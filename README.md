@@ -111,11 +111,21 @@ Angel 有 14 个工具：`read_file`、`write_file`、`edit_file`、`list_dir`�
 - **MCP**：默认关闭；在 `~/.angel/config.json` 里设 `"mcp_enabled": true` 并配置 `mcp_servers` 后可用，`python3 -m angel --list-mcp` 查看已加载的工具。
 - **调度器**：`python3 -m angel schedule list/add/remove/run/daemon`，见 `angel schedule --help`。
 - **会话压缩**：`python3 -m angel --compact <会话 id>` 或 REPL `/compact`。
+- **E2B 沙盒**（0.3.0）：文件读写与 shell 命令可以在 E2B 沙盒里执行，不碰本机：
+
+```bash
+pip install e2b   # 可选依赖，核心仍是标准库 only
+export E2B_API_KEY=你的 Key   # 或在 Muse 里保存 E2B 连接器
+python3 -m angel --sandbox e2b --mode full "在工作目录写一个 hello.txt"
+python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的工作"
+```
+
+沙盒模式下工作目录默认 `/home/user`；沙盒到期自动销毁（默认 1 小时，免费档上限），不主动删；`--sandbox-timeout` 可改（不超过 3600）。审批与 shell 黑名单在沙盒里同样生效。
 
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 53 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 62 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -133,7 +143,8 @@ angel/
 │   ├── tools.py       14 个工具 + 审批 + shell 黑名单
 │   ├── skills.py      技能加载 / 匹配 / 保存
 │   ├── memory.py      长期记忆 + AGENTS.md + 会话存储
-│   ├── config.py      配置 + provider 注册表 + provider 档案
+│   ├── config.py      配置 + provider 注册表 + provider 档案 + 沙盒设置
+│   ├── e2b_backend.py E2B 沙盒执行后端（可选依赖，凭证替身认证）
 │   ├── mcp.py         MCP 客户端（stdio JSON-RPC）
 │   ├── scheduler.py   内置调度器（文件式任务 + daemon）
 │   ├── compact.py     会话压缩（模型摘要 + 本地回退）

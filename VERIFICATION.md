@@ -1,3 +1,54 @@
+# Angel 验证报告（2026-11-16，v3 0.3.0）
+
+## v3 结论
+
+Angel 0.3.0 已完成并全部通过测试：62 个 mock 测试通过（v2 的 53 个全部保留并通过，新增 9 个）；E2B 沙盒执行后端已接进 Angel 本身，真实 DeepSeek + 真实 E2B 沙盒端到端跑通。
+
+## v3 新增内容
+
+| 模块/文件 | 说明 |
+|---|---|
+| `angel/e2b_backend.py`（新增） | E2B 沙盒执行后端：懒加载官方 `e2b` SDK（可选依赖），凭证优先 `E2B_API_KEY`、否则走已保存的 Muse 连接器凭证替身；`connect()` 新建或连接已有沙盒；`run_command` / `read_file` / `write_file` / `list_dir`；`close()` 不杀沙盒（到期自动销毁） |
+| `angel/tools.py`（改） | `ToolContext` 增加 `backend` 字段；`read_file` / `write_file` / `edit_file` / `list_dir` / `shell` / `plan` / `grep_search` / `git_status` 有后端时走后端，其余工具仍在本地；审批与 shell 黑名单在两种后端下都生效 |
+| `angel/config.py`（改） | `sandbox` / `e2b_template` / `e2b_timeout` / `e2b_sandbox_id` 配置 + `resolve_sandbox()`（CLI 参数 > `ANGEL_SANDBOX` / `ANGEL_E2B_*` 环境变量 > 配置文件 > 默认值） |
+| `angel/agent.py`（改） | `Agent` 接受 `backend` 参数并传给 `ToolContext`；`delegate()` 把同一后端传给子 agent；系统提示词在沙盒模式下告知模型文件与命令都在沙盒里执行 |
+| `angel/cli.py`（改） | `--sandbox {local,e2b}`、`--sandbox-id`、`--sandbox-template`、`--sandbox-timeout`；沙盒模式下工作目录默认 `/home/user`（沙盒路径，不在本地校验）；连接成功打印沙盒 id 与超时 |
+| `scripts/remote_run.py`、`scripts/upload_angel.py`（新增） | 第 1 步原型验证脚本（大脑在外、手在沙盒）与把 Angel 代码传进沙盒跑测试的脚本 |
+
+## v3 测试结果
+
+### 1. Mock 测试（62 个，全部通过）
+
+```bash
+cd ~/workspace/angel
+python3 -m unittest discover tests   # Ran 62 tests — OK
+```
+
+新增 9 个测试覆盖：FakeBackend 路由（读写改列文件、shell、plan、grep/git_status 走后端、本地零写入）、沙盒模式下黑名单与只读模式仍生效、E2B SDK 缺失时报明确安装提示、`E2B_API_KEY` 优先于连接器、`resolve_sandbox` 默认/环境变量/非法值、delegate 把后端传给子 agent。
+
+### 2. 真实 DeepSeek + 真实 E2B 沙盒端到端
+
+```bash
+cd ~/workspace/angel
+~/workspace/angel/.venv/bin/python -m angel --provider deepseek --mode full \
+  --sandbox e2b --sandbox-id ipfjq62okgtm53z1fl8io --max-turns 8 \
+  "在工作目录创建 sandbox-demo.txt，内容是'Angel 在沙盒里'，然后读出它确认，再列出工作目录"
+```
+
+结果：成功。Angel 连接沙盒 `ipfjq62okgtm53z1fl8io`，模型在沙盒里写 `/home/user/sandbox-demo.txt`（内容 `Angel 在沙盒里`）、读回确认、列出目录（`.bashrc`、`.profile` 等沙盒自带文件 + 本次新建的文件）。随后用 E2B SDK 独立回读确认：沙盒里确有该文件且内容一致；本地 `/home/user` 根本不存在，零写入。
+
+### 3. 第 1 步原型（remote_run.py）
+
+模型走 DeepSeek 连接器、工具走 E2B 沙盒，4 轮完成：写 `prime_sum.py`、沙盒里运行、结果 1060、读回确认。Angel 代码 28 个文件已上传进同一台沙盒，`--help` 正常，53 个测试在沙盒里全过。
+
+## v3 已知限制（诚实记录）
+
+1. **E2B 免费档沙盒超时上限 1 小时**：`--sandbox-timeout` 超过 3600 会被 E2B 拒绝（HTTP 400）；沙盒不主动删除，到期自动销毁。
+2. **定时任务仍走本地执行**：`angel schedule` 创建的任务不读沙盒设置；沙盒模式只对本次命令行/交互会话生效。
+3. 其余 v2 限制（web_search 未在真实网络验证、MCP 未接真实服务器、调度器 naive 本地时间、无真浏览器）仍适用。
+
+---
+
 # Angel 验证报告（2026-11-16，v2 0.2.0）
 
 ## v2 结论

@@ -16,9 +16,14 @@ DEFAULT_CONFIG = {
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
+    "sandbox": "local",
+    "e2b_template": "base",
+    "e2b_timeout": 3600,
+    "e2b_sandbox_id": None,
 }
 
 VALID_MODES = ("readonly", "auto", "full")
+VALID_SANDBOXES = ("local", "e2b")
 
 PROVIDERS = {
     "deepseek": {
@@ -226,6 +231,68 @@ def resolve_profile(
         if prof.get(key):
             merged[key] = prof[key]
     return merged
+
+
+@dataclass
+class SandboxSettings:
+    """Where file and shell tools run: locally, or in an E2B sandbox."""
+
+    backend: str = "local"
+    sandbox_id: str | None = None
+    template: str = "base"
+    timeout: int = 3600
+
+
+def resolve_sandbox(
+    config: dict | None = None,
+    backend: str | None = None,
+    sandbox_id: str | None = None,
+    template: str | None = None,
+    timeout: int | None = None,
+) -> SandboxSettings:
+    """Resolve sandbox settings.
+
+    Precedence: explicit arguments, then ANGEL_SANDBOX / ANGEL_E2B_*
+    environment variables, then ~/.angel/config.json, then defaults.
+    Raises ValueError for an unknown backend.
+    """
+    cfg = config if config is not None else load_config()
+    chosen = (
+        backend
+        or os.environ.get("ANGEL_SANDBOX")
+        or cfg.get("sandbox")
+        or "local"
+    )
+    if chosen not in VALID_SANDBOXES:
+        raise ValueError(
+            f"Invalid sandbox backend: {chosen}. "
+            f"Valid backends: {', '.join(VALID_SANDBOXES)}"
+        )
+    env_timeout = os.environ.get("ANGEL_E2B_TIMEOUT")
+    resolved_timeout = timeout
+    if resolved_timeout is None and env_timeout is not None:
+        try:
+            resolved_timeout = int(env_timeout)
+        except ValueError:
+            resolved_timeout = None
+    if resolved_timeout is None:
+        resolved_timeout = cfg.get("e2b_timeout") or 3600
+    return SandboxSettings(
+        backend=chosen,
+        sandbox_id=(
+            sandbox_id
+            or os.environ.get("ANGEL_E2B_SANDBOX_ID")
+            or cfg.get("e2b_sandbox_id")
+            or None
+        ),
+        template=(
+            template
+            or os.environ.get("ANGEL_E2B_TEMPLATE")
+            or cfg.get("e2b_template")
+            or "base"
+        ),
+        timeout=resolved_timeout,
+    )
 
 
 def validate_mode(mode: str) -> str:

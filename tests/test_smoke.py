@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from datetime import datetime
 from pathlib import Path
 
@@ -340,7 +341,7 @@ class CliTest(unittest.TestCase):
             cwd=root, capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(out.returncode, 0)
-        self.assertIn("Angel 0.2.0", out.stdout)
+        self.assertIn("Angel 0.3.0", out.stdout)
 
 
 FAKE_MCP_SERVER = '''\
@@ -846,6 +847,159 @@ class WebSearchParserTest(unittest.TestCase):
         self.assertIn("Bing", out)
         self.assertIn("百度", out)
         self.assertNotIn("标题", out)
+
+
+class FakeBackend:
+    """In-memory execution backend: proves tools route through it, not local."""
+
+    name = "fake"
+
+    def __init__(self):
+        self.files = {}
+        self.commands = []
+
+    def run_command(self, command, cwd=None, timeout=60):
+        self.commands.append(command)
+        return "fake-output"
+
+    def read_file(self, path):
+        if path not in self.files:
+            return f"错误：文件不存在：{path}"
+        return self.files[path]
+
+    def write_file(self, path, content):
+        self.files[path] = content
+        return f"已写入 {path}（{len(content)} 字符）"
+
+    def list_dir(self, path):
+        names = sorted(
+            p[len(path):].lstrip("/") for p in self.files if p.startswith(path + "/")
+        )
+        return "\n".join(names) or "（空目录）"
+
+    def close(self):
+        pass
+
+
+class SandboxBackendTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.backend = FakeBackend()
+        self.ctx = ToolContext(
+            workdir=Path("/home/user"),
+            mode="full",
+            interactive=False,
+            memory_path=ANGEL_HOME / "MEMORY.md",
+            skills_dir=ANGEL_HOME / "skills",
+            backend=self.backend,
+        )
+
+    def test_backend_routes_file_ops(self):
+        out = execute_tool("write_file", {"path": "hello.txt", "content": "你好"}, self.ctx)
+        self.assertIn("已写入", out)
+        self.assertEqual(self.backend.files["/home/user/hello.txt"], "你好")
+        self.assertEqual(execute_tool("read_file", {"path": "hello.txt"}, self.ctx), "你好")
+        self.assertIn("已写入", execute_tool("edit_file", {"path": "hello.txt", "old_text": "你好", "new_text": "你好，Angel"}, self.ctx))
+        self.assertEqual(self.backend.files["/home/user/hello.txt"], "你好，Angel")
+        self.assertIn("hello.txt", execute_tool("list_dir", {"path": "/home/user"}, self.ctx))
+        # Nothing touched the local filesystem.
+        self.assertEqual(list(self.tmp.iterdir()), [])
+        self.assertIn("文件不存在", execute_tool("read_file", {"path": "nope.txt"}, self.ctx))
+
+    def test_backend_routes_shell_and_denylist(self):
+        out = execute_tool("shell", {"command": "echo 42"}, self.ctx)
+        self.assertEqual(out, "fake-output")
+        self.assertEqual(self.backend.commands, ["echo 42"])
+        # The denylist still applies before anything reaches the backend.
+        blocked = execute_tool("shell", {"command": "rm -rf /"}, self.ctx)
+        self.assertTrue(blocked.startswith("错误："))
+        self.assertEqual(len(self.backend.commands), 1)
+
+    def test_backend_routes_plan(self):
+        out = execute_tool("plan", {"title": "计划", "steps": ["一步", "二步"]}, self.ctx)
+        self.assertIn("已写入计划", out)
+        self.assertIn("# 计划", self.backend.files["/home/user/plan.md"])
+
+    def test_backend_grep_and_git_status(self):
+        self.backend.files["/home/user/a.txt"] = "hello world\n"
+        out = execute_tool("grep_search", {"pattern": "hello", "path": "/home/user"}, self.ctx)
+        self.assertEqual(out, "fake-output")
+        self.assertTrue(any("grep" in c and "hello" in c for c in self.backend.commands))
+        out = execute_tool("git_status", {"path": "/home/user"}, self.ctx)
+        self.assertIn("fake-output", out)
+        self.assertIn("改动统计", out)
+        self.assertTrue(any("git" in c for c in self.backend.commands))
+
+    def test_backend_readonly_still_blocks(self):
+        ro = ToolContext(
+            workdir=Path("/home/user"), mode="readonly", interactive=False,
+            memory_path=ANGEL_HOME / "MEMORY.md",
+            skills_dir=ANGEL_HOME / "skills",
+            backend=self.backend,
+        )
+        out = execute_tool("write_file", {"path": "x.txt", "content": "x"}, ro)
+        self.assertIn("只读模式", out)
+        self.assertNotIn("/home/user/x.txt", self.backend.files)
+
+    def test_e2b_backend_missing_sdk(self):
+        from angel.e2b_backend import E2BBackend, E2BError
+
+        with unittest.mock.patch.dict(sys.modules, {"e2b": None}):
+            with self.assertRaises(E2BError) as ctx:
+                E2BBackend().connect()
+        self.assertIn("pip install e2b", str(ctx.exception))
+
+    def test_resolve_e2b_api_key_prefers_env(self):
+        from angel.e2b_backend import resolve_e2b_api_key
+
+        with unittest.mock.patch.dict(os.environ, {"E2B_API_KEY": "env-key-123"}):
+            self.assertEqual(resolve_e2b_api_key(), "env-key-123")
+
+    def test_resolve_sandbox_defaults_env_and_invalid(self):
+        from angel.config import resolve_sandbox
+
+        base = {"sandbox": "local", "e2b_template": "base", "e2b_timeout": 3600, "e2b_sandbox_id": None}
+        settings = resolve_sandbox(config=base)
+        self.assertEqual(settings.backend, "local")
+        self.assertEqual(settings.template, "base")
+        self.assertEqual(settings.timeout, 3600)
+        with unittest.mock.patch.dict(os.environ, {"ANGEL_SANDBOX": "e2b", "ANGEL_E2B_SANDBOX_ID": "sbx-1"}):
+            settings = resolve_sandbox(config=base)
+        self.assertEqual(settings.backend, "e2b")
+        self.assertEqual(settings.sandbox_id, "sbx-1")
+        settings = resolve_sandbox(config=base, backend="local")
+        self.assertEqual(settings.backend, "local")
+        with self.assertRaises(ValueError):
+            resolve_sandbox(config=base, backend="nope")
+
+    def test_agent_delegate_keeps_backend(self):
+        provider = FakeProvider(
+            [
+                assistant_message(
+                    calls=[tool_call("c1", "delegate", {"task": "写个文件", "max_turns": 3})]
+                ),
+                assistant_message("子任务写完了。"),
+            ]
+        )
+        provider.responses.insert(
+            1,
+            assistant_message(
+                calls=[tool_call("c2", "write_file", {"path": "child.txt", "content": "子任务文件"})]
+            ),
+        )
+        provider.responses.insert(2, assistant_message("已写好。"))
+        agent = Agent(
+            provider=provider,
+            workdir=Path("/home/user"),
+            mode="full",
+            max_turns=5,
+            interactive=False,
+            backend=self.backend,
+        )
+        result = agent.run("让子 agent 写个文件")
+        self.assertIn("子任务写完了", result)
+        self.assertEqual(self.backend.files["/home/user/child.txt"], "子任务文件")
+        self.assertEqual(list(self.tmp.iterdir()), [])
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ class Agent:
         skills_dirs: list[Path] | None = None,
         messages: list[dict] | None = None,
         mcp_manager: MCPToolManager | None = None,
+        backend: object | None = None,
     ) -> None:
         self.provider = provider
         self.workdir = Path(workdir)
@@ -66,6 +67,7 @@ class Agent:
         )
         self.skills: list[Skill] = load_skills(self.skills_dirs)
         self.mcp_manager = mcp_manager
+        self.backend = backend
         self.evidence = EvidenceStore(ANGEL_HOME / "evidence", self.session_id)
         self.ctx = ToolContext(
             workdir=self.workdir,
@@ -75,6 +77,7 @@ class Agent:
             skills_dir=ANGEL_HOME / "skills",
             delegate_fn=self.delegate,
             evidence=self.evidence,
+            backend=backend,
         )
 
     def tool_schemas(self) -> list[dict]:
@@ -95,6 +98,12 @@ class Agent:
 
     def build_system_prompt(self, task: str) -> str:
         sections = [SYSTEM_PROMPT_BASE, MODE_NOTES.get(self.mode, "")]
+        if self.backend is not None:
+            sections.append(
+                f"当前执行后端是 {self.backend.name} 沙盒："
+                "文件读写与命令都在沙盒里执行，不在本地机器上；"
+                "工作目录是沙盒里的工作目录。"
+            )
 
         agents_md = load_agents_md(self.workdir)
         if agents_md:
@@ -182,6 +191,7 @@ class Agent:
             interactive=self.interactive,
             skills_dirs=self.skills_dirs,
             mcp_manager=self.mcp_manager,
+            backend=self.backend,
         )
         try:
             return child.run(task)

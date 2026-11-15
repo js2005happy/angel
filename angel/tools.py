@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import html
 from pathlib import Path
 import re
+import shlex
 import subprocess
 from typing import Callable
 import urllib.error
@@ -28,6 +29,9 @@ class ToolContext:
     skills_dir: Path
     delegate_fn: Callable[[str, int], str] | None = None
     evidence: EvidenceStore | None = None
+    # Execution backend for file and shell tools. None means local execution;
+    # an E2BBackend routes those tools into a sandbox instead.
+    backend: object | None = None
 
 
 MUTATING_TOOLS = {
@@ -346,6 +350,8 @@ def _check_shell_denied(command: str) -> str | None:
 
 
 def _tool_read_file(ctx: ToolContext, path: str) -> str:
+    if ctx.backend is not None:
+        return _truncate(ctx.backend.read_file(str(_resolve_path(ctx, path))))
     target = _resolve_path(ctx, path)
     if not target.is_file():
         return f"错误：文件不存在：{path}"
@@ -354,6 +360,8 @@ def _tool_read_file(ctx: ToolContext, path: str) -> str:
 
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
     _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）")
+    if ctx.backend is not None:
+        return ctx.backend.write_file(str(_resolve_path(ctx, path)), content)
     target = _resolve_path(ctx, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
@@ -364,6 +372,17 @@ def _tool_edit_file(
     ctx: ToolContext, path: str, old_text: str, new_text: str
 ) -> str:
     _check_approval(ctx, "edit_file", f"编辑文件：{path}")
+    if ctx.backend is not None:
+        resolved = str(_resolve_path(ctx, path))
+        content = ctx.backend.read_file(resolved)
+        if content.startswith("错误："):
+            return content
+        count = content.count(old_text)
+        if count == 0:
+            return "错误：未找到要替换的文本"
+        if count > 1:
+            return f"错误：找到 {count} 处匹配，请提供更精确的 old_text"
+        return ctx.backend.write_file(resolved, content.replace(old_text, new_text, 1))
     target = _resolve_path(ctx, path)
     if not target.is_file():
         return f"错误：文件不存在：{path}"
@@ -378,6 +397,8 @@ def _tool_edit_file(
 
 
 def _tool_list_dir(ctx: ToolContext, path: str = ".") -> str:
+    if ctx.backend is not None:
+        return ctx.backend.list_dir(str(_resolve_path(ctx, path)))
     target = _resolve_path(ctx, path)
     if not target.is_dir():
         return f"错误：目录不存在：{path}"
@@ -401,6 +422,11 @@ def _tool_shell(
     if denied:
         return f"错误：{denied}"
     _check_approval(ctx, "shell", f"执行命令：{command}")
+    if ctx.backend is not None:
+        resolved_cwd = str(ctx.workdir / cwd if cwd else ctx.workdir)
+        return _truncate(
+            ctx.backend.run_command(command, cwd=resolved_cwd, timeout=timeout)
+        ) or "（无输出）"
     try:
         result = subprocess.run(
             command,
@@ -587,6 +613,9 @@ def _tool_plan(
         + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
         + "\n"
     )
+    if ctx.backend is not None:
+        ctx.backend.write_file(str(_resolve_path(ctx, path)), content)
+        return f"已写入计划 {path}（{len(steps)} 步）"
     target = _resolve_path(ctx, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
@@ -604,6 +633,35 @@ def _tool_grep_search(
     case_sensitive: bool = False,
     max_results: int = 50,
 ) -> str:
+    if ctx.backend is not None:
+        if regex:
+            try:
+                re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
+            except re.error as exc:
+                return f"错误：正则表达式无效：{exc}"
+        flags = ["-rn"]
+        if regex:
+            flags.append("-E")
+        if not case_sensitive:
+            flags.append("-i")
+        excludes = " ".join(
+            f"--exclude-dir={d}" for d in sorted(_SKIP_DIRS | {".*"})
+        )
+        command = (
+            f"grep {' '.join(flags)} {excludes} -- "
+            f"{shlex.quote(pattern)} {shlex.quote(str(_resolve_path(ctx, path)))}"
+        )
+        out = ctx.backend.run_command(command, cwd=str(ctx.workdir), timeout=30)
+        if "No such file or directory" in out:
+            return f"错误：路径不存在：{path}"
+        lines = [line for line in out.splitlines() if line.strip()]
+        if not lines:
+            return "未找到匹配内容"
+        found = lines[:max_results]
+        result = "\n".join(found)
+        if len(lines) > max_results:
+            result += f"\n……（已达上限 {max_results} 条）"
+        return result
     root = _resolve_path(ctx, path)
     if not root.exists():
         return f"错误：路径不存在：{path}"
@@ -647,6 +705,23 @@ def _tool_grep_search(
 
 def _tool_git_status(ctx: ToolContext, path: str = ".") -> str:
     target = _resolve_path(ctx, path)
+    if ctx.backend is not None:
+        out = ctx.backend.run_command(
+            f"git -C {shlex.quote(str(target))} status --short --branch",
+            cwd=str(ctx.workdir),
+            timeout=15,
+        )
+        if "fatal: not a git repository" in out or "不是一个 git 仓库" in out:
+            return "错误：该目录不是 git 仓库（或 git 报错）"
+        diff = ctx.backend.run_command(
+            f"git -C {shlex.quote(str(target))} diff --stat",
+            cwd=str(ctx.workdir),
+            timeout=15,
+        )
+        combined = out.strip() or "（工作区干净）"
+        if diff.strip() and "fatal" not in diff:
+            combined += "\n\n改动统计：\n" + diff.strip()
+        return _truncate(combined)
     if not target.is_dir():
         return f"错误：目录不存在：{path}"
     try:

@@ -12,8 +12,10 @@ from .config import (
     load_config,
     resolve_profile,
     resolve_provider,
+    resolve_sandbox,
     validate_mode,
 )
+from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .providers import Provider, ProviderError, describe_provider
 from .agent import Agent, AgentError, build_mcp_manager
 from .compact import compact_session_file
@@ -235,6 +237,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument(
+        "--sandbox",
+        choices=("local", "e2b"),
+        default=None,
+        help="执行后端：local 本地执行 / e2b 在 E2B 沙盒里执行（默认 local）",
+    )
+    parser.add_argument(
+        "--sandbox-id",
+        default=None,
+        help="连接已有的 E2B 沙盒（不给则新建一台）",
+    )
+    parser.add_argument(
+        "--sandbox-template",
+        default=None,
+        help="新建 E2B 沙盒用的模板（默认 base）",
+    )
+    parser.add_argument(
+        "--sandbox-timeout",
+        type=int,
+        default=None,
+        help="新建 E2B 沙盒的超时秒数（默认 3600，到期自动销毁）",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"Angel {__version__}",
@@ -267,10 +291,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    workdir = Path(args.workdir).resolve()
-    if not workdir.is_dir():
-        print(f"错误：工作目录不存在：{workdir}")
+    try:
+        sandbox_settings = resolve_sandbox(
+            backend=args.sandbox,
+            sandbox_id=args.sandbox_id,
+            template=args.sandbox_template,
+            timeout=args.sandbox_timeout,
+        )
+    except ValueError as exc:
+        print(f"错误：{exc}")
         return 1
+
+    if sandbox_settings.backend == "e2b":
+        # 工作目录是沙盒里的路径，不在本地校验。
+        workdir = (
+            Path(args.workdir)
+            if args.workdir != "."
+            else Path(DEFAULT_SANDBOX_WORKDIR)
+        )
+    else:
+        workdir = Path(args.workdir).resolve()
+        if not workdir.is_dir():
+            print(f"错误：工作目录不存在：{workdir}")
+            return 1
 
     if args.list_skills:
         skills = load_skills(
@@ -370,6 +413,18 @@ def main(argv: list[str] | None = None) -> int:
         session_id = args.resume
 
     interactive = sys.stdin.isatty()
+    backend = None
+    if sandbox_settings.backend == "e2b":
+        try:
+            backend = connect_backend(sandbox_settings)
+        except E2BError as exc:
+            print(f"错误：{exc}")
+            return 1
+        print(
+            f"沙盒已连接：E2B {backend.sandbox_id}"
+            f"（超时 {sandbox_settings.timeout} 秒，到期自动销毁）"
+        )
+        print("文件与命令将在沙盒里执行，不在本地机器上。")
     mcp_manager = build_mcp_manager()
     agent = Agent(
         provider=provider,
@@ -380,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
         interactive=interactive,
         messages=messages,
         mcp_manager=mcp_manager,
+        backend=backend,
     )
 
     try:
@@ -396,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
             f"Angel {__version__}（{describe_provider(provider)}，"
             f"模式：{mode}，会话：{agent.session_id}）"
         )
+        if backend is not None:
+            print(f"沙盒：E2B {backend.sandbox_id}，工作目录：{workdir}")
         if mcp_manager is not None:
             print(f"MCP 工具已加载：{len(mcp_manager.tool_schemas)} 个")
         print("输入 /help 查看命令，直接输入文字开始对话。")
@@ -469,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
 
         return 0
     finally:
+        if backend is not None:
+            backend.close()
         if mcp_manager is not None:
             mcp_manager.stop_all()
 
