@@ -108,7 +108,8 @@ Angel 有 14 个工具：`read_file`、`write_file`、`edit_file`、`list_dir`�
 - **会话**：每次运行自动保存到 `~/.angel/sessions/<id>.jsonl`，可用 `--resume` 继续。
 
 - **证据链**：联网抓到的页面原文存到 `~/.angel/evidence/<会话 id>/`，引用网上信息时附上来源链接；核查类任务走 `verify-research` 技能（搜索→打开官网→逐项核对→存证→附链接交付）。
-- **MCP**：默认关闭；在 `~/.angel/config.json` 里设 `"mcp_enabled": true` 并配置 `mcp_servers` 后可用，`python3 -m angel --list-mcp` 查看已加载的工具。
+- **MCP**：默认关闭；在 `~/.angel/config.json` 里设 `"mcp_enabled": true` 并配置 `mcp_servers` 后可用，`python3 -m angel --list-mcp` 查看已加载的工具。stdio 管道在 Windows/Linux/macOS 上均支持超时处理。
+- **Windows 终端编码**：旧代码页无法表示中文时，CLI/调度器会以 `\\uXXXX` 转义显示而不是崩溃。建议终端使用 UTF-8（如 PowerShell 设置 `$env:PYTHONIOENCODING="utf-8"`），以直接显示中文。
 - **调度器**：`python3 -m angel schedule list/add/remove/run/daemon`，见 `angel schedule --help`。
 - **会话压缩**：`python3 -m angel --compact <会话 id>` 或 REPL `/compact`。
 - **E2B 沙盒**（0.3.0）：文件读写与 shell 命令可以在 E2B 沙盒里执行，不碰本机：
