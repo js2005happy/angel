@@ -1,0 +1,177 @@
+# Angel 验证报告（2026-11-16，v2 0.2.0）
+
+## v2 结论
+
+Angel 0.2.0 已完成并全部通过测试：53 个 mock 测试通过（v1 的 21 个全部保留并通过，新增 32 个）；真实 DeepSeek API 端到端跑通（新工具 `grep_search` 实测）；MCP、调度器、会话压缩、证据链、provider 档案、web_search 双后端均已验证。
+
+## v2 新增内容
+
+| 模块/文件 | 说明 |
+|---|---|
+| `angel/mcp.py` | MCP 客户端（stdio JSON-RPC）：启动、initialize、list_tools、call_tool、超时控制；`MCPToolManager` 按最长前缀路由，工具名 `mcp_<服务器>_<工具>`；默认关闭（`mcp_enabled`） |
+| `angel/scheduler.py` | 内置调度器：`~/.angel/schedule.json` 文件式任务，间隔或每天固定时间，daemon 循环；到期判断、运行记录、错误隔离 |
+| `angel/compact.py` | 会话压缩：模型摘要 + 保留最近消息；模型失败时本地回退（保留首尾消息）；支持压缩整个会话文件 |
+| `angel/evidence.py` | 证据链：联网抓取的页面原文按会话存档（`~/.angel/evidence/<会话 id>/`），带来源、时间、搜索词 |
+| `angel/tools.py`（新增） | `grep_search`（文件内容搜索，支持正则/大小写）、`git_status`（只读）、`http_post`（走审批）；`web_search` 改为必应优先、百度兜底 |
+| `angel/config.py`（新增） | `profiles` 档案 + `resolve_profile`（CLI 参数 > `ANGEL_PROFILE` 环境变量 > 配置默认值）；`mcp_enabled` 开关 |
+| `skills/verify-research.md` | 核查式调研技能：搜索→打开官网→逐项核对→存证→附链接交付 |
+| `angel/agent.py`（改） | MCP 工具路由、证据 store、`/compact` 与 `compact()`、系统提示词加入查证流程 |
+| `angel/cli.py`（改） | `schedule` 子命令（list/add/remove/run/daemon）、`--profile`、`--compact`、`--list-mcp`、`--list-profiles`、REPL `/compact` |
+
+## v2 分工（Codex 生成 vs Muse 写/改）
+
+- **Codex 生成（按 Muse 的规格逐模块生成，Muse 落盘并逐一测试）**：`mcp.py`、`scheduler.py`、`compact.py`。三个模块一次通过编译与导入，无需返工；`scheduler.py` 的 `is_due` 有一处逻辑由 Muse 在测试后修正（见下）。
+- **Muse 写/改**：全部 v2 规格、集成改动（`config.py` 档案与开关、`tools.py` 新工具与 web_search 双后端、`agent.py` 路由与证据接线、`cli.py` 子命令与档案接线）、`evidence.py`、`verify-research` 技能、全部 32 个新增测试、文档更新（README/DESIGN/VERIFICATION/CHANGELOG）、全部测试与真实 API 验证。
+- **Muse 修正**：`scheduler.py` 的 `is_due`：原实现对“每天固定时间”任务只要从未运行就判到期，导致上午 9 点就触发 10:30 的任务。已改为：未到今天的执行时间就不到期（即使从未运行过），测试 `test_is_due_daily_at` 覆盖。
+
+## v2 测试结果
+
+### 1. Mock 测试（53 个，全部通过）
+
+```bash
+cd ~/workspace/angel
+python3 -m unittest discover tests   # Ran 53 tests — OK
+```
+
+新增 32 个测试覆盖：MCP（假 stdio JSON-RPC 服务器：列工具、调用、未知工具、坏服务器优雅失败、配置校验）、调度器（任务校验、到期判断、间隔/每天固定时间、运行记录、daemon 两轮）、压缩（模型摘要、失败回退、空会话、整文件压缩）、provider 档案（默认/命名/未知报错/列表）、证据链（存档与列表、web_fetch 存证）、新工具（grep 纯文本/正则/大小写、git 非仓库与真仓库、http_post 本地回显、只读模式拦截）、web_search 解析器（必应/百度固定 HTML、拦截页报错、双后端全失败时明确报错）。
+
+### 2. 真实 API 调用（DeepSeek flash，凭证走已保存连接器）
+
+```bash
+python3 -m angel --provider deepseek --model deepseek-flash --mode full \
+  --workdir /tmp/angel-v2-e2e \
+  "用 grep_search 找到工作目录里包含“香蕉”的文件和行号，把结果写进 result.txt，然后告诉我找到了什么"
+```
+
+结果：成功。模型调 `grep_search` 找到 `fruits.txt:2` 与 `more.txt:2`，写入 `result.txt` 并读回复核，还主动提醒 `result.txt` 自身含“香蕉”会导致下次搜索多一条命中。会话存于 `~/.angel/sessions/20261115-235218-1493.jsonl`。
+
+### 3. CLI 新功能实测
+
+- `python3 -m angel schedule list`：无任务时正常提示，exit 0。
+- `python3 -m angel --list-mcp`：MCP 未启用时提示在配置里设 `"mcp_enabled": true`，exit 0。
+- `python3 -m angel --list-skills`：列出 web-research、verify-research、file-organizer。
+- `python3 -m angel --version`：Angel 0.2.0。
+
+## v2 运行命令（给用户）
+
+```bash
+cd ~/workspace/angel
+
+# 调度器：每天 08:30 跑一个任务
+python3 -m angel schedule add --name 每日整理 --prompt "整理下载目录" --at 08:30 --mode full
+python3 -m angel schedule daemon          # 守护进程跑起来
+python3 -m angel schedule list             # 查看任务
+python3 -m angel schedule run              # 立刻跑一次到期的任务
+
+# 会话压缩
+python3 -m angel --compact <会话 id>
+
+# provider 档案（在 ~/.angel/config.json 的 profiles 里加档案后）
+python3 -m angel --profile strong "做点什么"
+python3 -m angel --list-profiles
+
+# MCP（在 ~/.angel/config.json 里设 "mcp_enabled": true 并配 mcp_servers 后）
+python3 -m angel --list-mcp
+```
+
+## v2 已知限制（诚实记录）
+
+1. **web_search 双后端未在真实网络验证**：必应/百度解析器只在固定 HTML 上测过；本机网络下真实搜索是否通（必应是否也被拦、百度是否要求验证）尚未实测，下次真实调用时以实际结果为准。全部失败时工具会明确报错，不编结果。
+2. **MCP 未接真实服务器验证**：只用假 stdio 服务器测过协议；真实 MCP 服务器的兼容性以实际接入为准。
+3. **调度器是 naive 本地时间**：不处理时区；daemon 需自己保持进程运行（systemd/后台运行另行配置）。
+4. **无真浏览器**：浏览器类工具（navigate/click/screenshot）未做，记入路线图；证据链是截图留档的轻量版。
+5. 其余 v1 限制（无真沙箱、模型调用计费、auto + 非交互）仍适用，见下。
+
+---
+
+## v1（2026-11-15）结论
+
+Angel 0.1.0 已完成并全部通过测试：Python 标准库 only，无 pip 依赖；21 个 mock 测试通过；真实 DeepSeek API 端到端跑通；REPL、会话恢复、auto 审批确认均已实测。
+
+## 交付物
+
+`~/workspace/angel/`，共约 2100 行代码+文档：
+
+| 文件 | 说明 |
+|---|---|
+| `angel/config.py` | 配置 + provider 注册表（deepseek/xai/openrouter/ollama/openai/custom） |
+| `angel/providers.py` | OpenAI 兼容客户端（urllib），支持 env Key 与已保存连接器凭证 |
+| `angel/tools.py` | 11 个工具 + 审批 + shell 危险命令黑名单 |
+| `angel/agent.py` | agent 主循环、系统提示词组装、delegate 子 agent |
+| `angel/skills.py` | 技能解析 / 关键词匹配 / 保存 |
+| `angel/memory.py` | 长期记忆 + AGENTS.md + 会话 jsonl 存储 |
+| `angel/cli.py` | 参数解析 + REPL（/help /mode /skills /sessions /clear /new /exit） |
+| `angel/__init__.py`、`angel/__main__.py` | 版本号与入口 |
+| `skills/web-research.md`、`skills/file-organizer.md` | 自带示例技能 |
+| `tests/test_smoke.py` | 21 个测试（stdlib unittest） |
+| `README.md`、`DESIGN.md`、`LICENSE`（MIT） | 文档与许可证 |
+
+## 分工（Codex 生成 vs Muse 写/改）
+
+- **Codex 生成（按 Muse 的规格逐模块生成，Muse 落盘并逐一测试）**：`config.py`、`providers.py`、`skills.py`、`memory.py`、`tools.py`、`agent.py`、`cli.py`。6 个模块全部一次通过，无需返工（`tools.py` 的 web_search 提示文案由 Muse 后补一处，见下）。
+- **Muse 写/改**：架构与接口设计、全部规格提示词、`__init__.py`、`__main__.py`、两个示例技能、`tests/test_smoke.py`、`README.md`、`DESIGN.md`、`LICENSE`、本报告；`tools.py` 的一处小修（见“已知限制”）；全部测试与真实 API 验证。
+
+## 测试结果
+
+### 1. Mock 测试（21 个，全部通过）
+
+```bash
+cd ~/workspace/angel
+python3 -m unittest discover tests   # Ran 21 tests — OK
+python3 tests/test_smoke.py          # 同样通过
+```
+
+覆盖：主循环（写→读→回答）、delegate 子 agent、会话保存/恢复、最大轮数截断、provider 错误透传、11 个工具的读写改列、shell 黑名单（`rm -rf /`、`rm -rf ~`、`mkfs`、`dd` 写设备、关机、fork 炸弹）、readonly 禁写、auto 非交互禁写、edit 歧义拒绝、plan 写文件、技能解析/匹配、配置解析、CLI `--list-skills` / `--version`。
+
+### 2. 真实 API 调用（DeepSeek flash，凭证走已保存连接器）
+
+```bash
+python3 -m angel --provider deepseek --model deepseek-flash --mode full \
+  --workdir /tmp/angel-e2e \
+  "创建一个文件 hello-angel.txt，里面写一句英文问候，然后读回文件内容并向我汇报"
+```
+
+结果：成功。模型调用 `write_file` 写入 73 字符问候，再用 `read_file` 读回并中文汇报。文件内容：`Hello! It's a pleasure to meet you, and I hope you have a wonderful day.` 会话存于 `~/.angel/sessions/20261115-154741-0afd.jsonl`（即本次端到端 transcript）。
+
+随后用 `--resume 20261115-154741-0afd` 追问文件内容，模型直接从会话历史回答，未再读写文件——会话恢复已验证。
+
+### 3. REPL
+
+`printf '/help\n/skills\n/exit\n' | python3 -m angel`：横幅、`/help`、`/skills`（列出 web-research、file-organizer）、退出均正常，exit 0。
+
+### 4. auto 审批（PTY 实测）
+
+用 PTY 驱动 `python3 -m angel --mode auto`，模型请求写文件时出现 `允许执行吗？[y/N]`，输入 `y` 后文件 `approved.txt` 创建成功（内容 `approved`），exit 0。证明交互确认链路真实工作。
+
+### 5. web_fetch / web_search
+
+- `web_fetch https://example.com`：正常抓取并提取文本。
+- `web_search`：本机网络下 DuckDuckGo 返回人机验证页，工具返回明确提示（“DuckDuckGo 要求人机验证，当前网络下无法搜索”）而不是崩溃或假装有结果。见“已知限制”。
+
+## 运行命令（给用户）
+
+```bash
+cd ~/workspace/angel
+
+# DeepSeek（已保存的连接器凭证，不用再填 Key）
+python3 -m angel "帮我看看这个目录里有什么"
+python3 -m angel --mode full "创建一个文件 hello.txt，写一句问候"
+
+# 交互模式
+python3 -m angel
+
+# Grok
+python3 -m angel --provider xai "做点什么"
+
+# 查看技能 / 会话
+python3 -m angel --list-skills
+python3 -m angel --list-sessions
+```
+
+## 已知限制（诚实记录）
+
+1. **web_search 被 DuckDuckGo 拦截**：本机出口 IP 触发 DuckDuckGo 人机验证，搜索返回明确错误而非结果。换网络或接正式搜索 API 可解决；Muse 已补一处判断，让报错原因可读。这不是解析 bug。
+2. **无真沙箱**：shell 以运行 Angel 的用户身份执行，MVP 只靠审批 + 黑名单挡危险命令；真沙箱在路线图第一项。full 模式请只在信任目录使用。
+3. **memory_append / save_skill 未进单元测试**：这两个工具会写 `~/.angel/` 下的真实文件，单元测试里未覆盖；其代码路径已随主循环跑通过（工具分发表无问题），但未单独断言。
+4. **模型调用要花钱**：软件免费，推理按 token 计费。本次验证总计只用了几百 token 的 deepseek-flash，成本可忽略；日常使用建议默认 flash 模型。
+5. **auto + 非交互**：cron/管道运行时 auto 模式遇到写操作会明确报错退出，不会悄悄写入；后台任务请用 `--mode full`。
