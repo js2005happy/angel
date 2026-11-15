@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import select
+import queue
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -63,14 +64,16 @@ class MCPClient:
         self.process = None
         self.next_id = 1
         self.tools: list[dict] = []
-        self._read_buffer = b""
+        self._lines: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._reader: threading.Thread | None = None
 
     def start(self) -> None:
         if self.process is not None:
             raise MCPError("MCP 客户端已经启动，请先停止")
 
         self.tools = []
-        self._read_buffer = b""
+        self._lines = queue.Queue()
+        self._reader = None
         step = "启动进程"
         try:
             env = os.environ.copy()
@@ -84,6 +87,15 @@ class MCPClient:
                 errors="replace",
                 env=env,
             )
+            # Windows select() only accepts sockets, not subprocess pipes.
+            # A background reader gives stdio the same timeout semantics on
+            # Windows, Linux and macOS without blocking the main agent loop.
+            self._reader = threading.Thread(
+                target=self._pump_stdout,
+                args=(self.process.stdout, self._lines),
+                daemon=True,
+            )
+            self._reader.start()
             step = "初始化"
             self.initialize()
             step = "获取工具列表"
@@ -118,38 +130,36 @@ class MCPClient:
         except (OSError, ValueError) as exc:
             raise MCPError(f"写入 MCP 服务器失败：{exc}") from exc
 
+    @staticmethod
+    def _pump_stdout(stdout, lines: queue.Queue[tuple[str, str]]) -> None:
+        """Read blocking text pipes off-thread (select cannot watch pipes on Windows)."""
+        try:
+            for line in stdout:
+                lines.put(("line", line.strip()))
+        except (OSError, ValueError) as exc:
+            lines.put(("error", str(exc)))
+        finally:
+            lines.put(("eof", ""))
+
     def _read_line(self, deadline: float) -> str:
-        process = self.process
-        if process is None or process.stdout is None:
+        if self.process is None or self.process.stdout is None:
             raise MCPError("MCP 服务器尚未启动")
 
-        # 自行缓存字节，避免文本流预读导致 select 无法发现已缓存的响应。
-        while b"\n" not in self._read_buffer:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise MCPError("MCP 服务器响应超时")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MCPError("MCP 服务器响应超时")
+        try:
+            kind, value = self._lines.get(timeout=remaining)
+        except queue.Empty as exc:
+            raise MCPError("MCP 服务器响应超时") from exc
 
-            try:
-                readable, _, _ = select.select(
-                    [process.stdout], [], [], remaining
-                )
-                if not readable:
-                    raise MCPError("MCP 服务器响应超时")
-                chunk = os.read(process.stdout.fileno(), 65536)
-            except InterruptedError:
-                continue
-            except (OSError, ValueError) as exc:
-                raise MCPError(f"读取 MCP 服务器响应失败：{exc}") from exc
-
-            if not chunk:
-                raise MCPError("MCP 服务器已退出")
-            self._read_buffer += chunk
-
-        line, self._read_buffer = self._read_buffer.split(b"\n", 1)
-        text = line.decode("utf-8", errors="replace").strip()
-        if not text:
+        if kind == "error":
+            raise MCPError(f"读取 MCP 服务器响应失败：{value}")
+        if kind == "eof":
             raise MCPError("MCP 服务器已退出")
-        return text
+        if not value:
+            raise MCPError("MCP 服务器返回空行")
+        return value
 
     def _send_request(self, method: str, params: dict | None = None) -> dict:
         request_id = self.next_id
@@ -312,13 +322,16 @@ class MCPClient:
         finally:
             self.process = None
             self.tools = []
-            self._read_buffer = b""
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     try:
                         stream.close()
                     except OSError as exc:
                         print(f"关闭 MCP 进程管道失败：{exc}", file=sys.stderr)
+            if self._reader is not None:
+                self._reader.join(timeout=0.2)
+            self._reader = None
+            self._lines = queue.Queue()
 
     def __enter__(self) -> "MCPClient":
         self.start()
