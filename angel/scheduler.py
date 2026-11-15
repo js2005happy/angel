@@ -10,9 +10,9 @@ import re
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from .console import configure_stdio
-from pathlib import Path
 
 
 SCHEDULE_PATH = Path.home() / ".angel" / "schedule.json"
