@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .console import configure_stdio
 from .config import (
     ANGEL_HOME,
     VALID_MODES,
@@ -284,6 +285,7 @@ def print_setup_help(provider_name: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """执行命令行任务或启动交互式会话。"""
+    configure_stdio()
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "schedule":
         return handle_schedule(raw[1:], Path.cwd())
