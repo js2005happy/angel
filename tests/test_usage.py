@@ -175,7 +175,7 @@ class RuntimeUsageTest(unittest.TestCase):
         self.assertEqual(view["usage"]["total_tokens"], 75)
         self.assertEqual(view["usage"]["context_remaining_tokens"], 4030)
         self.assertIn('id="usage-kv"', PAGE_HTML)
-        self.assertIn("renderUsage(v.usage)", PAGE_HTML)
+        self.assertIn("renderUsage(v.usage,v.auto_compact_count||0)", PAGE_HTML)
 
 
 if __name__ == "__main__":
