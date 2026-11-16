@@ -1,5 +1,9 @@
 # Angel 👼
 
+## 工具异常时的保守处理
+
+工具执行抛异常时，Angel 会停止当前任务而非自动重试；若显式启用 `ToolJournal`，可写入 `result_error` 作为“工具报告异常”的元数据，不代表外部副作用已回滚。若写入失败则保留 unknown。异常正文可能含凭据，不会直接显示给用户。新增回归用例尚未运行；仍不支持安全自动恢复。
+
 ## 工具日志接入 Agent 主循环（默认关闭）
 
 通过 Python API 显式传入 `Agent(..., tool_journal=ToolJournal(session_id))` 可在工具调用前记录 intent，调用返回后记录 result。无法持久化 intent 时不执行工具，无法记录 result 时停止并报告结果未知，不自动重试。CLI 暂无开关，子 Agent 不继承；本轮未运行测试，不能把元数据日志当作真实执行成功的证明或安全断点恢复。
