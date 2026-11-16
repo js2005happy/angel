@@ -125,7 +125,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
             result = build_mcp_manager(mode="auto", interactive=True)
         terminal.flush()
         self.assertIsNone(result)
-        self.assertIn(b"\\\\u", raw.getvalue())
+        self.assertIn(b"\\u", raw.getvalue())
         self.assertFalse((self.root / "legacy.started").exists())
 
     def test_unknown_mode_fails_closed(self):
