@@ -45,6 +45,7 @@ REPL_COMMANDS = (
     ("/sessions", "列出历史会话"),
     ("/compact", "压缩当前会话（模型摘要 + 保留最近消息）"),
     ("/status", "显示模型调用与 Token 用量、参考上下文余量"),
+    ("/diff", "查看最近一轮本地文件检查点的实际修改差异"),
     ("/undo", "撤销当前会话最近一轮内置本地文件修改"),
     ("/rewind N", "撤销最近 N 轮文件检查点（最多 10），若有外部改动则拒绝"),
     ("/clear", "清空当前对话历史"),
@@ -731,6 +732,15 @@ def main(argv: list[str] | None = None) -> int:
                     + format_usage(agent.usage.snapshot())
                     + (f"\n自动压缩：已触发 {agent.auto_compact_count} 次" if enabled_auto_compact else "\n自动压缩：未启用")
                 )
+                continue
+            elif line == "/diff":
+                if agent.checkpoints is None:
+                    print("当前执行后端不支持本地文件差异检查")
+                else:
+                    try:
+                        print(agent.checkpoints.latest_diff())
+                    except (CheckpointError, OSError) as exc:
+                        print(f"差异查看失败：{exc}")
                 continue
             elif line == "/compact":
                 info = agent.compact()
