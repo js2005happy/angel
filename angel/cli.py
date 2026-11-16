@@ -400,6 +400,10 @@ def main(argv: list[str] | None = None) -> int:
         from .eigenflux_adapter import main as eigenflux_main
 
         return eigenflux_main(raw[1:])
+    if raw and raw[0] == "session-status":
+        from .session_diagnostics import main as session_status_main
+
+        return session_status_main(raw[1:])
 
     parser = build_parser()
     if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):
