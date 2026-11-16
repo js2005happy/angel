@@ -1,20 +1,9 @@
 # Angel 变更记录
 
-## 未发布（标准 JSON Lines 与固定退出码）
+## 未发布（memory_append / save_skill 测试补齐）
 
-- 增加一次性非交互 --json 模式，通过逐行、版本化、带递增序号的 JSON 事件输出开始、工具活动、Token 用量、自动压缩以及最终结果或错误。
-- 明确退出码 0/1/2/3/130，特别区分到达 max_turns 与真正完成；参数不合法也能返回机器可读的 run_failed 事件。
-- 原有 stdout 人类日志转到 stderr，工具事件默认不含原始参数与结果，以减少意外泄露；保留现有 readonly/auto/full 审批边界。
-- 补充解析、退出码、未授权写入、Token 事件、异常与兼容性测试。
-
-
-## 未发布（按用量自动压缩上下文）
-
-- 使用现有 `compact` 能力实现可选的自动摘要，触发条件为真实报告的请求输入 token 达到已配置上下文窗口的可配置阈值（默认 80%）。
-- 自动路径严格保护历史数据：仅摘要历史任务并保留当前任务及其完整工具调用链；摘要 API 失败或摘要没有缩短内容时不覆盖现有会话；每次任务最多尝试一次压缩，避免频繁额外费用。
-- CLI 增加 `--auto-compact` 和 `--auto-compact-threshold`，配置增加 `auto_compact_enabled`（默认关闭）、`auto_compact_threshold`；Web UI 同步状态和触发次数。
-- 摘要请求若返回 usage，将纳入真实 token 统计；新增覆盖阈值、失败保护、重复触发和 UI 的回归测试。
-
+- 新增测试 `tests/test_memory_skill_tools.py`（11 个）：`memory_append` 与 `save_skill` 首次有了直接的单元测试（此前只有群聊测试顺带调过一次 `memory_append`，`save_skill` 完全没有覆盖）。覆盖写入/多行折叠/空文本不写、readonly 与 auto 非交互拦截、技能文件可解析回读、非法技能名拒绝、覆盖重写；测试全程只写临时目录，不碰真实 `~/.angel/MEMORY.md`。
+- 附带修正 README：版本号标题仍写 0.2.0、测试数仍写 127，已同步为 0.3.0 / 175。测试总数 164 → 175，全部通过。
 
 ## 未发布（Token 用量与上下文状态）
 

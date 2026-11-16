@@ -1,18 +1,10 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
-## 待验证：非交互 JSONL 事件和固定退出码
+## 未发布：memory_append / save_skill 测试补齐（2026-11-16）
 
-- tests/test_json_mode.py 用虚拟模型运行 CLI 真实执行路径：验证 schema_version、seq、事件顺序、单行 JSON、stdout/stderr 隔离、工具参数不泄漏、auto 模式下禁止无人值守写文件。
-- 模拟提供商失败、配置缺失和 argparse 错误时的 run_failed 事件、退出码 1/2；模拟达到 max_turns 时退出码 3，确认不会宣称 run_completed。
-- 无需外部 API Key，无真实网络费用；等待 Ubuntu Python 3.10/3.12、Windows Python 3.12 的 GitHub Actions 通过后再合并。
-
-
-## 待验证：按实际用量触发的自动会话压缩
-
-- `tests/test_auto_compact.py` 覆盖阈值边界、未知窗口/缺失 usage、不合法配置、成功压缩、失败保留原文、长摘要不覆盖原文、当前用户请求及完整工具调用链保留、每次任务至多 1 次摘要、Web UI 状态。
-- 保留 `test_smoke.CompactTest` 的手动摘要及 fallback 行为；自动路径使用严格模式，不调用可能丢失历史的回退分支。
-- 模拟模型响应无需真实 API 费用。需以此 PR 的 GitHub Actions Ubuntu Python 3.10/3.12、Windows Python 3.12 验证为准，未经测试不合并。
-
+- 本轮先把本地 checkout 与 GitHub main 同步：本地停在 5cfad1f，远程已走到 b9248f28（网页界面、项目官网、群聊、Token 用量 5 个提交）；56 个文件经连接器拉取同步，同步后全套测试 164 个通过。
+- 新增 `tests/test_memory_skill_tools.py`（11 个）：`memory_append` 与 `save_skill` 的直接单元测试，v1 已知限制第 3 条就此关闭；测试只写临时目录（验证：跑完后 `~/.angel/` 下仍无 MEMORY.md）。
+- README 测试数 127 修正为 175（164 + 11），版本号标题修正为 0.3.0。本次未做真实 API 调用（纯 mock 测试加固，无需调用）。
 
 ## 待验证：Token 用量与剩余上下文（PR）
 

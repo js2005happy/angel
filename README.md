@@ -10,8 +10,9 @@
 
 项目官网是 `docs/` 目录下的纯静态单页（`index.html` + `style.css` + `main.js`），由 GitHub Pages 从 `main` 分支的 `/docs` 发布，地址 <https://js2005happy.github.io/angel/>。没有构建步骤、外部 CDN、外部字体或追踪脚本；默认中文，右上角可切换 English，支持手机与暗色模式。内容全部取自本 README、DESIGN.md 与 CHANGELOG.md。本地预览直接用浏览器打开 `docs/index.html` 即可；`tests/test_docs_site.py` 会检查页面存在、内部链接/锚点有效、没有加载任何外部资源。
 
-## v2 新功能（0.2.0）
+## 新功能（0.2.0 / 0.3.0）
 
+- **E2B 沙盒**（0.3.0）：`--sandbox e2b` 让文件读写与 shell 在 E2B 沙盒里执行，不碰本机；详见下文「E2B 沙盒」一节。
 - **MCP 客户端**：接标准 MCP 服务器（stdio JSON-RPC），配置里 `mcp_enabled: true` 并配好 `mcp_servers` 后，服务器的工具会以 `mcp_<服务器>_<工具>` 出现在工具列表里。默认关闭，需显式启用。
 - **内置调度器**：`angel schedule add --name 每日整理 --prompt "整理下载目录" --every 86400`，再 `angel schedule daemon` 跑守护进程；任务存在 `~/.angel/schedule.json`，支持间隔或每天固定时间（`--at 08:30`）。
 - **会话压缩**：`python3 -m angel --compact <会话 id>` 或 REPL 里 `/compact`，模型把长会话摘要成要点再继续；模型失败时本地回退保留首尾消息。
@@ -36,19 +37,7 @@ python3 -m angel --list-skills
 python3 -m angel --list-sessions
 ```
 
-## 非交互 JSON Lines（脚本、CI 与多 Agent 编排）
-
-Angel 支持单次任务的机器可读事件输出。每行是一个完整的 UTF-8 JSON 对象（schema_version=1，seq 从 1 递增），不混入 banner、工具日志或普通文本。输出通过 stdout，人工诊断通过 stderr。
-
-```bash
-python3 -m angel --json --mode readonly --max-turns 6 "检查这个仓库"
-python3 -m angel --json "分析测试结果" > run.jsonl
-```
-
-事件包括 run_started、tool_start、tool_result、usage、assistant、auto_compact、turn_limit、run_completed、run_incomplete、run_failed。工具事件只包含工具名称/调用 ID/成功状态，不直接记录原始参数或返回的敏感内容。最终答案可从 run_completed.output 获取；每个事件包含 schema_version、seq 和 type。
-
-固定退出码：0 表示完成；1 表示运行失败；2 表示参数/配置/凭证问题；3 表示达到最大轮数但尚未完成；130 表示任务被中断。调用者应同时检查退出码和最终事件。非交互 auto 模式继续拒绝需要人工确认的写操作；如显式使用 full 模式，请先隔离运行环境并确认授权范围。--json 不支持交互式 REPL、schedule/ui 子命令，也不与 --list-*、--compact 混用。
-
+## Token 用量与上下文状态
 
 Angel 现在会统计模型 API **实际返回** 的 Token 用量。交互终端输入 `/status` 即可查看调用次数、输入/输出 Token、最近一次请求的输入长度及参考上下文余量；Web UI 右侧新增 **Token 用量** 状态面板。单次任务结束时，统计信息输出到 **stderr**，不污染 stdout 的任务结果，适合未来的脚本/JSON 模式。
 
@@ -59,25 +48,7 @@ python3 -m angel                 # 然后输入 /status
 
 如果你知道当前模型官方的上下文上限，可以设置 `--context-window N` 或在 `~/.angel/config.json` 中设置 `"context_window_tokens": 8192`（数字仅为示例，不是对任何模型上限的断言）。没配置时会明确显示 **未知**；如果 API 没有提供 usage 字段，也不会用字符数伪造精确 Token。**上下文参考余量**按最近一次请求的输入 Token 减去已配置窗口计算，不包含最新生成、下一轮新输入以及模型额外的保留量，因此不能当成严格的剩余可用 Token。累计值只统计当前 Agent 进程中的模型回复；历史会话重新载入不自动补算之前的调用。
 
-**自动会话压缩（可选）**：如果确认了所用模型的真实上下文窗口，可以开启自动压缩。默认关闭，避免意外触发额外收费的模型摘要请求。打开后，当模型上一次**实际报告的输入 token** 达到指定窗口的 80% 时，Angel 在下一次模型请求前使用已有 `compact` 压缩**此前的完整历史**，同时保留当前用户请求以及当前轮次的工具调用和结果。
-
-```bash
-python3 -m angel --auto-compact --context-window 8192 "继续处理任务"
-```
-
-也可以写入 `~/.angel/config.json`：
-
-```json
-{
-  "context_window_tokens": 8192,
-  "auto_compact_enabled": true,
-  "auto_compact_threshold": 0.80
-}
-```
-
-阈值支持 0.50–0.95，仅在上下文上限已经配置且 API 实际返回输入 token 时自动触发；**不会按字符数伪造精确 token**，也不会对没有 usage 的模型擅自触发。每次任务至多自动尝试一次压缩，控制调用费用。如果摘要失败或者摘要没有缩短内容，原始历史保持不变；自动压缩绝不使用手动压缩的丢弃历史回退。压缩仍可能丢失某些未写入摘要的细节，应定期检查会话与备份；不能保证百分百保留原始上下文。Web UI 采用配置文件里的同一开关，会显示自动压缩次数。群聊默认沿用独立机器人设置，不因主 UI 开关自动获得额外写入权限。
-
-后续迭代按 [ROADMAP.md](ROADMAP.md) 排序，下一项是面向 CI 和脚本的非交互 `--json`。
+后续迭代按 [ROADMAP.md](ROADMAP.md) 排序，下一项是基于真实用量和保守阈值的自动会话压缩。
 
 ## 多机器人群聊（Python 核心 + JavaScript 界面）
 
@@ -236,7 +207,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 127 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 175 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
