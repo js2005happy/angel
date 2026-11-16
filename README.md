@@ -37,6 +37,24 @@ python3 -m angel --list-skills
 python3 -m angel --list-sessions
 ```
 
+## 两阶段计划模式（先审核，后执行）
+
+先在项目工作目录生成计划，不直接修改代码：
+
+```bash
+python3 -m angel --workdir . --plan "评估登录逻辑并列出修复步骤"
+```
+
+规划时只开放 `read_file`、`list_dir`，读取路径限制在工作目录内；不会调用 shell、MCP、E2B 或普通 Agent 会话。完成后仅生成 `plan.md`，输出完整 SHA-256 校验值。调用模型仍可能计费。
+
+人工审阅 `plan.md` 后，复制完整 64 位 SHA-256，再批准该版本执行：
+
+```bash
+python3 -m angel --workdir . --execute-plan --approve-plan 完整SHA256
+```
+
+计划任意字节修改都会使旧批准失效。**批准计划不等于跳过工具审批**：执行默认 `auto`，每次写文件或运行命令仍需同意；只有显式指定 `--mode full` 才免逐项确认。当前仅支持本地工作目录，不与 `--json` 混用。这不是操作系统沙箱，应人工审查改动范围和风险。
+
 ## Token 用量与上下文状态
 
 Angel 现在会统计模型 API **实际返回** 的 Token 用量。交互终端输入 `/status` 即可查看调用次数、输入/输出 Token、最近一次请求的输入长度及参考上下文余量；Web UI 右侧新增 **Token 用量** 状态面板。单次任务结束时，统计信息输出到 **stderr**，不污染 stdout 的任务结果，适合未来的脚本/JSON 模式。

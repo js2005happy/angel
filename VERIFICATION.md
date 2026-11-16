@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 已验证：两阶段计划模式（PR #12）
+
+- `tests/test_plan_mode.py` 使用模拟 Provider 测试只读工具白名单、路径穿越与符号链接、拒绝 shell/写入/MCP、旧计划在失败后不变、SHA-256 绑定批准。
+- CLI 测试验证规划阶段不实例化 Agent/MCP/E2B；执行默认 auto（包括全权配置的情况），错误哈希不启动 Agent，与 JSONL 冲突得到错误。
+- GitHub Actions [PR #12 CI 运行 43799280549](https://github.com/js2005happy/angel/actions/runs/43799280549)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过；Windows 日志显示 211 项 unittest 全部通过。测试使用假模型，无实际 API 费用。
+
+
 ## 未发布：memory_append / save_skill 测试补齐（2026-11-16）
 
 - 本轮先把本地 checkout 与 GitHub main 同步：本地停在 5cfad1f，远程已走到 b9248f28（网页界面、项目官网、群聊、Token 用量 5 个提交）；56 个文件经连接器拉取同步，同步后全套测试 164 个通过。
