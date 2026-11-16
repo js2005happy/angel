@@ -144,22 +144,27 @@ class ToolJournal:
     def inspect(self) -> dict:
         """Only counts; never expose a transcript, argument, result or call id."""
         records = self._records()
+        # Event filenames are random, not chronological. Group by call ID
+        # before evaluating; never infer causality from lexical file order.
+        groups: dict[str, list[dict]] = {}
+        for record in records:
+            groups.setdefault(record["call_id"], []).append(record)
         calls: dict[str, dict] = {}
         invalid = False
-        for record in records:
-            cid = record["call_id"]
-            if record["event"] == "intent":
-                if cid in calls:
-                    invalid = True
-                else:
-                    calls[cid] = {"tool": record["tool"], "outcome": "unknown"}
-            else:
-                current = calls.get(cid)
-                if (current is None or current["tool"] != record["tool"]
-                        or current["outcome"] != "unknown"):
-                    invalid = True
-                else:
-                    current["outcome"] = record["event"]
+        for cid, events in groups.items():
+            intents = [e for e in events if e["event"] == "intent"]
+            results = [e for e in events if e["event"] != "intent"]
+            if len(intents) != 1 or len(results) > 1:
+                invalid = True
+            if not intents:
+                continue
+            tool = intents[0]["tool"]
+            if any(e["tool"] != tool for e in events):
+                invalid = True
+            calls[cid] = {
+                "tool": tool,
+                "outcome": results[0]["event"] if len(results) == 1 else "unknown",
+            }
         pending = sum(x["outcome"] == "unknown" for x in calls.values())
         return {
             "session_id": self.session_id,
