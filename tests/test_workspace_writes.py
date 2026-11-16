@@ -188,16 +188,21 @@ class ScopedApprovalTest(unittest.TestCase):
         self.assertFalse((self.root / "three.txt").exists())
 
     def test_shell_always_applies_only_to_identical_command(self):
-        with patch("builtins.input", side_effect=["always", "n"]) as prompts, \
+        with patch("builtins.input", side_effect=["always", "n", "n"]) as prompts, \
              patch("sys.stdout", new_callable=io.StringIO):
             for command in ("echo 42", "echo 42", "echo 43"):
                 execute_tool("shell", {"command": command}, self.ctx)
-        self.assertEqual(prompts.call_count, 2)
-        self.assertEqual(self.ctx.approved_shell_commands, {"echo 42"})
+            # Same command from another working directory must be approved anew.
+            result = execute_tool("shell", {
+                "command": "echo 42", "cwd": "other",
+            }, self.ctx)
+        self.assertIn("用户拒绝", result)
+        self.assertEqual(prompts.call_count, 3)
+        self.assertEqual(self.ctx.approved_shell_commands, {("echo 42", ".")})
 
     def test_auto_noninteractive_and_readonly_cannot_use_cached_grants(self):
         self.ctx.approved_file_tools.add("write_file")
-        self.ctx.approved_shell_commands.add("echo 42")
+        self.ctx.approved_shell_commands.add(("echo 42", "."))
         for mode, interactive in (("auto", False), ("readonly", True)):
             with self.subTest(mode=mode, interactive=interactive):
                 self.ctx.mode = mode
