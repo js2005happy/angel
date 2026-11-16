@@ -1,5 +1,12 @@
 # Angel 设计文档
 
+## 工具执行元数据日志（开发中）
+
+`angel/tool_journal.py` 是独立、显式启用的本地事件数据层：每次 `begin` 产生随机 call_id 并记录 `intent`，`finish` 记录 `result_ok` 或 `result_error`。单条事件通过独立排他创建的文件写入并 fsync，文件名随机，读取时按 call_id 分组，不能按文件名推断时序。任何丢失结果都保留 unknown；`execution_verified` 与 `safe_to_auto_resume` 恒为 false。只存 tool 名、事件类型、时间戳和随机调用 ID，不存模型对话、参数、输出和凭据。
+
+此阶段**未接入 Agent 执行路径**，并发进程对同一调用的结果写入尚无跨进程互斥；目录祖先更换存在 TOCTOU 风险，日志文件也不具备防篡改能力。后续必须先完善失败关闭、跨进程一致性和审批机制，才可尝试真正的断点恢复。
+
+
 ## 一句话
 
 Angel 是一个全能 AI agent 命令行工具：用 **Python 标准库**从零写成（零 pip 依赖），集多个开源 agent 的设计思想之长，跑在任何只有 Python 3 的机器上。
