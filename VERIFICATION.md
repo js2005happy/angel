@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 未发布：MCP 子进程环境隔离验证
+
+- 新增单元测试 `tests/test_mcp_environment.py`：验证默认不继承模型 API Key、显式环境传递、配置格式错误及实际 Python MCP stdio 子进程的环境可见性。
+- 只有 GitHub Actions 中 Linux/Windows 检查成功，才能认为新变更通过回归测试；与先前真实 DeepSeek/E2B 端到端测试不同。
+- 安全边界：这是环境变量过滤，不代表进程、磁盘或网络沙箱。
+
+
 ## 未发布：跨平台稳定性修复（2026-11-16）
 
 - GitHub Actions [运行记录](https://github.com/js2005happy/angel/actions/runs/43778155074)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 均通过语法编译、单元测试、CLI 版本检查。

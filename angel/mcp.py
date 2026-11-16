@@ -23,12 +23,25 @@ class MCPError(Exception):
     pass
 
 
+# MCP servers run outside the agent's tool approval boundary while starting.
+# Avoid exposing unrelated provider credentials or tokens via os.environ.
+# These are ordinary process bootstrap variables, not an execution sandbox.
+MCP_BOOTSTRAP_ENV = (
+    "PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC",
+    "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+    "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
+    "VIRTUAL_ENV",
+)
+ENV_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
 @dataclass
 class MCPServerConfig:
     name: str
     command: str
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    inherit_env: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, name: str, raw: dict) -> "MCPServerConfig":
@@ -53,8 +66,20 @@ class MCPServerConfig:
             for key, value in env.items()
         ):
             raise MCPError("env 的键和值必须是字符串")
+        if any(not ENV_NAME_PATTERN.fullmatch(key) for key in env):
+            raise MCPError("env 包含非法的环境变量名称")
 
-        return cls(name=name, command=command, args=list(args), env=dict(env))
+        inherit_env = raw.get("inherit_env", [])
+        if not isinstance(inherit_env, list) or any(
+            not isinstance(key, str) or not ENV_NAME_PATTERN.fullmatch(key)
+            for key in inherit_env
+        ):
+            raise MCPError("inherit_env 必须是合法环境变量名称列表")
+
+        return cls(
+            name=name, command=command, args=list(args),
+            env=dict(env), inherit_env=list(inherit_env),
+        )
 
 
 class MCPClient:
@@ -67,6 +92,19 @@ class MCPClient:
         self._lines: queue.Queue[tuple[str, str]] = queue.Queue()
         self._reader: threading.Thread | None = None
 
+    def _subprocess_env(self) -> dict[str, str]:
+        """Pass only bootstrap values and explicitly requested variables.
+
+        This limits accidental credential forwarding. It does not sandbox
+        an untrusted MCP executable or prevent access to local user files.
+        """
+        names = set(MCP_BOOTSTRAP_ENV) | set(self.config.inherit_env)
+        env = {key: os.environ[key] for key in names if key in os.environ}
+        env.update(self.config.env)
+        # Keep stdio JSON-RPC valid on Windows even with legacy code pages.
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        return env
+
     def start(self) -> None:
         if self.process is not None:
             raise MCPError("MCP 客户端已经启动，请先停止")
@@ -76,11 +114,7 @@ class MCPClient:
         self._reader = None
         step = "启动进程"
         try:
-            env = os.environ.copy()
-            env.update(self.config.env)
-            # Python-based MCP servers must write UTF-8 JSON-RPC on Windows too.
-            # Keep explicitly configured overrides intact.
-            env.setdefault("PYTHONIOENCODING", "utf-8")
+            env = self._subprocess_env()
             self.process = subprocess.Popen(
                 [self.config.command] + self.config.args,
                 stdin=subprocess.PIPE,
