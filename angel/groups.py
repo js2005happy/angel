@@ -26,7 +26,7 @@ from .providers import build_provider
 
 _ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _MENTION = re.compile(r"(?<![A-Za-z0-9_])@([a-z][a-z0-9_-]{0,31})")
-MAX_BOTS = 6
+MAX_BOTS = 8
 MAX_ROUNDS = 2
 MAX_BOT_TURNS = 3
 MAX_PARALLEL_BOTS = 4
@@ -37,6 +37,10 @@ MAX_CONTEXT_MESSAGES = 12
 
 class GroupError(ValueError):
     """The room, bot definition or message is invalid."""
+
+
+class _GroupCancelled(Exception):
+    """Internal signal used to skip a bot whose model call has not started."""
 
 
 def _identifier(value: str, label: str) -> str:
@@ -138,6 +142,7 @@ class GroupStore:
         self.root = Path(root)
         self.provider_factory = provider_factory
         self._locks: dict[str, threading.RLock] = {}
+        self._active_cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
     def _guard(self, room_id: str) -> threading.RLock:
@@ -198,6 +203,16 @@ class GroupStore:
         with self._guard(room_id):
             return self._read(room_id)
 
+    def cancel(self, room_id: str) -> bool:
+        """Stop scheduling bots and rounds for an active room turn."""
+        room_id = _identifier(room_id, "群 ID")
+        with self._lock:
+            event = self._active_cancels.get(room_id)
+            if event is None:
+                return False
+            event.set()
+            return True
+
     def list_rooms(self) -> list[dict]:
         if not self.root.exists():
             return []
@@ -226,7 +241,10 @@ class GroupStore:
             raise GroupError("模型凭证未配置")
         return provider
 
-    def _bot_response(self, room: dict, bot: Bot, transcript: list[dict]) -> str:
+    def _bot_response(
+        self, room: dict, bot: Bot, transcript: list[dict],
+        cancel_event: threading.Event | None = None,
+    ) -> str:
         home = self.root / room["id"] / "bots" / bot.id
         workdir = home / "workspace"
         workdir.mkdir(parents=True, exist_ok=True)
@@ -260,12 +278,23 @@ class GroupStore:
             system_instructions=instructions,
             memory_path=memory_path,
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise _GroupCancelled
         return agent.run(prompt)[:MAX_RESPONSE_CHARS] or "（无回复）"
 
-    def _bot_entry(self, room: dict, bot: Bot, transcript: list[dict]) -> dict:
+    def _bot_entry(
+        self, room: dict, bot: Bot, transcript: list[dict],
+        cancel_event: threading.Event | None = None,
+    ) -> dict:
         try:
-            response = self._bot_response(room, bot, transcript)
+            response = self._bot_response(room, bot, transcript, cancel_event)
             return {"sender": bot.id, "content": response, "time": _stamp()}
+        except _GroupCancelled:
+            return {
+                "sender": bot.id,
+                "content": "已停止：未启动本轮模型请求。",
+                "time": _stamp(), "cancelled": True,
+            }
         except (AgentError, GroupError) as exc:
             return {
                 "sender": bot.id,
@@ -283,58 +312,85 @@ class GroupStore:
     def send(
         self, room_id: str, message: str, rounds: int = 1, parallel: bool = False,
     ) -> dict:
+        room_id = _identifier(room_id, "群 ID")
         message = _text(message, "群消息", MAX_INPUT_CHARS)
         if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= MAX_ROUNDS:
             raise GroupError(f"每条消息最多允许 {MAX_ROUNDS} 轮讨论")
         if not isinstance(parallel, bool):
             raise GroupError("parallel 必须是布尔值")
-        with self._guard(room_id):
-            room = self._read(room_id)
-            bots = [Bot.parse(raw) for raw in room["bots"]]
-            mentions = set(_MENTION.findall(message))
-            known = {bot.id for bot in bots}
-            unknown = mentions - known
-            if unknown:
-                raise GroupError("未知机器人：" + ", ".join(sorted(unknown)))
-            selected = [bot for bot in bots if not mentions or bot.id in mentions]
-            new_entries: list[dict] = []
-            entry = {"sender": "user", "content": message, "time": _stamp()}
-            room["messages"].append(entry)
-            new_entries.append(entry)
-            _write_json(self._file(room_id), room)
-            for _ in range(rounds):
-                if parallel and len(selected) > 1:
-                    # Every bot in this round receives the same transcript
-                    # snapshot. The next round starts only after all results
-                    # are persisted, so discussion dependencies remain clear.
-                    transcript = list(room["messages"])
-                    workers = min(MAX_PARALLEL_BOTS, len(selected))
-                    with ThreadPoolExecutor(
-                        max_workers=workers, thread_name_prefix="angel-group"
-                    ) as pool:
-                        futures = {
-                            pool.submit(self._bot_entry, room, bot, transcript): bot
-                            for bot in selected
-                        }
-                        for future in as_completed(futures):
-                            entry = future.result()
-                            room["messages"].append(entry)
-                            new_entries.append(entry)
-                            _write_json(self._file(room_id), room)
-                    continue
-                for bot in selected:
-                    entry = self._bot_entry(room, bot, room["messages"])
+        cancel_event = threading.Event()
+        with self._lock:
+            if room_id in self._active_cancels:
+                raise GroupError("这个群已有一条消息正在处理")
+            self._active_cancels[room_id] = cancel_event
+        try:
+            with self._guard(room_id):
+                room = self._read(room_id)
+                bots = [Bot.parse(raw) for raw in room["bots"]]
+                mentions = set(_MENTION.findall(message))
+                known = {bot.id for bot in bots}
+                unknown = mentions - known
+                if unknown:
+                    raise GroupError("未知机器人：" + ", ".join(sorted(unknown)))
+                selected = [bot for bot in bots if not mentions or bot.id in mentions]
+                new_entries: list[dict] = []
+
+                def persist(entry: dict) -> None:
                     room["messages"].append(entry)
                     new_entries.append(entry)
                     _write_json(self._file(room_id), room)
-            return {
-                "room": room_id,
-                "messages": new_entries,
-                "total": len(room["messages"]),
-                "execution": {
-                    "mode": "parallel" if parallel else "serial",
-                    "max_concurrent_bots": (
-                        min(MAX_PARALLEL_BOTS, len(selected)) if parallel else 1
-                    ),
-                },
-            }
+
+                def mark_skipped(skipped: list[Bot]) -> None:
+                    for bot in skipped:
+                        persist({
+                            "sender": bot.id,
+                            "content": "已停止：未启动本轮模型请求。",
+                            "time": _stamp(), "cancelled": True,
+                        })
+
+                persist({"sender": "user", "content": message, "time": _stamp()})
+                for _ in range(rounds):
+                    if cancel_event.is_set():
+                        mark_skipped(selected)
+                        break
+                    if parallel and len(selected) > 1:
+                        # Every bot in this round receives the same transcript
+                        # snapshot. The next round starts only after all results
+                        # are persisted, so discussion dependencies remain clear.
+                        transcript = list(room["messages"])
+                        workers = min(MAX_PARALLEL_BOTS, len(selected))
+                        with ThreadPoolExecutor(
+                            max_workers=workers, thread_name_prefix="angel-group"
+                        ) as pool:
+                            futures = {
+                                pool.submit(
+                                    self._bot_entry, room, bot, transcript, cancel_event
+                                ): bot
+                                for bot in selected
+                            }
+                            for future in as_completed(futures):
+                                persist(future.result())
+                        continue
+                    for index, bot in enumerate(selected):
+                        persist(self._bot_entry(
+                            room, bot, list(room["messages"]), cancel_event
+                        ))
+                        if cancel_event.is_set():
+                            mark_skipped(selected[index + 1:])
+                            break
+                return {
+                    "room": room_id,
+                    "messages": new_entries,
+                    "total": len(room["messages"]),
+                    "execution": {
+                        "mode": "parallel" if parallel else "serial",
+                        "max_concurrent_bots": (
+                            min(MAX_PARALLEL_BOTS, len(selected)) if parallel else 1
+                        ),
+                        "cancelled": cancel_event.is_set(),
+                    },
+                }
+        finally:
+            with self._lock:
+                if self._active_cancels.get(room_id) is cancel_event:
+                    self._active_cancels.pop(room_id, None)

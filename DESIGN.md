@@ -177,11 +177,12 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 - `angel/groups.py`（Python）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
 - `angel/group-ui.html` + `angel/group-ui.js`（原生 HTML/CSS/JavaScript）：独立群聊 UI、组员列表、各成员模型配置与发送消息；不强制所有代码使用 Python，前端无需重新编译。
-- `angel/webui.py`：沿用现有同源 token 安全边界，提供 `GET/POST /api/groups`、`GET /api/groups/<id>`、`POST /api/groups/<id>/messages`。前端以 `textContent` 显示不可信的群消息，避免 HTML 注入。
+- `angel/webui.py`：沿用现有同源 token 安全边界，提供 `GET/POST /api/groups`、`GET /api/groups/<id>`、`POST /api/groups/<id>/messages` 与 `POST /api/groups/<id>/cancel`。前端以 `textContent` 显示不可信的群消息，避免 HTML 注入。
 - 机器人身份和记忆分离：不同成员的 `Agent` 实例、模型会话 ID、群内 workspace 与 `MEMORY.md` 相互独立；共享的只有群消息记录。
-- 资源限制：每群最多 6 人、每条消息最多 2 轮、每个机器人每次最多 3 轮模型调用；独立的 `delegate` 工具有共享子任务预算/递归深度限制。
+- 资源限制：每群最多 8 人、每条消息最多 2 轮、每个机器人每次最多 3 轮模型调用；独立的 `delegate` 工具有共享子任务预算/递归深度限制。
 - 默认按串行模式逐个响应，保留前一位成员影响后一位成员的讨论方式。用户可显式启用并行响应：同一轮最多 4 个成员共用轮次开始时的对话快照，全部完成后才开始下一轮；失败按成员分别记入，完成结果立即持久化。模型调用总数与费用不因并行减少。
-- 并行响应由 Python `ThreadPoolExecutor` 执行同步 HTTP/模型调用，最大并发固定为 4；该路径主要等待网络 I/O，避免启动 Go 子进程或跨语言 RPC。Web UI 用原生 JavaScript 提供显式开关。独立后台任务、取消正在进行的 HTTP 请求、流式进度及群聊 trace 父子关系仍待开发。
+- 创建页默认放入 4 个成员，可从 8 个角色模板中添加/移除，服务端也强制 2–8 人范围。并行响应由 Python `ThreadPoolExecutor` 执行同步 HTTP/模型调用，最大并发固定为 4；该路径主要等待网络 I/O，避免启动 Go 子进程或跨语言 RPC。Web UI 用原生 JavaScript 提供显式开关和停止按钮。
+- 停止请求会阻止尚未启动的机器人调用并跳过后续讨论轮次；已发出的同步 HTTP 请求不能被硬中断，服务器需等其返回后完成收尾。独立后台任务、流式进度及群聊 trace 父子关系仍待开发。
 - 语言路线：Python 负责 agent 状态、权限和网络 I/O，JavaScript 负责浏览器交互；Go/Rust/C 用于经 profiling 证实的 CPU 密集热点，例如向量距离扫描。新增语言模块需独立构建、明确数据协议，并证明端到端收益后再纳入。
 
 ## 单文件补丁与审批差异预览
@@ -227,7 +228,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 **v2 已完成（0.2.0）：** MCP 客户端、内置调度器/daemon、会话压缩、证据链、grep/git_status/http_post、provider 档案、web_search 双后端。
 
-**生产化补充方向（开发分支）：** Agent 执行追踪、项目文档 SQLite 语义检索 MVP 和群聊并行响应 MVP 已实现待验证；后台多 Agent 队列、任务取消和可关联群聊 trace 仍待开发。
+**生产化补充方向（开发分支）：** Agent 执行追踪、项目文档 SQLite 语义检索 MVP 和群聊并行响应/停止 MVP 已实现待验证；后台多 Agent 队列和可关联群聊 trace 仍待开发。
 
 1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。

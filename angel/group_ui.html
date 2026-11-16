@@ -29,6 +29,7 @@ input:focus,textarea:focus{outline:2px solid #6e88c8}
 .message{padding:12px 15px;margin-bottom:12px;border:1px solid var(--line);border-radius:12px;max-width:860px}
 .message.user{margin-left:auto;background:#232c4b}
 .message.error{border-color:#8d464b}
+.message.cancelled{border-color:#59627e;color:var(--muted)}
 .speaker{font-weight:700;color:var(--gold);margin-bottom:5px}
 .content{white-space:pre-wrap;overflow-wrap:anywhere}
 #composer{display:flex;gap:8px;padding:14px 18px;border-top:1px solid var(--line)}
@@ -43,7 +44,11 @@ dialog::backdrop{background:#000a}
 .row{display:flex;gap:9px;align-items:center}
 #botFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .botfield{background:#0d1430;border:1px solid var(--line);padding:10px;border-radius:10px}
+.botfield-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.botfield-head button{padding:4px 8px;font-size:12px}
 .botfield input{width:100%;margin-top:5px}
+.botfield textarea{width:100%;min-height:72px;resize:vertical}
+#botCount{margin:0 auto 0 0}
 #status{min-height:18px;color:var(--muted);padding:0 20px 8px}
 @media(max-width:850px){main{grid-template-columns:175px 1fr}aside:last-child{display:none}aside{padding:12px}}
 @media(max-width:540px){main{grid-template-columns:1fr;grid-template-rows:auto 1fr}aside:first-child{padding:10px;display:flex;gap:8px;align-items:center;overflow:auto;border-bottom:1px solid var(--line);border-right:0}aside:first-child h2{display:none}#rooms{display:flex;gap:6px;overflow-x:auto}#rooms button{white-space:nowrap}#composer{flex-wrap:wrap}#messageInput{width:100%;flex-basis:100%}}
@@ -67,16 +72,18 @@ dialog::backdrop{background:#000a}
 <select id="rounds" aria-label="讨论轮数"><option value="1">1 轮</option><option value="2">2 轮</option></select>
 <label class="parallel-choice" title="同一轮最多 4 个机器人并发调用模型；下一轮会读取上一轮所有回复"><input id="parallelResponses" type="checkbox">并行</label>
 <button class="primary" type="submit" id="sendBtn">发送</button>
+<button type="button" id="cancelBtn" hidden>停止本轮</button>
 </form>
 </section>
-<aside><h2>群成员</h2><div id="members"></div><p class="muted">默认只读。一次请求最多 2 轮、每轮最多 4 个并发模型请求。并行只缩短等待时间，不减少总调用量或费用。</p></aside>
+<aside><h2>群成员</h2><div id="members"></div><p class="muted">默认只读。每群最多 8 位机器人；一次请求最多 2 轮、每轮最多 4 个并发模型请求。并行只缩短等待时间，不减少总调用量或费用。</p></aside>
 </main>
 <dialog id="newDialog">
 <form id="createForm">
 <h2>创建独立机器人群</h2>
 <div class="field"><label for="newName">群名称</label><input id="newName" required maxlength="100" value="Angel 开发团队"></div>
 <div class="field"><label for="newId">群 ID（英文小写，无空格）</label><input id="newId" required pattern="[a-z][a-z0-9_-]{0,31}" value="dev-team"></div>
-<p class="muted">为每个机器人选择模型提供商和模型 ID（留空即使用 Angel 当前默认设置）。所有成员初始为只读，防止自动执行危险操作。</p>
+<p class="muted">默认创建 4 位机器人，可添加或移除成员，人数范围为 2–8。每位机器人可单独选择模型提供商和模型 ID（留空即使用 Angel 当前默认设置）。所有成员初始为只读。</p>
+<div class="row"><span class="muted" id="botCount">当前 4 / 8 位机器人</span><button type="button" id="addBot">＋ 添加机器人</button></div>
 <div id="botFields"></div>
 <div class="row" style="justify-content:flex-end;margin-top:18px">
 <button type="button" id="cancelCreate">取消</button><button class="primary" type="submit">创建群</button>

@@ -687,6 +687,11 @@ class Handler(BaseHTTPRequestHandler):
             except GroupError as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return self._json(HTTPStatus.CREATED, room)
+        match = re.fullmatch(r"/api/groups/([a-z][a-z0-9_-]{0,31})/cancel", path)
+        if match:
+            if not self.state.groups.cancel(match.group(1)):
+                return self._error(HTTPStatus.CONFLICT, "这个群当前没有可停止的消息")
+            return self._json(HTTPStatus.OK, {"accepted": True})
         match = re.fullmatch(r"/api/groups/([a-z][a-z0-9_-]{0,31})/messages", path)
         if match:
             try:
