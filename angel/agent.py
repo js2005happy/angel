@@ -16,6 +16,7 @@ from .compact import compact_messages
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
 from .console import configure_stream
+from .usage import UsageTracker
 
 
 class AgentError(Exception):
@@ -84,8 +85,10 @@ class Agent:
         delegate_budget: _DelegationBudget | None = None,
         system_instructions: str = "",
         memory_path: str | Path | None = None,
+        context_window_tokens: int | None = None,
     ) -> None:
         self.provider = provider
+        self.usage = UsageTracker(configured_window=context_window_tokens)
         self.system_instructions = system_instructions
         self.memory_path = Path(memory_path) if memory_path is not None else ANGEL_HOME / "MEMORY.md"
         self.delegate_depth = delegate_depth
@@ -198,6 +201,9 @@ class Agent:
             except ProviderError as exc:
                 raise AgentError(str(exc)) from exc
 
+            self.usage.record(resp)
+            if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
+                self._emit("usage", self.usage.snapshot())
             choice = resp["choices"][0]
             msg = choice.get("message") or {}
             assistant_msg: dict = {
@@ -301,6 +307,7 @@ class Agent:
             delegate_budget=self._delegate_budget,
             system_instructions=self.system_instructions,
             memory_path=self.memory_path,
+            context_window_tokens=self.usage.configured_window,
         )
         try:
             return child.run(task)

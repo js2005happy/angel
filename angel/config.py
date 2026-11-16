@@ -13,6 +13,7 @@ DEFAULT_CONFIG = {
     "model": "deepseek-flash",
     "mode": "auto",
     "max_turns": 20,
+    "context_window_tokens": None,  # Set only to verified model input limit.
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,

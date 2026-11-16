@@ -74,6 +74,13 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 厂商锁定：不绑定任何一家模型；Claude Code 的专有配置方式也不采纳。
 - **浏览器工具（BrowserNavigate / BrowserClick / BrowserScreenshot 等）**：IllusionAgent 0.5.0 的核心是内置真浏览器，Angel 在 v2 里**不做假的**：没有真实浏览器驱动就无法实现导航、点击、截图，`web_fetch` 的纯文本抓取不能冒充浏览器。已记入路线图，待有浏览器驱动（如 Playwright/Chromium）再做。
 
+## Token 用量与上下文状态
+
+- `angel/usage.py` 仅累计 OpenAI 兼容响应中的 usage / prompt_tokens / completion_tokens / total_tokens（也接受 input_tokens / output_tokens），并标明未报告的响应数。未报告的数字不得估算为精确值。
+- `Agent.usage` 负责每个 Agent 实例的实时计量；用于 CLI `/status`、一次性任务 stderr 与 Web UI 会话的 status API，原有会话存储与普通 stdout 文本接口保持兼容。
+- 仅当配置中存在已核实的 `context_window_tokens`（或 CLI 的 `--context-window`）且 API 返回输入 Token，才能计算参考余量。每个模型有不同限制，需随具体模型调整配置；参考值不包括下一次输入和输出。
+- 下一步自动压缩应当在请求前预估或根据上轮 usage 守护阈值，遇到模型未报告用量时需显式保守处理，不得伪装为准确 token 计算。
+
 ## 多 Agent 群聊架构（可运行 MVP）
 
 - `angel/groups.py`（Python）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
