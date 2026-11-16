@@ -113,6 +113,7 @@ class UIState:
         self.runs: dict[str, Run] = {}
         self.approvals: dict[str, tuple[Run, dict]] = {}
         self.lock = threading.Lock()
+        self._mode_lock = threading.Lock()
 
     # -- provider -----------------------------------------------------------
     def provider(self):
@@ -186,6 +187,38 @@ class UIState:
         )
         return out
 
+    def set_mode(self, new_mode: str) -> str:
+        """Apply mode changes to MCP processes and existing agents safely."""
+        new_mode = validate_mode(new_mode)
+        with self._mode_lock:
+            with self.lock:
+                runs = list(self.runs.values())
+            for run in runs:
+                with run.lock:
+                    if run.status == "running":
+                        raise RuntimeError("有任务正在执行，请完成后再切换模式")
+            if new_mode == self.mode:
+                return new_mode
+            # Stop previous MCP processes before switching to a lower-trust mode.
+            previous = self.mcp_manager
+            self.mcp_manager = None
+            for run in runs:
+                if run.agent is not None:
+                    run.agent.mcp_manager = None
+            if previous is not None:
+                previous.stop_all()
+            from .agent import build_mcp_manager
+
+            manager = build_mcp_manager(mode=new_mode, interactive=False)
+            self.mcp_manager = manager
+            self.mode = new_mode
+            for run in runs:
+                if run.agent is not None:
+                    run.agent.mode = new_mode
+                    run.agent.ctx.mode = new_mode
+                    run.agent.mcp_manager = manager
+            return new_mode
+
     # -- sessions -----------------------------------------------------------
     def get_run(self, session_id: str, create: bool = True) -> Run | None:
         with self.lock:
@@ -241,6 +274,11 @@ class UIState:
 
     # -- running ------------------------------------------------------------
     def send(self, session_id: str, text: str) -> Run:
+        # Serialize new runs with mode switches to avoid a race with MCP stop.
+        with self._mode_lock:
+            return self._send_unlocked(session_id, text)
+
+    def _send_unlocked(self, session_id: str, text: str) -> Run:
         run = self.get_run(session_id)
         with run.lock:
             if run.status == "running":
@@ -521,10 +559,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.CREATED, {"id": self.state.new_session()})
         if path == "/api/mode":
             try:
-                self.state.mode = validate_mode(str(body.get("mode", "")))
+                mode = self.state.set_mode(str(body.get("mode", "")))
             except ValueError as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
-            return self._json(HTTPStatus.OK, {"mode": self.state.mode})
+            except RuntimeError as exc:
+                return self._error(HTTPStatus.CONFLICT, str(exc))
+            return self._json(HTTPStatus.OK, {"mode": mode})
         match = re.fullmatch(r"/api/sessions/([^/]+)/messages", path)
         if match:
             sid = urllib.parse.unquote(match.group(1))
@@ -617,7 +657,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     from .agent import build_mcp_manager
 
-    mcp_manager = build_mcp_manager()
+    # The browser cannot approve local MCP process startup. Auto/readonly
+    # do not launch MCP subprocesses; full is an explicit opt-in.
+    mcp_manager = build_mcp_manager(mode=mode, interactive=False)
     state = UIState(
         workdir,
         mode=mode,
