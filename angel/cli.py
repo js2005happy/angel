@@ -427,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         from .poppy import PoppyError
         try:
             result = inspect_poppy_identity(args.inspect_poppy_identity)
-        except (IdentityError, OSError) as exc:
+        except (PoppyError, OSError) as exc:
             print(f"Poppy 身份核验失败：{exc}", file=sys.stderr)
             return 1
         print(json.dumps(result, ensure_ascii=False, indent=2))
