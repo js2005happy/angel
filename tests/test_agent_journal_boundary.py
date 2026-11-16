@@ -82,6 +82,42 @@ class JournalBoundaryTests(unittest.TestCase):
         execute.assert_called_once()
         self.assertEqual(self.journal.inspect()["unknown_outcomes"], 1)
 
+    def test_tool_exception_is_logged_as_error_and_stops_without_retry(self):
+        with mock.patch(
+            "angel.agent.execute_tool",
+            side_effect=RuntimeError("secret=DO_NOT_DISCLOSE"),
+        ) as execute, mock.patch("angel.agent.save_session"):
+            with self.assertRaises(AgentError) as captured:
+                self.agent(self.journal).run("read")
+        execute.assert_called_once()
+        self.assertNotIn("DO_NOT_DISCLOSE", str(captured.exception))
+        self.assertIn("禁止自动重试", str(captured.exception))
+        report = self.journal.inspect()
+        self.assertEqual(report["reported_errors"], 1)
+        self.assertEqual(report["unknown_outcomes"], 0)
+        self.assertFalse(report["execution_verified"])
+        self.assertFalse(report["safe_to_auto_resume"])
+
+    def test_exception_result_write_failure_remains_unknown(self):
+        with mock.patch(
+            "angel.agent.execute_tool", side_effect=RuntimeError("secret"),
+        ) as execute, mock.patch.object(
+            self.journal, "finish", side_effect=JournalError("disk full"),
+        ), mock.patch("angel.agent.save_session"):
+            with self.assertRaisesRegex(AgentError, "状态未知"):
+                self.agent(self.journal).run("read")
+        execute.assert_called_once()
+        self.assertEqual(self.journal.inspect()["unknown_outcomes"], 1)
+
+    def test_exception_without_journal_still_fails_closed(self):
+        with mock.patch(
+            "angel.agent.execute_tool", side_effect=RuntimeError("private"),
+        ) as execute, mock.patch("angel.agent.save_session"):
+            with self.assertRaisesRegex(AgentError, "禁止自动重试"):
+                self.agent(None).run("read")
+        execute.assert_called_once()
+        self.assertFalse(self.journal.path.exists())
+
     def test_tool_error_is_not_reported_as_success(self):
         with mock.patch("angel.agent.execute_tool", return_value="错误：permission denied"), \
              mock.patch("angel.agent.save_session"):
