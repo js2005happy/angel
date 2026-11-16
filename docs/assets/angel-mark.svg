@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Angel">
+  <rect width="64" height="64" rx="14" fill="#111A42"/>
+  <ellipse cx="32" cy="15" rx="13" ry="4.2" fill="none" stroke="#EAC45F" stroke-width="3"/>
+  <path d="M32 24 L44 52 H38.6 L35.9 45.4 H28.1 L25.4 52 H20 Z M29.8 41 H34.2 L32 35.4 Z" fill="#FAF8F4"/>
+  <path d="M19 33 C12 31 8.5 26 8 21 C12.5 24 16 25 20.5 26.5 Z" fill="#FAF8F4" opacity=".85"/>
+  <path d="M45 33 C52 31 55.5 26 56 21 C51.5 24 48 25 43.5 26.5 Z" fill="#FAF8F4" opacity=".85"/>
+</svg>

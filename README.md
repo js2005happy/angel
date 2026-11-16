@@ -4,6 +4,12 @@
 
 > Angel 的代码全部是原创（见 [DESIGN.md](DESIGN.md) 的来源说明），只借鉴了各项目的设计思想，没有复制任何源码。
 
+**官网：** <https://js2005happy.github.io/angel/>（中英双语）
+
+## 官网
+
+项目官网是 `docs/` 目录下的纯静态单页（`index.html` + `style.css` + `main.js`），由 GitHub Pages 从 `main` 分支的 `/docs` 发布，地址 <https://js2005happy.github.io/angel/>。没有构建步骤、外部 CDN、外部字体或追踪脚本；默认中文，右上角可切换 English，支持手机与暗色模式。内容全部取自本 README、DESIGN.md 与 CHANGELOG.md。本地预览直接用浏览器打开 `docs/index.html` 即可；`tests/test_docs_site.py` 会检查页面存在、内部链接/锚点有效、没有加载任何外部资源。
+
 ## v2 新功能（0.2.0）
 
 - **MCP 客户端**：接标准 MCP 服务器（stdio JSON-RPC），配置里 `mcp_enabled: true` 并配好 `mcp_servers` 后，服务器的工具会以 `mcp_<服务器>_<工具>` 出现在工具列表里。默认关闭，需显式启用。
@@ -104,6 +110,25 @@ python3 -m angel --mode full "整理下载目录"
 
 继续上一次会话：`python3 -m angel --resume <会话 id> "继续"`。
 
+交互模式启动时会显示横幅（版本、模型、审批模式、会话 id），提示符是 `angel[auto] ›`（方括号里是当前审批模式）；每次工具调用按 `┌ 工具名 参数` / `└ ✓/✗ 结果摘要` 分组显示。颜色只在终端（TTY）里启用，设置 `NO_COLOR=1`、`TERM=dumb` 或输出被重定向时自动退回纯文本；一次性任务（`python3 -m angel "任务"`）的输出保持不变。
+
+## 网页界面
+
+```bash
+python3 -m angel ui            # 启动后打印带 token 的链接，在浏览器打开
+python3 -m angel ui --open     # 自动打开浏览器
+python3 -m angel ui --port 9000 --workdir ~/project --mode auto
+```
+
+本地网页界面，纯标准库 `http.server` + 一个内嵌的 HTML/CSS/JS 页面，不引用任何 CDN 或外部资源：
+
+- **左栏：会话列表**——直接读取 `~/.angel/sessions/`，可新建会话，也可点开历史会话继续。
+- **中栏：对话**——用户/助手消息（基本 Markdown 渲染），执行中轮询显示进度；每次工具调用是一张可折叠卡片（工具名、参数、结果摘要）。auto 模式下需要审批时卡片里出现“批准 / 拒绝”按钮，走的是和终端相同的审批门（`tools.py` 的 `_check_approval`），readonly / full 行为不变；10 分钟无人处理按拒绝处理。
+- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤。
+- **顶栏**——切换审批模式；“设置”只读显示当前配置，API Key 只显示是否已配置，**绝不回显值**。
+
+安全：默认只监听 `127.0.0.1`（`--host` 改成非本机地址时会打印警告）；每次启动随机生成一个访问 token，页面链接通过 `?token=` 带入，所有 API 请求都必须在请求头里带上它（防 CSRF），监听本机地址时还会校验 `Host` 头。网页界面目前在本地执行工具（不接 E2B 沙盒），会按配置启动 MCP 服务器（默认关闭）。
+
 ## 技能（Skills）
 
 技能是 `skills/*.md` 文件（自带三个示例：`web-research` 网上调研、`file-organizer` 文件整理、`verify-research` 核查式调研），格式：
@@ -148,7 +173,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 83 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 127 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -172,7 +197,11 @@ angel/
 │   ├── scheduler.py   内置调度器（文件式任务 + daemon）
 │   ├── compact.py     会话压缩（模型摘要 + 本地回退）
 │   ├── net.py         网络小工具（本机地址直连、不走代理）
-│   └── evidence.py    会话内证据链
+│   ├── evidence.py    会话内证据链
+│   ├── console.py     终端输出（编码降级、颜色、工具调用分组）
+│   ├── webui.py       本地网页界面服务器（python3 -m angel ui）
+│   └── webui_page.py  网页界面的内嵌单页（HTML/CSS/JS）
+├── docs/              项目官网（GitHub Pages，纯静态）
 ├── skills/            自带示例技能
 ├── tests/             mock 测试
 ├── README.md
@@ -184,4 +213,4 @@ angel/
 
 ## 路线图
 
-见 [DESIGN.md](DESIGN.md)：真沙箱、浏览器工具（需真实浏览器驱动）、GEPA 式自动学习、桌面 UI、多会话并发。
+见 [DESIGN.md](DESIGN.md)：真沙箱、浏览器工具（需真实浏览器驱动）、GEPA 式自动学习、桌面 UI（本地网页界面已可用，独立桌面应用未开始）、多会话并发。

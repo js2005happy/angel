@@ -22,7 +22,8 @@ agent.py ── 主循环：组装系统提示词 → 调模型 → 执行工具
  │   ├── mcp.py ─────── MCP 客户端（stdio JSON-RPC，默认关闭）
  │   ├── scheduler.py ─ 内置调度器（~/.angel/schedule.json + daemon）
  │   ├── compact.py ─── 会话压缩（模型摘要 + 本地回退）
- │   └── evidence.py ── 会话内证据链（联网抓取原文存档）
+ │   ├── evidence.py ── 会话内证据链（联网抓取原文存档）
+│   └── webui.py ───── 本地网页界面（http.server + 内嵌单页，复用 Agent 与审批门）
 ```
 
 **关键设计选择：**
@@ -89,7 +90,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。
 3. **GEPA 式自动学习**：任务成功后自动提炼技能（现在是模型主动调 `save_skill`，未来是成功后自动总结+评估）。
-4. **桌面 UI**：轻量 Web 界面查看会话与技能。
+4. **桌面 UI**（部分完成）：本地网页界面 `python3 -m angel ui` 已可用（2026-11-16：会话列表、对话与工具卡片、网页内审批、证据与计划检查器，纯标准库、默认只听 127.0.0.1 + 启动 token）；技能浏览、独立桌面应用、按品牌形象的完整三栏 App 尚未开始。
 5. **多模型路由**：按任务难度自动选便宜/强的模型。
 6. **多会话并发**：每会话独立引擎（IllusionAgent 的做法），目前 Angel 一次只跑一个会话。
 7. **hooks / 插件**：任务前后钩子与第三方插件加载。

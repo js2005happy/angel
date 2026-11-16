@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN" data-lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Angel — 纯 Python 标准库写成的 AI agent 命令行工具</title>
+<meta name="description" content="Angel 是一个全能 AI agent 命令行工具：Python 标准库从零写成，零 pip 依赖，支持任意 OpenAI 兼容接口、MCP、调度器、证据链与 E2B 沙盒。">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="assets/angel-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main"><span data-l="zh">跳到正文</span><span data-l="en">Skip to content</span></a>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="Angel">
+      <img src="assets/angel-mark.svg" alt="" width="28" height="28">
+      <span>Angel</span>
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#features"><span data-l="zh">能力</span><span data-l="en">Features</span></a>
+      <a href="#demo"><span data-l="zh">演示</span><span data-l="en">Demo</span></a>
+      <a href="#webui"><span data-l="zh">网页界面</span><span data-l="en">Web UI</span></a>
+      <a href="#architecture"><span data-l="zh">架构</span><span data-l="en">Architecture</span></a>
+      <a href="#roadmap"><span data-l="zh">路线图</span><span data-l="en">Roadmap</span></a>
+      <a href="#changelog"><span data-l="zh">更新</span><span data-l="en">Changelog</span></a>
+    </nav>
+    <div class="nav-actions">
+      <a class="gh" href="https://github.com/js2005happy/angel" rel="noopener">GitHub</a>
+      <button class="lang" type="button" id="lang-toggle" aria-label="Switch language / 切换语言">
+        <span data-l="zh">English</span><span data-l="en">中文</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow"><span class="dot"></span>v0.3.0 · MIT · Python 3.10+</p>
+      <h1>
+        <span data-l="zh">一个 Python 目录，<br>一个<em>会动手</em>的 AI 助手。</span>
+        <span data-l="en">One Python folder.<br>An AI agent that <em>gets things done</em>.</span>
+      </h1>
+      <p class="lede">
+        <span data-l="zh">Angel 是一个全能 AI agent 命令行工具：用 Python 标准库从零写成，没有 pip 依赖，有 Python 3 就能跑。它通过调用工具完成任务——读写文件、执行命令、联网查证——而不是只靠说话。</span>
+        <span data-l="en">Angel is an all-round AI agent for the command line, written from scratch on the Python standard library. No pip dependencies: if you have Python 3, it runs. It finishes tasks by calling tools — reading and writing files, running commands, researching the web — not just by talking.</span>
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#install"><span data-l="zh">快速开始</span><span data-l="en">Get started</span></a>
+        <a class="btn" href="https://github.com/js2005happy/angel" rel="noopener"><span data-l="zh">在 GitHub 查看源码</span><span data-l="en">View on GitHub</span></a>
+      </div>
+      <ul class="facts">
+        <li><strong>0</strong><span data-l="zh">pip 依赖</span><span data-l="en">pip dependencies</span></li>
+        <li><strong>14</strong><span data-l="zh">内置工具</span><span data-l="en">built-in tools</span></li>
+        <li><strong>6</strong><span data-l="zh">provider 预设</span><span data-l="en">provider presets</span></li>
+        <li><strong>3</strong><span data-l="zh">审批模式</span><span data-l="en">approval modes</span></li>
+      </ul>
+    </div>
+
+    <div class="install-card" id="install">
+      <div class="card-head">
+        <span data-l="zh">安装与快速开始</span><span data-l="en">Install &amp; quick start</span>
+      </div>
+      <div class="cmd">
+        <div class="cmd-label"><span data-l="zh">1 · 获取源码</span><span data-l="en">1 · Get the source</span></div>
+        <div class="cmd-row"><code>git clone https://github.com/js2005happy/angel.git &amp;&amp; cd angel</code><button class="copy" type="button" data-copy="git clone https://github.com/js2005happy/angel.git &amp;&amp; cd angel"><span data-l="zh">复制</span><span data-l="en">Copy</span></button></div>
+      </div>
+      <div class="cmd">
+        <div class="cmd-label"><span data-l="zh">2 · 配置模型 Key（任选一家）</span><span data-l="en">2 · Set a model key (any provider)</span></div>
+        <div class="cmd-row"><code><span data-l="zh">export DEEPSEEK_API_KEY=你的Key</span><span data-l="en">export DEEPSEEK_API_KEY=YOUR_KEY</span></code><button class="copy" type="button" data-copy="export DEEPSEEK_API_KEY="><span data-l="zh">复制</span><span data-l="en">Copy</span></button></div>
+      </div>
+      <div class="cmd">
+        <div class="cmd-label"><span data-l="zh">3 · 一次性任务</span><span data-l="en">3 · One-shot task</span></div>
+        <div class="cmd-row"><code>python3 -m angel "创建一个文件 hello.txt，写一句问候，再读回来汇报"</code><button class="copy" type="button" data-copy='python3 -m angel "创建一个文件 hello.txt，写一句问候，再读回来汇报"'><span data-l="zh">复制</span><span data-l="en">Copy</span></button></div>
+      </div>
+      <div class="cmd">
+        <div class="cmd-label"><span data-l="zh">或：交互模式 / 本地网页界面</span><span data-l="en">Or: interactive REPL / local web UI</span></div>
+        <div class="cmd-row"><code>python3 -m angel</code><button class="copy" type="button" data-copy="python3 -m angel"><span data-l="zh">复制</span><span data-l="en">Copy</span></button></div>
+        <div class="cmd-row"><code>python3 -m angel ui --open</code><button class="copy" type="button" data-copy="python3 -m angel ui --open"><span data-l="zh">复制</span><span data-l="en">Copy</span></button></div>
+      </div>
+      <p class="note">
+        <span data-l="zh">Key 只从环境变量或已保存的连接器读取，绝不打印、记录或写进项目文件。</span>
+        <span data-l="en">Keys are read only from environment variables or saved connectors — never printed, logged, or written to project files.</span>
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="features">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="kicker"><span data-l="zh">核心能力</span><span data-l="en">What it does</span></p>
+      <h2><span data-l="zh">小而完整：agent 该有的，都用标准库写了一遍。</span><span data-l="en">Small but complete: every piece an agent needs, on the standard library.</span></h2>
+    </header>
+    <div class="grid cards">
+      <article class="card">
+        <div class="icon" aria-hidden="true">⌘</div>
+        <h3><span data-l="zh">14 个工具</span><span data-l="en">14 tools</span></h3>
+        <p><span data-l="zh">读写改列文件、带危险命令黑名单的 shell、web_fetch / web_search、记忆、技能保存、delegate 子 agent、plan、grep_search、git_status、http_post。</span><span data-l="en">Read, write, edit and list files; shell with a dangerous-command denylist; web_fetch / web_search; memory; save_skill; delegate to a sub-agent; plan; grep_search; git_status; http_post.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">◎</div>
+        <h3><span data-l="zh">三档审批</span><span data-l="en">Three approval modes</span></h3>
+        <p><span data-l="zh"><code>readonly</code> 只读；<code>auto</code>（默认）写文件、执行命令前请你确认，非交互运行不会悄悄写入；<code>full</code> 全权执行。</span><span data-l="en"><code>readonly</code> reads only; <code>auto</code> (default) asks before writes and commands and refuses them when unattended; <code>full</code> runs without asking.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">⇄</div>
+        <h3><span data-l="zh">MCP 客户端</span><span data-l="en">MCP client</span></h3>
+        <p><span data-l="zh">接标准 MCP 服务器（stdio JSON-RPC），工具以 <code>mcp_&lt;服务器&gt;_&lt;工具&gt;</code> 出现。默认关闭，需显式启用；所有 MCP 调用一律经过审批。</span><span data-l="en">Connects to standard MCP servers (stdio JSON-RPC); tools appear as <code>mcp_&lt;server&gt;_&lt;tool&gt;</code>. Off by default; every MCP call goes through approval.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">◷</div>
+        <h3><span data-l="zh">内置调度器</span><span data-l="en">Built-in scheduler</span></h3>
+        <p><span data-l="zh"><code>angel schedule add</code> 添加任务，<code>schedule daemon</code> 跑守护进程；支持按间隔或每天固定时间，任务存在 <code>~/.angel/schedule.json</code>。</span><span data-l="en"><code>angel schedule add</code> a task, then run <code>schedule daemon</code>. Interval or fixed daily time; tasks live in <code>~/.angel/schedule.json</code>.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">§</div>
+        <h3><span data-l="zh">证据链</span><span data-l="en">Evidence trail</span></h3>
+        <p><span data-l="zh">web_fetch / web_search 抓到的页面原文自动存为会话内证据，结论必须附来源链接，任何人都能按证据复核。</span><span data-l="en">Pages fetched by web_fetch / web_search are saved as per-session evidence. Conclusions must cite sources, so anyone can re-check them.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">≡</div>
+        <h3><span data-l="zh">会话压缩</span><span data-l="en">Session compaction</span></h3>
+        <p><span data-l="zh"><code>--compact &lt;会话 id&gt;</code> 或 REPL 里 <code>/compact</code>：模型把长会话摘要成要点再继续；模型失败时本地回退保留首尾消息。</span><span data-l="en"><code>--compact &lt;id&gt;</code> or <code>/compact</code>: the model summarises a long session and keeps going; falls back locally to first and last messages.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">⚑</div>
+        <h3><span data-l="zh">Provider 档案</span><span data-l="en">Provider profiles</span></h3>
+        <p><span data-l="zh">任何 OpenAI 兼容接口：DeepSeek、xAI、OpenRouter、Ollama、OpenAI、自定义。配置里存多个命名档案，<code>--profile strong</code> 一键切换。</span><span data-l="en">Any OpenAI-compatible API: DeepSeek, xAI, OpenRouter, Ollama, OpenAI or custom. Store named profiles and switch with <code>--profile strong</code>.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">✦</div>
+        <h3><span data-l="zh">技能（Skills）</span><span data-l="en">Skills</span></h3>
+        <p><span data-l="zh">技能是带 frontmatter 的 Markdown 文件，按任务关键词自动加载；做法值得复用时，Angel 会用 <code>save_skill</code> 存成新技能。</span><span data-l="en">Skills are Markdown files with frontmatter, loaded by task keywords. When an approach is worth reusing, Angel saves it with <code>save_skill</code>.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">▣</div>
+        <h3><span data-l="zh">E2B 沙盒后端</span><span data-l="en">E2B sandbox backend</span></h3>
+        <p><span data-l="zh"><code>--sandbox e2b</code> 让文件读写与 shell 在 E2B 沙盒里执行，不碰本机；审批与黑名单同样生效。SDK 是可选依赖，核心仍是标准库 only。</span><span data-l="en"><code>--sandbox e2b</code> runs file and shell tools inside an E2B sandbox, not on your machine; approvals and the denylist still apply. The SDK is optional.</span></p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="demo">
+  <div class="wrap demo-grid">
+    <div>
+      <p class="kicker"><span data-l="zh">工作方式</span><span data-l="en">How it works</span></p>
+      <h2><span data-l="zh">先计划，再动手，处处留证据。</span><span data-l="en">Plan first, act second, leave evidence everywhere.</span></h2>
+      <p class="muted"><span data-l="zh">多步骤任务先调用 <code>plan</code> 写计划，再按计划执行；写文件、执行命令前在 auto 模式下请你确认；需要查证的事实走“搜索 → 打开官网 → 逐项核对 → 存证 → 附链接交付”。</span><span data-l="en">Multi-step tasks start with <code>plan</code>. In auto mode, writes and commands wait for your confirmation. Facts are verified by search → open the official page → check item by item → save evidence → deliver with links.</span></p>
+      <ul class="checks">
+        <li><span data-l="zh">会话自动保存为 jsonl，<code>--resume</code> 续聊</span><span data-l="en">Sessions auto-save as jsonl; continue with <code>--resume</code></span></li>
+        <li><span data-l="zh">读取工作目录的 <code>AGENTS.md</code> 作为项目说明</span><span data-l="en">Reads <code>AGENTS.md</code> in the working directory as project instructions</span></li>
+        <li><span data-l="zh">发往本机地址的请求总是直连，不受代理影响</span><span data-l="en">Requests to loopback addresses always bypass proxies</span></li>
+      </ul>
+    </div>
+    <figure class="term" aria-label="示意终端 / illustrative terminal">
+      <div class="term-bar"><i></i><i></i><i></i><span>angel — zsh</span><b class="badge"><span data-l="zh">示意</span><span data-l="en">Illustration</span></b></div>
+<pre class="term-body"><span class="p">$</span> python3 -m angel
+<span class="g">Angel 0.3.0</span>  <span class="d">deepseek / deepseek-flash · auto</span>
+<span class="d">输入 /help 查看命令</span>
+
+<span class="u">angel ›</span> 查一下这个目录里有哪些 Python 文件，写个清单到 files.md
+<span class="t">┌ plan</span>      <span class="d">plan.md</span>
+<span class="t">├ list_dir</span>  <span class="d">.</span>  <span class="ok">✓</span>
+<span class="t">├ write_file</span> <span class="d">files.md</span>
+<span class="w">│ 允许执行吗？[y/N]</span> y
+<span class="t">└</span> <span class="ok">✓ 已写入</span>
+已列出 6 个 .py 文件并写入 files.md。</pre>
+      <figcaption><span data-l="zh">示意图：用 HTML/CSS 绘制，用于说明交互流程，不是真实运行截图。</span><span data-l="en">Illustration drawn in HTML/CSS to explain the flow — not a real screenshot.</span></figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="webui">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="kicker"><span data-l="zh">网页界面</span><span data-l="en">Web UI</span></p>
+      <h2><span data-l="zh"><code>python3 -m angel ui</code>：本机浏览器里的三栏工作台。</span><span data-l="en"><code>python3 -m angel ui</code>: a three-pane workspace in your local browser.</span></h2>
+    </header>
+    <div class="grid three">
+      <div class="mini"><h3><span data-l="zh">会话</span><span data-l="en">Sessions</span></h3><p><span data-l="zh">左栏直接读取现有会话存储，可新建、可恢复。</span><span data-l="en">The left pane reads the existing session store; start new or resume.</span></p></div>
+      <div class="mini"><h3><span data-l="zh">对话与工具卡片</span><span data-l="en">Chat &amp; tool cards</span></h3><p><span data-l="zh">工具调用以可折叠卡片显示；auto 模式下需要审批时出现“批准 / 拒绝”。</span><span data-l="en">Tool calls render as collapsible cards; in auto mode, approvals show Approve / Deny.</span></p></div>
+      <div class="mini"><h3><span data-l="zh">检查器</span><span data-l="en">Inspector</span></h3><p><span data-l="zh">右栏显示 provider / 模型、证据与来源链接、计划进度；Key 只显示是否已配置。</span><span data-l="en">The right pane shows provider / model, evidence with source links and plan progress; keys show only whether they are set.</span></p></div>
+    </div>
+    <p class="muted small"><span data-l="zh">纯标准库 <code>http.server</code> + 单个内嵌页面，无 CDN。默认只监听 127.0.0.1，并用启动时随机生成的 token 防 CSRF。</span><span data-l="en">Pure standard-library <code>http.server</code> plus one embedded page, no CDN. Listens on 127.0.0.1 by default and uses a per-launch random token against CSRF.</span></p>
+  </div>
+</section>
+
+<section class="section alt" id="architecture">
+  <div class="wrap arch-grid">
+    <div>
+      <p class="kicker"><span data-l="zh">架构</span><span data-l="en">Architecture</span></p>
+      <h2><span data-l="zh">部署就是复制一个目录。</span><span data-l="en">Deploying is copying a folder.</span></h2>
+      <ul class="plain">
+        <li><strong><span data-l="zh">标准库 only</span><span data-l="en">Stdlib only</span></strong> — <span data-l="zh"><code>urllib</code> 调 API、<code>subprocess</code> 跑命令、<code>json</code>/<code>re</code> 做解析。</span><span data-l="en"><code>urllib</code> for APIs, <code>subprocess</code> for commands, <code>json</code>/<code>re</code> for parsing.</span></li>
+        <li><strong><span data-l="zh">OpenAI 兼容协议</span><span data-l="en">OpenAI-compatible</span></strong> — <span data-l="zh">所有 provider 走同一套 chat completions + function calling，换模型只改配置。</span><span data-l="en">every provider uses the same chat completions + function calling; switching models is a config change.</span></li>
+        <li><strong><span data-l="zh">审批是工具层的门</span><span data-l="en">Approval lives at the tool layer</span></strong> — <span data-l="zh"><code>_check_approval</code> 是唯一入口。</span><span data-l="en"><code>_check_approval</code> is the single gate.</span></li>
+        <li><strong><span data-l="zh">技能是 Markdown，会话是 jsonl</span><span data-l="en">Skills are Markdown, sessions are jsonl</span></strong> — <span data-l="zh">可读、可改，坏了也能用编辑器修。</span><span data-l="en">readable, editable, fixable with any text editor.</span></li>
+      </ul>
+    </div>
+<pre class="tree" aria-label="目录简图 / layout">angel/
+├── __main__.py    <span class="d">python3 -m angel</span>
+├── cli.py         <span class="d">参数 · REPL · schedule</span>
+├── agent.py       <span class="d">主循环：plan → 工具 → 汇报</span>
+├── providers.py   <span class="d">OpenAI 兼容客户端（urllib）</span>
+├── tools.py       <span class="d">14 个工具 + 审批 + 黑名单</span>
+├── skills.py      <span class="d">技能加载 / 匹配 / 保存</span>
+├── memory.py      <span class="d">记忆 · AGENTS.md · 会话</span>
+├── config.py      <span class="d">配置 · provider · 档案</span>
+├── mcp.py         <span class="d">MCP 客户端（stdio）</span>
+├── scheduler.py   <span class="d">调度器 + daemon</span>
+├── compact.py     <span class="d">会话压缩</span>
+├── evidence.py    <span class="d">证据链</span>
+├── e2b_backend.py <span class="d">E2B 沙盒后端（可选）</span>
+├── net.py         <span class="d">本机直连、不走代理</span>
+└── webui.py       <span class="d">本地网页界面</span></pre>
+  </div>
+</section>
+
+<section class="section" id="providers">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="kicker">Providers</p>
+      <h2><span data-l="zh">不绑定任何一家模型。</span><span data-l="en">No vendor lock-in.</span></h2>
+    </header>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Provider</th><th><span data-l="zh">环境变量</span><span data-l="en">Env variable</span></th><th><span data-l="zh">默认模型</span><span data-l="en">Default model</span></th></tr></thead>
+        <tbody>
+          <tr><td>deepseek <span class="tag"><span data-l="zh">默认</span><span data-l="en">default</span></span></td><td><code>DEEPSEEK_API_KEY</code></td><td><code>deepseek-flash</code></td></tr>
+          <tr><td>xai</td><td><code>XAI_API_KEY</code></td><td><code>grok-4.3</code></td></tr>
+          <tr><td>openrouter</td><td><code>OPENROUTER_API_KEY</code></td><td><code>nousresearch/hermes-4-14b</code></td></tr>
+          <tr><td>ollama</td><td><span data-l="zh">无需 Key</span><span data-l="en">no key</span></td><td><code>qwen2.5:7b</code></td></tr>
+          <tr><td>openai</td><td><code>OPENAI_API_KEY</code></td><td><code>gpt-4o-mini</code></td></tr>
+          <tr><td>custom</td><td><code>ANGEL_API_KEY</code> + <code>ANGEL_BASE_URL</code> + <code>ANGEL_MODEL</code></td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="roadmap">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="kicker"><span data-l="zh">路线图</span><span data-l="en">Roadmap</span></p>
+      <h2><span data-l="zh">诚实的待办清单。</span><span data-l="en">An honest to-do list.</span></h2>
+    </header>
+    <ol class="roadmap">
+      <li><b class="st plan"><span data-l="zh">计划</span><span data-l="en">Planned</span></b><div><h3><span data-l="zh">真沙箱</span><span data-l="en">Real local sandbox</span></h3><p><span data-l="zh">Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。</span><span data-l="en">bubblewrap or uid sandboxing for shell on Linux; writes confined to the working directory.</span></p></div></li>
+      <li><b class="st plan"><span data-l="zh">待定</span><span data-l="en">TBD</span></b><div><h3><span data-l="zh">浏览器工具</span><span data-l="en">Browser tools</span></h3><p><span data-l="zh">导航、点击、截图需要真实浏览器驱动，不做假的；目前只有证据链轻量版。</span><span data-l="en">Navigate / click / screenshot need a real browser driver — not faked. Only the lightweight evidence trail exists today.</span></p></div></li>
+      <li><b class="st plan"><span data-l="zh">计划</span><span data-l="en">Planned</span></b><div><h3><span data-l="zh">GEPA 式自动学习</span><span data-l="en">GEPA-style self-learning</span></h3><p><span data-l="zh">任务成功后自动总结并评估技能。</span><span data-l="en">Automatically distil and evaluate skills after successful tasks.</span></p></div></li>
+      <li><b class="st part"><span data-l="zh">部分完成</span><span data-l="en">In progress</span></b><div><h3><span data-l="zh">桌面 UI</span><span data-l="en">Desktop UI</span></h3><p><span data-l="zh">本地网页界面 <code>python3 -m angel ui</code> 已可用；独立桌面应用尚未开始。</span><span data-l="en">The local web UI <code>python3 -m angel ui</code> is available; a standalone desktop app has not started.</span></p></div></li>
+      <li><b class="st plan"><span data-l="zh">计划</span><span data-l="en">Planned</span></b><div><h3><span data-l="zh">多模型路由</span><span data-l="en">Multi-model routing</span></h3><p><span data-l="zh">按任务难度自动选便宜或强的模型。</span><span data-l="en">Pick a cheap or strong model by task difficulty.</span></p></div></li>
+      <li><b class="st plan"><span data-l="zh">计划</span><span data-l="en">Planned</span></b><div><h3><span data-l="zh">多会话并发</span><span data-l="en">Concurrent sessions</span></h3><p><span data-l="zh">每会话独立引擎；目前一次只跑一个会话。</span><span data-l="en">An engine per session; today one session runs at a time.</span></p></div></li>
+      <li><b class="st plan"><span data-l="zh">计划</span><span data-l="en">Planned</span></b><div><h3><span data-l="zh">hooks / 插件</span><span data-l="en">Hooks / plugins</span></h3><p><span data-l="zh">任务前后钩子与第三方插件加载。</span><span data-l="en">Before/after task hooks and third-party plugins.</span></p></div></li>
+    </ol>
+  </div>
+</section>
+
+<section class="section" id="changelog">
+  <div class="wrap">
+    <header class="section-head">
+      <p class="kicker"><span data-l="zh">更新记录</span><span data-l="en">Changelog</span></p>
+      <h2><span data-l="zh">每个版本都有测试数字。</span><span data-l="en">Every release ships with its test count.</span></h2>
+    </header>
+    <div class="timeline">
+      <article><time><span data-l="zh">未发布</span><span data-l="en">Unreleased</span></time><ul>
+        <li><span data-l="zh">本地网页界面 <code>python3 -m angel ui</code>；终端 REPL 横幅、提示符与工具调用分组。</span><span data-l="en">Local web UI <code>python3 -m angel ui</code>; REPL banner, prompt and grouped tool-call output.</span></li>
+        <li><span data-l="zh">发往本机地址的请求绕过环境代理（本地 Ollama 在代理环境下可用）。</span><span data-l="en">Loopback requests bypass environment proxies (local Ollama works behind a proxy).</span></li>
+        <li><span data-l="zh">MCP 子进程默认只继承基础环境变量，不再自动暴露无关 API Key（可用 <code>inherit_env</code> 显式继承）。</span><span data-l="en">MCP subprocesses inherit only a minimal environment, so unrelated API keys are no longer exposed (opt in with <code>inherit_env</code>).</span></li>
+        <li><span data-l="zh">MCP 工具调用统一接入审批；证据文件冲突不再覆盖。</span><span data-l="en">All MCP tool calls go through approval; evidence files never overwrite on collision.</span></li>
+        <li><span data-l="zh">Windows 兼容：MCP stdio 改为读取线程；Linux / Windows 多版本 CI。</span><span data-l="en">Windows: MCP stdio via reader thread; Linux / Windows CI matrix.</span></li>
+      </ul></article>
+      <article><time>0.3.0 · 2026-11-16</time><ul>
+        <li><span data-l="zh">E2B 沙盒执行后端：<code>--sandbox e2b</code>，文件与 shell 在沙盒里执行。</span><span data-l="en">E2B sandbox backend: <code>--sandbox e2b</code> runs file and shell tools in a sandbox.</span></li>
+        <li><span data-l="zh">测试从 53 个增至 62 个。</span><span data-l="en">Tests grew from 53 to 62.</span></li>
+      </ul></article>
+      <article><time>0.2.0 · 2026-11-16</time><ul>
+        <li><span data-l="zh">MCP 客户端、内置调度器、会话压缩、证据链、provider 档案。</span><span data-l="en">MCP client, scheduler, session compaction, evidence trail, provider profiles.</span></li>
+        <li><span data-l="zh">新工具 grep_search / git_status / http_post；web_search 双后端。测试 21 → 53。</span><span data-l="en">New tools grep_search / git_status / http_post; dual-backend web_search. Tests 21 → 53.</span></li>
+      </ul></article>
+      <article><time>0.1.0 · 2026-11-15</time><ul>
+        <li><span data-l="zh">首版：6 个 provider、11 个工具、审批三档、技能、记忆与会话。21 个测试。</span><span data-l="en">First release: 6 providers, 11 tools, three approval modes, skills, memory and sessions. 21 tests.</span></li>
+      </ul></article>
+    </div>
+    <p class="more"><a href="https://github.com/js2005happy/angel/blob/main/CHANGELOG.md" rel="noopener"><span data-l="zh">完整 CHANGELOG →</span><span data-l="en">Full CHANGELOG →</span></a></p>
+  </div>
+</section>
+
+<section class="section alt" id="license">
+  <div class="wrap license">
+    <div>
+      <p class="kicker"><span data-l="zh">许可证与原创性</span><span data-l="en">License &amp; originality</span></p>
+      <h2>MIT</h2>
+      <p><span data-l="zh">Angel 以 MIT 许可证发布。代码全部原创，只借鉴了 Codex CLI、OpenCode、Pi、Goose、OpenHands、Hermes Agent 等开源项目的设计思想，没有复制任何源码；设计来源与各项目许可证见 DESIGN.md。</span><span data-l="en">Angel is released under the MIT License. All code is original: it borrows design ideas from open-source agents such as Codex CLI, OpenCode, Pi, Goose, OpenHands and Hermes Agent, without copying any source. Design credits and their licenses are listed in DESIGN.md.</span></p>
+    </div>
+    <div class="links">
+      <a href="https://github.com/js2005happy/angel/blob/main/LICENSE" rel="noopener">LICENSE</a>
+      <a href="https://github.com/js2005happy/angel/blob/main/DESIGN.md" rel="noopener">DESIGN.md</a>
+      <a href="https://github.com/js2005happy/angel/blob/main/README.md" rel="noopener">README.md</a>
+      <a href="https://github.com/js2005happy/angel/blob/main/VERIFICATION.md" rel="noopener">VERIFICATION.md</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <span><img src="assets/angel-mark.svg" alt="" width="18" height="18"> Angel · MIT</span>
+    <span class="muted"><span data-l="zh">本站为纯静态页面，无外部字体、CDN 或追踪脚本。</span><span data-l="en">This site is fully static: no external fonts, CDNs or trackers.</span></span>
+    <a href="#top"><span data-l="zh">回到顶部 ↑</span><span data-l="en">Back to top ↑</span></a>
+  </div>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>
