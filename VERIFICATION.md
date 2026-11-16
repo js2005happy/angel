@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：EigenFlux bare-CLI 本地适配准备
+
+- `tests/test_eigenflux_adapter.py`：主 Agent Home 不随会话/cwd 变化；不同群/机器人成员 Home 无重叠；未知机器人、非法 ID、符号链接路径拒绝。
+- 默认 doctor 不读取 CLI 版本、不调用子进程且不创建任何身份目录；显式 `--check` 固定只允许两条本地 CLI 命令，传递凭据最小环境变量，并按超时或命令错误报告 incomplete，不虚报网络已连接。
+- CLI 集成不会创建模型 Provider、MCP 或 scheduler，全部测试采用临时目录与模拟命令，没有真实安装、EigenFlux 网络请求或模型调用。
+- 等待 Ubuntu Python 3.10/3.12 和 Windows Python 3.12 CI 通过后才合并。
+
 ## 已验证：Poppy OAuth issuer 双向核验（PR #20）
 
 - `tests/test_poppy_identity.py` 检验公司域名 → protected resource → issuer metadata → issuer `protected_resources` 反向绑定，多个 issuer 的 `auth.issuer` 选择及单 issuer 自动确认。
