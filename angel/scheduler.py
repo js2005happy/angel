@@ -12,6 +12,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from .console import configure_stdio
+
 
 SCHEDULE_PATH = Path.home() / ".angel" / "schedule.json"
 
@@ -236,6 +238,7 @@ def run_daemon(
     path: Path | None = None,
     stop_after: int | None = None,
 ) -> int:
+    configure_stdio()
     rounds = 0
 
     try:

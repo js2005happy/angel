@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import html
+import posixpath
 from pathlib import Path
 import re
 import shlex
@@ -277,6 +278,19 @@ def _truncate(text: str) -> str:
     return text
 
 
+def _resolve_backend_path(ctx: ToolContext, path: str) -> str:
+    """Resolve sandbox paths as POSIX paths, independent of the host OS.
+
+    On Windows, Path("/home/user") becomes a Windows path ("\\home\\user").
+    Sending that to a Linux E2B sandbox breaks all file tools.
+    """
+    base = str(ctx.workdir).replace("\\", "/")
+    target = str(path).replace("\\", "/")
+    if posixpath.isabs(target):
+        return posixpath.normpath(target)
+    return posixpath.normpath(posixpath.join(base, target))
+
+
 def _resolve_path(ctx: ToolContext, path: str) -> Path:
     # The MVP does not check for paths escaping the working directory.
     if Path(path).is_absolute():
@@ -351,7 +365,7 @@ def _check_shell_denied(command: str) -> str | None:
 
 def _tool_read_file(ctx: ToolContext, path: str) -> str:
     if ctx.backend is not None:
-        return _truncate(ctx.backend.read_file(str(_resolve_path(ctx, path))))
+        return _truncate(ctx.backend.read_file(_resolve_backend_path(ctx, path)))
     target = _resolve_path(ctx, path)
     if not target.is_file():
         return f"错误：文件不存在：{path}"
@@ -361,7 +375,7 @@ def _tool_read_file(ctx: ToolContext, path: str) -> str:
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
     _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）")
     if ctx.backend is not None:
-        return ctx.backend.write_file(str(_resolve_path(ctx, path)), content)
+        return ctx.backend.write_file(_resolve_backend_path(ctx, path), content)
     target = _resolve_path(ctx, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
@@ -373,7 +387,7 @@ def _tool_edit_file(
 ) -> str:
     _check_approval(ctx, "edit_file", f"编辑文件：{path}")
     if ctx.backend is not None:
-        resolved = str(_resolve_path(ctx, path))
+        resolved = _resolve_backend_path(ctx, path)
         content = ctx.backend.read_file(resolved)
         if content.startswith("错误："):
             return content
@@ -398,7 +412,7 @@ def _tool_edit_file(
 
 def _tool_list_dir(ctx: ToolContext, path: str = ".") -> str:
     if ctx.backend is not None:
-        return ctx.backend.list_dir(str(_resolve_path(ctx, path)))
+        return ctx.backend.list_dir(_resolve_backend_path(ctx, path))
     target = _resolve_path(ctx, path)
     if not target.is_dir():
         return f"错误：目录不存在：{path}"
@@ -423,7 +437,7 @@ def _tool_shell(
         return f"错误：{denied}"
     _check_approval(ctx, "shell", f"执行命令：{command}")
     if ctx.backend is not None:
-        resolved_cwd = str(ctx.workdir / cwd if cwd else ctx.workdir)
+        resolved_cwd = _resolve_backend_path(ctx, cwd or ".")
         return _truncate(
             ctx.backend.run_command(command, cwd=resolved_cwd, timeout=timeout)
         ) or "（无输出）"
@@ -614,7 +628,7 @@ def _tool_plan(
         + "\n"
     )
     if ctx.backend is not None:
-        ctx.backend.write_file(str(_resolve_path(ctx, path)), content)
+        ctx.backend.write_file(_resolve_backend_path(ctx, path), content)
         return f"已写入计划 {path}（{len(steps)} 步）"
     target = _resolve_path(ctx, path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -649,9 +663,9 @@ def _tool_grep_search(
         )
         command = (
             f"grep {' '.join(flags)} {excludes} -- "
-            f"{shlex.quote(pattern)} {shlex.quote(str(_resolve_path(ctx, path)))}"
+            f"{shlex.quote(pattern)} {shlex.quote(_resolve_backend_path(ctx, path))}"
         )
-        out = ctx.backend.run_command(command, cwd=str(ctx.workdir), timeout=30)
+        out = ctx.backend.run_command(command, cwd=_resolve_backend_path(ctx, "."), timeout=30)
         if "No such file or directory" in out:
             return f"错误：路径不存在：{path}"
         lines = [line for line in out.splitlines() if line.strip()]
@@ -704,24 +718,25 @@ def _tool_grep_search(
 
 
 def _tool_git_status(ctx: ToolContext, path: str = ".") -> str:
-    target = _resolve_path(ctx, path)
     if ctx.backend is not None:
+        target = _resolve_backend_path(ctx, path)
         out = ctx.backend.run_command(
             f"git -C {shlex.quote(str(target))} status --short --branch",
-            cwd=str(ctx.workdir),
+            cwd=_resolve_backend_path(ctx, "."),
             timeout=15,
         )
         if "fatal: not a git repository" in out or "不是一个 git 仓库" in out:
             return "错误：该目录不是 git 仓库（或 git 报错）"
         diff = ctx.backend.run_command(
             f"git -C {shlex.quote(str(target))} diff --stat",
-            cwd=str(ctx.workdir),
+            cwd=_resolve_backend_path(ctx, "."),
             timeout=15,
         )
         combined = out.strip() or "（工作区干净）"
         if diff.strip() and "fatal" not in diff:
             combined += "\n\n改动统计：\n" + diff.strip()
         return _truncate(combined)
+    target = _resolve_path(ctx, path)
     if not target.is_dir():
         return f"错误：目录不存在：{path}"
     try:
