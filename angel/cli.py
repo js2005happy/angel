@@ -34,6 +34,7 @@ from .scheduler import (
 from .skills import load_skills
 from .memory import list_sessions, load_session, new_session_id
 from .usage import UsageTracker, context_limit, format_usage
+from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 
 
 REPL_COMMANDS = (
@@ -291,6 +292,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-window", type=int, default=None,
         help="已确认的模型上下文窗口 token 上限（未知时不估算）",
     )
+    parser.add_argument(
+        "--auto-compact", action="store_true",
+        help="达到配置的上下文阈值时自动压缩（需要设置 --context-window，可能增加模型费用）",
+    )
+    parser.add_argument(
+        "--auto-compact-threshold", type=float, default=None,
+        help="触发自动压缩的上下文占比，0.50 到 0.95（默认 0.80）",
+    )
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument(
         "--sandbox",
@@ -425,6 +434,15 @@ def main(argv: list[str] | None = None) -> int:
         args.context_window if args.context_window is not None
         else config.get("context_window_tokens")
     )
+    enabled_auto_compact = bool(args.auto_compact or config.get("auto_compact_enabled", False))
+    try:
+        threshold = validate_auto_compact_threshold(
+            args.auto_compact_threshold if args.auto_compact_threshold is not None
+            else config.get("auto_compact_threshold", DEFAULT_AUTO_COMPACT_THRESHOLD)
+        )
+    except ValueError as exc:
+        print(f"错误：{exc}")
+        return 1
 
     try:
         provider_cfg = resolve_provider(
@@ -505,6 +523,8 @@ def main(argv: list[str] | None = None) -> int:
         mcp_manager=mcp_manager,
         backend=backend,
         context_window_tokens=window,
+        auto_compact_enabled=enabled_auto_compact,
+        auto_compact_threshold=threshold,
     )
 
     try:
@@ -597,6 +617,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"会话：{agent.session_id}；模型：{provider.name} / {provider.model}；模式：{agent.mode}\n"
                     + format_usage(agent.usage.snapshot())
+                    + (f"\n自动压缩：已触发 {agent.auto_compact_count} 次" if enabled_auto_compact else "\n自动压缩：未启用")
                 )
                 continue
             elif line == "/compact":
