@@ -43,6 +43,7 @@ from .config import (
     validate_mode,
 )
 from .providers import Provider, describe_provider
+from .usage import context_limit
 from .webui_page import PAGE_HTML
 
 DEFAULT_HOST = "127.0.0.1"
@@ -100,6 +101,7 @@ class UIState:
         profile: str | None = None,
         max_turns: int | None = None,
         mcp_manager=None,
+        context_window_tokens: int | None = None,
     ) -> None:
         self.workdir = Path(workdir)
         self.mode = validate_mode(mode)
@@ -109,6 +111,7 @@ class UIState:
         self.model = model
         self.profile = profile
         self.max_turns = max_turns
+        self.context_window_tokens = context_limit(context_window_tokens)
         self.mcp_manager = mcp_manager
         self._provider_factory = provider_factory
         self._provider = None
@@ -133,6 +136,8 @@ class UIState:
                 )
                 if self.max_turns is None:
                     self.max_turns = cfg.get("max_turns") or 20
+                if self.context_window_tokens is None:
+                    self.context_window_tokens = context_limit(cfg.get("context_window_tokens"))
         return self._provider
 
     def info(self) -> dict:
@@ -178,6 +183,7 @@ class UIState:
             profiles = cfg.get("profiles") or {}
             out["config"] = {
                 "max_turns": cfg.get("max_turns"),
+                "context_window_tokens": context_limit(cfg.get("context_window_tokens")),
                 "mcp_enabled": bool(cfg.get("mcp_enabled")),
                 "sandbox": cfg.get("sandbox") or "local",
                 "profiles": sorted(profiles) if isinstance(profiles, dict) else [],
@@ -272,6 +278,7 @@ class UIState:
             "pending": pending,
             "evidence": list_evidence(session_id),
             "plan": find_plan(messages, events, status),
+            "usage": run.agent.usage.snapshot() if run is not None and run.agent is not None else None,
         }
 
     # -- running ------------------------------------------------------------
@@ -302,6 +309,7 @@ class UIState:
                     mcp_manager=self.mcp_manager,
                     on_event=lambda kind, data: self._record(run, kind, data),
                     approve_fn=lambda tool, summary: self._approve(run, tool, summary),
+                    context_window_tokens=self.context_window_tokens,
                 )
             else:
                 run.agent.mode = self.mode
@@ -714,6 +722,7 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         profile=args.profile,
         mcp_manager=mcp_manager,
+        context_window_tokens=context_limit(cfg.get("context_window_tokens")),
     )
     try:
         server = make_server(args.host, args.port, state, verbose=args.verbose)
