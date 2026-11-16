@@ -155,6 +155,16 @@ class PlanCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(PlanError, "64 位"):
             read_approved_plan(self.root, digest[:12])
 
+    def test_windows_crlf_is_valid_only_with_its_own_hash(self):
+        initial = render_plan("原任务", "详细执行步骤")
+        old_digest = save_plan(self.root, initial)
+        windows_bytes = initial.replace("\n", "\r\n").encode("utf-8")
+        (self.root / "plan.md").write_bytes(windows_bytes)
+        with self.assertRaisesRegex(PlanError, "已变更|不匹配"):
+            read_approved_plan(self.root, old_digest)
+        new_digest = hashlib.sha256(windows_bytes).hexdigest()
+        self.assertEqual(read_approved_plan(self.root, new_digest), windows_bytes.decode("utf-8"))
+
     def test_failed_planning_does_not_modify_previous_plan(self):
         original = render_plan("task", "existing steps")
         save_plan(self.root, original)
