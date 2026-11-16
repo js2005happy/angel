@@ -1,5 +1,11 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：Poppy 1.0 公共发现客户端首阶段
+
+- `tests/test_poppy.py` 验证：公共域名标准发现、精确重定向路径、Poppy 1.0 及同主机备选版本、组织域名绑定、HTTP/URL 凭据/端口拒绝、公开 DNS 检查与 pinned-IP TLS、默认隐藏工具/只读显式开启、无需 Provider 的 CLI 诊断。
+- 不进行真实站点请求、付费模型调用或外部 MCP 连接；测试阶段所有 HTTPS 都使用模拟响应。需通过 Ubuntu 3.10/3.12、Windows 3.12 GitHub Actions 并确认无冲突后才合并。
+- 已知限制：尚未实现 Poppy Session、OAuth issuer、DPoP、API 资源令牌或 UCP 商务调用；本阶段只发现而不执行。
+
 ## 已验证：长期记忆浏览器（PR #17）
 
 - `tests/test_memory_browser.py` 测试全局及独立机器人完整记忆读写、token 鉴权、未知机器人及路径穿越拒绝、符号链接不越界、超过 64 KiB 不允许网页编辑。
