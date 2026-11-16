@@ -6,6 +6,7 @@
 
 import json
 from pathlib import Path
+from typing import Callable
 
 
 COMPACT_SYSTEM_INSTRUCTION = (
@@ -28,13 +29,17 @@ def build_compact_messages(
     return new_messages
 
 
-def summarize_with_provider(provider, messages: list[dict]) -> str:
+def summarize_with_provider(
+    provider, messages: list[dict], on_response: Callable[[dict], None] | None = None
+) -> str:
     request_messages = [
         {"role": "system", "content": COMPACT_SYSTEM_INSTRUCTION},
         *messages,
         {"role": "user", "content": "请按以上要求压缩这段对话。"},
     ]
     response = provider.chat(request_messages, tools=None, timeout=120)
+    if on_response is not None:
+        on_response(response)
     content = response["choices"][0]["message"]["content"]
     summary = (content or "").strip()
     if not summary:
@@ -43,7 +48,9 @@ def summarize_with_provider(provider, messages: list[dict]) -> str:
 
 
 def compact_messages(
-    provider, messages: list[dict], keep_last: int = 4
+    provider, messages: list[dict], keep_last: int = 4, *,
+    strict: bool = False,
+    on_response: Callable[[dict], None] | None = None,
 ) -> tuple[list[dict], dict]:
     before = len(messages)
     if not messages:
@@ -55,8 +62,12 @@ def compact_messages(
         }
 
     try:
-        summary = summarize_with_provider(provider, messages)
+        summary = summarize_with_provider(provider, messages, on_response=on_response)
     except Exception:
+        if strict:
+            # Automatic compaction must never discard history if its
+            # summarization call fails. Manual compaction retains its fallback.
+            raise
         fallback_messages = [
             {
                 "role": "user",
