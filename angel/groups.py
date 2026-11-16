@@ -245,6 +245,8 @@ class GroupStore:
         self, room: dict, bot: Bot, transcript: list[dict],
         cancel_event: threading.Event | None = None,
     ) -> str:
+        if cancel_event is not None and cancel_event.is_set():
+            raise _GroupCancelled
         home = self.root / room["id"] / "bots" / bot.id
         workdir = home / "workspace"
         workdir.mkdir(parents=True, exist_ok=True)
