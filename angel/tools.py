@@ -1083,7 +1083,7 @@ def _tool_poppy_identity_check(ctx: ToolContext, site: str) -> str:
         raise ToolError("Poppy OAuth 元数据核验未启用，需显式 --poppy")
     try:
         result = inspect_poppy_identity(site)
-    except IdentityError as exc:
+    except (IdentityError, PoppyError, OSError) as exc:
         raise ToolError(str(exc)) from exc
     import json
     return json.dumps(result, ensure_ascii=False)
