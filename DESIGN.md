@@ -103,6 +103,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## 长期记忆：可查看、可管理、与会话压缩解耦
+
+- 原有 `memory.py` 的全局 `MEMORY.md` 和 `groups.py` 中按机器人隔离的 `MEMORY.md` 都位于 session JSONL 之外，`compact.py` 只处理消息数组，不会写入长期记忆。Agent 每次构造系统提示词时加载相应记忆文件的**最后 40 行**，因此持久文件本身不等于模型能同时回忆所有内容。
+- 新增 `memory_browser.py`：严格按既有文件路径读取 UTF-8 完整内容，支持带 SHA-256 修订号的 CAS 保存、同目录临时文件与原子替换、64 KiB 容量限制及已有符号链接防护，文件冲突失败关闭。使用 `MEMORY_LOCK` 与同一 Python 进程中 `append_memory` 串行化。
+- Web UI 新增受原有访问 token 保护的 `GET /api/memory/scopes`、`GET /api/memory?scope=...`、`POST /api/memory`，只允许全局记忆和通过 `GroupStore.get` 证实存在的机器人。群 ID 与机器人 ID 不作为任意文件路径，拒绝符号链接穿透及跨机器人越界访问。
+- `webui_page.py` 加入独立的编辑对话框，选择记忆所属、载入完整 Markdown、刷新和明确保存；版本冲突提示用户先手工合并，关闭/切换未保存内容时警告。所有记忆正文通过 `textarea.value` 输出，不插入 HTML。
+- 已知限制：单进程锁与 SHA-256 校验不构成多进程原子 compare-and-swap；文件系统竞争时仍有 TOCTOU 风险；目前没有记忆条目语义索引、自动去重、记忆摘要层次或跨机器人授权共享。
+
 ## 多 Agent 群聊架构（可运行 MVP）
 
 - `angel/groups.py`（Python）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
