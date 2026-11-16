@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：Token 用量与剩余上下文（PR）
+
+- 新增 `tests/test_usage.py`，验证真实 API usage 累计、缺失或畸形数据不产生伪值、模型上下文上限仅在明确配置时生效。
+- 覆盖 Agent 用量事件、CLI `/status`、一次性任务 stdout/stderr 分离，以及 Web UI 会话状态与展示标记。
+- 使用模拟模型返回，不实际消耗 API Token；需要等待本 PR 在 Linux 3.10/3.12 和 Windows 3.12 全部通过后再合并。
+
+
 ## 未发布：多机器人群聊与独立 Agent 验证
 
 - `tests/test_group_chat.py`：成员独立 system 身份、会话文件与 workspace、私有记忆、不同模型、@mention 路由、持久化、创建校验和讨论上限。
