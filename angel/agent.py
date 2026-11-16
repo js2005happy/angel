@@ -58,6 +58,52 @@ MAX_DELEGATE_CALLS = 8
 MAX_DELEGATE_TURNS = 12
 
 
+def recover_interrupted_tool_calls(messages: list[dict]) -> tuple[list[dict], bool]:
+    """Close dangling tool-call groups without replaying possibly completed work."""
+    recovered: list[dict] = []
+    changed = False
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        recovered.append(message)
+        calls = (
+            message.get("tool_calls")
+            if isinstance(message, dict) and message.get("role") == "assistant"
+            else None
+        )
+        if not isinstance(calls, list):
+            index += 1
+            continue
+        call_ids = list(dict.fromkeys(
+            call.get("id") for call in calls
+            if isinstance(call, dict) and isinstance(call.get("id"), str) and call.get("id")
+        ))
+        index += 1
+        recorded: set[str] = set()
+        while index < len(messages):
+            following = messages[index]
+            if not isinstance(following, dict) or following.get("role") != "tool":
+                break
+            recovered.append(following)
+            call_id = following.get("tool_call_id")
+            if isinstance(call_id, str):
+                recorded.add(call_id)
+            index += 1
+        for call_id in call_ids:
+            if call_id in recorded:
+                continue
+            recovered.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": (
+                    "错误：执行状态未知。Angel 在工具执行过程中中断，无法确认操作是否完成；"
+                    "本次工具调用未自动重放。恢复时先检查当前状态和证据，再决定是否重试。"
+                ),
+            })
+            changed = True
+    return recovered, changed
+
+
 @dataclass
 class _DelegationBudget:
     remaining: int = MAX_DELEGATE_CALLS
@@ -486,12 +532,16 @@ class Agent:
             self._delegate_budget.reset()
             if self.checkpoints is not None:
                 self.checkpoints.begin_turn()
+        self.messages, _ = recover_interrupted_tool_calls(self.messages)
         system = self.build_system_prompt(task)
         messages: list[dict] = (
             [{"role": "system", "content": system}]
             + self.messages
             + [{"role": "user", "content": task}]
         )
+        # Persist the user's task before making a potentially long API request.
+        # This gives --resume and the web UI a durable recovery point.
+        save_session(self.session_id, messages[1:])
 
         attempted_auto_compact = False
         for _ in range(self.max_turns):
@@ -520,14 +570,19 @@ class Agent:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
 
+            if tool_calls:
+                # Record the full tool-call group before executing any member;
+                # recovery can then mark missing results as uncertain.
+                save_session(self.session_id, messages[1:])
+
             if tool_calls and assistant_msg["content"]:
                 self._emit("assistant", {"content": assistant_msg["content"]})
 
             if not tool_calls:
                 final = msg.get("content") or ""
-                self._emit("final", {"content": final})
                 self.messages = messages[1:]
                 save_session(self.session_id, self.messages)
+                self._emit("final", {"content": final})
                 self._trace_outcome = "completed"
                 return final
 
@@ -635,6 +690,9 @@ class Agent:
                         "content": result,
                     }
                 )
+                # Persist each tool result immediately so a later failing or
+                # interrupted call cannot discard already-finished steps.
+                save_session(self.session_id, messages[1:])
 
             save_session(self.session_id, messages[1:])
 

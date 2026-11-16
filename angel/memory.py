@@ -2,8 +2,10 @@
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import secrets
+import tempfile
 import threading
 
 from .config import ANGEL_HOME
@@ -73,14 +75,21 @@ def new_session_id() -> str:
 
 
 def save_session(session_id: str, messages: list[dict]) -> Path:
-    """Write messages as UTF-8 JSON Lines and return the session path."""
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    """Atomically write private UTF-8 JSON Lines and return the session path."""
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = SESSIONS_DIR / f"{session_id}.jsonl"
-
-    with path.open("w", encoding="utf-8") as handle:
-        for message in messages:
-            handle.write(json.dumps(message, ensure_ascii=False) + "\n")
-
+    fd, temporary = tempfile.mkstemp(prefix=".session-", suffix=".tmp", dir=SESSIONS_DIR)
+    try:
+        os.chmod(temporary, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for message in messages:
+                handle.write(json.dumps(message, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return path
 
 

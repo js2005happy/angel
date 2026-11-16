@@ -73,6 +73,8 @@ main{display:grid;grid-template-rows:1fr auto;min-height:0;min-width:0}
 .yes,.no{border-radius:8px;padding:6px 14px;font-weight:600;cursor:pointer;border:1px solid}
 .yes{background:var(--ok);border-color:var(--ok);color:#fff}.no{background:var(--surface);border-color:var(--bad);color:var(--bad)}
 .err-line{max-width:760px;margin:0 auto 12px;color:var(--bad);font-size:13px;padding-left:36px}
+.recovery{max-width:760px;margin:0 auto 14px;border:1px solid var(--accent);border-radius:12px;background:rgba(234,196,95,.12);padding:12px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.recovery p{margin:0;flex:1;min-width:220px;font-size:13px}
 .composer{border-top:1px solid var(--line);padding:12px clamp(14px,4vw,48px) 14px;background:var(--bg)}
 .box{max-width:760px;margin:0 auto;display:flex;gap:8px;align-items:flex-end;border:1px solid var(--line);background:var(--surface);border-radius:14px;padding:8px}
 .box:focus-within{border-color:var(--accent)}
@@ -223,6 +225,16 @@ function renderTranscript(messages){var log=$("log");log.innerHTML="";
     else if(m.role==="assistant"){if(m.content)addMsg("assistant",m.content);(m.tool_calls||[]).forEach(function(tc){var f=tc.function||{};toolCard(tc.id,f.name,f.arguments)})}
     else if(m.role==="tool"){setResult(findCard(m.tool_call_id),m.content||"")}
   });}
+function markUncertainTools(){document.querySelectorAll(".tool").forEach(function(card){var st=card.querySelector(".st");if(!st||!st.classList.contains("wait"))return;
+  st.className="st err";st.textContent="中断 · 结果未知";card.querySelector(".rl").hidden=false;var re=card.querySelector(".re");re.hidden=false;
+  re.textContent="任务中断前没有保存该工具的结果，无法确认操作是否完成。恢复时先检查当前状态和证据。"})}
+function renderRecovery(v){var old=$("log").querySelector(".recovery");if(old)old.remove();if(!v.resume_available)return;
+  var box=el("div","recovery"),p=el("p"),button=el("button","ibtn");p.textContent="上次任务没有正常结束。Angel 已保存最近的会话和工具结果；不确定的调用不会自动重放。继续前先检查当前状态。";
+  button.type="button";button.textContent="检查状态并继续";button.onclick=function(){button.disabled=true;
+    api("/api/sessions/"+encodeURIComponent(state.sid)+"/resume",{method:"POST",body:"{}"}).then(function(r){
+      if(r.status!=="running")throw new Error(r.error||"未能恢复任务");state.status="running";state.next=0;setBusy(true);box.remove();poll();
+    }).catch(function(e){button.disabled=false;p.textContent="恢复失败："+e.message})};
+  box.appendChild(p);box.appendChild(button);$("log").prepend(box)}
 function applyEvent(ev){var d=ev.data||{};
   if(ev.type==="user")addMsg("user",d.content);
   else if(ev.type==="assistant"||ev.type==="final"){if(d.content)addMsg("assistant",d.content)}
@@ -255,19 +267,19 @@ function renderUsage(u,count){var box=$("usage-kv"),hint=$("usage-hint");box.inn
   rows.forEach(function(r){box.appendChild(el("span")).textContent=r[0];box.appendChild(el("span")).textContent=r[1]});
   hint.textContent=(u.missing_calls?u.missing_calls+" 次 API 响应未报告用量；累计值不完整。":"仅统计模型报告的 token。")+(u.context_remaining_tokens==null?" 无法确认上下文剩余。":" 余量按最近请求的输入 tokens 估算，不含输出和下一轮输入。")+" 自动压缩次数："+count+"（需要显式启用）。"}
 function renderSide(v){renderUsage(v.usage,v.auto_compact_count||0);var p=$("plan");
-  if(v.plan){p.innerHTML="";var t=el("div",null);t.innerHTML="<b></b> <span class='st "+(v.plan.state==="running"?"wait":"ok")+"'>"+(v.plan.state==="running"?"进行中":"已结束")+"</span>";t.querySelector("b").textContent=v.plan.title;p.appendChild(t);var ol=el("ol");v.plan.steps.forEach(function(s){var li=el("li");li.textContent=s;ol.appendChild(li)});p.appendChild(ol)}
+  if(v.plan){p.innerHTML="";var t=el("div",null);var interrupted=v.plan.state==="interrupted";t.innerHTML="<b></b> <span class='st "+(v.plan.state==="running"?"wait":interrupted?"err":"ok")+"'>"+(v.plan.state==="running"?"进行中":interrupted?"已中断":"已结束")+"</span>";t.querySelector("b").textContent=v.plan.title;p.appendChild(t);var ol=el("ol");v.plan.steps.forEach(function(s){var li=el("li");li.textContent=s;ol.appendChild(li)});p.appendChild(ol)}
   else p.innerHTML='<div class="empty">这个会话还没有调用 plan。</div>';
   var e=$("evidence");if(!v.evidence.length){e.innerHTML='<div class="empty">联网抓取的页面原文会作为证据列在这里。</div>';return}
   e.innerHTML="";v.evidence.forEach(function(x){var a=el("div","ev");var safe=/^https?:\/\//.test(x.source);a.innerHTML=(safe?'<a target="_blank" rel="noopener noreferrer"></a>':'<span></span>')+"<small></small>";var l=a.firstChild;l.textContent=x.query?("搜索："+x.query):x.source;if(safe)l.href=x.source;a.querySelector("small").textContent=[x.kind,x.time,x.file].filter(Boolean).join(" · ");e.appendChild(a)})}
 function setBusy(b){$("send").disabled=b;$("send").textContent=b?"执行中…":"发送";var dot=$("prov").querySelector(".dot");if(b)dot.className="dot run";else dot.className="dot "+(state.info&&state.info.credentials?"on":"off")}
 function loadSession(sid,keepLive){state.sid=sid;state.next=0;state.live=[];
   document.querySelectorAll(".sess").forEach(function(b){b.classList.toggle("active",b.dataset.id===sid)});
-  return api("/api/sessions/"+encodeURIComponent(sid)).then(function(v){renderTranscript(v.messages);v.events.forEach(applyEvent);state.next=v.next;renderSide(v);
+  return api("/api/sessions/"+encodeURIComponent(sid)).then(function(v){renderTranscript(v.messages);if(v.resume_available)markUncertainTools();renderRecovery(v);v.events.forEach(applyEvent);state.next=v.next;renderSide(v);
     if(v.status==="error"&&v.error)$("log").appendChild(el("div","err-line","")).textContent="错误："+v.error;
     state.status=v.status;setBusy(v.status==="running");if(v.status==="running")poll();scrollEnd()})}
 function poll(){clearTimeout(state.timer);state.timer=setTimeout(function(){if(!state.sid)return;var sid=state.sid;
   api("/api/sessions/"+encodeURIComponent(sid)+"?since="+state.next).then(function(v){if(sid!==state.sid)return;
-    v.events.forEach(applyEvent);if(v.events.length)scrollEnd();state.next=v.next;renderSide(v);
+    v.events.forEach(applyEvent);if(v.resume_available)markUncertainTools();renderRecovery(v);if(v.events.length)scrollEnd();state.next=v.next;renderSide(v);
     if(v.status==="running")poll();else{loadSession(sid);loadSessions()}}).catch(function(){poll()})},600)}
 function loadSessions(){return api("/api/sessions").then(function(r){var box=$("sessions");box.innerHTML="";
   if(!r.sessions.length){box.innerHTML='<div class="empty">还没有会话。</div>';return}

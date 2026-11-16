@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -35,7 +36,7 @@ from . import memory as memory_module
 from .memory_browser import (
     MemoryBrowserError, MemoryConflict, inspect_memory, replace_memory,
 )
-from .agent import Agent, AgentError
+from .agent import Agent, AgentError, recover_interrupted_tool_calls
 from .groups import GroupStore, GroupError
 from .config import (
     PROVIDERS,
@@ -87,6 +88,8 @@ class Run:
         # Transcript as it was when the current task started; the live part
         # of a running task is delivered as events instead.
         self.base_messages: list[dict] = []
+        self.task = ""
+        self.started_at = 0.0
         self.lock = threading.Lock()
         self.thread: threading.Thread | None = None
 
@@ -303,12 +306,17 @@ class UIState:
         run = self.get_run(session_id, create=False)
         if run is not None and run.status == "running":
             return list(run.base_messages)
+        if run is not None and run.status == "error":
+            return memory_module.load_session(session_id) or (
+                list(run.agent.messages) if run.agent is not None else []
+            )
         if run is not None and run.agent is not None:
             return list(run.agent.messages)
         return memory_module.load_session(session_id) or []
 
     def session_view(self, session_id: str, since: int = 0) -> dict:
         run = self.get_run(session_id, create=False)
+        saved_state = self._load_run_state(session_id)
         messages = self.session_messages(session_id)
         events: list[dict] = []
         status = "idle"
@@ -323,6 +331,19 @@ class UIState:
                 total = len(run.events)
         else:
             total = 0
+        if status == "idle" and saved_state is not None:
+            if saved_state["status"] == "running":
+                status = "interrupted"
+                error = "Angel 上次关闭时任务仍在运行；请检查状态后再继续。"
+            elif saved_state["status"] == "error":
+                status = "error"
+                error = str(saved_state.get("error") or "上次任务未正常完成。")
+        resume_available = (
+            status in {"interrupted", "error"}
+            and saved_state is not None
+            and saved_state.get("status") in {"running", "error"}
+            and (run is None or run.status != "running")
+        )
         if pending:
             pending.pop("event", None)
             pending.pop("decision", None)
@@ -330,6 +351,7 @@ class UIState:
             "id": session_id,
             "status": status,
             "error": error,
+            "resume_available": resume_available,
             "messages": messages,
             "events": events,
             "next": total,
@@ -353,10 +375,23 @@ class UIState:
                 raise RuntimeError("这个会话正在执行任务，请等它完成")
             run.events = []
             run.error = ""
+            run.task = text
+            run.started_at = time.time()
             run.status = "running"
+        try:
+            self._save_run_state(run)
+        except OSError as exc:
+            with run.lock:
+                run.status = "error"
+                run.error = f"无法保存任务恢复点：{type(exc).__name__}"
+            return run
         try:
             if run.agent is None:
                 provider = self.provider()
+                messages = memory_module.load_session(session_id) or []
+                messages, changed = recover_interrupted_tool_calls(messages)
+                if changed:
+                    memory_module.save_session(session_id, messages)
                 run.agent = Agent(
                     provider=provider,
                     workdir=self.workdir,
@@ -364,7 +399,7 @@ class UIState:
                     max_turns=self.max_turns or 20,
                     session_id=session_id,
                     interactive=True,
-                    messages=memory_module.load_session(session_id),
+                    messages=messages,
                     mcp_manager=self.mcp_manager,
                     on_event=lambda kind, data: self._record(run, kind, data),
                     approve_fn=lambda tool, summary: self._approve(run, tool, summary),
@@ -381,6 +416,10 @@ class UIState:
             with run.lock:
                 run.status = "error"
                 run.error = f"无法启动：{exc}"
+            try:
+                self._save_run_state(run)
+            except OSError:
+                pass
             return run
         self._record(run, "user", {"content": text})
         thread = threading.Thread(
@@ -407,6 +446,92 @@ class UIState:
             with run.lock:
                 run.status = "error"
                 run.error = f"{type(exc).__name__}: {exc}"
+        try:
+            self._save_run_state(run)
+        except OSError as exc:
+            with run.lock:
+                suffix = f"无法保存任务最终状态：{type(exc).__name__}"
+                run.error = f"{run.error}\n{suffix}" if run.error else suffix
+
+    def _run_state_path(self, session_id: str) -> Path:
+        if not SESSION_ID_RE.fullmatch(session_id):
+            raise ValueError("会话 id 无效")
+        return config_module.ANGEL_HOME / "runs" / f"{session_id}.json"
+
+    def _save_run_state(self, run: Run) -> None:
+        with run.lock:
+            state = {
+                "version": 1,
+                "session_id": run.session_id,
+                "status": run.status,
+                "task": run.task,
+                "error": run.error,
+                "started_at": run.started_at,
+                "updated_at": time.time(),
+            }
+            directory = config_module.ANGEL_HOME / "runs"
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path = self._run_state_path(run.session_id)
+            fd, temporary = tempfile.mkstemp(prefix=".run-", suffix=".tmp", dir=directory)
+            try:
+                os.chmod(temporary, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(state, handle, ensure_ascii=False)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+
+    def _load_run_state(self, session_id: str) -> dict | None:
+        try:
+            path = self._run_state_path(session_id)
+            if path.is_symlink() or path.stat().st_size > MAX_BODY * 2:
+                return None
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(state, dict)
+            or state.get("version") != 1
+            or state.get("session_id") != session_id
+            or state.get("status") not in {"running", "done", "error"}
+        ):
+            return None
+        return state
+
+    def resume(self, session_id: str) -> Run:
+        """Explicitly continue a failed/interrupted task from saved messages."""
+        if not SESSION_ID_RE.fullmatch(session_id):
+            raise RuntimeError("会话 id 无效")
+        current = self.get_run(session_id, create=False)
+        if current is not None and current.status in {"running", "done"}:
+            raise RuntimeError("当前会话没有可恢复的中断任务")
+        state = self._load_run_state(session_id)
+        if state is None or state.get("status") not in {"running", "error"}:
+            raise RuntimeError("没有可恢复的任务检查点")
+        task = state.get("task") if isinstance(state.get("task"), str) else ""
+        messages = memory_module.load_session(session_id) or []
+        messages, changed = recover_interrupted_tool_calls(messages)
+        if changed:
+            try:
+                memory_module.save_session(session_id, messages)
+            except OSError as exc:
+                raise RuntimeError("无法保存中断工具的恢复记录") from exc
+        last_user = next(
+            (item.get("content") for item in reversed(messages)
+             if isinstance(item, dict) and item.get("role") == "user"),
+            None,
+        )
+        prompt = (
+            "请继续完成上次被中断的任务。所有没有保存工具结果的调用状态都不确定；"
+            "先检查当前文件、服务状态和已有证据，再决定下一步。没有验证的结果不得宣称完成。"
+        )
+        if task and last_user != task:
+            prompt += "\n\n原任务内容：\n" + task
+        return self.send(session_id, prompt)
 
     def _record(self, run: Run, kind: str, data: dict) -> None:
         clean = {}
@@ -511,7 +636,10 @@ def find_plan(messages: list[dict], events: list[dict], status: str) -> dict | N
             return {
                 "title": str(args.get("title") or ""),
                 "steps": [str(step) for step in args["steps"]],
-                "state": "running" if status == "running" else "finished",
+                "state": (
+                    "running" if status == "running" else
+                    "interrupted" if status in {"interrupted", "error"} else "finished"
+                ),
             }
     return None
 
@@ -712,6 +840,19 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 return self._error(HTTPStatus.CONFLICT, str(exc))
             return self._json(HTTPStatus.OK, {"mode": mode})
+        match = re.fullmatch(r"/api/sessions/([^/]+)/resume", path)
+        if match:
+            sid = urllib.parse.unquote(match.group(1))
+            if not SESSION_ID_RE.match(sid):
+                return self._error(HTTPStatus.BAD_REQUEST, "会话 id 无效")
+            try:
+                run = self.state.resume(sid)
+            except RuntimeError as exc:
+                return self._error(HTTPStatus.CONFLICT, str(exc))
+            return self._json(
+                HTTPStatus.ACCEPTED,
+                {"id": sid, "status": run.status, "error": run.error},
+            )
         match = re.fullmatch(r"/api/sessions/([^/]+)/messages", path)
         if match:
             sid = urllib.parse.unquote(match.group(1))
