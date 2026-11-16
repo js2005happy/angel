@@ -293,6 +293,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="已确认的模型上下文窗口 token 上限（未知时不估算）",
     )
     parser.add_argument(
+        "--json", dest="json_mode", action="store_true",
+        help="单次非交互任务输出 JSON Lines（机器可读事件 + 稳定退出码）",
+    )
+    parser.add_argument(
         "--auto-compact", action="store_true",
         help="达到配置的上下文阈值时自动压缩（需要设置 --context-window，可能增加模型费用）",
     )
@@ -359,7 +363,24 @@ def main(argv: list[str] | None = None) -> int:
         return ui_main(raw[1:])
 
     parser = build_parser()
-    args = parser.parse_args(argv)
+    if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):
+        try:
+            args = parser.parse_args(raw)
+        except SystemExit as exc:
+            # argparse uses exit code 2 for invalid flags/values. Emit JSONL
+            # too, so CI consumers never receive malformed stdout on errors.
+            if exc.code == 0:
+                return 0
+            from .json_mode import invalid_arguments
+
+            return invalid_arguments(sys.stdout)
+    else:
+        args = parser.parse_args(raw)
+
+    if args.json_mode:
+        from .json_mode import run_json
+
+        return run_json(args)
 
     try:
         sandbox_settings = resolve_sandbox(
