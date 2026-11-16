@@ -10,6 +10,7 @@ import re
 MAX_PATCH_CHARS = 64000
 MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024
 MAX_PREVIEW_CHARS = 6000
+MAX_PREVIEW_INPUT_BYTES = 128 * 1024
 
 HUNK_HEADER = re.compile(
     r"^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@(?: .*)?$"
@@ -145,6 +146,8 @@ def unified_preview(
     """Bounded, escaped-by-the-caller diff of exact bytes for a human reviewer."""
     if before == after:
         return "（内容未改变）"
+    if max(len(before or b""), len(after or b"")) > MAX_PREVIEW_INPUT_BYTES:
+        return "（文件超过 128 KiB，diff 预览不可用；请单独检查完整文件后再审批）"
     try:
         old_text = before.decode("utf-8") if before is not None else ""
         new_text = after.decode("utf-8") if after is not None else ""
