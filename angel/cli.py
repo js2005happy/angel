@@ -423,7 +423,8 @@ def main(argv: list[str] | None = None) -> int:
             print("错误：--inspect-poppy-identity 是独立的只读诊断命令", file=sys.stderr)
             return 2
         import json
-        from .poppy_identity import IdentityError, inspect_poppy_identity
+        from .poppy_identity import inspect_poppy_identity
+        from .poppy import PoppyError
         try:
             result = inspect_poppy_identity(args.inspect_poppy_identity)
         except (IdentityError, OSError) as exc:
