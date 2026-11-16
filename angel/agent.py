@@ -10,7 +10,7 @@ from typing import Callable
 from .config import ANGEL_HOME, load_config
 from .providers import Provider, ProviderError
 from .tools import (
-    TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA,
+    TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
     ToolContext, ToolError, _check_approval, execute_tool,
 )
 from .skills import Skill, load_skills, match_skills, render_skill
@@ -166,7 +166,9 @@ class Agent:
             if self.backend is None or schema["function"]["name"] != "apply_patch"
         ]
         if self.poppy_enabled:
-            schemas.extend((POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA))
+            schemas.extend((
+                POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
+            ))
         if self.mcp_manager is not None and self.mcp_manager.has_tools():
             schemas.extend(self.mcp_manager.tool_schemas)
         return schemas
