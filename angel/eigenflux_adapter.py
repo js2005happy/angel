@@ -60,7 +60,17 @@ def home_for_agent(
             for item in group.get("bots", [])
         ):
             raise EigenFluxAdapterError("该群中没有指定机器人")
-        target = root / "eigenflux" / "agents" / "rooms" / room / "bots" / bot / ".eigenflux"
+        # New rooms have a random incarnation marker. Re-creating a deleted
+        # room with the same user-facing id cannot reuse an old Agent key.
+        # Legacy rooms without the marker keep their existing Home path.
+        instance = group.get("instance_id")
+        if instance is not None:
+            if not isinstance(instance, str) or not re.fullmatch(r"[0-9a-f]{32}", instance):
+                raise EigenFluxAdapterError("群实例标记无效，拒绝访问网络身份")
+            target = (root / "eigenflux" / "agents" / "rooms" / room /
+                      "instances" / instance / "bots" / bot / ".eigenflux")
+        else:
+            target = root / "eigenflux" / "agents" / "rooms" / room / "bots" / bot / ".eigenflux"
     else:
         target = root / "eigenflux" / "agents" / "main" / ".eigenflux"
 
@@ -167,23 +177,70 @@ def doctor(*, root: Path | None = None,
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="angel eigenflux",
-        description="EigenFlux bare-CLI 本地适配准备：不会安装、注册、广播或开启定时任务",
+        description=(
+            "EigenFlux 本地适配：不负责安装、认证、外发或自动计划任务；"
+            "网络权限还需独立的 ef-onboarding 前台授权"
+        ),
     )
-    parser.add_argument(
-        "action", choices=("doctor",),
-        help="输出当前 Agent 身份的独立 Home 和安装就绪检查结果",
+    commands = parser.add_subparsers(dest="action", required=True)
+    doc = commands.add_parser("doctor", help="仅做本地准备与可选 CLI 诊断")
+    policy = commands.add_parser(
+        "policy", help="管理每个 Angel 机器人的本地网络行为上限（非官方授权）"
     )
-    parser.add_argument("--room", help="已经创建的 Angel 群聊 ID")
-    parser.add_argument("--bot", help="该群里的机器人 ID")
-    parser.add_argument(
+    for sub in (doc, policy):
+        sub.add_argument("--room", help="已存在的群 ID；不填则选主 Agent")
+        sub.add_argument("--bot", help="群中的机器人 ID；必须与 --room 一同出现")
+    doc.add_argument(
         "--check", action="store_true",
-        help="明确运行 eigenflux --homedir HOME version / skills path --host terminal",
+        help="只执行 eigenflux --homedir HOME version 和 skills path --host terminal",
     )
+    policy.add_argument(
+        "operation", choices=("show", "allow", "deny", "audit"),
+        help="查看、记录本地限制意向、撤销或查询审计历史",
+    )
+    policy.add_argument(
+        "--capability", choices=(
+            "feed_read", "public_broadcast", "direct_message",
+            "relationship_request", "recurring_check", "profile_prefill",
+        ),
+        help="需要本地选择的精确网络行为；只用于 allow/deny",
+    )
+    policy.add_argument(
+        "--confirm", action="store_true",
+        help="用户明确确认记录一个本地 allow 意向；不代表 EigenFlux 官方授权",
+    )
+    policy.add_argument(
+        "--expect-revision", default=None,
+        help="可选乐观并发版本校验，防止过期权限修改",
+    )
+    policy.add_argument("--limit", type=int, default=30, help="最多显示的审计条数")
     args = parser.parse_args(argv)
     try:
-        result = doctor(room=args.room, bot=args.bot, check=args.check)
-    except (EigenFluxAdapterError, OSError) as exc:
-        print("EigenFlux 适配检查失败：" + str(exc), file=sys.stderr)
+        if args.action == "doctor":
+            result = doctor(room=args.room, bot=args.bot, check=args.check)
+            status = 0 if result["status"] in ("not_checked", "local_cli_verified") else 1
+        else:
+            from .eigenflux_policy import NetworkPolicy, NetworkPolicyError
+            gate = NetworkPolicy()
+            if args.operation in ("allow", "deny"):
+                if args.capability is None:
+                    raise EigenFluxAdapterError("allow/deny 需要 --capability")
+                result = gate.change(
+                    args.operation, args.capability, room=args.room,
+                    bot=args.bot, confirmed=args.confirm,
+                    expected_revision=args.expect_revision,
+                )
+            elif args.operation == "show":
+                if args.capability is not None or args.confirm:
+                    raise EigenFluxAdapterError("show 不接受 --capability 或 --confirm")
+                result = gate.show(room=args.room, bot=args.bot)
+            else:
+                if args.capability is not None or args.confirm:
+                    raise EigenFluxAdapterError("audit 不接受 --capability 或 --confirm")
+                result = gate.audit(room=args.room, bot=args.bot, limit=args.limit)
+            status = 0
+    except (EigenFluxAdapterError, OSError, ValueError) as exc:
+        print("EigenFlux 适配拒绝操作：" + str(exc), file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result["status"] in ("not_checked", "local_cli_verified") else 1
+    return status

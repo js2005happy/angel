@@ -255,7 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
             "子命令：angel schedule <list|add|remove|run|daemon> 管理定时任务；"
             "angel ui [--host 127.0.0.1] [--port 8765] [--open] 启动本地网页界面；"
             "angel permissions <list|check|grant|revoke|audit> 管理 Poppy 站点授权意向；"
-            "angel eigenflux doctor [--room ID --bot ID] [--check] EigenFlux 接入检测"
+            "angel eigenflux doctor [--room ID --bot ID] [--check] 接入检测；"
+            "angel eigenflux policy <show|allow|deny|audit> 管理逐机器人本地网络限制"
         ),
     )
     parser.add_argument(

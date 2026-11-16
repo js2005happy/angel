@@ -53,8 +53,11 @@ class EigenFluxHomeTests(_EigenFluxFixture, unittest.TestCase):
         )
         main = eigenflux.home_for_agent(root=self.root)
         self.assertEqual(len({first, second, third, main}), 4)
-        self.assertEqual(first, self.root /
-                         "eigenflux/agents/rooms/alpha/bots/lead/.eigenflux")
+        marker = self.groups.get("alpha")["instance_id"]
+        self.assertEqual(
+            first, self.root / "eigenflux/agents/rooms/alpha" /
+            "instances" / marker / "bots/lead/.eigenflux",
+        )
         self.assertFalse(any(x.exists() for x in (first, second, third, main)))
 
     def test_unknown_bot_room_and_partial_ids_fail_closed(self):

@@ -103,6 +103,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## EigenFlux 行为上限与群实例隔离（E2a）
+
+- `angel/eigenflux_policy.py` 新增按 `main` 或 `room:<id>/bot:<id>` 隔离的本地网络行为上限，固定六类行为，默认全部拒绝；`allow` 需要真实 CLI 用户显式 `--confirm`，`deny` 随时撤销。模型工具、外站消息、Skills 不能通过该模块写入记录。
+- 权限存储在 `~/.angel/eigenflux/network-policy.json` 中，与所有 EigenFlux Home 凭据目录隔离。最多 100 个 Agent、250 条审计事件、128 KiB 文件；进程内 RLock、同目录临时文件 + `os.replace`，基于原始文件 SHA-256 提供 `--expect-revision`，拒绝已损坏 JSON、目录和符号链接。审计不是防篡改日志，不保护跨进程写入竞争和有磁盘权限的攻击者。
+- `angel eigenflux policy show|allow|deny|audit` 直接通过 CLI 路由，不启动 Provider/MCP、外部 CLI、调度器或网络操作。预设 `feed_read`、`public_broadcast`、`direct_message`、`relationship_request`、`recurring_check`、`profile_prefill`；不支持通配授权。`local_intent=allowed` 是额外上限选择，不是 EigenFlux OAuth、账户认证、Consent 或 CLI 执行许可；返回的 `effective_network_permission` 始终 false，绝不宣称已入网。
+- 群聊新增 `instance_id=secrets.token_hex(16)`：相同群 ID 在删除重建后视作不同身份。新群 EigenFlux Home 路径含实例标记；原有群无此字段时保留之前的稳定目录。策略记录也绑定实例标记；旧实例的本地 allow 在重建后失效，deny 删除旧状态。不能让重名群继承前任机器人的身份私钥或广播许可。
+- 该本地上限的正确使用方式是**未来网络执行网关**在真实发起命令之前先读取它，同时进一步验证官方 `ef-onboarding` 的当前授权、身份凭据、用户明确操作意图及公开内容安全要求。当前没有网络执行网关，因此只提供管理接口，不承诺阻止用户在 Angel 外部直接运行 CLI。
+
 ## EigenFlux bare-CLI 适配准备：身份隔离与无副作用诊断
 
 - 采用官方 CLI 作为网络协议边界，不复刻 EigenFlux 的 Ed25519 身份认证，不使用私有协议伪造 Agent 入网状态。

@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import tempfile
 import threading
 from typing import Callable
@@ -184,6 +185,9 @@ class GroupStore:
                 "bots": [asdict(b) for b in members],
                 "messages": [],
                 "created_at": _stamp(),
+                # Stable, unguessable incarnation marker. Recreating a room
+                # with the same id must not inherit its old external policies.
+                "instance_id": secrets.token_hex(16),
             }
             _write_json(path, data)
             return data
