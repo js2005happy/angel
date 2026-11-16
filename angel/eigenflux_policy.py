@@ -58,7 +58,7 @@ def _resolve_identity(root: Path, room: str | None, bot: str | None):
     if room is None:
         return "main", "main-v1"
     group = GroupStore(root / "groups").get(room)
-    stamp = group.get("created_at")
+    stamp = group.get("instance_id", group.get("created_at"))
     if not isinstance(stamp, str) or not stamp or len(stamp) > 100:
         raise NetworkPolicyError("群聊缺少稳定的创建标记，不能继承旧权限")
     return f"room:{room}/bot:{bot}", stamp
@@ -222,17 +222,22 @@ class NetworkPolicy:
             data, revision = _read(self.path, self.root)
             if expected_revision is not None and expected_revision != revision:
                 raise NetworkPolicyConflict("策略已被其他任务修改，请重新查看后操作")
-            entry = data["agents"].get(identity)
+            stored_entry = data["agents"].get(identity)
             # A recreated room MUST NOT inherit an old group's permissions.
-            if entry is None or entry["instance"] != instance:
-                entry = {"instance": instance, "allowed": []}
+            stale = stored_entry is not None and stored_entry["instance"] != instance
+            entry = (
+                stored_entry if stored_entry is not None and not stale
+                else {"instance": instance, "allowed": []}
+            )
             allowed = set(entry["allowed"])
             was_allowed = cap in allowed
             if operation == "allow":
                 allowed.add(cap)
             else:
                 allowed.discard(cap)
-            changed = (cap in allowed) != was_allowed
+            changed = (cap in allowed) != was_allowed or (
+                stale and operation == "deny"
+            )
             if not changed:
                 return {"identity": identity, "capability": cap, "changed": False,
                         "revision": revision, "local_intent": (
