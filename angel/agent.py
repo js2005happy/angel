@@ -345,6 +345,7 @@ class Agent:
 
         self.messages = messages[1:]
         save_session(self.session_id, self.messages)
+        self._emit("max_turns", {"max_turns": self.max_turns})
         return "（已达到最大轮数，任务未完成，请拆分任务或提高 --max-turns 后重试）"
 
     def delegate(self, task: str, max_turns: int = 6) -> str:

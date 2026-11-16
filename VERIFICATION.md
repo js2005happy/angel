@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：非交互 JSONL 事件和固定退出码
+
+- tests/test_json_mode.py 用虚拟模型运行 CLI 真实执行路径：验证 schema_version、seq、事件顺序、单行 JSON、stdout/stderr 隔离、工具参数不泄漏、auto 模式下禁止无人值守写文件。
+- 模拟提供商失败、配置缺失和 argparse 错误时的 run_failed 事件、退出码 1/2；模拟达到 max_turns 时退出码 3，确认不会宣称 run_completed。
+- 无需外部 API Key，无真实网络费用；等待 Ubuntu Python 3.10/3.12、Windows Python 3.12 的 GitHub Actions 通过后再合并。
+
+
 ## 待验证：按实际用量触发的自动会话压缩
 
 - `tests/test_auto_compact.py` 覆盖阈值边界、未知窗口/缺失 usage、不合法配置、成功压缩、失败保留原文、长摘要不覆盖原文、当前用户请求及完整工具调用链保留、每次任务至多 1 次摘要、Web UI 状态。
