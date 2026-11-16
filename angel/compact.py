@@ -137,3 +137,34 @@ def compact_session_file(
     info["session_id"] = session_id
     info["path"] = str(path)
     return info
+
+
+DEFAULT_AUTO_COMPACT_THRESHOLD = 0.80
+MIN_AUTO_COMPACT_MESSAGES = 5
+
+
+def validate_auto_compact_threshold(value: float) -> float:
+    """Accept conservative fractions; reject accidental 80 or boolean values."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not 0.5 <= value <= 0.95
+    ):
+        raise ValueError("自动压缩阈值必须在 0.50 到 0.95 之间")
+    return float(value)
+
+
+def should_auto_compact(
+    usage: dict, message_count: int, threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD
+) -> bool:
+    """Trigger only with *reported* input tokens and an explicit context limit."""
+    validate_auto_compact_threshold(threshold)
+    last = usage.get("last_prompt_tokens")
+    window = usage.get("context_window_tokens")
+    if (
+        isinstance(last, bool) or not isinstance(last, int)
+        or isinstance(window, bool) or not isinstance(window, int)
+        or last < 0 or window <= 0 or message_count < MIN_AUTO_COMPACT_MESSAGES
+    ):
+        return False
+    return last / window >= threshold
