@@ -2,7 +2,7 @@
 
 ## 待验证：按实际用量触发的自动会话压缩
 
-- `tests/test_auto_compact.py` 覆盖阈值边界、未知窗口/缺失 usage、不合法配置、成功压缩、失败保留原文、长摘要不覆盖原文、每次任务至多 1 次摘要、Web UI 状态。
+- `tests/test_auto_compact.py` 覆盖阈值边界、未知窗口/缺失 usage、不合法配置、成功压缩、失败保留原文、长摘要不覆盖原文、当前用户请求及完整工具调用链保留、每次任务至多 1 次摘要、Web UI 状态。
 - 保留 `test_smoke.CompactTest` 的手动摘要及 fallback 行为；自动路径使用严格模式，不调用可能丢失历史的回退分支。
 - 模拟模型响应无需真实 API 费用。需以此 PR 的 GitHub Actions Ubuntu Python 3.10/3.12、Windows Python 3.12 验证为准，未经测试不合并。
 
