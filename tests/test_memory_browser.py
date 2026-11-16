@@ -108,6 +108,40 @@ class MemoryStorageTests(unittest.TestCase):
         if not __import__("os").name == "nt":
             self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
 
+    def test_auto_compact_does_not_change_persistent_memory(self):
+        class Provider:
+            def __init__(self):
+                self.calls = 0
+            def chat(self, messages, tools=None, timeout=120):
+                self.calls += 1
+                return {"choices": [{"message": {
+                    "role": "assistant",
+                    "content": "historical summary" if self.calls == 1 else "finished",
+                }}]}
+        self.path.write_text("- permanent cross-session agreement\n", encoding="utf-8")
+        original = self.path.read_bytes()
+        provider = Provider()
+        previous = [
+            {"role": "user" if i % 2 == 0 else "assistant",
+             "content": ("historical line %s " % i) * 100}
+            for i in range(6)
+        ]
+        with mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"), \
+             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"):
+            agent = Agent(provider, workdir=self.root, mode="readonly",
+                          memory_path=self.path, messages=previous,
+                          interactive=False, skills_dirs=[],
+                          auto_compact_enabled=True, context_window_tokens=1000)
+            agent.usage.record({"usage": {
+                "prompt_tokens": 850, "completion_tokens": 20,
+                "total_tokens": 870,
+            }})
+            self.assertEqual(agent.run("continue"), "finished")
+            self.assertEqual(agent.auto_compact_count, 1)
+            self.assertEqual(self.path.read_bytes(), original)
+            self.assertIn("permanent cross-session agreement",
+                          agent.build_system_prompt("another task"))
+
     def test_manual_compact_does_not_touch_global_memory(self):
         from angel.memory import load_memory_summary
         class Provider:
@@ -118,7 +152,8 @@ class MemoryStorageTests(unittest.TestCase):
         self.path.write_text("- [2026-11-16] important permanent memory\n",
                              encoding="utf-8")
         original = self.path.read_bytes()
-        with mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"):
+        with mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"), \
+             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"):
             agent = Agent(
                 Provider(), workdir=self.root, mode="readonly",
                 memory_path=self.path, messages=[
