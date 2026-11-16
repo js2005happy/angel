@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "provider-fallback-config",
+      "task": "检查 provider 配置片段，准确说明主模型、备用模型的顺序，以及最多允许配置几个备用项。不要把未配置的模型说成已启用。",
+      "files": {
+        "config.json": "{\n  \"provider\": \"deepseek\",\n  \"model\": \"deepseek-flash\",\n  \"fallback_providers\": [\n    {\"provider\": \"xai\", \"model\": \"grok-4.3\"},\n    {\"provider\": \"ollama\", \"model\": \"qwen2.5:7b\"}\n  ]\n}\n",
+        "provider-policy.md": "Angel 的 fallback_providers 是按顺序尝试的显式备用链。当前链的顺序为 xAI Grok，然后本机 Ollama。备用项最多 3 个。"
+      },
+      "checks": [
+        {"type": "answer_contains", "value": "deepseek-flash"},
+        {"type": "answer_contains", "value": "grok-4.3"},
+        {"type": "answer_contains", "value": "qwen2.5:7b"},
+        {"type": "answer_contains", "value": "3"}
+      ]
+    },
+    {
+      "id": "fallback-trace-diagnosis",
+      "task": "分析这次调用轨迹：说明主模型失败原因、最终使用的模型，以及任务最终是否成功。只依据记录作答。",
+      "files": {
+        "trace.json": "{\n  \"trace_id\": \"t-019\",\n  \"spans\": [\n    {\"kind\": \"model\", \"provider\": \"deepseek\", \"model\": \"deepseek-flash\", \"status\": \"error\", \"status_code\": 429, \"failure_reason\": \"rate_limit\"},\n    {\"kind\": \"provider_fallback\", \"from_model\": \"deepseek-flash\", \"to_model\": \"grok-4.5\", \"failed\": [{\"status_code\": 429}]},\n    {\"kind\": \"model\", \"provider\": \"xai\", \"model\": \"grok-4.5\", \"status\": \"ok\", \"usage\": {\"prompt_tokens\": 1200, \"completion_tokens\": 180}},\n    {\"kind\": \"agent\", \"status\": \"completed\"}\n  ]\n}\n"
+      },
+      "checks": [
+        {"type": "answer_contains", "value": "429"},
+        {"type": "answer_contains", "value": "grok-4.5"},
+        {"type": "answer_contains", "value": "completed"}
+      ]
+    },
+    {
+      "id": "semantic-search-data-boundary",
+      "task": "根据设计记录说明：embedding 由哪里生成、向量存在哪里、检索是否近似，以及文档片段可能发往哪里。",
+      "files": {
+        "knowledge-design.md": "# 本地知识检索\n\n- 用户手动为当前项目的 Markdown、纯文本和 reStructuredText 建立索引。\n- Ollama 的 embedding API 固定使用本机 loopback：`http://localhost:11434/api/embed`。\n- SQLite 保存归一化 float32 向量，查询执行精确余弦扫描，不使用 ANN 索引。\n- 检索命中的文档片段会进入当前 Agent 对话；如果聊天模型托管在云端，片段会随对话发送给该云端模型。\n"
+      },
+      "checks": [
+        {"type": "answer_contains", "value": "Ollama"},
+        {"type": "answer_contains", "value": "SQLite"},
+        {"type": "answer_contains", "value": "精确"},
+        {"type": "answer_contains", "value": "云端"}
+      ]
+    },
+    {
+      "id": "group-concurrency-cost",
+      "task": "阅读群聊运行记录，报告群成员上限、并发上限，并判断并行模式是否减少模型调用或费用。",
+      "files": {
+        "group-runtime.md": "# 群聊运行参数\n\n- 一个讨论组允许 2 到 8 个机器人。\n- 用户启用并行后，每轮最多 4 个机器人同时请求模型。\n- 同一轮使用开始时的对话快照，所有结果保存后才进入下一轮。\n- 并行只减少网络等待时间，不减少模型调用数量，也不减少费用。\n"
+      },
+      "checks": [
+        {"type": "answer_contains", "value": "8"},
+        {"type": "answer_contains", "value": "4"},
+        {"type": "answer_contains", "value": "不减少"},
+        {"type": "answer_contains", "value": "费用"}
+      ]
+    },
+    {
+      "id": "interrupted-task-recovery",
+      "task": "说明恢复这个中断任务时，Angel 如何处理没有结果的工具调用、用户要做什么，以及恢复后如何确认副作用。",
+      "files": {
+        "recovery-policy.md": "# 中断任务恢复\n\n- 网页任务和会话消息会写入本地私有状态文件。\n- 服务重启后只标记为中断，用户必须主动点击“检查状态并继续”。\n- 缺少结果的工具调用会写入 `status=unknown` 占位结果，绝不自动重放，因为外部副作用可能已经发生。\n- 继续时 Agent 应重新读取当前文件、服务状态和可用证据；Angel 不保证 exactly-once，也不把模型自述当成独立验收。\n"
+      },
+      "checks": [
+        {"type": "answer_contains", "value": "不自动重放"},
+        {"type": "answer_contains", "value": "用户"},
+        {"type": "answer_contains", "value": "检查"},
+        {"type": "answer_contains", "value": "证据"}
+      ]
+    }
+  ]
+}

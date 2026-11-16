@@ -1,5 +1,11 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：真实任务评估集 MVP（开发分支）
+
+- `angel eval list` 仅读取有界 JSON manifest；`angel eval run` 在每个临时工作区使用 readonly Agent，开放 `list_dir`、`read_file` 并在执行边界复核，禁用联网、MCP、委派、搜索、写入、用户技能和全局记忆。
+- 五项任务以可审阅的字符串包含判据计算成功率；报告模型请求、兜底后的 Provider 尝试、工具步数、耗时及实际 API Token。用户必须显式提供输入/输出单价；触发跨模型兜底、Token 或 Provider 尝试记录不完整时成本显示未知。
+- 本轮未运行单元测试、CI 或真实模型评估。仍需验证恶意/畸形 manifest、进程中断清理、Linux/macOS/Windows 行为及报告文件权限；默认数据集是首版工作流覆盖，lexical judge 不能等同于独立质量验收，必须重复真实运行才能形成基线。
+
 ## 待验证：网页长任务恢复 MVP（开发分支）
 
 - 新任务状态写入 `~/.angel/runs/` 私有 JSON；会话 JSONL 在请求前、工具调用前和各工具结果后以原子快照保存。

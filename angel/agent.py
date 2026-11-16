@@ -146,7 +146,7 @@ shell 命令保持简单、安全，不执行破坏性命令。
 
 MODE_NOTES = {
     "readonly": "当前为只读模式：你只能读取文件、联网查询，不能写入文件或执行命令；外部 MCP 工具也不可调用。",
-    "auto": "当前为自动确认模式：写入文件、执行命令或调用外部 MCP 工具前，系统会请用户确认。", 
+    "auto": "当前为自动确认模式：写入文件、执行命令或调用外部 MCP 工具前，系统会请用户确认。",
     "full": "当前为全权模式：你可以写入文件和执行命令，请谨慎操作。",
 }
 
@@ -180,6 +180,8 @@ class Agent:
         trace_id: str | None = None,
         trace_parent_span_id: str | None = None,
         trace_enabled: bool = False,
+        allowed_tools: set[str] | frozenset[str] | None = None,
+        session_dir: str | Path | None = None,
     ) -> None:
         self.provider = provider
         self._traced_provider = _TracedProvider(self)
@@ -194,6 +196,8 @@ class Agent:
         self.last_trace_id: str | None = None
         self._trace_outcome: str | None = None
         self.poppy_enabled = bool(poppy_enabled)
+        self.allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else None
+        self.session_dir = Path(session_dir) if session_dir is not None else None
         self.usage = UsageTracker(configured_window=context_window_tokens)
         self.auto_compact_enabled = bool(auto_compact_enabled)
         self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
@@ -265,6 +269,11 @@ class Agent:
             # A broken observer must never break the agent loop.
             pass
 
+    def _save_session(self, messages: list[dict]) -> Path:
+        if self.session_dir is None:
+            return save_session(self.session_id, messages)
+        return save_session(self.session_id, messages, directory=self.session_dir)
+
     def tool_schemas(self) -> list[dict]:
         """内置工具 + 已启动的 MCP 服务器工具。"""
         schemas = [
@@ -279,6 +288,11 @@ class Agent:
             schemas.append(KNOWLEDGE_TOOL_SCHEMA)
         if self.mcp_manager is not None and self.mcp_manager.has_tools():
             schemas.extend(self.mcp_manager.tool_schemas)
+        if self.allowed_tools is not None:
+            schemas = [
+                schema for schema in schemas
+                if schema.get("function", {}).get("name") in self.allowed_tools
+            ]
         return schemas
 
     def compact(self, keep_last: int = 4) -> dict:
@@ -288,7 +302,7 @@ class Agent:
         )
         self._emit_provider_fallback()
         self.messages = new_messages
-        save_session(self.session_id, self.messages)
+        self._save_session(self.messages)
         return info
 
     def _emit_provider_fallback(self, span_id: str | None = None) -> dict | None:
@@ -448,7 +462,7 @@ class Agent:
                 self._emit("auto_compact_skipped", {"reason": "no_size_reduction"})
                 return messages
             # Persist only after a valid, smaller summary has been produced.
-            save_session(self.session_id, reduced)
+            self._save_session(reduced)
         except Exception:
             self._emit("auto_compact_failed", {"reason": "summarization_failed"})
             return messages
@@ -541,7 +555,7 @@ class Agent:
         )
         # Persist the user's task before making a potentially long API request.
         # This gives --resume and the web UI a durable recovery point.
-        save_session(self.session_id, messages[1:])
+        self._save_session(messages[1:])
 
         attempted_auto_compact = False
         for _ in range(self.max_turns):
@@ -573,7 +587,7 @@ class Agent:
             if tool_calls:
                 # Record the full tool-call group before executing any member;
                 # recovery can then mark missing results as uncertain.
-                save_session(self.session_id, messages[1:])
+                self._save_session(messages[1:])
 
             if tool_calls and assistant_msg["content"]:
                 self._emit("assistant", {"content": assistant_msg["content"]})
@@ -581,7 +595,7 @@ class Agent:
             if not tool_calls:
                 final = msg.get("content") or ""
                 self.messages = messages[1:]
-                save_session(self.session_id, self.messages)
+                self._save_session(self.messages)
                 self._emit("final", {"content": final})
                 self._trace_outcome = "completed"
                 return final
@@ -619,7 +633,9 @@ class Agent:
                 if self.trace_enabled:
                     self._active_tool_span_id = tool_span_id
                 try:
-                    if args is None or not isinstance(args, dict):
+                    if self.allowed_tools is not None and fn_name not in self.allowed_tools:
+                        result = f"错误：当前运行未开放工具 {fn_name}"
+                    elif args is None or not isinstance(args, dict):
                         result = "错误：工具参数不是合法的 JSON 对象"
                     elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
                         # MCP servers can expose side-effecting tools without declaring
@@ -692,12 +708,12 @@ class Agent:
                 )
                 # Persist each tool result immediately so a later failing or
                 # interrupted call cannot discard already-finished steps.
-                save_session(self.session_id, messages[1:])
+                self._save_session(messages[1:])
 
-            save_session(self.session_id, messages[1:])
+            self._save_session(messages[1:])
 
         self.messages = messages[1:]
-        save_session(self.session_id, self.messages)
+        self._save_session(self.messages)
         self._emit("max_turns", {"max_turns": self.max_turns})
         self._trace_outcome = "incomplete"
         return "（已达到最大轮数，任务未完成，请拆分任务或提高 --max-turns 后重试）"
@@ -740,6 +756,8 @@ class Agent:
             trace_id=self._trace_id if self.trace_enabled else None,
             trace_parent_span_id=self._active_tool_span_id if self.trace_enabled else None,
             trace_enabled=self.trace_enabled,
+            allowed_tools=self.allowed_tools,
+            session_dir=self.session_dir,
         )
         try:
             return child.run(task)

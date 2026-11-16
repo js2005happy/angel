@@ -74,11 +74,22 @@ def new_session_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
-def save_session(session_id: str, messages: list[dict]) -> Path:
+def save_session(
+    session_id: str,
+    messages: list[dict],
+    directory: str | Path | None = None,
+) -> Path:
     """Atomically write private UTF-8 JSON Lines and return the session path."""
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = SESSIONS_DIR / f"{session_id}.jsonl"
-    fd, temporary = tempfile.mkstemp(prefix=".session-", suffix=".tmp", dir=SESSIONS_DIR)
+    session_dir = Path(directory) if directory is not None else SESSIONS_DIR
+    if session_dir.is_symlink():
+        raise OSError("会话目录不能是符号链接")
+    session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        session_dir.chmod(0o700)
+    except OSError:
+        pass
+    path = session_dir / f"{session_id}.jsonl"
+    fd, temporary = tempfile.mkstemp(prefix=".session-", suffix=".tmp", dir=session_dir)
     try:
         os.chmod(temporary, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

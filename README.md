@@ -125,6 +125,20 @@ python3 -m angel ui --trace
 
 工具 span 以产生该工具调用的模型 span 为父级；委派子 Agent 的根 span 以 `delegate` 工具 span 为父级。API 未返回 token 用量时，trace 中保持缺失，不估算。
 
+### 真实任务评估集
+
+`angel eval list` 只列出内置任务，不调用模型。`angel eval run` 会调用当前配置的模型并产生 API 费用；每项任务最多 6 轮（可调到 8），最多默认运行 5 项。评估任务在临时工作区执行，使用只读模式，只开放 `list_dir` 和 `read_file`；联网、MCP、委派、搜索和写文件工具均被隐藏并在执行边界再次拒绝。任务 fixture 中的文本按不可信资料处理。
+
+```bash
+python3 -m angel eval list
+python3 -m angel eval run --case fallback-trace-diagnosis --limit 1
+python3 -m angel eval run --limit 5
+```
+
+每条任务有明确的答案包含判据；汇总记录成功率、模型请求数、故障兜底 Provider 尝试数、工具步数、耗时和实际 API 报告 Token。成本只有在用户提供主模型输入/输出单价、没有触发模型兜底且每次调用都报告完整 Token 用量时才显示；任何缺失或跨模型兜底都显示未知。成本是基于用户价格和 API 用量的事后核算，不是实时预算封顶。只保存任务 ID 与聚合指标，不保存提示词、fixture、模型答案或工具内容；摘要保存在权限为用户私有的 `~/.angel/evaluations/`。运行会话放在独立的临时目录并在正常结束时删除；若进程被强制终止，系统临时目录中可能留下权限为 0700 的评估目录。
+
+默认集覆盖 Provider 兜底诊断、语义检索数据边界、群聊并行成本以及中断任务恢复等 Angel 工作流。判据是透明的字符串匹配，不能替代人工审查或 LLM-as-a-judge；第一次真实运行只形成该模型/配置的基线，本轮未启动真实跑分。
+
 后续迭代按 [ROADMAP.md](ROADMAP.md) 排序。
 
 ## Poppy OAuth issuer 双向核验（第三阶段首个安全增量）

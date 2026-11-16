@@ -235,7 +235,9 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 **v2 已完成（0.2.0）：** MCP 客户端、内置调度器/daemon、会话压缩、证据链、grep/git_status/http_post、provider 档案、web_search 双后端。
 
-**生产化补充方向（开发分支）：** Agent 执行追踪、项目文档 SQLite 语义检索 MVP 和群聊并行响应/停止 MVP 已实现待验证；后台多 Agent 队列和可关联群聊 trace 仍待开发。
+**生产化补充方向（开发分支）：** Agent 执行追踪、项目文档 SQLite 语义检索 MVP、群聊并行响应/停止 MVP 和真实任务评估 runner 已实现待验证；后台多 Agent 队列和可关联群聊 trace 仍待开发。
+
+评估 runner 从版本化 JSON 任务集中读取有界 fixture，在临时目录中创建只读 Agent。除 `list_dir`、`read_file` 外，工具既不会向模型公布，也会在调用分发时拒绝；MCP、联网、委派、搜索与写入全部关闭。结果以确定性字符串包含判据评分，记录模型请求、Provider 尝试、工具步数、耗时和 API 报告 Token。没有内置模型价格：只有显式输入/输出单价、没有触发跨模型兜底且用量完整时才报告核算成本；它不提供预算硬封顶。摘要文件只记录任务 ID 和指标，不保存提示词、fixture 或答案；会话存储在独立临时目录并在正常结束时删除，强制终止时临时目录可能残留。默认评估集首期为小型工作流基准，词面判据和单次真实运行都不等价于统计学质量结论；需要人工复核任务集，并针对目标模型重复运行建立基线。
 
 1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。

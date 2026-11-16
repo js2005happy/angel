@@ -410,6 +410,10 @@ def main(argv: list[str] | None = None) -> int:
         from .knowledge_cli import main as knowledge_main
 
         return knowledge_main(raw[1:])
+    if raw and raw[0] == "eval":
+        from .evaluation import main as evaluation_main
+
+        return evaluation_main(raw[1:])
 
     parser = build_parser()
     if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):
