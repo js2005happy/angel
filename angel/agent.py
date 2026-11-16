@@ -12,7 +12,10 @@ from .providers import Provider, ProviderError
 from .tools import TOOL_SCHEMAS, ToolContext, ToolError, _check_approval, execute_tool
 from .skills import Skill, load_skills, match_skills, render_skill
 from .memory import load_memory_summary, load_agents_md, new_session_id, save_session
-from .compact import compact_messages
+from .compact import (
+    compact_messages, should_auto_compact, validate_auto_compact_threshold,
+    DEFAULT_AUTO_COMPACT_THRESHOLD,
+)
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
 from .console import configure_stream
@@ -86,9 +89,14 @@ class Agent:
         system_instructions: str = "",
         memory_path: str | Path | None = None,
         context_window_tokens: int | None = None,
+        auto_compact_enabled: bool = False,
+        auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
     ) -> None:
         self.provider = provider
         self.usage = UsageTracker(configured_window=context_window_tokens)
+        self.auto_compact_enabled = bool(auto_compact_enabled)
+        self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
+        self.auto_compact_count = 0
         self.system_instructions = system_instructions
         self.memory_path = Path(memory_path) if memory_path is not None else ANGEL_HOME / "MEMORY.md"
         self.delegate_depth = delegate_depth
@@ -153,6 +161,48 @@ class Agent:
         save_session(self.session_id, self.messages)
         return info
 
+    def _maybe_auto_compact(self, messages: list[dict]) -> list[dict]:
+        """Summarize a full, completed exchange before the next model request.
+
+        A failed summary must leave the original in-memory and on-disk
+        transcript untouched. Auto-compaction uses zero unpaired tail messages
+        to avoid orphaned tool_call_id entries in OpenAI-compatible requests.
+        """
+        before = messages[1:]
+        if not should_auto_compact(
+            self.usage.snapshot(), len(before), self.auto_compact_threshold
+        ):
+            return messages
+
+        old_size = len(json.dumps(before, ensure_ascii=False))
+        try:
+            def account(response: dict) -> None:
+                self.usage.record(response)
+                if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+                    self._emit("usage", self.usage.snapshot())
+
+            reduced, info = compact_messages(
+                self.provider, before, keep_last=0,
+                strict=True, on_response=account,
+            )
+            new_size = len(json.dumps(reduced, ensure_ascii=False))
+            if new_size >= old_size:
+                self._emit("auto_compact_skipped", {"reason": "no_size_reduction"})
+                return messages
+            # Persist only after a valid, smaller summary has been produced.
+            save_session(self.session_id, reduced)
+        except Exception:
+            self._emit("auto_compact_failed", {"reason": "summarization_failed"})
+            return messages
+
+        self.messages = reduced
+        self.auto_compact_count += 1
+        self._emit("auto_compact", {
+            "before": info["before"], "after": info["after"],
+            "method": info["method"], "count": self.auto_compact_count,
+        })
+        return [messages[0], *reduced]
+
     def build_system_prompt(self, task: str) -> str:
         sections = [SYSTEM_PROMPT_BASE, MODE_NOTES.get(self.mode, "")]
         if self.system_instructions:
@@ -195,7 +245,13 @@ class Agent:
             + [{"role": "user", "content": task}]
         )
 
+        attempted_auto_compact = False
         for _ in range(self.max_turns):
+            if self.auto_compact_enabled and not attempted_auto_compact and should_auto_compact(
+                self.usage.snapshot(), len(messages) - 1, self.auto_compact_threshold
+            ):
+                attempted_auto_compact = True  # At most one extra paid call per run.
+                messages = self._maybe_auto_compact(messages)
             try:
                 resp = self.provider.chat(messages, tools=self.tool_schemas())
             except ProviderError as exc:
@@ -308,6 +364,8 @@ class Agent:
             system_instructions=self.system_instructions,
             memory_path=self.memory_path,
             context_window_tokens=self.usage.configured_window,
+            auto_compact_enabled=self.auto_compact_enabled,
+            auto_compact_threshold=self.auto_compact_threshold,
         )
         try:
             return child.run(task)
