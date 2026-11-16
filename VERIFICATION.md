@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：工具执行意图/结果元数据日志（2026-11-17）
+
+- 静态审阅新增 `angel/tool_journal.py` 和 `tests/test_tool_journal.py`：只存固定元数据；intent 无结果标记 unknown；即使 result_ok 也不代表副作用完成或已验证。
+- 单条事件使用 O_EXCL 创建和 fsync，读取拒绝损坏文件、符号链接、异常字段和超限事件。文件名随机，聚合不依赖字典序。
+- **未运行单元测试、CI、安装或发布。** 尚未接入工具执行主循环；并发写入与日志目录祖先替换仍有竞态，不能视为可信执行审计或安全自动恢复机制。
+
+
 ## 待验证：会话状态诊断安全加固（2026-11-17）
 
 - 静态审阅 `angel/session_diagnostics.py`：新增整段工具调用 ID 去重、空会话/空白最终回复拒绝、工具链乱序标记；所有状态继续 `execution_verified=false`、`safe_to_auto_resume=false`。
