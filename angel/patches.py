@@ -46,8 +46,9 @@ def apply_unified_patch(original: str, patch: str, relative_path: str) -> str:
     lines = patch.splitlines()
     if len(lines) < 4 or lines[0] != "--- a/" + relative_path or lines[1] != "+++ b/" + relative_path:
         raise PatchError("补丁必须以匹配目标文件的 --- a/路径 和 +++ b/路径 开头")
-    if "\r" in original.replace("\r\n", ""):
-        raise PatchError("暂不支持混用或单独 CR 的换行风格")
+    non_crlf = original.replace("\r\n", "")
+    if "\r" in non_crlf or ("\r\n" in original and "\n" in non_crlf):
+        raise PatchError("暂不支持混用 LF/CRLF 或单独 CR 的换行风格")
     crlf = "\r\n" in original
     plain = original.replace("\r\n", "\n")
     old_lines = plain.split("\n")
