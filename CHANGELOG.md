@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（工具日志接入 Agent 执行边界，2026-11-17）
+
+- `Agent(..., tool_journal=ToolJournal(...))` 显式启用后，在内置工具和 MCP 审批/执行前先写入 intent，返回结果后再写入 result；原有调用默认不启用。
+- intent 持久化失败则拒绝执行；result 持久化失败则停止并报告执行结果未知，绝不自动重放。子 Agent 不隐式继承日志配置。
+- 新增静态编写的 `tests/test_agent_journal_boundary.py`，尚未运行。仅记录结果字符串以“错误：”开头的错误状态，不能证明副作用是否成功；工具抛异常时保留 unknown。
+
 ## 未发布（工具意图与结果事件日志基础，2026-11-17）
 
 - 新增 `angel/tool_journal.py`：独立于工具执行器的显式启用、元数据限定的 intent/result 事件记录；崩溃后缺少 result 只能报告 unknown，绝不自动重放。
