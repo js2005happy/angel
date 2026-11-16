@@ -172,14 +172,20 @@ def read_approved_plan(workdir: Path, approval_hash: str) -> str:
     if path.stat().st_size > MAX_PLAN_BYTES:
         raise PlanError("plan.md 超出大小限制")
     data = path.read_bytes()
-    if len(data) > MAX_PLAN_BYTES or not data.startswith(PLAN_HEADER.encode("utf-8")):
+    if len(data) > MAX_PLAN_BYTES:
+        raise PlanError("plan.md 超出大小限制")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeError:
+        raise PlanError("plan.md 不是有效的 UTF-8 文件") from None
+    # Text editors on Windows may change LF to CRLF during review.
+    # Accept either newline representation as a plan, but always validate
+    # the SHA-256 over the ORIGINAL bytes, not normalized text.
+    if not content.replace("\r\n", "\n").startswith(PLAN_HEADER):
         raise PlanError("plan.md 格式无效")
     if hashlib.sha256(data).hexdigest() != approval_hash.lower():
         raise PlanError("plan.md 已变更或校验值不匹配，请重新审核")
-    try:
-        return data.decode("utf-8")
-    except UnicodeError:
-        raise PlanError("plan.md 不是有效的 UTF-8 文件") from None
+    return content
 
 
 def approved_execution_task(plan_text: str) -> str:
