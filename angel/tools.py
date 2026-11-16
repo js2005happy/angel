@@ -16,6 +16,7 @@ from .memory import append_memory
 from .skills import save_skill_file
 from .evidence import EvidenceStore
 from .net import open_url
+from .checkpoints import CheckpointError
 
 
 class ToolError(Exception):
@@ -42,6 +43,8 @@ class ToolContext:
     # identical shell command strings. Never persisted or reused by other runs.
     approved_file_tools: set[tuple[str, str, str, int]] = field(default_factory=set)
     approved_shell_commands: set[tuple[str, str, str, int, int]] = field(default_factory=set)
+    # Optional local text-file checkpoint manager; never applies to shell/MCP/E2B.
+    checkpoint: object | None = None
 
 
 MUTATING_TOOLS = {
@@ -483,13 +486,23 @@ def _tool_read_file(ctx: ToolContext, path: str) -> str:
     return _truncate(target.read_text(encoding="utf-8", errors="replace"))
 
 
+def _write_local_text(ctx: ToolContext, target: Path, content: str) -> None:
+    if ctx.checkpoint is not None and ctx.backend is None:
+        try:
+            ctx.checkpoint.write_text(target, content)
+        except CheckpointError as exc:
+            raise ToolError(str(exc)) from exc
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
     target = _workspace_write_path(ctx, path)
     _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）", file_target=target)
     if ctx.backend is not None:
         return ctx.backend.write_file(str(target), content)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    _write_local_text(ctx, target, content)
     return f"已写入 {path}（{len(content)} 字符）"
 
 
@@ -517,7 +530,7 @@ def _tool_edit_file(
         return "错误：未找到要替换的文本"
     if count > 1:
         return f"错误：找到 {count} 处匹配，请提供更精确的 old_text"
-    target.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+    _write_local_text(ctx, target, content.replace(old_text, new_text, 1))
     return f"已编辑 {path}"
 
 
@@ -745,8 +758,7 @@ def _tool_plan(
     if ctx.backend is not None:
         ctx.backend.write_file(str(target), content)
         return f"已写入计划 {path}（{len(steps)} 步）"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    _write_local_text(ctx, target, content)
     return f"已写入计划 {path}（{len(steps)} 步）"
 
 
