@@ -8,7 +8,7 @@
 |---|---|---|
 | P1 | Poppy 1.0 公开协议发现，协议优先 | 已实现 PR #18：默认关闭的只读校验与渠道摘要；远端调用尚未实现 |
 | P2 | 站点权限账本与 scoped 审批 | 已实现 PR #19：精确站点/账户/scope 本地意向、撤销与审计（部分；远端调用审批尚未实现） |
-| P3 | Poppy Session + 认证、HTTP MCP/OpenAPI | 当前 PR：OAuth issuer 双向公共元数据核验（部分）；真实 Session 签名、登录、DPoP 和 HTTP MCP 未实现 |
+| P3 | Poppy Session + 认证、HTTP MCP/OpenAPI | 已实现 PR #20：OAuth issuer 双向公共元数据核验（部分）；真实 Session、OAuth 登录、DPoP、HTTP MCP 未实现 |
 | P4 | UCP 购物及商店 Agent 对话 | 待开发：真实协议互通验证与交易前人工批准；不能把 discovery 当作已完成购买 |
 | P5 | Angel 对外发布自身能力 | 待开发：服务化时再考虑托管 poppy.json 与安全的 MCP/OpenAPI 服务器 |
 
