@@ -1,11 +1,11 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
-## 待验证：Poppy OAuth issuer 双向核验（PR 开发中）
+## 已验证：Poppy OAuth issuer 双向核验（PR #20）
 
 - `tests/test_poppy_identity.py` 检验公司域名 → protected resource → issuer metadata → issuer `protected_resources` 反向绑定，多个 issuer 的 `auth.issuer` 选择及单 issuer 自动确认。
 - 测试合法 404、合法无 issuer、非法 403/超时不降级；错误资源、错配发行方、无 `refresh_token`、无 revocation/token/authorization 端点和重定向均失败关闭。
 - CLI `--inspect-poppy-identity` 不调用 Provider/MCP/外部 API；只读 Agent 工具必须显式 `--poppy`；结果不声称已登录、获得 OAuth 令牌或支持远端操作。
-- CI 需在 Ubuntu 3.10/3.12 与 Windows 3.12 完成回归。本轮测试完全使用 mocked HTTPS、无真实 OAuth 或付费模型调用。
+- GitHub Actions [PR #20 CI 43827185087](https://github.com/js2005happy/angel/actions/runs/43827185087)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部成功；Windows 运行 330 项 unittest。测试使用 mocked HTTPS，无真实 OAuth、远端 MCP 或付费模型调用。
 
 ## 已验证：Poppy 站点授权意向账本（PR #19）
 
