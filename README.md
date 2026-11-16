@@ -36,7 +36,10 @@ python3 -m angel --list-skills
 python3 -m angel --list-sessions
 ```
 
-## Token 用量与上下文状态
+## 非交互 JSON Lines（脚本、CI 与多 Agent 编排）
+
+Angel 支持单次任务的机器可读事件输出。每行是一个完整的 UTF-8 JSON 对象（schema_version=1，seq 从 1 递增），不混入 banner、工具日志或普通文本。输出通过 stdout，人工诊断通过 stderr。
+
 
 Angel 现在会统计模型 API **实际返回** 的 Token 用量。交互终端输入 `/status` 即可查看调用次数、输入/输出 Token、最近一次请求的输入长度及参考上下文余量；Web UI 右侧新增 **Token 用量** 状态面板。单次任务结束时，统计信息输出到 **stderr**，不污染 stdout 的任务结果，适合未来的脚本/JSON 模式。
 
