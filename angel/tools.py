@@ -1,6 +1,6 @@
 """Angel CLI tool schemas, approval checks, and standard-library implementations."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import html
 import posixpath
 from pathlib import Path
@@ -38,6 +38,10 @@ class ToolContext:
     # replaces the terminal [y/N] prompt for interactive auto mode, so other
     # front ends (such as the local web UI) reuse the same approval gate.
     approve_fn: Callable[[str, str], bool] | None = None
+    # Explicit, session-local approvals for a small set of file tools and
+    # identical shell command strings. Never persisted or reused by other runs.
+    approved_file_tools: set[str] = field(default_factory=set)
+    approved_shell_commands: set[str] = field(default_factory=set)
 
 
 MUTATING_TOOLS = {
@@ -305,13 +309,42 @@ def _resolve_backend_path(ctx: ToolContext, path: str) -> str:
 
 
 def _resolve_path(ctx: ToolContext, path: str) -> Path:
-    # The MVP does not check for paths escaping the working directory.
     if Path(path).is_absolute():
         return Path(path)
     return ctx.workdir / path
 
 
-def _check_approval(ctx: ToolContext, tool_name: str, summary: str) -> None:
+def _workspace_write_path(ctx: ToolContext, path: str) -> Path | str:
+    """Keep built-in file writes under workdir, even in full mode.
+
+    Local paths are resolved before use, so existing symlinks in any ancestor
+    cannot redirect writes outside the workspace. The remote E2B backend is
+    restricted lexically; it cannot inspect sandbox symlink targets here.
+    This is not a shell/OS-level sandbox.
+    """
+    if not isinstance(path, str) or not path or "\x00" in path:
+        raise ToolError("写入文件路径无效")
+    if ctx.backend is not None:
+        base = posixpath.normpath(str(ctx.workdir).replace("\\", "/"))
+        target = _resolve_backend_path(ctx, path)
+        if (not base.startswith("/") or target == base
+                or not (target == base or target.startswith(base.rstrip("/") + "/"))):
+            raise ToolError("禁止写入工作目录之外的路径")
+        return target
+
+    root = ctx.workdir.resolve()
+    target = (root / path).resolve()
+    if target == root or not target.is_relative_to(root):
+        raise ToolError("禁止写入工作目录之外的路径")
+    return target
+
+
+_SESSION_FILE_TOOLS = frozenset(("write_file", "edit_file", "plan"))
+
+
+def _check_approval(
+    ctx: ToolContext, tool_name: str, summary: str, *, command: str | None = None
+) -> None:
     if tool_name not in MUTATING_TOOLS:
         return
     if ctx.mode == "readonly":
@@ -323,14 +356,29 @@ def _check_approval(ctx: ToolContext, tool_name: str, summary: str) -> None:
             raise ToolError(
                 "非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行"
             )
+        # Session-wide approvals are *explicit* and narrowly scoped. No
+        # wildcard approval for MCP, HTTP POST, memory or skill writes.
+        if tool_name in _SESSION_FILE_TOOLS and tool_name in ctx.approved_file_tools:
+            return
+        if tool_name == "shell" and command is not None and command in ctx.approved_shell_commands:
+            return
         if ctx.approve_fn is not None:
             if not ctx.approve_fn(tool_name, summary):
                 raise ToolError("用户拒绝执行")
             return
         print(summary)
-        answer = input("允许执行吗？[y/N] ")
-        if answer.strip().lower() not in ("y", "yes"):
-            raise ToolError("用户拒绝执行")
+        allow_repeat = tool_name in _SESSION_FILE_TOOLS or (tool_name == "shell" and command is not None)
+        prompt = "允许执行吗？[y/N/a] (a=本次会话同类文件工具或完全相同命令始终允许) " if allow_repeat else "允许执行吗？[y/N] "
+        answer = input(prompt).strip().lower()
+        if answer in ("y", "yes"):
+            return
+        if allow_repeat and answer in ("a", "always"):
+            if tool_name in _SESSION_FILE_TOOLS:
+                ctx.approved_file_tools.add(tool_name)
+            elif tool_name == "shell" and command is not None:
+                ctx.approved_shell_commands.add(command)
+            return
+        raise ToolError("用户拒绝执行")
     if ctx.mode == "full":
         return
 
@@ -390,10 +438,10 @@ def _tool_read_file(ctx: ToolContext, path: str) -> str:
 
 
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
+    target = _workspace_write_path(ctx, path)
     _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）")
     if ctx.backend is not None:
-        return ctx.backend.write_file(_resolve_backend_path(ctx, path), content)
-    target = _resolve_path(ctx, path)
+        return ctx.backend.write_file(str(target), content)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"已写入 {path}（{len(content)} 字符）"
@@ -402,9 +450,10 @@ def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
 def _tool_edit_file(
     ctx: ToolContext, path: str, old_text: str, new_text: str
 ) -> str:
+    target = _workspace_write_path(ctx, path)
     _check_approval(ctx, "edit_file", f"编辑文件：{path}")
     if ctx.backend is not None:
-        resolved = _resolve_backend_path(ctx, path)
+        resolved = str(target)
         content = ctx.backend.read_file(resolved)
         if content.startswith("错误："):
             return content
@@ -414,7 +463,6 @@ def _tool_edit_file(
         if count > 1:
             return f"错误：找到 {count} 处匹配，请提供更精确的 old_text"
         return ctx.backend.write_file(resolved, content.replace(old_text, new_text, 1))
-    target = _resolve_path(ctx, path)
     if not target.is_file():
         return f"错误：文件不存在：{path}"
     content = target.read_text(encoding="utf-8")
@@ -452,7 +500,7 @@ def _tool_shell(
     denied = _check_shell_denied(command)
     if denied:
         return f"错误：{denied}"
-    _check_approval(ctx, "shell", f"执行命令：{command}")
+    _check_approval(ctx, "shell", f"执行命令：{command}", command=command)
     if ctx.backend is not None:
         resolved_cwd = _resolve_backend_path(ctx, cwd or ".")
         return _truncate(
@@ -638,6 +686,7 @@ def _tool_plan(
     steps: list[str],
     path: str = "plan.md",
 ) -> str:
+    target = _workspace_write_path(ctx, path)
     _check_approval(ctx, "plan", f"写入计划文件：{path}")
     content = (
         f"# {title}\n\n"
@@ -645,9 +694,8 @@ def _tool_plan(
         + "\n"
     )
     if ctx.backend is not None:
-        ctx.backend.write_file(_resolve_backend_path(ctx, path), content)
+        ctx.backend.write_file(str(target), content)
         return f"已写入计划 {path}（{len(steps)} 步）"
-    target = _resolve_path(ctx, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return f"已写入计划 {path}（{len(steps)} 步）"
