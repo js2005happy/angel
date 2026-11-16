@@ -4,8 +4,14 @@ from datetime import datetime
 import json
 from pathlib import Path
 import secrets
+import threading
 
 from .config import ANGEL_HOME
+
+
+# Shared with the web memory editor. Protects append/replace operations in
+# this Python process; concurrent separate processes still require caution.
+MEMORY_LOCK = threading.RLock()
 
 
 MEMORY_PATH = ANGEL_HOME / "MEMORY.md"
@@ -38,10 +44,11 @@ def append_memory(text: str, path: Path | None = None) -> None:
         return
 
     target = path if path is not None else MEMORY_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    with target.open("a", encoding="utf-8") as handle:
-        handle.write(f"- [{timestamp}] {text}\n")
+    with MEMORY_LOCK:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(f"- [{timestamp}] {text}\n")
 
 
 def load_agents_md(workdir: Path) -> str:
