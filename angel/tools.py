@@ -43,6 +43,9 @@ MUTATING_TOOLS = {
     "save_skill",
     "plan",
     "http_post",
+    # All MCP tools are treated as potentially mutating: the server's
+    # advertised name/description cannot establish whether it is read-only.
+    "mcp",
 }
 
 TOOL_SCHEMAS = [

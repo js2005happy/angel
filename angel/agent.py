@@ -5,7 +5,7 @@ from pathlib import Path
 
 from .config import ANGEL_HOME, load_config
 from .providers import Provider, ProviderError
-from .tools import TOOL_SCHEMAS, ToolContext, execute_tool
+from .tools import TOOL_SCHEMAS, ToolContext, ToolError, _check_approval, execute_tool
 from .skills import Skill, load_skills, match_skills, render_skill
 from .memory import load_memory_summary, load_agents_md, new_session_id, save_session
 from .compact import compact_messages
@@ -28,8 +28,8 @@ shell 命令保持简单、安全，不执行破坏性命令。
 所有回答使用中文，任务结束时简要汇报做了什么。"""
 
 MODE_NOTES = {
-    "readonly": "当前为只读模式：你只能读取文件、联网查询，不能写入文件或执行命令。",
-    "auto": "当前为自动确认模式：写入文件或执行命令前，系统会请用户确认。",
+    "readonly": "当前为只读模式：你只能读取文件、联网查询，不能写入文件或执行命令；外部 MCP 工具也不可调用。",
+    "auto": "当前为自动确认模式：写入文件、执行命令或调用外部 MCP 工具前，系统会请用户确认。", 
     "full": "当前为全权模式：你可以写入文件和执行命令，请谨慎操作。",
 }
 
@@ -163,7 +163,19 @@ class Agent:
                 if args is None or not isinstance(args, dict):
                     result = "错误：工具参数不是合法的 JSON 对象"
                 elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
-                    result = self.mcp_manager.execute(fn_name, args)
+                    # MCP servers can expose side-effecting tools without declaring
+                    # it in their schema. Never trust their names as proof of safety.
+                    # Approval must happen at the same boundary as built-in tools.
+                    try:
+                        _check_approval(
+                            self.ctx,
+                            "mcp",
+                            f"调用外部 MCP 工具：{fn_name}（可能产生外部副作用）",
+                        )
+                    except ToolError as exc:
+                        result = f"错误：{exc}"
+                    else:
+                        result = self.mcp_manager.execute(fn_name, args)
                 else:
                     result = execute_tool(fn_name, args, self.ctx)
 
