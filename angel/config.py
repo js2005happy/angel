@@ -14,6 +14,8 @@ DEFAULT_CONFIG = {
     "mode": "auto",
     "max_turns": 20,
     "context_window_tokens": None,  # Set only to verified model input limit.
+    "auto_compact_enabled": False,  # Opt-in: summarizing makes an extra paid call.
+    "auto_compact_threshold": 0.80,
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
