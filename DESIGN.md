@@ -74,6 +74,13 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 厂商锁定：不绑定任何一家模型；Claude Code 的专有配置方式也不采纳。
 - **浏览器工具（BrowserNavigate / BrowserClick / BrowserScreenshot 等）**：IllusionAgent 0.5.0 的核心是内置真浏览器，Angel 在 v2 里**不做假的**：没有真实浏览器驱动就无法实现导航、点击、截图，`web_fetch` 的纯文本抓取不能冒充浏览器。已记入路线图，待有浏览器驱动（如 Playwright/Chromium）再做。
 
+## 两阶段只读计划模式
+
+- `angel/plan_mode.py` 独立于普通 Agent：规划只允许调用 `read_file` / `list_dir`，所有路径经 `resolve()` 检查必须位于工作目录内，阻止 `../`、绝对路径与符号链接越界。不能执行 shell、MCP、子 Agent、网络写入等。
+- 模型返回完整 Markdown 后才原子保存 `workdir/plan.md`，如果生成失败则保留旧计划。拒绝已有的符号链接计划文件。
+- `--execute-plan --approve-plan SHA256` 用完整 64 位 SHA-256 校验文件所有字节。校验失败不会初始化执行 Agent；执行仅使用校验过的内存内容，不重新读取计划。
+- 批准计划不会提升工具权限；默认进入 `auto`，不继承配置中可能存在的 full；仅显式 `--mode full` 才取消工具级确认。本版本仅本地 CLI，不宣称 OS 沙箱或 Web UI 审批功能。
+
 ## 可编排 JSON Lines 执行协议
 
 - python3 -m angel --json "任务" 通过独立的 json_mode.py 单次执行入口构造真实 Agent；Agent 仍走原有工具审批与 MCP 安全门，不因输出模式更换而提高权限。
