@@ -1,11 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
-## 待验证：Poppy 站点授权意向账本（PR 开发中）
+## 已验证：Poppy 站点授权意向账本（PR #19）
 
 - `tests/test_poppy_permissions.py`：默认拒绝、按完整站点/账户别名/scope 隔离，CLI grant 强制 `--confirm`，revoke 与审计，SHA-256 版本校验，损坏文件/符号链接拒绝、非公开域名/错误 scope 拒绝。
 - 只读 Agent 工具 `poppy_permission_check` 仅在 `--poppy` 开启，不能通过模型工具 grant/revoke，`local_intent=recorded` 依然 `may_execute_remote_action=false`。
 - Poppy 1.0 `scope_hints` 未知 changes 按不可逆、个人数据字段缺失按未知处理，均不等于真实远端授权。
-- 使用临时目录/mock Agent/无真实网络请求，等待 Ubuntu Python 3.10/3.12 和 Windows Python 3.12 CI 通过；后续 OAuth Session/HTTP MCP 不在此 PR。
+- GitHub Actions [PR #19 运行 43825501917](https://github.com/js2005happy/angel/actions/runs/43825501917)：Ubuntu Python 3.10/3.12 与 Windows Python 3.12 全通过，Windows 共执行 313 项测试。全部采用临时目录和 mock，无真实网络或模型 API 花费。
+- 后续 OAuth Session、HTTP MCP 与真实远端操作审批不在本 PR，不能把本地意向当作可执行授权。
 
 ## 已验证：Poppy 1.0 公共发现客户端首阶段（PR #18）
 
