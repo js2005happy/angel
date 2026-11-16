@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：Agent 工具日志执行边界（2026-11-17）
+
+- 静态审阅 `agent.py`：`tool_journal=None` 默认关闭；显式注入时 intent 写入在内置/MCP 工具审批和执行前，result 写入在返回事件和会话追加前。
+- 写 intent 失败阻止工具执行；写 result 失败停止并报告可能执行、结果未知。新建 `tests/test_agent_journal_boundary.py`，**未运行**。
+- 风险：工具抛异常留下 unknown；`错误：` 前缀分类不是结构化状态；日志没有跨进程互斥或防篡改能力。本轮没有运行测试/CI，也没有合并或发布。
+
+
 ## 待验证：工具执行意图/结果元数据日志（2026-11-17）
 
 - 静态审阅新增 `angel/tool_journal.py` 和 `tests/test_tool_journal.py`：只存固定元数据；intent 无结果标记 unknown；即使 result_ok 也不代表副作用完成或已验证。
