@@ -121,6 +121,7 @@ class AgentAutoCompactTest(unittest.TestCase):
         summary = provider.calls[1][0][1]
         self.assertTrue(summary["content"].startswith("[此前会话摘要]"))
         self.assertNotIn("prior context 0", str(provider.calls[1][0]))
+        self.assertEqual(provider.calls[1][0][-1], {"role": "user", "content": "现在继续"})
         persisted = memory_module.load_session(agent.session_id)
         self.assertEqual(persisted[0]["content"], summary["content"])
         self.assertEqual(persisted[-1]["content"], "继续成功")
@@ -167,6 +168,33 @@ class AgentAutoCompactTest(unittest.TestCase):
         self.assertEqual(agent.run("continue"), "answer")
         self.assertEqual(agent.auto_compact_count, 0)
         self.assertIn("prior context 0", str(provider.calls[1][0]))
+
+    def test_compaction_preserves_in_flight_tool_call_and_result(self):
+        call = {
+            "id": "active-tool",
+            "type": "function",
+            "function": {"name": "list_dir", "arguments": '{"path":"."}'},
+        }
+        provider = ScriptedProvider([
+            response("", prompt_tokens=850, tool_calls=[call]),
+            response("older-turns summary", prompt_tokens=300),
+            response("finished"),
+        ])
+        agent = self.agent(provider)
+        agent.usage.last_prompt_tokens = 100
+        self.assertEqual(agent.run("实际操作：列出目录"), "finished")
+        self.assertEqual(agent.auto_compact_count, 1)
+        self.assertIsNone(provider.calls[1][1])  # summary call
+        followup = provider.calls[2][0]
+        self.assertIn({"role": "user", "content": "实际操作：列出目录"}, followup)
+        self.assertTrue(any(
+            m.get("role") == "assistant"
+            and m.get("tool_calls") == [call] for m in followup
+        ))
+        self.assertTrue(any(
+            m.get("role") == "tool" and m.get("tool_call_id") == "active-tool"
+            for m in followup
+        ))
 
     def test_single_compaction_per_run_even_if_usage_stays_high(self):
         call = {
