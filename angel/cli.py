@@ -254,7 +254,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "子命令：angel schedule <list|add|remove|run|daemon> 管理定时任务；"
             "angel ui [--host 127.0.0.1] [--port 8765] [--open] 启动本地网页界面；"
-            "angel permissions <list|check|grant|revoke|audit> 管理 Poppy 站点授权意向"
+            "angel permissions <list|check|grant|revoke|audit> 管理 Poppy 站点授权意向；"
+            "angel eigenflux doctor [--room ID --bot ID] [--check] EigenFlux 接入检测"
         ),
     )
     parser.add_argument(
@@ -394,6 +395,10 @@ def main(argv: list[str] | None = None) -> int:
         from .poppy_permissions_cli import main as permissions_main
 
         return permissions_main(raw[1:])
+    if raw and raw[0] == "eigenflux":
+        from .eigenflux_adapter import main as eigenflux_main
+
+        return eigenflux_main(raw[1:])
 
     parser = build_parser()
     if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):
