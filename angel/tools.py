@@ -40,8 +40,8 @@ class ToolContext:
     approve_fn: Callable[[str, str], bool] | None = None
     # Explicit, session-local approvals for a small set of file tools and
     # identical shell command strings. Never persisted or reused by other runs.
-    approved_file_tools: set[str] = field(default_factory=set)
-    approved_shell_commands: set[tuple[str, str]] = field(default_factory=set)
+    approved_file_tools: set[tuple[str, str, str, int]] = field(default_factory=set)
+    approved_shell_commands: set[tuple[str, str, str, int, int]] = field(default_factory=set)
 
 
 MUTATING_TOOLS = {
@@ -342,9 +342,41 @@ def _workspace_write_path(ctx: ToolContext, path: str) -> Path | str:
 _SESSION_FILE_TOOLS = frozenset(("write_file", "edit_file", "plan"))
 
 
+def _workspace_shell_cwd(ctx: ToolContext, cwd: str | None) -> Path | str:
+    """Validate and canonicalize the requested shell starting directory.
+
+    This prevents starting outside workdir; the command itself can still
+    change directories or write elsewhere, so this is NOT a shell sandbox.
+    """
+    if cwd is not None and (not isinstance(cwd, str) or "\x00" in cwd or not cwd):
+        raise ToolError("shell 工作目录无效")
+    if ctx.backend is not None:
+        base = posixpath.normpath(str(ctx.workdir).replace("\\", "/"))
+        target = _resolve_backend_path(ctx, cwd or ".")
+        if not base.startswith("/") or not (
+            target == base or target.startswith(base.rstrip("/") + "/")
+        ):
+            raise ToolError("禁止在工作目录之外启动 shell")
+        return target
+    root = ctx.workdir.resolve()
+    target = (root / (cwd or ".")).resolve()
+    if not target.is_relative_to(root):
+        raise ToolError("禁止在工作目录之外启动 shell")
+    if not target.is_dir():
+        raise ToolError("shell 工作目录不存在")
+    return target
+
+
+def _approval_root(ctx: ToolContext) -> str:
+    if ctx.backend is not None:
+        return posixpath.normpath(str(ctx.workdir).replace("\\", "/"))
+    return str(ctx.workdir.resolve())
+
+
 def _check_approval(
     ctx: ToolContext, tool_name: str, summary: str, *,
-    command: str | None = None, cwd: str | None = None
+    command: str | None = None, cwd: str | None = None,
+    file_target: Path | str | None = None, timeout: int = 60,
 ) -> None:
     if tool_name not in MUTATING_TOOLS:
         return
@@ -357,29 +389,41 @@ def _check_approval(
             raise ToolError(
                 "非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行"
             )
-        # Session-wide approvals are *explicit* and narrowly scoped. No
-        # wildcard approval for MCP, HTTP POST, memory or skill writes.
-        if tool_name in _SESSION_FILE_TOOLS and tool_name in ctx.approved_file_tools:
-            return
-        shell_scope = (command, cwd or ".") if command is not None else None
-        if tool_name == "shell" and shell_scope is not None and shell_scope in ctx.approved_shell_commands:
-            return
+        # A frontend approval callback always takes precedence: cached grants
+        # from a previous terminal prompt must not bypass the Web UI gate.
         if ctx.approve_fn is not None:
             if not ctx.approve_fn(tool_name, summary):
                 raise ToolError("用户拒绝执行")
             return
+
+        file_scope = (
+            tool_name, str(file_target), _approval_root(ctx), id(ctx.backend)
+        ) if tool_name in _SESSION_FILE_TOOLS and file_target is not None else None
+        shell_scope = (
+            command, cwd, _approval_root(ctx), timeout, id(ctx.backend)
+        ) if tool_name == "shell" and command is not None and cwd is not None else None
+        if file_scope is not None and file_scope in ctx.approved_file_tools:
+            return
+        if shell_scope is not None and shell_scope in ctx.approved_shell_commands:
+            return
+
         print(summary)
-        allow_repeat = tool_name in _SESSION_FILE_TOOLS or (tool_name == "shell" and command is not None)
-        prompt = "允许执行吗？[y/N/a] (a=本次会话同种文件工具或相同命令与 cwd 始终允许) " if allow_repeat else "允许执行吗？[y/N] "
+        if file_scope is not None:
+            prompt = "允许执行吗？[y/N/a] (a=本次会话此工具对该文件始终允许) "
+        elif shell_scope is not None:
+            prompt = "允许执行吗？[y/N/a] (a=本次会话相同命令、目录、后端和超时始终允许) "
+        else:
+            prompt = "允许执行吗？[y/N] "
         answer = input(prompt).strip().lower()
         if answer in ("y", "yes"):
             return
-        if allow_repeat and answer in ("a", "always"):
-            if tool_name in _SESSION_FILE_TOOLS:
-                ctx.approved_file_tools.add(tool_name)
-            elif tool_name == "shell" and shell_scope is not None:
+        if answer in ("a", "always"):
+            if file_scope is not None:
+                ctx.approved_file_tools.add(file_scope)
+                return
+            if shell_scope is not None:
                 ctx.approved_shell_commands.add(shell_scope)
-            return
+                return
         raise ToolError("用户拒绝执行")
     if ctx.mode == "full":
         return
@@ -441,7 +485,7 @@ def _tool_read_file(ctx: ToolContext, path: str) -> str:
 
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
     target = _workspace_write_path(ctx, path)
-    _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）")
+    _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）", file_target=target)
     if ctx.backend is not None:
         return ctx.backend.write_file(str(target), content)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -453,7 +497,7 @@ def _tool_edit_file(
     ctx: ToolContext, path: str, old_text: str, new_text: str
 ) -> str:
     target = _workspace_write_path(ctx, path)
-    _check_approval(ctx, "edit_file", f"编辑文件：{path}")
+    _check_approval(ctx, "edit_file", f"编辑文件：{path}", file_target=target)
     if ctx.backend is not None:
         resolved = str(target)
         content = ctx.backend.read_file(resolved)
@@ -502,20 +546,20 @@ def _tool_shell(
     denied = _check_shell_denied(command)
     if denied:
         return f"错误：{denied}"
+    resolved_cwd = _workspace_shell_cwd(ctx, cwd)
     _check_approval(
-        ctx, "shell", f"执行命令：{command}（cwd: {cwd or '.'}）",
-        command=command, cwd=cwd,
+        ctx, "shell", f"执行命令：{command}（cwd: {resolved_cwd}；timeout: {timeout}s）",
+        command=command, cwd=str(resolved_cwd), timeout=timeout,
     )
     if ctx.backend is not None:
-        resolved_cwd = _resolve_backend_path(ctx, cwd or ".")
         return _truncate(
-            ctx.backend.run_command(command, cwd=resolved_cwd, timeout=timeout)
+            ctx.backend.run_command(command, cwd=str(resolved_cwd), timeout=timeout)
         ) or "（无输出）"
     try:
         result = subprocess.run(
             command,
             shell=True,
-            cwd=(ctx.workdir / cwd if cwd else ctx.workdir),
+            cwd=resolved_cwd,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -692,7 +736,7 @@ def _tool_plan(
     path: str = "plan.md",
 ) -> str:
     target = _workspace_write_path(ctx, path)
-    _check_approval(ctx, "plan", f"写入计划文件：{path}")
+    _check_approval(ctx, "plan", f"写入计划文件：{path}", file_target=target)
     content = (
         f"# {title}\n\n"
         + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
