@@ -34,11 +34,18 @@ class EvidenceStore:
         query: str | None = None,
     ) -> Path:
         """保存一条证据，返回文件路径。"""
-        self._index += 1
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", url.split("://", 1)[-1])[:60].strip("-")
         slug = slug or "page"
-        name = f"{self._index:03d}_{kind}_{slug}.md"
-        path = self.dir / name
+        safe_kind = re.sub(r"[^a-zA-Z0-9_-]+", "-", kind).strip("-") or "unknown"
+        while True:
+            self._index += 1
+            name = f"{self._index:03d}_{safe_kind}_{slug}.md"
+            path = self.dir / name
+            try:
+                handle = path.open("x", encoding="utf-8")
+                break
+            except FileExistsError:
+                continue
         header = (
             f"# 证据 {self._index}\n\n"
             f"- 来源：{url}\n"
@@ -47,10 +54,8 @@ class EvidenceStore:
         )
         if query:
             header += f"- 搜索词：{query}\n"
-        path.write_text(
-            header + "\n" + content[:MAX_EVIDENCE_CHARS],
-            encoding="utf-8",
-        )
+        with handle:
+            handle.write(header + "\n" + content[:MAX_EVIDENCE_CHARS])
         return path
 
     def list(self) -> list[Path]:
