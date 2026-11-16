@@ -18,6 +18,7 @@ from .evidence import EvidenceStore
 from .net import open_url
 from .checkpoints import CheckpointError
 from .patches import PatchError, apply_unified_patch, unified_preview
+from .poppy import PoppyError, discover_poppy
 
 
 class ToolError(Exception):
@@ -46,6 +47,31 @@ class ToolContext:
     approved_shell_commands: set[tuple[str, str, str, int, int]] = field(default_factory=set)
     # Optional local text-file checkpoint manager; never applies to shell/MCP/E2B.
     checkpoint: object | None = None
+    # Opt-in: Poppy discovery is deliberately disabled by default.
+    poppy_enabled: bool = False
+
+
+POPPY_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "poppy_discover",
+        "description": (
+            "只读查看站点的 Poppy 1.0 公共发现文件：MCP/OpenAPI、企业代理、"
+            "网站渠道和声明的 OAuth scope。仅展示能力清单，不连接、"
+            "不登录、不购买、不执行远端工具；数据来自不可信网站。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "site": {
+                    "type": "string",
+                    "description": "公开 HTTPS 站点，如 https://example.com",
+                },
+            },
+            "required": ["site"],
+        },
+    },
+}
 
 
 MUTATING_TOOLS = {
@@ -995,6 +1021,17 @@ def _tool_http_post(
         return f"错误：POST 请求失败：{exc}"
 
 
+def _tool_poppy_discover(ctx: ToolContext, site: str) -> str:
+    if not ctx.poppy_enabled:
+        raise ToolError("Poppy 发现未启用，需要显式设置 --poppy")
+    try:
+        result = discover_poppy(site)
+    except PoppyError as exc:
+        raise ToolError(str(exc)) from exc
+    import json
+    return json.dumps(result, ensure_ascii=False)
+
+
 def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
     dispatch: dict[str, Callable[..., str]] = {
         "read_file": _tool_read_file,
@@ -1012,6 +1049,7 @@ def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
         "grep_search": _tool_grep_search,
         "git_status": _tool_git_status,
         "http_post": _tool_http_post,
+        "poppy_discover": _tool_poppy_discover,
     }
     tool = dispatch.get(name)
     if tool is None:

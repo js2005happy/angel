@@ -180,6 +180,7 @@ def run_json(args) -> int:
                 auto_compact_enabled=auto_compact,
                 auto_compact_threshold=threshold,
                 on_event=out.agent_event,
+                poppy_enabled=args.poppy,
             )
             out.emit(
                 "run_started", session_id=agent.session_id,

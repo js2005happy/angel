@@ -103,6 +103,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## Poppy 协议发现薄层（首阶段，默认关闭）
+
+- 官方参考：`https://personalagentprotocol.org/docs/1.0/spec`。新增 `angel/poppy.py` 只做不带登录身份的公共 `/.well-known/poppy.json` 发现，检查文档版本、实际服务主机与 `organization.domain` 一致、重定向最终 well-known 路径精确且无 query。首选非 1.0 时若 `supported_versions` 指向同主机的 1.0 备选文件，则按规范拒绝备选重定向并校验它的版本。
+- 为减少 SSRF，域名须有效且为公共 DNS；DNS 地址全部要求是公开可路由 IP，再通过定制的标准库 `http.client.HTTPSConnection` 连接到已检查的 IP、以原主机做 TLS SNI/证书校验。禁用自动代理与 Cookie/Token，拒绝非 HTTPS、URL 凭据、非默认端口以及内网/环回 DNS 和重定向目标；响应受字节数、超时和重定向次数限制。
+- 能力解析返回类型、渠道 URL 与缩短的描述，`status=metadata_only`；禁止自动发起身份验证或调用任意返回的远端 MCP/OpenAPI/UCP 公司 Agent。远程 HTTP MCP 与 Angel 既有 stdio MCP 不等价，必须后续另行实现 OAuth 与 Session JWT。
+- `ToolContext.poppy_enabled` 默认 false，只有 CLI `--poppy` 明确开放工具 schema，委派子 Agent 保留显式开关；独立 CLI `--discover-poppy` 在创建 Provider/连接 MCP 前完成，无实际模型调用。JSONL 单次任务可以带 `--poppy`，权限仍遵守原有模式。
+- 未来步骤：权限账本（站点/授权 scope/操作风险），再实现 HTTP MCP、Session、OAuth/DPoP 与用户审批；之后按需实现 UCP 搜索、加购、结账。没有显式核实的交易能力不得被认为已可用。用户的 Shopify 站点需单独实测发现文件，不能从平台公告推断其特定文件内容。
+
 ## 长期记忆：可查看、可管理、与会话压缩解耦
 
 - 原有 `memory.py` 的全局 `MEMORY.md` 和 `groups.py` 中按机器人隔离的 `MEMORY.md` 都位于 session JSONL 之外，`compact.py` 只处理消息数组，不会写入长期记忆。Agent 每次构造系统提示词时加载相应记忆文件的**最后 40 行**，因此持久文件本身不等于模型能同时回忆所有内容。
