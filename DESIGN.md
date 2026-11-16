@@ -106,7 +106,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 ## EigenFlux 行为上限与群实例隔离（E2a）
 
 - `angel/eigenflux_policy.py` 新增按 `main` 或 `room:<id>/bot:<id>` 隔离的本地网络行为上限，固定六类行为，默认全部拒绝；`allow` 需要真实 CLI 用户显式 `--confirm`，`deny` 随时撤销。模型工具、外站消息、Skills 不能通过该模块写入记录。
-- 权限存储在 `~/.angel/eigenflux/network-policy.json` 中，与所有 EigenFlux Home 凭据目录隔离。最多 100 个 Agent、250 条审计事件、128 KiB 文件；进程内 RLock、同目录临时文件 + `os.replace`，基于原始文件 SHA-256 提供 `--expect-revision`，拒绝已损坏 JSON、目录和符号链接。审计不是防篡改日志，不保护跨进程写入竞争和有磁盘权限的攻击者。
+- 权限存储在 `~/.angel/eigenflux/network-policy.json` 中，与所有 EigenFlux Home 凭据目录隔离。最多 100 个 Agent、250 条审计事件、128 KiB 文件；allow/deny 在进程内 RLock 和跨进程 OS 文件锁中完成读-改-写，基于原始文件 SHA-256 的 `--expect-revision` 在锁内比较；临时文件写完后用 `os.replace` 原子替换。只读查询可能读到完整的旧版或新版。拒绝损坏 JSON、目录和符号链接。锁是协作式保护，不防止拥有同一目录写权限的程序绕过它直接改文件；审计也不是防篡改日志。
 - `angel eigenflux policy show|allow|deny|audit` 直接通过 CLI 路由，不启动 Provider/MCP、外部 CLI、调度器或网络操作。预设 `feed_read`、`public_broadcast`、`direct_message`、`relationship_request`、`recurring_check`、`profile_prefill`；不支持通配授权。`local_intent=allowed` 是额外上限选择，不是 EigenFlux OAuth、账户认证、Consent 或 CLI 执行许可；返回的 `effective_network_permission` 始终 false，绝不宣称已入网。
 - 群聊新增 `instance_id=secrets.token_hex(16)`：相同群 ID 在删除重建后视作不同身份。新群 EigenFlux Home 路径含实例标记；原有群无此字段时保留之前的稳定目录。策略记录也绑定实例标记；旧实例的本地 allow 在重建后失效，deny 删除旧状态。不能让重名群继承前任机器人的身份私钥或广播许可。
 - 该本地上限的正确使用方式是**未来网络执行网关**在真实发起命令之前先读取它，同时进一步验证官方 `ef-onboarding` 的当前授权、身份凭据、用户明确操作意图及公开内容安全要求。当前没有网络执行网关，因此只提供管理接口，不承诺阻止用户在 Angel 外部直接运行 CLI。
@@ -117,7 +117,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - `angel/eigenflux_adapter.py` 提供 `home_for_agent()`：稳定地为主 Agent 和已有群聊的特定 bot 计算独立 `EIGENFLUX_HOME`，无会话 ID、任务时间、cwd 或可修改昵称参与路径。群与 bot ID 使用严格白名单，并通过 `GroupStore.get()` 验证实际成员，拒绝别人的 home 和符号链接穿透。
 - `angel eigenflux doctor` 只返回 JSON 安装准备报告，不访问网络或运行二进制，也不创建身份文件；`--check` 才使用 `shutil.which()` 查找官方 CLI，然后以 `subprocess.run(shell=False)` 运行两个无用户自定义参数的官方本地诊断：`version`、`skills path --host terminal`。超时 8 秒，仅白名单环境变量（含特定 EIGENFLUX_HOME），不会继承模型密钥；只有两个诊断都成功才标注 `local_cli_verified`。
 - 这个状态不代表 EigenFlux 网络已认证或 onboarding 完成：结果中 `network_actions_allowed=false`、`broadcast_enabled=false`、`scheduled_checks_enabled=false` 和 `onboarding_complete=false` 始终为 false。本期没有安装器调用、任意 Shell 执行、feed 查询、凭据导出或周期任务。
-- 剩余工作：用户明确同意安装时才依官方指南执行 bare-CLI，随后需使用已安装的 `ef-onboarding` Skill 分别取得个人资料、邮箱身份和网络行动授权。若最终接入多机器人互动，每个成员应使用自己的稳定 Home 与授权范围；跨进程身份并发及网络滥用另做审计与限制。
+- 剩余工作：用户明确同意安装时才依官方指南执行 bare-CLI，随后需使用已安装的 `ef-onboarding` Skill 分别取得个人资料、邮箱身份和网络行动授权。若最终接入多机器人互动，每个成员应使用自己的稳定 Home 与授权范围；网络执行层和滥用控制仍需单独设计。
 
 ## Poppy OAuth issuer 元数据双向核验（第三阶段第一增量）
 

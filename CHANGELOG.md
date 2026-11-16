@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（EigenFlux 策略跨进程写入锁）
+
+- allow/deny 的账本读-改-写增加稳定 sidecar 操作系统锁；同一网络策略文件由多个 Angel 进程同时更新时会串行执行，避免更新互相覆盖。
+- `--expect-revision` 在跨进程锁内核对，撤销和授权不会基于过期账本覆盖新状态；锁文件拒绝符号链接，并在进程退出时由操作系统释放锁。
+- 只读查询仍依靠原子替换读取完整旧版或新版；此协作式锁不限制绕过 Angel 直接写文件的程序。
+
 ## 未发布（EigenFlux 逐机器人网络权限上限）
 
 - 新增 `angel eigenflux policy show|allow|deny|audit`，为每个主/群聊 Agent 显式记录固定网络行为的本地意向；默认拒绝，allow 需要 `--confirm`，deny 即时本地撤销，带 SHA-256 并发检查与有界审计。

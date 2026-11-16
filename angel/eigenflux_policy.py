@@ -8,12 +8,14 @@ current credentials, per-action user approval and the installed ef-* Skills.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 import threading
 
@@ -159,6 +161,65 @@ def _persist(path: Path, root: Path, record: dict) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+@contextmanager
+def _cross_process_lock(path: Path, root: Path):
+    """Serialize policy read-modify-write operations across Angel processes.
+
+    The lock file is stable across atomic replacement of the policy JSON. The
+    OS releases the lock if a process exits unexpectedly.
+    """
+    path = Path(path)
+    root = Path(root)
+    _safe_file(path, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(".network-policy.lock")
+    _safe_file(lock_path, root)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise NetworkPolicyError("无法安全打开网络策略锁文件") from exc
+
+    locked = False
+    try:
+        _safe_file(lock_path, root)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NetworkPolicyError("网络策略锁必须是普通文件")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                # Windows byte-range locks require a byte to exist first.
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise NetworkPolicyError("无法取得网络策略跨进程锁") from exc
+        locked = True
+        yield
+    finally:
+        try:
+            if locked:
+                if os.name == "nt":
+                    import msvcrt
+
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 class NetworkPolicy:
     """Owner-controlled local ceilings that cannot activate the EigenFlux CLI."""
 
@@ -218,7 +279,7 @@ class NetworkPolicy:
             not _REVISION.fullmatch(expected_revision)
         ):
             raise NetworkPolicyError("策略版本格式无效")
-        with _LOCK:
+        with _LOCK, _cross_process_lock(self.path, self.root):
             data, revision = _read(self.path, self.root)
             if expected_revision is not None and expected_revision != revision:
                 raise NetworkPolicyConflict("策略已被其他任务修改，请重新查看后操作")
