@@ -127,6 +127,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
   </main>
   <aside class="right" id="right">
     <div class="card"><h4>模型</h4><div class="kv" id="model-kv"></div></div>
+    <div class="card"><h4>Token 用量</h4><div class="kv" id="usage-kv"></div><div class="hint" id="usage-hint">仅统计当前进程中 API 返回的真实用量。</div></div>
     <div class="card plan"><h4>计划</h4><div id="plan"><div class="empty">这个会话还没有调用 plan。</div></div></div>
     <div class="card"><h4>证据</h4><div id="evidence"><div class="empty">联网抓取的页面原文会作为证据列在这里。</div></div></div>
   </aside>
@@ -204,7 +205,13 @@ function applyEvent(ev){var d=ev.data||{};
   else if(ev.type==="approval_result"){var b=$("log").querySelector('.approve[data-aid="'+d.id+'"]');if(b){b.querySelector("p").textContent=d.approved?"已批准":(d.timeout?"审批超时，已拒绝":"已拒绝");b.querySelectorAll("button").forEach(function(x){x.remove()})}}
 }
 function scrollEnd(){var l=$("log");l.scrollTop=l.scrollHeight}
-function renderSide(v){var p=$("plan");
+function renderUsage(u){var box=$("usage-kv"),hint=$("usage-hint");box.innerHTML="";
+  if(!u){hint.textContent="本次进程尚无用量数据。";return}
+  var show=function(n){return n==null?"未报告":Number(n).toLocaleString()};
+  var rows=[["模型调用",u.calls+" 次（报告 "+u.reported_calls+" 次）"],["输入 Token",show(u.prompt_tokens)],["输出 Token",show(u.completion_tokens)],["Token 合计",show(u.total_tokens)],["最近输入",show(u.last_prompt_tokens)],["配置上下文",u.context_window_tokens==null?"未配置":show(u.context_window_tokens)],["参考剩余",u.context_remaining_tokens==null?"未知":show(u.context_remaining_tokens)]];
+  rows.forEach(function(r){box.appendChild(el("span")).textContent=r[0];box.appendChild(el("span")).textContent=r[1]});
+  hint.textContent=(u.missing_calls?u.missing_calls+" 次 API 响应未报告用量；累计值不完整。":"仅统计模型报告的 token。")+(u.context_remaining_tokens==null?" 无法确认上下文剩余。":" 余量按最近请求的输入 tokens 估算，不含输出和下一轮输入。")}
+function renderSide(v){renderUsage(v.usage);var p=$("plan");
   if(v.plan){p.innerHTML="";var t=el("div",null);t.innerHTML="<b></b> <span class='st "+(v.plan.state==="running"?"wait":"ok")+"'>"+(v.plan.state==="running"?"进行中":"已结束")+"</span>";t.querySelector("b").textContent=v.plan.title;p.appendChild(t);var ol=el("ol");v.plan.steps.forEach(function(s){var li=el("li");li.textContent=s;ol.appendChild(li)});p.appendChild(ol)}
   else p.innerHTML='<div class="empty">这个会话还没有调用 plan。</div>';
   var e=$("evidence");if(!v.evidence.length){e.innerHTML='<div class="empty">联网抓取的页面原文会作为证据列在这里。</div>';return}
@@ -235,7 +242,7 @@ function loadInfo(){return api("/api/info").then(function(i){state.info=i;$("ver
   var p=$("prov");p.querySelector("span").textContent=i.provider?(i.provider+" / "+i.model):"provider 未配置";p.querySelector(".dot").className="dot "+(i.credentials?"on":"off");p.title=i.provider_desc||i.provider_error||"";
   var sel=$("mode");sel.innerHTML="";i.modes.forEach(function(m){var o=el("option");o.value=m;o.textContent=m;if(m===i.mode)o.selected=true;sel.appendChild(o)});
   var kv=$("model-kv");kv.innerHTML="";[["Provider",i.provider||"—"],["模型",i.model||"—"],["凭据",i.credentials?"已配置":"未配置"],["模式",i.mode],["工作目录",i.workdir]].forEach(function(r){kv.appendChild(el("span")).textContent=r[0];kv.appendChild(el("span")).textContent=r[1]});
-  var c=$("cfg-kv");c.innerHTML="";var cfg=i.config||{};[["版本",i.version],["当前 provider",i.provider_desc||i.provider_error||"—"],["最大轮数",cfg.max_turns],["MCP",cfg.mcp_enabled?("已启用（"+i.mcp_tools+" 个工具）"):"未启用"],["沙盒（配置）",cfg.sandbox+"（网页界面在本地执行）"],["档案",(cfg.profiles||[]).join(", ")||"—"]].forEach(function(r){c.appendChild(el("span")).textContent=r[0];c.appendChild(el("span")).textContent=r[1]==null?"—":String(r[1])});
+  var c=$("cfg-kv");c.innerHTML="";var cfg=i.config||{};[["版本",i.version],["当前 provider",i.provider_desc||i.provider_error||"—"],["最大轮数",cfg.max_turns],["配置上下文窗口",cfg.context_window_tokens||"未知"],["MCP",cfg.mcp_enabled?("已启用（"+i.mcp_tools+" 个工具）"):"未启用"],["沙盒（配置）",cfg.sandbox+"（网页界面在本地执行）"],["档案",(cfg.profiles||[]).join(", ")||"—"]].forEach(function(r){c.appendChild(el("span")).textContent=r[0];c.appendChild(el("span")).textContent=r[1]==null?"—":String(r[1])});
   var k=$("keys");k.innerHTML="";i.keys.forEach(function(x){var tr=el("tr");var st=x.env?(x.configured?"✓ 已配置":(x.connector?"未设置（可用已保存连接器）":(x.needs_key?"未设置":"无需 Key"))):"无需 Key";
     [x.provider,x.env||"—",st].forEach(function(v){tr.appendChild(el("td")).textContent=v});k.appendChild(tr)})})}
 $("form").addEventListener("submit",function(e){e.preventDefault();send()});
