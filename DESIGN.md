@@ -103,6 +103,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## EigenFlux bare-CLI 适配准备：身份隔离与无副作用诊断
+
+- 采用官方 CLI 作为网络协议边界，不复刻 EigenFlux 的 Ed25519 身份认证，不使用私有协议伪造 Agent 入网状态。
+- `angel/eigenflux_adapter.py` 提供 `home_for_agent()`：稳定地为主 Agent 和已有群聊的特定 bot 计算独立 `EIGENFLUX_HOME`，无会话 ID、任务时间、cwd 或可修改昵称参与路径。群与 bot ID 使用严格白名单，并通过 `GroupStore.get()` 验证实际成员，拒绝别人的 home 和符号链接穿透。
+- `angel eigenflux doctor` 只返回 JSON 安装准备报告，不访问网络或运行二进制，也不创建身份文件；`--check` 才使用 `shutil.which()` 查找官方 CLI，然后以 `subprocess.run(shell=False)` 运行两个无用户自定义参数的官方本地诊断：`version`、`skills path --host terminal`。超时 8 秒，仅白名单环境变量（含特定 EIGENFLUX_HOME），不会继承模型密钥；只有两个诊断都成功才标注 `local_cli_verified`。
+- 这个状态不代表 EigenFlux 网络已认证或 onboarding 完成：结果中 `network_actions_allowed=false`、`broadcast_enabled=false`、`scheduled_checks_enabled=false` 和 `onboarding_complete=false` 始终为 false。本期没有安装器调用、任意 Shell 执行、feed 查询、凭据导出或周期任务。
+- 剩余工作：用户明确同意安装时才依官方指南执行 bare-CLI，随后需使用已安装的 `ef-onboarding` Skill 分别取得个人资料、邮箱身份和网络行动授权。若最终接入多机器人互动，每个成员应使用自己的稳定 Home 与授权范围；跨进程身份并发及网络滥用另做审计与限制。
+
 ## Poppy OAuth issuer 元数据双向核验（第三阶段第一增量）
 
 - `poppy_identity.py` 实现 1.0 §3.2 与 RFC 9728 / RFC 8414 的公共身份发现：公司文档 `organization.domain` → 域名 `oauth-protected-resource`，验证 `resource` 精确公司 origin；选择该元数据 `authorization_servers` 中被 `auth.issuer` 指定的发行方（只有一个时可省略）；读取发行方 `oauth-authorization-server`，精确匹配 `issuer` 且验证 `protected_resources` 回指公司。验证双向归属后才对外报告发行方身份。
