@@ -144,8 +144,13 @@ def _fetch_public_https(url: str, *, allow_redirect: bool = True) -> tuple[str, 
             if response.status != 200:
                 raise PoppyError(f"站点没有可用的 Poppy 文件（HTTP {response.status}）")
             length = response.getheader("Content-Length")
-            if length and int(length) > MAX_BYTES:
-                raise PoppyError("Poppy 文件超过 128 KiB")
+            if length is not None:
+                try:
+                    declared_size = int(length)
+                except (TypeError, ValueError) as exc:
+                    raise PoppyError("Poppy 响应的 Content-Length 无效") from exc
+                if declared_size < 0 or declared_size > MAX_BYTES:
+                    raise PoppyError("Poppy 文件大小无效或超过 128 KiB")
             body = response.read(MAX_BYTES + 1)
             if len(body) > MAX_BYTES:
                 raise PoppyError("Poppy 文件超过 128 KiB")
