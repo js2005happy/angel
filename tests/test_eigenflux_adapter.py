@@ -14,11 +14,14 @@ import angel.eigenflux_adapter as eigenflux
 from angel.groups import GroupStore
 
 
-class EigenFluxHomeTests(unittest.TestCase):
+class _EigenFluxFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "angel"
         self.root.mkdir()
+        # Windows Temp may use 8.3 alias in one API and canonical long path
+        # in Path.resolve(). Compare paths in the same canonical spelling.
+        self.root = self.root.resolve()
         self.groups = GroupStore(self.root / "groups")
         self.groups.create("alpha", "Alpha")
         self.groups.create("beta", "Beta")
@@ -101,7 +104,11 @@ class EigenFluxHomeTests(unittest.TestCase):
             eigenflux.home_for_agent(root=self.root, room="alpha", bot="lead")
 
 
-class EigenFluxDoctorTests(EigenFluxHomeTests):
+class EigenFluxHomeTests(_EigenFluxFixture, unittest.TestCase):
+    """Tests of home identity isolation."""
+
+
+class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
     def test_default_dry_run_never_executes_cli_or_creates_identity(self):
         with mock.patch("angel.eigenflux_adapter.shutil.which") as which, \
              mock.patch("angel.eigenflux_adapter.subprocess.run") as execute:
