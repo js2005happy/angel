@@ -32,7 +32,8 @@ from .scheduler import (
     save_schedule,
 )
 from .skills import load_skills
-from .memory import list_sessions, load_session, new_session_id
+from .memory import list_sessions, load_session, new_session_id, save_session
+from .checkpoints import CheckpointStore, CheckpointError
 from .usage import UsageTracker, context_limit, format_usage
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 
@@ -44,6 +45,8 @@ REPL_COMMANDS = (
     ("/sessions", "列出历史会话"),
     ("/compact", "压缩当前会话（模型摘要 + 保留最近消息）"),
     ("/status", "显示模型调用与 Token 用量、参考上下文余量"),
+    ("/undo", "撤销当前会话最近一轮内置本地文件修改"),
+    ("/rewind N", "撤销最近 N 轮文件检查点（最多 10），若有外部改动则拒绝"),
     ("/clear", "清空当前对话历史"),
     ("/new", "开始一个新会话"),
     ("/exit 或 /quit", "退出"),
@@ -736,6 +739,37 @@ def main(argv: list[str] | None = None) -> int:
                     f"（方式：{info['method']}）"
                 )
                 continue
+            elif line == "/undo" or line == "/rewind" or line.startswith("/rewind "):
+                if agent.checkpoints is None:
+                    print("错误：当前执行后端不支持本地文件检查点撤销")
+                    continue
+                try:
+                    if line == "/undo" or line == "/rewind":
+                        count = 1
+                    else:
+                        pieces = line.split()
+                        if len(pieces) != 2 or not pieces[1].isdigit():
+                            raise CheckpointError("用法：/rewind N（1 至 10）")
+                        count = int(pieces[1])
+                    result = agent.checkpoints.undo(count)
+                except (CheckpointError, OSError) as exc:
+                    print(f"撤销失败：{exc}")
+                    continue
+                # The model's history must not silently claim undone file
+                # changes are still present. Log the rollback as a user turn.
+                agent.messages.append({
+                    "role": "user", "content": (
+                        f"[Angel 撤销记录] 已恢复最近 {result['turns']} 轮中的 "
+                        f"{result['files']} 个本地文件；此前工具执行结果可能已失效。"
+                        "后续操作请重新读取文件，不要假设此前改动仍存在。"
+                    ),
+                })
+                save_session(agent.session_id, agent.messages)
+                agent.ctx.approved_file_tools.clear()
+                agent.ctx.approved_shell_commands.clear()
+                print(f"已撤销 {result['turns']} 轮，恢复 {result['files']} 个本地文件。")
+                print("注意：Shell、MCP、E2B、记忆/技能等副作用不在撤销范围内。")
+                continue
             elif line == "/clear":
                 agent.messages = []
                 agent.ctx.approved_file_tools.clear()
@@ -749,6 +783,11 @@ def main(argv: list[str] | None = None) -> int:
                 agent.ctx.approved_shell_commands.clear()
                 agent.usage = UsageTracker(configured_window=window)
                 agent.session_id = new_session_id()
+                if agent.checkpoints is not None:
+                    agent.checkpoints = CheckpointStore(
+                        ANGEL_HOME / "checkpoints", agent.session_id, agent.workdir
+                    )
+                    agent.ctx.checkpoint = agent.checkpoints
                 print(f"已开始新会话：{agent.session_id}")
                 continue
             else:

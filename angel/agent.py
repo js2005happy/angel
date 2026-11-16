@@ -20,6 +20,7 @@ from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
 from .console import configure_stream
 from .usage import UsageTracker
+from .checkpoints import CheckpointStore
 
 
 class AgentError(Exception):
@@ -91,6 +92,7 @@ class Agent:
         context_window_tokens: int | None = None,
         auto_compact_enabled: bool = False,
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
+        checkpoint_store: CheckpointStore | None = None,
     ) -> None:
         self.provider = provider
         self.usage = UsageTracker(configured_window=context_window_tokens)
@@ -123,6 +125,11 @@ class Agent:
         self.skills: list[Skill] = load_skills(self.skills_dirs)
         self.mcp_manager = mcp_manager
         self.backend = backend
+        self.checkpoints = (
+            checkpoint_store if checkpoint_store is not None else
+            CheckpointStore(ANGEL_HOME / "checkpoints", self.session_id, self.workdir)
+            if backend is None else None
+        )
         self.evidence = EvidenceStore(ANGEL_HOME / "evidence", self.session_id)
         self.ctx = ToolContext(
             workdir=self.workdir,
@@ -134,6 +141,7 @@ class Agent:
             evidence=self.evidence,
             backend=backend,
             approve_fn=approve_fn,
+            checkpoint=self.checkpoints,
         )
 
     def _emit(self, kind: str, data: dict) -> None:
@@ -251,6 +259,8 @@ class Agent:
         if self.delegate_depth == 0:
             # Each top-level user request starts a fresh child-agent allowance.
             self._delegate_budget.reset()
+            if self.checkpoints is not None:
+                self.checkpoints.begin_turn()
         system = self.build_system_prompt(task)
         messages: list[dict] = (
             [{"role": "system", "content": system}]
@@ -380,6 +390,7 @@ class Agent:
             context_window_tokens=self.usage.configured_window,
             auto_compact_enabled=self.auto_compact_enabled,
             auto_compact_threshold=self.auto_compact_threshold,
+            checkpoint_store=self.checkpoints,
         )
         try:
             return child.run(task)
