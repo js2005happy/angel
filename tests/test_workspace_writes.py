@@ -160,20 +160,27 @@ class ScopedApprovalTest(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_file_tool_always_is_scoped_to_current_context_and_tool(self):
-        with patch("builtins.input", side_effect=["a", "y"]) as prompts, \
+    def test_file_tool_always_is_scoped_to_canonical_target_and_tool(self):
+        with patch("builtins.input", side_effect=["a", "y", "n"]) as prompts, \
              patch("sys.stdout", new_callable=io.StringIO):
             self.assertIn("已写入", execute_tool("write_file", {
                 "path": "one.txt", "content": "1",
             }, self.ctx))
             self.assertIn("已写入", execute_tool("write_file", {
+                "path": str(self.root / "one.txt"), "content": "2",
+            }, self.ctx))  # Same canonical target: no second prompt.
+            self.assertIn("已写入", execute_tool("write_file", {
                 "path": "two.txt", "content": "2",
-            }, self.ctx))
-            self.assertIn("已编辑", execute_tool("edit_file", {
-                "path": "one.txt", "old_text": "1", "new_text": "3",
-            }, self.ctx))
-        self.assertEqual(prompts.call_count, 2)
-        self.assertEqual(self.ctx.approved_file_tools, {"write_file"})
+            }, self.ctx))  # Different target: prompt.
+            result = execute_tool("edit_file", {
+                "path": "one.txt", "old_text": "2", "new_text": "3",
+            }, self.ctx)  # Different tool: prompt.
+        self.assertIn("用户拒绝", result)
+        self.assertEqual(prompts.call_count, 3)
+        self.assertEqual(
+            self.ctx.approved_file_tools,
+            {("write_file", str(self.root / "one.txt"), str(self.root), id(None))},
+        )
         fresh = ToolContext(
             workdir=self.root, mode="auto", interactive=True,
             memory_path=self.root / "mem", skills_dir=self.root / "skills",
@@ -187,22 +194,35 @@ class ScopedApprovalTest(unittest.TestCase):
         prompts.assert_called_once()
         self.assertFalse((self.root / "three.txt").exists())
 
-    def test_shell_always_applies_only_to_identical_command(self):
-        with patch("builtins.input", side_effect=["always", "n", "n"]) as prompts, \
+    def test_shell_always_requires_same_command_cwd_timeout_and_backend(self):
+        other = self.root / "other"
+        other.mkdir()
+        with patch("builtins.input", side_effect=["always", "n", "n", "n"]) as prompts, \
              patch("sys.stdout", new_callable=io.StringIO):
             for command in ("echo 42", "echo 42", "echo 43"):
                 execute_tool("shell", {"command": command}, self.ctx)
-            # Same command from another working directory must be approved anew.
-            result = execute_tool("shell", {
+            # Different canonical working directory is a separate grant.
+            different_dir = execute_tool("shell", {
                 "command": "echo 42", "cwd": "other",
             }, self.ctx)
-        self.assertIn("用户拒绝", result)
-        self.assertEqual(prompts.call_count, 3)
-        self.assertEqual(self.ctx.approved_shell_commands, {("echo 42", ".")})
+            # Different timeout must never reuse the previous grant.
+            different_timeout = execute_tool("shell", {
+                "command": "echo 42", "timeout": 120,
+            }, self.ctx)
+        self.assertIn("用户拒绝", different_dir)
+        self.assertIn("用户拒绝", different_timeout)
+        self.assertEqual(prompts.call_count, 4)
+        self.assertEqual(self.ctx.approved_shell_commands, {
+            ("echo 42", str(self.root), str(self.root), 60, id(None))
+        })
 
     def test_auto_noninteractive_and_readonly_cannot_use_cached_grants(self):
-        self.ctx.approved_file_tools.add("write_file")
-        self.ctx.approved_shell_commands.add(("echo 42", "."))
+        self.ctx.approved_file_tools.add(
+            ("write_file", str(self.root / "blocked.txt"), str(self.root), id(None))
+        )
+        self.ctx.approved_shell_commands.add(
+            ("echo 42", str(self.root), str(self.root), 60, id(None))
+        )
         for mode, interactive in (("auto", False), ("readonly", True)):
             with self.subTest(mode=mode, interactive=interactive):
                 self.ctx.mode = mode
@@ -224,15 +244,18 @@ class ScopedApprovalTest(unittest.TestCase):
         self.assertEqual(self.ctx.approved_file_tools, set())
         self.assertEqual(self.ctx.approved_shell_commands, set())
 
-    def test_callback_uses_existing_per_call_approval(self):
+    def test_callback_always_runs_even_when_grants_are_already_cached(self):
+        self.ctx.approved_file_tools.add(
+            ("write_file", str(self.root / "test.txt"), str(self.root), id(None))
+        )
         approvals = []
-        self.ctx.approve_fn = lambda name, summary: approvals.append(name) or True
-        for _ in range(2):
-            self.assertIn("已写入", execute_tool("write_file", {
-                "path": "test.txt", "content": "ok",
-            }, self.ctx))
-        self.assertEqual(approvals, ["write_file", "write_file"])
-        self.assertEqual(self.ctx.approved_file_tools, set())
+        self.ctx.approve_fn = lambda name, summary: approvals.append(name) or False
+        result = execute_tool("write_file", {
+            "path": "test.txt", "content": "should not write",
+        }, self.ctx)
+        self.assertIn("用户拒绝", result)
+        self.assertEqual(approvals, ["write_file"])
+        self.assertFalse((self.root / "test.txt").exists())
 
 
 if __name__ == "__main__":
