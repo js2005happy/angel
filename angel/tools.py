@@ -41,7 +41,7 @@ class ToolContext:
     # Explicit, session-local approvals for a small set of file tools and
     # identical shell command strings. Never persisted or reused by other runs.
     approved_file_tools: set[str] = field(default_factory=set)
-    approved_shell_commands: set[str] = field(default_factory=set)
+    approved_shell_commands: set[tuple[str, str]] = field(default_factory=set)
 
 
 MUTATING_TOOLS = {
@@ -343,7 +343,8 @@ _SESSION_FILE_TOOLS = frozenset(("write_file", "edit_file", "plan"))
 
 
 def _check_approval(
-    ctx: ToolContext, tool_name: str, summary: str, *, command: str | None = None
+    ctx: ToolContext, tool_name: str, summary: str, *,
+    command: str | None = None, cwd: str | None = None
 ) -> None:
     if tool_name not in MUTATING_TOOLS:
         return
@@ -360,7 +361,8 @@ def _check_approval(
         # wildcard approval for MCP, HTTP POST, memory or skill writes.
         if tool_name in _SESSION_FILE_TOOLS and tool_name in ctx.approved_file_tools:
             return
-        if tool_name == "shell" and command is not None and command in ctx.approved_shell_commands:
+        shell_scope = (command, cwd or ".") if command is not None else None
+        if tool_name == "shell" and shell_scope is not None and shell_scope in ctx.approved_shell_commands:
             return
         if ctx.approve_fn is not None:
             if not ctx.approve_fn(tool_name, summary):
@@ -368,15 +370,15 @@ def _check_approval(
             return
         print(summary)
         allow_repeat = tool_name in _SESSION_FILE_TOOLS or (tool_name == "shell" and command is not None)
-        prompt = "允许执行吗？[y/N/a] (a=本次会话同类文件工具或完全相同命令始终允许) " if allow_repeat else "允许执行吗？[y/N] "
+        prompt = "允许执行吗？[y/N/a] (a=本次会话同种文件工具或相同命令与 cwd 始终允许) " if allow_repeat else "允许执行吗？[y/N] "
         answer = input(prompt).strip().lower()
         if answer in ("y", "yes"):
             return
         if allow_repeat and answer in ("a", "always"):
             if tool_name in _SESSION_FILE_TOOLS:
                 ctx.approved_file_tools.add(tool_name)
-            elif tool_name == "shell" and command is not None:
-                ctx.approved_shell_commands.add(command)
+            elif tool_name == "shell" and shell_scope is not None:
+                ctx.approved_shell_commands.add(shell_scope)
             return
         raise ToolError("用户拒绝执行")
     if ctx.mode == "full":
@@ -500,7 +502,10 @@ def _tool_shell(
     denied = _check_shell_denied(command)
     if denied:
         return f"错误：{denied}"
-    _check_approval(ctx, "shell", f"执行命令：{command}", command=command)
+    _check_approval(
+        ctx, "shell", f"执行命令：{command}（cwd: {cwd or '.'}）",
+        command=command, cwd=cwd,
+    )
     if ctx.backend is not None:
         resolved_cwd = _resolve_backend_path(ctx, cwd or ".")
         return _truncate(
