@@ -1,6 +1,7 @@
 """Angel 的工具驱动代理循环、系统提示词和子任务委派。"""
 
 import json
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +13,7 @@ from .memory import load_memory_summary, load_agents_md, new_session_id, save_se
 from .compact import compact_messages
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
+from .console import configure_stream
 
 
 class AgentError(Exception):
@@ -246,13 +248,22 @@ class Agent:
             return f"子任务异常：{type(exc).__name__}: {exc}"
 
 
-def build_mcp_manager(timeout: float = 30.0) -> MCPToolManager | None:
-    """按 ~/.angel/config.json 启动 MCP 服务器。
+def build_mcp_manager(
+    timeout: float = 30.0,
+    *,
+    mode: str = "auto",
+    interactive: bool = False,
+) -> MCPToolManager | None:
+    """按执行权限决定是否启动 MCP 服务，而不只检查调用权限。
 
-    MCP 默认关闭：只有 config 里 mcp_enabled 为 true 且配了 mcp_servers
-    时才启动。没有配置或全部启动失败时返回 None
-    （警告已由 MCPToolManager 打印到 stderr）。
+    启动本机 MCP 程序本身就可能产生副作用，即使不调用它的工具也是如此。
+    readonly 或非交互 auto 一律不启动；交互 auto 按服务器逐一确认。
     """
+    if mode not in ("auto", "full"):
+        return None
+    if mode == "auto" and not interactive:
+        return None
+
     try:
         config = load_config()
     except Exception:
@@ -262,6 +273,28 @@ def build_mcp_manager(timeout: float = 30.0) -> MCPToolManager | None:
     servers = load_mcp_servers(config)
     if not servers:
         return None
+
+    if mode == "auto":
+        # Core API use may bypass cli.main() which normally configures stdio.
+        # Make startup consent usable on legacy Windows code-page consoles.
+        configure_stream(sys.stdout)
+        approved = {}
+        for name, server in servers.items():
+            # Server commands and env can contain secrets; only show the name.
+            print(
+                f"外部 MCP 服务 {name} 将以当前系统用户启动，"
+                "可能访问本机文件和网络。"
+            )
+            try:
+                answer = input("允许启动该 MCP 服务吗？[y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            if answer.strip().lower() in ("y", "yes"):
+                approved[name] = server
+        servers = approved
+        if not servers:
+            return None
+
     manager = MCPToolManager(servers, timeout=timeout)
     manager.start_all()
     if not manager.has_tools():

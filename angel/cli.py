@@ -427,8 +427,9 @@ def main(argv: list[str] | None = None) -> int:
         print_setup_help(provider.name)
         return 1
 
+    interactive = sys.stdin.isatty()
     if args.list_mcp:
-        manager = build_mcp_manager()
+        manager = build_mcp_manager(mode=mode, interactive=interactive)
         if manager is None:
             print("MCP 未启用或无可用服务器。")
             print("在 ~/.angel/config.json 里设置 \"mcp_enabled\": true 并配置 mcp_servers 后可用。")
@@ -467,7 +468,6 @@ def main(argv: list[str] | None = None) -> int:
         messages = loaded
         session_id = args.resume
 
-    interactive = sys.stdin.isatty()
     backend = None
     if sandbox_settings.backend == "e2b":
         try:
@@ -480,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             f"（超时 {sandbox_settings.timeout} 秒，到期自动销毁）"
         )
         print("文件与命令将在沙盒里执行，不在本地机器上。")
-    mcp_manager = build_mcp_manager()
+    mcp_manager = build_mcp_manager(mode=mode, interactive=interactive)
     agent = Agent(
         provider=provider,
         workdir=workdir,
@@ -542,6 +542,19 @@ def main(argv: list[str] | None = None) -> int:
                 new_mode = line.split(None, 1)[1].strip()
                 try:
                     validate_mode(new_mode)
+                    if new_mode != agent.mode:
+                        # Permission changes must apply to running subprocesses,
+                        # not just subsequent tool invocations.
+                        if mcp_manager is not None:
+                            try:
+                                mcp_manager.stop_all()
+                            finally:
+                                mcp_manager = None
+                                agent.mcp_manager = None
+                        mcp_manager = build_mcp_manager(
+                            mode=new_mode, interactive=interactive
+                        )
+                        agent.mcp_manager = mcp_manager
                     agent.mode = new_mode
                     agent.ctx.mode = new_mode
                     print(f"已切换为 {new_mode} 模式")

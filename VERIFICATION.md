@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 未发布：MCP 启动授权（含新 Web UI 兼容性）
+
+- `tests/test_mcp_startup.py` 使用真实本地模拟 MCP stdio 进程启动标记，覆盖 readonly/非交互 auto 未启动、终端交互逐台批准、full 启动、旧 Windows 输出编码及 REPL 模式切换。
+- `tests/test_webui_mcp_mode.py` 覆盖 Web UI 权限降级时关闭进程、升为 full 时重新加载、任务执行中拒绝切换，以及相同模式不重复启动。
+- Web UI 新功能被保留，不覆盖任何已合并的 UI/官网源码。仅以 GitHub Actions 当前 PR Linux/Windows 结果为真实回归测试证据；这是进程启动控制，不是 OS 沙箱。
+
+
 ## 未发布：MCP 子进程环境隔离验证
 
 - 新增单元测试 `tests/test_mcp_environment.py`：验证默认不继承模型 API Key、显式环境传递、配置格式错误及实际 Python MCP stdio 子进程的环境可见性。
