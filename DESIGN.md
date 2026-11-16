@@ -2,7 +2,7 @@
 
 ## 一句话
 
-Angel 是一个全能 AI agent 命令行工具：用 **Python 标准库**从零写成（零 pip 依赖），集多个开源 agent 的设计思想之长，跑在任何只有 Python 3 的机器上。
+Angel 是一个全能 AI agent 命令行工具：Agent 与服务端使用 **Python 标准库**（零 pip 依赖），网页界面使用原生 JavaScript。按性能剖析为模块选语言；只有确认 CPU 热点后，才用 Go、Rust 或 C 编写独立的高速组件，不为“多语言”引入无收益的运行时边界。
 
 ## 架构
 
@@ -180,8 +180,9 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - `angel/webui.py`：沿用现有同源 token 安全边界，提供 `GET/POST /api/groups`、`GET /api/groups/<id>`、`POST /api/groups/<id>/messages`。前端以 `textContent` 显示不可信的群消息，避免 HTML 注入。
 - 机器人身份和记忆分离：不同成员的 `Agent` 实例、模型会话 ID、群内 workspace 与 `MEMORY.md` 相互独立；共享的只有群消息记录。
 - 资源限制：每群最多 6 人、每条消息最多 2 轮、每个机器人每次最多 3 轮模型调用；独立的 `delegate` 工具有共享子任务预算/递归深度限制。
-- 当前选择串行逐个响应，以便后续成员能看到前一个人的意见，也便于控制模型调用成本。可并行的独立任务队列、WebSocket/SSE 推送与多机器人实际代码执行放入后续迭代，不虚称已实现。
-- 语言路线：保留 Python 标准库 agent / 协议适配，交互层使用 JavaScript；当有具体并发或性能瓶颈，再评估 TypeScript、Go、Rust，而不是先重写。
+- 默认按串行模式逐个响应，保留前一位成员影响后一位成员的讨论方式。用户可显式启用并行响应：同一轮最多 4 个成员共用轮次开始时的对话快照，全部完成后才开始下一轮；失败按成员分别记入，完成结果立即持久化。模型调用总数与费用不因并行减少。
+- 并行响应由 Python `ThreadPoolExecutor` 执行同步 HTTP/模型调用，最大并发固定为 4；该路径主要等待网络 I/O，避免启动 Go 子进程或跨语言 RPC。Web UI 用原生 JavaScript 提供显式开关。独立后台任务、取消正在进行的 HTTP 请求、流式进度及群聊 trace 父子关系仍待开发。
+- 语言路线：Python 负责 agent 状态、权限和网络 I/O，JavaScript 负责浏览器交互；Go/Rust/C 用于经 profiling 证实的 CPU 密集热点，例如向量距离扫描。新增语言模块需独立构建、明确数据协议，并证明端到端收益后再纳入。
 
 ## 单文件补丁与审批差异预览
 
@@ -226,7 +227,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 **v2 已完成（0.2.0）：** MCP 客户端、内置调度器/daemon、会话压缩、证据链、grep/git_status/http_post、provider 档案、web_search 双后端。
 
-**生产化补充方向（开发分支）：** Agent 执行追踪已实现待验证；项目文档 SQLite 语义检索 MVP 已实现待验证；多 Agent 并行编排仍待开发。
+**生产化补充方向（开发分支）：** Agent 执行追踪、项目文档 SQLite 语义检索 MVP 和群聊并行响应 MVP 已实现待验证；后台多 Agent 队列、任务取消和可关联群聊 trace 仍待开发。
 
 1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。

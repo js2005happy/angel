@@ -691,7 +691,8 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             try:
                 result = self.state.groups.send(
-                    match.group(1), body.get("text"), body.get("rounds", 1)
+                    match.group(1), body.get("text"), body.get("rounds", 1),
+                    parallel=body.get("parallel", False),
                 )
             except GroupError as exc:
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))

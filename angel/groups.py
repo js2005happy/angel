@@ -7,6 +7,7 @@ another. All work starts from an explicit user message (no runaway loops).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
@@ -28,6 +29,7 @@ _MENTION = re.compile(r"(?<![A-Za-z0-9_])@([a-z][a-z0-9_-]{0,31})")
 MAX_BOTS = 6
 MAX_ROUNDS = 2
 MAX_BOT_TURNS = 3
+MAX_PARALLEL_BOTS = 4
 MAX_INPUT_CHARS = 6000
 MAX_RESPONSE_CHARS = 6000
 MAX_CONTEXT_MESSAGES = 12
@@ -260,10 +262,32 @@ class GroupStore:
         )
         return agent.run(prompt)[:MAX_RESPONSE_CHARS] or "（无回复）"
 
-    def send(self, room_id: str, message: str, rounds: int = 1) -> dict:
+    def _bot_entry(self, room: dict, bot: Bot, transcript: list[dict]) -> dict:
+        try:
+            response = self._bot_response(room, bot, transcript)
+            return {"sender": bot.id, "content": response, "time": _stamp()}
+        except (AgentError, GroupError) as exc:
+            return {
+                "sender": bot.id,
+                "content": f"机器人执行失败：{exc}",
+                "time": _stamp(), "error": True,
+            }
+        except Exception as exc:
+            # Avoid exposing keys/paths from unexpected provider failures.
+            return {
+                "sender": bot.id,
+                "content": f"机器人执行失败（{type(exc).__name__}）",
+                "time": _stamp(), "error": True,
+            }
+
+    def send(
+        self, room_id: str, message: str, rounds: int = 1, parallel: bool = False,
+    ) -> dict:
         message = _text(message, "群消息", MAX_INPUT_CHARS)
         if isinstance(rounds, bool) or not isinstance(rounds, int) or not 1 <= rounds <= MAX_ROUNDS:
             raise GroupError(f"每条消息最多允许 {MAX_ROUNDS} 轮讨论")
+        if not isinstance(parallel, bool):
+            raise GroupError("parallel 必须是布尔值")
         with self._guard(room_id):
             room = self._read(room_id)
             bots = [Bot.parse(raw) for raw in room["bots"]]
@@ -279,24 +303,38 @@ class GroupStore:
             new_entries.append(entry)
             _write_json(self._file(room_id), room)
             for _ in range(rounds):
+                if parallel and len(selected) > 1:
+                    # Every bot in this round receives the same transcript
+                    # snapshot. The next round starts only after all results
+                    # are persisted, so discussion dependencies remain clear.
+                    transcript = list(room["messages"])
+                    workers = min(MAX_PARALLEL_BOTS, len(selected))
+                    with ThreadPoolExecutor(
+                        max_workers=workers, thread_name_prefix="angel-group"
+                    ) as pool:
+                        futures = {
+                            pool.submit(self._bot_entry, room, bot, transcript): bot
+                            for bot in selected
+                        }
+                        for future in as_completed(futures):
+                            entry = future.result()
+                            room["messages"].append(entry)
+                            new_entries.append(entry)
+                            _write_json(self._file(room_id), room)
+                    continue
                 for bot in selected:
-                    try:
-                        response = self._bot_response(room, bot, room["messages"])
-                        entry = {"sender": bot.id, "content": response, "time": _stamp()}
-                    except (AgentError, GroupError) as exc:
-                        entry = {
-                            "sender": bot.id,
-                            "content": f"机器人执行失败：{exc}",
-                            "time": _stamp(), "error": True,
-                        }
-                    except Exception as exc:
-                        # Avoid exposing keys/paths from unexpected provider failures.
-                        entry = {
-                            "sender": bot.id,
-                            "content": f"机器人执行失败（{type(exc).__name__}）",
-                            "time": _stamp(), "error": True,
-                        }
+                    entry = self._bot_entry(room, bot, room["messages"])
                     room["messages"].append(entry)
                     new_entries.append(entry)
                     _write_json(self._file(room_id), room)
-            return {"room": room_id, "messages": new_entries, "total": len(room["messages"])}
+            return {
+                "room": room_id,
+                "messages": new_entries,
+                "total": len(room["messages"]),
+                "execution": {
+                    "mode": "parallel" if parallel else "serial",
+                    "max_concurrent_bots": (
+                        min(MAX_PARALLEL_BOTS, len(selected)) if parallel else 1
+                    ),
+                },
+            }

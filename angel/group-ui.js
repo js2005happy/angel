@@ -140,16 +140,21 @@
     const input = el("messageInput");
     const value = input.value.trim();
     if (!value) return;
+    const parallel = el("parallelResponses").checked;
     busy = true;
     el("sendBtn").disabled = true;
-    say("机器人正在分别思考和回复。每位机器人最多运行 3 轮模型调用……");
+    say(parallel
+      ? "并行讨论中：最多 4 个机器人同时请求模型；同一轮互不读取对方的未完成回复……"
+      : "机器人正在依次思考和回复。每位机器人最多运行 3 轮模型调用……");
     try {
-      await api("/api/groups/" + encodeURIComponent(activeId) + "/messages", {
-        text:value, rounds:Number(el("rounds").value)
+      const result = await api("/api/groups/" + encodeURIComponent(activeId) + "/messages", {
+        text:value, rounds:Number(el("rounds").value), parallel
       });
       input.value = "";
       await openRoom(activeId);
-      say("本轮讨论已保存；每位成员的记忆与会话单独保存。");
+      say(result.execution && result.execution.mode === "parallel"
+        ? "并行结果已保存；下一轮读取本轮全部结果。总调用数与费用不变。"
+        : "本轮讨论已保存；每位成员的记忆与会话单独保存。");
     } catch (error) {
       say(error.message);
       if (activeId) await openRoom(activeId).catch(() => {});

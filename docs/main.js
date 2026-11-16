@@ -7,8 +7,8 @@
     root.setAttribute("data-lang", lang);
     root.setAttribute("lang", lang === "en" ? "en" : "zh-CN");
     document.title = lang === "en"
-      ? "Angel — an AI agent CLI written on the Python standard library"
-      : "Angel — 纯 Python 标准库写成的 AI agent 命令行工具";
+      ? "Angel — Python Agent Core + JavaScript UI"
+      : "Angel — Python Agent 核心 + JavaScript 界面";
     try { localStorage.setItem(KEY, lang); } catch (e) { /* private mode */ }
   }
 

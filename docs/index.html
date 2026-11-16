@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Angel — 纯 Python 标准库写成的 AI agent 命令行工具</title>
-<meta name="description" content="Angel 是一个全能 AI agent 命令行工具：Python 标准库从零写成，零 pip 依赖，支持任意 OpenAI 兼容接口、MCP、调度器、证据链与 E2B 沙盒。">
+<title>Angel — Python Agent Core + JavaScript UI</title>
+<meta name="description" content="Angel uses Python's standard library for its agent core and native JavaScript for its web UI. No pip dependencies. Includes MCP, scheduling, evidence, semantic retrieval, and optional parallel agent responses.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="assets/angel-mark.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
@@ -39,14 +39,14 @@
 <section class="hero" id="top">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow"><span class="dot"></span>v0.3.0 · MIT · Python 3.10+</p>
+      <p class="eyebrow"><span class="dot"></span>v0.3.0 · MIT · Python + JavaScript</p>
       <h1>
-        <span data-l="zh">一个 Python 目录，<br>一个<em>会动手</em>的 AI 助手。</span>
-        <span data-l="en">One Python folder.<br>An AI agent that <em>gets things done</em>.</span>
+        <span data-l="zh">按模块选技术，<br>让 AI 助手<em>更快行动</em>。</span>
+        <span data-l="en">The right language<br>for each part of an agent.</span>
       </h1>
       <p class="lede">
-        <span data-l="zh">Angel 是一个全能 AI agent 命令行工具：用 Python 标准库从零写成，没有 pip 依赖，有 Python 3 就能跑。它通过调用工具完成任务——读写文件、执行命令、联网查证——而不是只靠说话。</span>
-        <span data-l="en">Angel is an all-round AI agent for the command line, written from scratch on the Python standard library. No pip dependencies: if you have Python 3, it runs. It finishes tasks by calling tools — reading and writing files, running commands, researching the web — not just by talking.</span>
+        <span data-l="zh">Angel 用 Python 标准库处理 Agent 和服务端，用原生 JavaScript 构建网页界面。模型网络等待使用有界并发；只有经性能剖析确认的 CPU 热点才引入 Go、Rust 或 C。</span>
+        <span data-l="en">Angel uses Python's standard library for agent logic and the server, with native JavaScript for the web UI. Network waits use bounded concurrency; Go, Rust, or C are reserved for CPU hotspots proven by profiling.</span>
       </p>
       <div class="cta">
         <a class="btn primary" href="#install"><span data-l="zh">快速开始</span><span data-l="en">Get started</span></a>
