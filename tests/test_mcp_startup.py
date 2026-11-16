@@ -116,6 +116,18 @@ class MCPStartupPolicyTest(unittest.TestCase):
         finally:
             manager.stop_all()
 
+    def test_legacy_windows_console_does_not_crash_on_consent_prompt(self):
+        raw = io.BytesIO()
+        terminal = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+        with patch("angel.agent.load_config", return_value=self.config("legacy")), \
+             patch("builtins.input", return_value="n"), \
+             patch("sys.stdout", terminal):
+            result = build_mcp_manager(mode="auto", interactive=True)
+        terminal.flush()
+        self.assertIsNone(result)
+        self.assertIn(b"\\\\u", raw.getvalue())
+        self.assertFalse((self.root / "legacy.started").exists())
+
     def test_unknown_mode_fails_closed(self):
         with patch("angel.agent.load_config", return_value=self.config("bad")) as load:
             result = build_mcp_manager(mode="unrecognized", interactive=True)
