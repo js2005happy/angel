@@ -74,7 +74,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 厂商锁定：不绑定任何一家模型；Claude Code 的专有配置方式也不采纳。
 - **浏览器工具（BrowserNavigate / BrowserClick / BrowserScreenshot 等）**：IllusionAgent 0.5.0 的核心是内置真浏览器，Angel 在 v2 里**不做假的**：没有真实浏览器驱动就无法实现导航、点击、截图，`web_fetch` 的纯文本抓取不能冒充浏览器。已记入路线图，待有浏览器驱动（如 Playwright/Chromium）再做。
 
-## Token 用量与上下文状态
+## 可编排 JSON Lines 执行协议
+
+- python3 -m angel --json "任务" 通过独立的 json_mode.py 单次执行入口构造真实 Agent；Agent 仍走原有工具审批与 MCP 安全门，不因输出模式更换而提高权限。
+- 每个事件是单行 JSON，包含 schema_version（当前 1）、seq（递增序号）与 type；任务开始、工具开始/结束、usage、自动压缩、完成、失败、耗尽轮数均有可枚举事件。
+- 工具事件默认只输出 id、name 与执行状态，**不会**无意记录原始工具参数、文件内容或命令输出；任务最终答案仅位于 run_completed.output 或 run_incomplete.output。交互式审批不适合机器执行，非交互 auto 模式继续拒绝需要确认的写入。
+- 人工 print 在执行期间被导向 stderr；机器 stdout 保留给结构化事件，即使参数校验或运行失败也返回 run_failed。help 与不支持的 schedule/ui 子命令仍属于原有人类界面，不属于 --json 合约。
+- 固定退出码：0 完成、1 运行故障、2 参数/配置/凭证问题、3 达到轮数上限未完成、130 用户中断。下游程序必须结合退出码和最终事件判断结果，不应将任意助手文本视作已完成操作。
+
 
 - `angel/usage.py` 仅累计 OpenAI 兼容响应中的 usage / prompt_tokens / completion_tokens / total_tokens（也接受 input_tokens / output_tokens），并标明未报告的响应数。未报告的数字不得估算为精确值。
 - `Agent.usage` 负责每个 Agent 实例的实时计量；用于 CLI `/status`、一次性任务 stderr 与 Web UI 会话的 status API，原有会话存储与普通 stdout 文本接口保持兼容。
