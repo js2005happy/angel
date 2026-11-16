@@ -117,7 +117,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 - `angel/patches.py` 使用标准库解析单文件 unified diff。强制匹配文件头、每段 hunk 的旧/新行号以及逐行上下文，不允许模糊匹配、多文件补丁、重命名或新建/删除补丁；支持 LF、CRLF 和基本无末尾换行标记。
 - `apply_patch` 先通过工作目录安全检查，读取原始字节、计算修改与 diff，再按原有 `readonly/auto/full` 权限审批。审批后重新比对原始文件防止过期补丁，最终交由 `CheckpointStore` 写入，保留 `/undo` 能力。E2B 暂不支持此工具。
-- 本地 `write_file`、`edit_file`、`plan` 与 `apply_patch` 的交互审批摘要附带最大 6000 字符的 unified diff；Web UI 保留预格式化换行和滚动，避免多行文本压成一行。超长预览标记截断，不宣称展示了完整改动。
+- 本地 `write_file`、`edit_file`、`plan` 与 `apply_patch` 的交互审批摘要附带最大 6000 字符的 unified diff（单侧超过 128 KiB 时不执行昂贵的对比运算，提示无法预览）；Web UI 保留预格式化换行和滚动，避免多行文本压成一行。超长预览标记截断，不宣称展示了完整改动。
 - `CheckpointStore.latest_diff()` 展示最近活动检查点原始内容与当前文件差异；若文件哈希不匹配，报告外部冲突而非展示外部编辑。CLI `/diff` 为只读视图。
 - 已知限制：路径安全检查与执行之间有残余竞态；本次不实现跨文件补丁事务、远端补丁、OS 沙箱或完整 Git 工作树 diff。
 
