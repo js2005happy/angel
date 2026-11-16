@@ -1,5 +1,12 @@
 # Angel 变更记录
 
+## 未发布（本地 SQLite 语义检索）
+
+- 新增 `angel knowledge index|search|status`，仅在用户显式请求后为当前项目中的 Markdown、纯文本和 reStructuredText 文件建索引；隐藏目录、常见依赖/构建目录与符号链接跳过，索引按项目路径隔离并设文件数、单文件、总文本和片段数上限。
+- 复用本机 Ollama `/api/embed` 生成 embedding，SQLite 标准库保存 float32 向量，搜索采用精确余弦扫描；不引入 Python 依赖、不调用云端 embedding API，也不把 SQLite 描述成 ANN 引擎。
+- 已有有效索引时 Agent 按需获得只读 `knowledge_search`，结果带源文件和行号，并在系统提示中明确检索文档是不可信内容。全局/群聊长期记忆不会自动进入项目索引；修改文档后需重新运行 index。
+- 本地本轮未运行测试或 CI；完整多语料性能、Ollama 版本互通和不同平台权限行为仍待验证。
+
 ## 未发布（轻量 Agent 执行追踪）
 
 - 使用 `--trace` 时，为每次 Agent 执行生成 trace_id，并用 span/parent_span_id 关联模型请求、工具调用和委派子 Agent。

@@ -18,6 +18,7 @@ agent.py ── 主循环：组装系统提示词 → 调模型 → 执行工具
  │   ├── tools.py ────── 14 个工具 + 审批 + shell 危险命令黑名单
  │   ├── skills.py ──── 技能加载 / 关键词匹配 / 保存
  │   ├── memory.py ──── 长期记忆 + AGENTS.md + 会话 jsonl 存储
+ │   ├── knowledge.py ─ 可选本地 embedding + SQLite 项目文档检索
  │   ├── config.py ──── 配置 + provider 注册表 + provider 档案
  │   ├── mcp.py ─────── MCP 客户端（stdio JSON-RPC，默认关闭）
  │   ├── scheduler.py ─ 内置调度器（~/.angel/schedule.json + daemon）
@@ -164,6 +165,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - `webui_page.py` 加入独立的编辑对话框，选择记忆所属、载入完整 Markdown、刷新和明确保存；版本冲突提示用户先手工合并，关闭/切换未保存内容时警告。所有记忆正文通过 `textarea.value` 输出，不插入 HTML。
 - 已知限制：单进程锁与 SHA-256 校验不构成多进程原子 compare-and-swap；文件系统竞争时仍有 TOCTOU 风险；目前没有记忆条目语义索引、自动去重、记忆摘要层次或跨机器人授权共享。
 
+## 项目文档语义检索（可选，本地索引）
+
+- `knowledge.py` 只在用户运行 `angel knowledge index` 后扫描所选工作目录中的 `.md`、`.markdown`、`.txt`、`.rst`；跳过隐藏目录、常见依赖/构建目录及符号链接，并限制文件数、单文件、总字节和片段数。项目路径哈希用于分隔 `~/.angel/knowledge/` 下的 SQLite 数据库。
+- Embedding 固定发到本机 Ollama `http://localhost:11434/api/embed`。数据库保存文件 SHA-256、片段正文、行号和归一化 float32 向量；文件变化只重新嵌入变化文件，embedding 完成后通过 SQLite 事务替换索引内容。
+- 搜索逐片段计算精确余弦相似度，不依赖向量扩展、外部包或近似索引；因此时间与语料片段数量线性增长。查询也走本机 Ollama。Agent 只在对应工作目录具有有效索引时开放 `knowledge_search`，返回路径与行号，并将检索文本视为不可信内容。
+- Embedding 输入只发往本机 Ollama，但检索到的文档片段会作为工具结果进入当前对话；若 Agent 使用云端聊天模型，这些片段会随对话发送给该模型。文档索引本地保存不等同于聊天内容始终留在本机。
+- 这是项目文档检索，不等于长期记忆 RAG：全局及群聊 `MEMORY.md` 不会自动索引；没有自动文件监听、云 embedding、ANN、去重或跨项目共享。用户修改文档后需手动重跑 index。
+
 ## 多 Agent 群聊架构（可运行 MVP）
 
 - `angel/groups.py`（Python）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
@@ -216,6 +225,8 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 ## 路线图
 
 **v2 已完成（0.2.0）：** MCP 客户端、内置调度器/daemon、会话压缩、证据链、grep/git_status/http_post、provider 档案、web_search 双后端。
+
+**生产化补充方向（开发分支）：** Agent 执行追踪已实现待验证；项目文档 SQLite 语义检索 MVP 已实现待验证；多 Agent 并行编排仍待开发。
 
 1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。

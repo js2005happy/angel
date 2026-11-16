@@ -406,6 +406,10 @@ def main(argv: list[str] | None = None) -> int:
         from .eigenflux_adapter import main as eigenflux_main
 
         return eigenflux_main(raw[1:])
+    if raw and raw[0] == "knowledge":
+        from .knowledge_cli import main as knowledge_main
+
+        return knowledge_main(raw[1:])
 
     parser = build_parser()
     if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):

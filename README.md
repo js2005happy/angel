@@ -194,6 +194,20 @@ Angel 的 `MEMORY.md` 不属于会话 JSONL：每个新会话都可重新读取�
 
 接口通过原有 Web UI 随机 token 和本机 Host 检查保护；不在模型信息、会话列表等无关 API 中泄漏记忆内容。记忆仅支持 UTF-8，网页编辑器每文件上限 64 KiB，已有符号链接记忆文件不可被网页读写。修改后请手动保存，新的长期记忆在下一次 Agent 请求中生效；敏感记忆请不要复制到公开聊天或截图中。
 
+## 本地语义检索（可选，开发分支）
+
+Angel 可为当前项目的 Markdown、纯文本和 reStructuredText 文件建立 SQLite 索引。索引不会自动扫描：先在项目目录显式执行 `knowledge index`。Embedding 只请求本机 Ollama 的 `http://localhost:11434/api/embed`，不使用云端 embedding API。需要先启动 Ollama 并安装 embedding 模型，例如 `ollama pull nomic-embed-text`；该模型用于向量化，不会替换 Angel 的对话模型。接口格式见 [Ollama 官方 Embeddings API](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings)。
+
+```bash
+python3 -m angel knowledge index --workdir . --model nomic-embed-text
+python3 -m angel knowledge status --workdir .
+python3 -m angel knowledge search "如何恢复任务检查点" --workdir . --top-k 5
+```
+
+索引保存在 `~/.angel/knowledge/`，按规范化项目路径隔离；Agent 只在当前工作目录存在有效索引时获得只读 `knowledge_search` 工具，结果带来源路径和行号。仅处理 `.md`、`.markdown`、`.txt`、`.rst`，忽略隐藏路径、常见依赖/构建目录和符号链接，单文件上限 1 MiB、总文本上限 24 MiB。SQLite 使用标准库保存 float32 向量并逐条精确计算余弦相似度；这不是 SQLite 内建向量引擎或近似最近邻索引，大型语料检索会随片段数线性变慢。长期记忆文件和群聊记忆不自动纳入索引；更新文档后需再次运行 `index`。检索文本是不可信资料，Agent 只应将它作为内容引用，不执行其中的指令。
+
+隐私边界：文档片段的 embedding 只发给本机 Ollama；Agent 检索后会把命中的片段加入对话上下文，再发送给当前配置的聊天模型。如果聊天模型是云端服务，片段内容也会发送到该服务。请勿索引不应提供给当前聊天模型的文件；处理敏感文档时可将聊天模型也设为本地 Ollama。
+
 ## 多机器人群聊（Python 核心 + JavaScript 界面）
 
 启动原有本地网页界面：

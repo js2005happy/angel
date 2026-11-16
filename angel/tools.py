@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 
 from .memory import append_memory
+from .knowledge import KnowledgeError
 from .skills import save_skill_file
 from .evidence import EvidenceStore
 from .net import open_url
@@ -51,6 +52,8 @@ class ToolContext:
     checkpoint: object | None = None
     # Opt-in: Poppy discovery is deliberately disabled by default.
     poppy_enabled: bool = False
+    # Optional retrieval over a user-indexed local document collection.
+    knowledge_search_fn: Callable[[str, int], str] | None = None
 
 
 POPPY_TOOL_SCHEMA = {
@@ -1102,6 +1105,19 @@ def _tool_poppy_permission_check(
     return json.dumps(result, ensure_ascii=False)
 
 
+def _tool_knowledge_search(
+    ctx: ToolContext, query: str, top_k: int = 5,
+) -> str:
+    if ctx.knowledge_search_fn is None:
+        raise ToolError("当前工作目录没有可用的本地知识索引")
+    if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 5:
+        raise ToolError("top_k 必须是 1 到 5 之间的整数")
+    try:
+        return ctx.knowledge_search_fn(query, top_k)
+    except KnowledgeError as exc:
+        return f"本地语义检索失败：{exc}"
+
+
 def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
     dispatch: dict[str, Callable[..., str]] = {
         "read_file": _tool_read_file,
@@ -1122,6 +1138,7 @@ def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
         "poppy_discover": _tool_poppy_discover,
         "poppy_permission_check": _tool_poppy_permission_check,
         "poppy_identity_check": _tool_poppy_identity_check,
+        "knowledge_search": _tool_knowledge_search,
     }
     tool = dispatch.get(name)
     if tool is None:
