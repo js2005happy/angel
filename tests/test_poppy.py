@@ -226,6 +226,30 @@ class DiscoveryTests(unittest.TestCase):
                     "https://store.example.com/.well-known/poppy.json"
                 )
 
+    def test_invalid_http_length_is_a_clear_discovery_error(self):
+        class BadResponse:
+            status = 200
+            def getheader(self, key):
+                return "not-a-number" if key == "Content-Length" else None
+            def read(self, limit):
+                raise AssertionError("invalid length must fail before body read")
+        class FakeConn:
+            def __init__(self, *args):
+                pass
+            def request(self, *args, **kwargs):
+                pass
+            def getresponse(self):
+                return BadResponse()
+            def close(self):
+                pass
+        with mock.patch("angel.poppy.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("8.8.8.8", 443))
+        ]), mock.patch("angel.poppy._PinnedHTTPSConnection", FakeConn):
+            with self.assertRaisesRegex(poppy.PoppyError, "Content-Length"):
+                poppy._fetch_public_https(
+                    "https://store.example.com/.well-known/poppy.json"
+                )
+
     def test_large_json_document_rejected(self):
         with self.assertRaises(poppy.PoppyError):
             poppy._doc(b"[]" , "store.example.com")
@@ -270,6 +294,14 @@ class OptInToolTests(unittest.TestCase):
         self.assertNotIn("poppy_discover", [s["function"]["name"] for s in a.tool_schemas()])
         self.assertIn("poppy_discover", [s["function"]["name"] for s in b.tool_schemas()])
         self.assertTrue(b.ctx.poppy_enabled)
+
+    def test_jsonl_conflict_still_emits_structured_error(self):
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            status = cli.main(["--json", "--discover-poppy", "store.example.com"])
+        self.assertEqual(status, 2)
+        output = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(len(output), 1)
+        self.assertEqual(output[0]["type"], "run_failed")
 
     def test_standalone_cli_does_not_require_provider_or_mcp(self):
         with mock.patch("angel.poppy.discover_poppy", return_value={
