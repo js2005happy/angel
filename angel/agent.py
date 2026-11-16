@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Callable
 
 from .config import ANGEL_HOME, load_config
 from .providers import Provider, ProviderError
@@ -49,8 +50,13 @@ class Agent:
         messages: list[dict] | None = None,
         mcp_manager: MCPToolManager | None = None,
         backend: object | None = None,
+        on_event: Callable[[str, dict], None] | None = None,
+        approve_fn: Callable[[str, str], bool] | None = None,
     ) -> None:
         self.provider = provider
+        # Optional observer for front ends (REPL grouping, web UI). It only
+        # sees events; it never changes how the loop runs.
+        self.on_event = on_event
         self.workdir = Path(workdir)
         self.mode = mode
         self.max_turns = max_turns
@@ -78,7 +84,17 @@ class Agent:
             delegate_fn=self.delegate,
             evidence=self.evidence,
             backend=backend,
+            approve_fn=approve_fn,
         )
+
+    def _emit(self, kind: str, data: dict) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(kind, data)
+        except Exception:
+            # A broken observer must never break the agent loop.
+            pass
 
     def tool_schemas(self) -> list[dict]:
         """内置工具 + 已启动的 MCP 服务器工具。"""
@@ -146,8 +162,12 @@ class Agent:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
 
+            if tool_calls and assistant_msg["content"]:
+                self._emit("assistant", {"content": assistant_msg["content"]})
+
             if not tool_calls:
                 final = msg.get("content") or ""
+                self._emit("final", {"content": final})
                 self.messages = messages[1:]
                 save_session(self.session_id, self.messages)
                 return final
@@ -160,6 +180,14 @@ class Agent:
                 except Exception:
                     args = None
 
+                self._emit(
+                    "tool_start",
+                    {
+                        "id": tc.get("id", ""),
+                        "name": fn_name,
+                        "arguments": args if isinstance(args, dict) else args_raw,
+                    },
+                )
                 if args is None or not isinstance(args, dict):
                     result = "错误：工具参数不是合法的 JSON 对象"
                 elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
@@ -179,6 +207,10 @@ class Agent:
                 else:
                     result = execute_tool(fn_name, args, self.ctx)
 
+                self._emit(
+                    "tool_result",
+                    {"id": tc.get("id", ""), "name": fn_name, "result": result},
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -204,6 +236,7 @@ class Agent:
             skills_dirs=self.skills_dirs,
             mcp_manager=self.mcp_manager,
             backend=self.backend,
+            approve_fn=self.ctx.approve_fn,
         )
         try:
             return child.run(task)

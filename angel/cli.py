@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .console import configure_stdio
+from .console import ToolPrinter, configure_stdio, style, use_color
 from .config import (
     ANGEL_HOME,
     VALID_MODES,
@@ -35,16 +35,61 @@ from .skills import load_skills
 from .memory import list_sessions, load_session, new_session_id
 
 
-REPL_HELP = """可用命令：
-  /help          显示本帮助
-  /mode <模式>   切换审批模式（readonly / auto / full）
-  /skills        列出已加载的技能
-  /sessions      列出历史会话
-  /compact       压缩当前会话（模型摘要 + 保留最近消息）
-  /clear         清空当前对话历史
-  /new           开始一个新会话
-  /exit 或 /quit 退出
-直接输入文字即向 Angel 提问。"""
+REPL_COMMANDS = (
+    ("/help", "显示本帮助"),
+    ("/mode <模式>", "切换审批模式（readonly / auto / full）"),
+    ("/skills", "列出已加载的技能"),
+    ("/sessions", "列出历史会话"),
+    ("/compact", "压缩当前会话（模型摘要 + 保留最近消息）"),
+    ("/clear", "清空当前对话历史"),
+    ("/new", "开始一个新会话"),
+    ("/exit 或 /quit", "退出"),
+)
+
+
+def _display_width(text: str) -> int:
+    """Terminal column width: CJK and full-width characters take two columns."""
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def format_repl_help(color: bool = False) -> str:
+    """Render the REPL help as an aligned table (plain text when color is off)."""
+    width = max(_display_width(cmd) for cmd, _ in REPL_COMMANDS) + 2
+    lines = [style("可用命令", "bold", enabled=color)]
+    for cmd, desc in REPL_COMMANDS:
+        pad = " " * (width - _display_width(cmd))
+        lines.append(f"  {style(cmd, 'cyan', enabled=color)}{pad}{desc}")
+    lines.append("")
+    lines.append(style("直接输入文字即向 Angel 提问。", "dim", enabled=color))
+    return "\n".join(lines)
+
+
+REPL_HELP = format_repl_help(color=False)
+
+
+def format_banner(
+    provider_desc: str, mode: str, session_id: str, color: bool = False
+) -> str:
+    """The REPL start-up banner."""
+    halo = style("◯", "gold", enabled=color)
+    title = style(f"Angel {__version__}", "bold", enabled=color)
+    label = lambda text: style(text, "dim", enabled=color)  # noqa: E731
+    return "\n".join(
+        [
+            f"{halo} {title}  {label('全能 AI 助手 · Python 标准库')}",
+            f"  {label('模型')}  {provider_desc}",
+            f"  {label('模式')}  {mode}",
+            f"  {label('会话')}  {session_id}",
+        ]
+    )
+
+
+def repl_prompt(mode: str, color: bool = False) -> str:
+    name = style("angel", "gold", "bold", enabled=color)
+    tag = style(f"[{mode}]", "dim", enabled=color)
+    return f"{name}{tag} › "
 
 
 def _make_task_agent(task: dict, workdir: Path) -> Agent:
@@ -199,6 +244,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="angel",
         description="Angel — 全能 AI 助手",
+        epilog=(
+            "子命令：angel schedule <list|add|remove|run|daemon> 管理定时任务；"
+            "angel ui [--host 127.0.0.1] [--port 8765] [--open] 启动本地网页界面"
+        ),
     )
     parser.add_argument(
         "prompt",
@@ -289,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "schedule":
         return handle_schedule(raw[1:], Path.cwd())
+    if raw and raw[0] == "ui":
+        from .webui import main as ui_main
+
+        return ui_main(raw[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -450,19 +503,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"错误：{exc}")
                 return 1
 
+        color = use_color()
         print(
-            f"Angel {__version__}（{describe_provider(provider)}，"
-            f"模式：{mode}，会话：{agent.session_id}）"
+            format_banner(
+                describe_provider(provider), mode, agent.session_id, color=color
+            )
         )
+        if interactive:
+            # Group tool activity under each answer; only in the REPL, so
+            # one-shot output stays exactly as before.
+            agent.on_event = ToolPrinter(color=color)
         if backend is not None:
             print(f"沙盒：E2B {backend.sandbox_id}，工作目录：{workdir}")
         if mcp_manager is not None:
             print(f"MCP 工具已加载：{len(mcp_manager.tool_schemas)} 个")
-        print("输入 /help 查看命令，直接输入文字开始对话。")
+        print(style("输入 /help 查看命令，直接输入文字开始对话。", "dim", enabled=color))
 
         while True:
             try:
-                line = input("angel> ")
+                line = input(repl_prompt(agent.ctx.mode, color=color))
             except EOFError:
                 print()
                 break
@@ -477,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
             if line in ("/exit", "/quit"):
                 break
             elif line == "/help":
-                print(REPL_HELP)
+                print(format_repl_help(color=color))
                 continue
             elif line.startswith("/mode "):
                 new_mode = line.split(None, 1)[1].strip()
@@ -525,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
                     result = agent.run(line)
                     print(result)
                 except AgentError as exc:
-                    print(f"错误：{exc}")
+                    print(style(f"错误：{exc}", "red", enabled=color))
 
         return 0
     finally:

@@ -34,6 +34,10 @@ class ToolContext:
     # Execution backend for file and shell tools. None means local execution;
     # an E2BBackend routes those tools into a sandbox instead.
     backend: object | None = None
+    # Optional approval callback (tool_name, summary) -> bool. When set, it
+    # replaces the terminal [y/N] prompt for interactive auto mode, so other
+    # front ends (such as the local web UI) reuse the same approval gate.
+    approve_fn: Callable[[str, str], bool] | None = None
 
 
 MUTATING_TOOLS = {
@@ -314,6 +318,10 @@ def _check_approval(ctx: ToolContext, tool_name: str, summary: str) -> None:
             raise ToolError(
                 "非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行"
             )
+        if ctx.approve_fn is not None:
+            if not ctx.approve_fn(tool_name, summary):
+                raise ToolError("用户拒绝执行")
+            return
         print(summary)
         answer = input("允许执行吗？[y/N] ")
         if answer.strip().lower() not in ("y", "yes"):
