@@ -16,6 +16,8 @@ DEFAULT_CONFIG = {
     "context_window_tokens": None,  # Set only to verified model input limit.
     "auto_compact_enabled": False,  # Opt-in: summarizing makes an extra paid call.
     "auto_compact_threshold": 0.80,
+    "model_pricing": {},  # Explicit USD / million-token prices, keyed by provider/model.
+    "cost_budget_usd": None,  # Stops later model calls after this per-Agent spend threshold.
     "fallback_providers": [],  # Explicit ordered failover only; no hidden provider spend.
     "profiles": {},
     "mcp_servers": {},

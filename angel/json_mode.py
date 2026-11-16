@@ -89,6 +89,9 @@ class JsonLines:
             self.emit("assistant", content=data.get("content", ""))
         elif kind == "provider_fallback":
             self.emit("provider_fallback", **data)
+        elif kind == "cost_budget_stop":
+            self.incomplete = True
+            self.emit("cost_budget_stop", **data)
         elif kind == "max_turns":
             self.incomplete = True
             self.emit("turn_limit", max_turns=data.get("max_turns"))
@@ -207,6 +210,12 @@ def run_json(args) -> int:
                 on_event=out.agent_event,
                 poppy_enabled=args.poppy,
                 trace_enabled=bool(getattr(args, "trace", False)),
+                model_pricing=config.get("model_pricing"),
+                cost_budget_usd=(
+                    args.cost_budget_usd
+                    if args.cost_budget_usd is not None
+                    else config.get("cost_budget_usd")
+                ),
             )
             out.emit(
                 "run_started", session_id=agent.session_id,

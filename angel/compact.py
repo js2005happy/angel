@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from .usage import CostLedger
+
 
 COMPACT_SYSTEM_INSTRUCTION = (
     "你是会话压缩助手。把以下对话压缩成一份要点摘要（中文，不超过 800 字），"
@@ -107,6 +109,7 @@ def compact_session_file(
     provider,
     keep_last: int = 4,
     sessions_dir: Path | None = None,
+    cost_ledger: CostLedger | None = None,
 ) -> dict:
     if sessions_dir is None:
         sessions_dir = Path.home() / ".angel" / "sessions"
@@ -128,7 +131,26 @@ def compact_session_file(
     except FileNotFoundError:
         raise FileNotFoundError(f"找不到会话：{session_id}") from None
 
-    new_messages, info = compact_messages(provider, messages, keep_last)
+    if cost_ledger is not None:
+        reason = cost_ledger.stop_reason(
+            getattr(provider, "name", None), getattr(provider, "model", None)
+        )
+        if reason:
+            raise ValueError(reason)
+
+    def account(response: dict) -> None:
+        if cost_ledger is not None:
+            cost_ledger.record(
+                response,
+                getattr(provider, "name", None),
+                getattr(provider, "model", None),
+            )
+
+    new_messages, info = compact_messages(
+        provider, messages, keep_last, on_response=account
+    )
+    if cost_ledger is not None and info.get("method") == "fallback":
+        cost_ledger.mark_unknown("summarization_failed")
 
     with path.open("w", encoding="utf-8") as session_file:
         for message in new_messages:

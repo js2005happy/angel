@@ -112,6 +112,8 @@ class UIState:
         auto_compact_enabled: bool = False,
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
         trace_enabled: bool = False,
+        model_pricing: dict | None = None,
+        cost_budget_usd: object | None = None,
     ) -> None:
         self.workdir = Path(workdir)
         self.mode = validate_mode(mode)
@@ -125,6 +127,8 @@ class UIState:
         self.auto_compact_enabled = bool(auto_compact_enabled)
         self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
         self.trace_enabled = bool(trace_enabled)
+        self.model_pricing = model_pricing if isinstance(model_pricing, dict) else {}
+        self.cost_budget_usd = cost_budget_usd
         self.mcp_manager = mcp_manager
         self._provider_factory = provider_factory
         self._provider = None
@@ -200,6 +204,7 @@ class UIState:
                 "context_window_tokens": context_limit(cfg.get("context_window_tokens")),
                 "auto_compact_enabled": self.auto_compact_enabled,
                 "auto_compact_threshold": self.auto_compact_threshold,
+                "cost_budget_usd": self.cost_budget_usd,
                 "mcp_enabled": bool(cfg.get("mcp_enabled")),
                 "sandbox": cfg.get("sandbox") or "local",
                 "profiles": sorted(profiles) if isinstance(profiles, dict) else [],
@@ -306,7 +311,7 @@ class UIState:
         run = self.get_run(session_id, create=False)
         if run is not None and run.status == "running":
             return list(run.base_messages)
-        if run is not None and run.status == "error":
+        if run is not None and run.status in {"error", "incomplete"}:
             return memory_module.load_session(session_id) or (
                 list(run.agent.messages) if run.agent is not None else []
             )
@@ -339,9 +344,9 @@ class UIState:
                 status = "error"
                 error = str(saved_state.get("error") or "上次任务未正常完成。")
         resume_available = (
-            status in {"interrupted", "error"}
+            status in {"interrupted", "error", "incomplete"}
             and saved_state is not None
-            and saved_state.get("status") in {"running", "error"}
+            and saved_state.get("status") in {"running", "error", "incomplete"}
             and (run is None or run.status != "running")
         )
         if pending:
@@ -407,6 +412,8 @@ class UIState:
                     auto_compact_enabled=self.auto_compact_enabled,
                     auto_compact_threshold=self.auto_compact_threshold,
                     trace_enabled=self.trace_enabled,
+                    model_pricing=self.model_pricing,
+                    cost_budget_usd=self.cost_budget_usd,
                 )
             else:
                 run.agent.mode = self.mode
@@ -437,7 +444,9 @@ class UIState:
                 )
             run.agent.run(text)
             with run.lock:
-                run.status = "done"
+                run.status = "incomplete" if run.agent._trace_outcome == "incomplete" else "done"
+                if run.status == "incomplete":
+                    run.error = "任务因费用阈值或轮数限制暂停。"
         except AgentError as exc:
             with run.lock:
                 run.status = "error"
@@ -497,7 +506,7 @@ class UIState:
             not isinstance(state, dict)
             or state.get("version") != 1
             or state.get("session_id") != session_id
-            or state.get("status") not in {"running", "done", "error"}
+            or state.get("status") not in {"running", "done", "error", "incomplete"}
         ):
             return None
         return state
@@ -510,7 +519,7 @@ class UIState:
         if current is not None and current.status in {"running", "done"}:
             raise RuntimeError("当前会话没有可恢复的中断任务")
         state = self._load_run_state(session_id)
-        if state is None or state.get("status") not in {"running", "error"}:
+        if state is None or state.get("status") not in {"running", "error", "incomplete"}:
             raise RuntimeError("没有可恢复的任务检查点")
         task = state.get("task") if isinstance(state.get("task"), str) else ""
         messages = memory_module.load_session(session_id) or []
@@ -962,6 +971,8 @@ def main(argv: list[str] | None = None) -> int:
             cfg.get("auto_compact_threshold", DEFAULT_AUTO_COMPACT_THRESHOLD)
         ),
         trace_enabled=args.trace,
+        model_pricing=cfg.get("model_pricing"),
+        cost_budget_usd=cfg.get("cost_budget_usd"),
     )
     try:
         server = make_server(args.host, args.port, state, verbose=args.verbose)

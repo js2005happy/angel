@@ -113,6 +113,14 @@ python3 -m angel                 # 然后输入 /status
 
 如果你知道当前模型官方的上下文上限，可以设置 `--context-window N` 或在 `~/.angel/config.json` 中设置 `"context_window_tokens": 8192`（数字仅为示例，不是对任何模型上限的断言）。没配置时会明确显示 **未知**；如果 API 没有提供 usage 字段，也不会用字符数伪造精确 Token。**上下文参考余量**按最近一次请求的输入 Token 减去已配置窗口计算，不包含最新生成、下一轮新输入以及模型额外的保留量，因此不能当成严格的剩余可用 Token。累计值只统计当前 Agent 进程中的模型回复；历史会话重新载入不自动补算之前的调用。
 
+## 模型费用核算与停止阈值（MVP）
+
+可在 `~/.angel/config.json` 的 `model_pricing` 中，按 `provider/model` 配置 `input_usd_per_million` 和 `output_usd_per_million`；价格请从你实际使用的服务商账单/价格页填写。`cost_budget_usd` 设置当前 Agent 实例的 USD 停止阈值，也可用 `--cost-budget-usd N` 覆盖。Web UI 侧栏和终端 `/status` 会显示已核算费用、阈值和可确认时的余量。
+
+预算保护在每次模型回复后核算，并在下一次模型请求前再次检查；如果模型刚返回工具调用且费用未知或达到阈值，该工具调用组不会执行。当前在途请求可能超过阈值；发生兜底尝试、缺价格、API 未返回完整 Token、请求失败或压缩失败时，费用显示未知，并在配置了阈值时阻止后续模型请求。账本只存在于当前 Agent 实例内存中：新建会话、`/clear` 或重启会清空；Web UI/CLI 的恢复不会恢复先前进程中的累计费用。群聊各机器人目前也没有共享的群级费用账本。因此这是停止阈值 MVP，不是服务端硬性封顶，也不是跨会话账单。
+
+只有配置了当前活跃 `provider/model` 的双向单价才能在启用预算时发起模型请求；金额基于 API 报告 Token 与用户填入的单价事后估算，服务端计费细节可能不同。评估 runner 仍使用独立的显式单价参数，与普通 Agent 的预算账本分开。
+
 ### 轻量执行追踪
 
 使用 `--trace`（Web UI 使用 `angel ui --trace`）时，每次 Agent 执行都会生成 `trace_id`，并为任务、模型请求、工具调用和委派子 Agent 建立可关联的 span。span 记录本地计时、状态、模型 API 实际返回的 token 数，以及兜底尝试的安全摘要；不记录提示词、工具参数或工具结果。终端显示摘要（一次性模式写到 stderr），Web UI 会话和 `--json --trace` 事件流提供结构化详情。当前不落独立追踪文件，也不提供 OpenTelemetry 导出。

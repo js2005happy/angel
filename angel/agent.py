@@ -24,7 +24,7 @@ from .compact import (
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
 from .console import configure_stream, format_provider_fallback, format_trace_span
-from .usage import UsageTracker
+from .usage import CostLedger, UsageTracker
 from .checkpoints import CheckpointStore
 from .knowledge import KNOWLEDGE_TOOL_SCHEMA, KnowledgeStore, format_search_results
 
@@ -182,6 +182,9 @@ class Agent:
         trace_enabled: bool = False,
         allowed_tools: set[str] | frozenset[str] | None = None,
         session_dir: str | Path | None = None,
+        cost_ledger: CostLedger | None = None,
+        cost_budget_usd: object | None = None,
+        model_pricing: dict | None = None,
     ) -> None:
         self.provider = provider
         self._traced_provider = _TracedProvider(self)
@@ -198,7 +201,13 @@ class Agent:
         self.poppy_enabled = bool(poppy_enabled)
         self.allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else None
         self.session_dir = Path(session_dir) if session_dir is not None else None
-        self.usage = UsageTracker(configured_window=context_window_tokens)
+        self.model_pricing = model_pricing if isinstance(model_pricing, dict) else {}
+        self.cost_budget_usd = cost_budget_usd
+        self.cost_ledger = cost_ledger or CostLedger(self.model_pricing, cost_budget_usd)
+        self.usage = UsageTracker(
+            configured_window=context_window_tokens,
+            cost_ledger=self.cost_ledger,
+        )
         self.auto_compact_enabled = bool(auto_compact_enabled)
         self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
         self.auto_compact_count = 0
@@ -274,6 +283,13 @@ class Agent:
             return save_session(self.session_id, messages)
         return save_session(self.session_id, messages, directory=self.session_dir)
 
+    def reset_usage(self, configured_window: int | None = None) -> None:
+        self.cost_ledger = CostLedger(self.model_pricing, self.cost_budget_usd)
+        self.usage = UsageTracker(
+            configured_window=configured_window,
+            cost_ledger=self.cost_ledger,
+        )
+
     def tool_schemas(self) -> list[dict]:
         """内置工具 + 已启动的 MCP 服务器工具。"""
         schemas = [
@@ -297,10 +313,24 @@ class Agent:
 
     def compact(self, keep_last: int = 4) -> dict:
         """压缩当前会话：模型摘要 + 保留最近几条消息，并保存。"""
+        stop_reason = self._cost_stop_reason()
+        if stop_reason:
+            raise AgentError(stop_reason)
+
+        def account(response: dict) -> None:
+            self.usage.record(
+                response,
+                getattr(self.provider, "name", None),
+                getattr(self.provider, "model", None),
+            )
+
         new_messages, info = compact_messages(
-            self._traced_provider, self.messages, keep_last=keep_last
+            self._traced_provider, self.messages, keep_last=keep_last,
+            on_response=account,
         )
         self._emit_provider_fallback()
+        if info.get("method") == "fallback":
+            self.cost_ledger.mark_unknown("summarization_failed")
         self.messages = new_messages
         self._save_session(self.messages)
         return info
@@ -310,12 +340,34 @@ class Agent:
         event = consume() if callable(consume) else None
         if event:
             event = dict(event)
+            if event.get("failed"):
+                self.cost_ledger.mark_unknown("fallback_attempt")
             if self._trace_id:
                 event["trace_id"] = self._trace_id
             if span_id:
                 event["span_id"] = span_id
             self._emit("provider_fallback", event)
         return event
+
+    def _cost_stop_reason(self) -> str | None:
+        return self.cost_ledger.stop_reason(
+            getattr(self.provider, "name", None),
+            getattr(self.provider, "model", None),
+        )
+
+    def _cost_pause(self, messages: list[dict], reason: str, tool_calls=None) -> str:
+        for call in tool_calls or []:
+            call_id = call.get("id", "") if isinstance(call, dict) else ""
+            result = "费用阈值已触发；此工具调用没有执行。调整预算并继续前，请重新评估当前状态。"
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
+            self._emit("tool_result", {"id": call_id, "name": "", "result": result})
+        self.messages = messages[1:]
+        self._save_session(self.messages)
+        self._emit("cost_budget_stop", {"reason": reason, "usage": self.usage.snapshot()})
+        self._trace_outcome = "incomplete"
+        result = f"（费用阈值暂停：{reason}。本次在途请求可能已经超过阈值。）"
+        self._emit("final", {"content": result})
+        return result
 
     def _chat_with_trace(self, messages, tools=None, timeout=120.0):
         if not self.trace_enabled:
@@ -447,7 +499,11 @@ class Agent:
         old_size = len(json.dumps(before, ensure_ascii=False))
         try:
             def account(response: dict) -> None:
-                self.usage.record(response)
+                self.usage.record(
+                    response,
+                    getattr(self.provider, "name", None),
+                    getattr(self.provider, "model", None),
+                )
                 if isinstance(response, dict) and isinstance(response.get("usage"), dict):
                     self._emit("usage", self.usage.snapshot())
 
@@ -464,6 +520,7 @@ class Agent:
             # Persist only after a valid, smaller summary has been produced.
             self._save_session(reduced)
         except Exception:
+            self.cost_ledger.mark_unknown("summarization_failed")
             self._emit("auto_compact_failed", {"reason": "summarization_failed"})
             return messages
 
@@ -559,18 +616,29 @@ class Agent:
 
         attempted_auto_compact = False
         for _ in range(self.max_turns):
+            stop_reason = self._cost_stop_reason()
+            if stop_reason:
+                return self._cost_pause(messages, stop_reason)
             if self.auto_compact_enabled and not attempted_auto_compact and should_auto_compact(
                 self.usage.snapshot(), len(messages) - 1, self.auto_compact_threshold
             ):
                 attempted_auto_compact = True  # At most one extra paid call per run.
                 messages = self._maybe_auto_compact(messages)
+                stop_reason = self._cost_stop_reason()
+                if stop_reason:
+                    return self._cost_pause(messages, stop_reason)
             try:
                 resp = self._traced_provider.chat(messages, tools=self.tool_schemas())
             except ProviderError as exc:
+                self.cost_ledger.mark_unknown("provider_request_failed")
                 raise AgentError(str(exc)) from exc
             self._emit_provider_fallback()
 
-            self.usage.record(resp)
+            self.usage.record(
+                resp,
+                getattr(self.provider, "name", None),
+                getattr(self.provider, "model", None),
+            )
             if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
                 self._emit("usage", self.usage.snapshot())
             choice = resp["choices"][0]
@@ -599,6 +667,10 @@ class Agent:
                 self._emit("final", {"content": final})
                 self._trace_outcome = "completed"
                 return final
+
+            stop_reason = self._cost_stop_reason()
+            if stop_reason:
+                return self._cost_pause(messages, stop_reason, tool_calls)
 
             for tc in tool_calls:
                 fn_name = tc.get("function", {}).get("name", "")
@@ -758,6 +830,7 @@ class Agent:
             trace_enabled=self.trace_enabled,
             allowed_tools=self.allowed_tools,
             session_dir=self.session_dir,
+            cost_ledger=self.cost_ledger,
         )
         try:
             return child.run(task)

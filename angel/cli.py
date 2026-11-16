@@ -34,7 +34,7 @@ from .scheduler import (
 from .skills import load_skills
 from .memory import list_sessions, load_session, new_session_id, save_session
 from .checkpoints import CheckpointStore, CheckpointError
-from .usage import UsageTracker, context_limit, format_usage
+from .usage import CostLedger, context_limit, format_usage
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 
 
@@ -117,12 +117,17 @@ def _make_task_agent(task: dict, workdir: Path) -> Agent:
         mode=validate_mode(mode),
         max_turns=config.get("max_turns") or 20,
         interactive=False,
+        model_pricing=config.get("model_pricing"),
+        cost_budget_usd=config.get("cost_budget_usd"),
     )
 
 
 def _run_scheduled_task(task: dict, workdir: Path) -> str:
     agent = _make_task_agent(task, workdir)
-    return agent.run(task["prompt"])
+    result = agent.run(task["prompt"])
+    if agent._trace_outcome == "incomplete":
+        raise AgentError(result)
+    return result
 
 
 def handle_schedule(argv: list[str], workdir: Path) -> int:
@@ -300,6 +305,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--context-window", type=int, default=None,
         help="已确认的模型上下文窗口 token 上限（未知时不估算）",
+    )
+    parser.add_argument(
+        "--cost-budget-usd", default=None,
+        help="当前 Agent 的费用停止阈值（需配置 model_pricing；单次请求可能超出）",
     )
     parser.add_argument(
         "--json", dest="json_mode", action="store_true",
@@ -669,11 +678,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.compact:
+        cost_ledger = CostLedger(
+            config.get("model_pricing"),
+            args.cost_budget_usd
+            if args.cost_budget_usd is not None
+            else config.get("cost_budget_usd"),
+        )
         try:
-            info = compact_session_file(args.compact, provider)
+            info = compact_session_file(args.compact, provider, cost_ledger=cost_ledger)
             consume = getattr(provider, "consume_fallback_event", None)
             fallback = consume() if callable(consume) else None
             if fallback:
+                if fallback.get("failed"):
+                    cost_ledger.mark_unknown("fallback_attempt")
                 print(format_provider_fallback(fallback), file=sys.stderr)
         except FileNotFoundError as exc:
             print(f"错误：{exc}")
@@ -726,6 +743,12 @@ def main(argv: list[str] | None = None) -> int:
         auto_compact_threshold=threshold,
         poppy_enabled=args.poppy,
         trace_enabled=args.trace,
+        model_pricing=config.get("model_pricing"),
+        cost_budget_usd=(
+            args.cost_budget_usd
+            if args.cost_budget_usd is not None
+            else config.get("cost_budget_usd")
+        ),
     )
 
     try:
@@ -733,7 +756,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 result = agent.run(args.prompt)
                 print(result)
-                return 0
+                return 3 if agent._trace_outcome == "incomplete" else 0
             except AgentError as exc:
                 print(f"错误：{exc}")
                 return 1
@@ -875,14 +898,14 @@ def main(argv: list[str] | None = None) -> int:
                 agent.messages = []
                 agent.ctx.approved_file_tools.clear()
                 agent.ctx.approved_shell_commands.clear()
-                agent.usage = UsageTracker(configured_window=window)
+                agent.reset_usage(configured_window=window)
                 print("已清空对话历史")
                 continue
             elif line == "/new":
                 agent.messages = []
                 agent.ctx.approved_file_tools.clear()
                 agent.ctx.approved_shell_commands.clear()
-                agent.usage = UsageTracker(configured_window=window)
+                agent.reset_usage(configured_window=window)
                 agent.session_id = new_session_id()
                 if agent.checkpoints is not None:
                     agent.checkpoints = CheckpointStore(

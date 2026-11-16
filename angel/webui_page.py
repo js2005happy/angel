@@ -264,8 +264,15 @@ function renderUsage(u,count){var box=$("usage-kv"),hint=$("usage-hint");box.inn
   if(!u){hint.textContent="本次进程尚无用量数据。";return}
   var show=function(n){return n==null?"未报告":Number(n).toLocaleString()};
   var rows=[["模型调用",u.calls+" 次（报告 "+u.reported_calls+" 次）"],["输入 Token",show(u.prompt_tokens)],["输出 Token",show(u.completion_tokens)],["Token 合计",show(u.total_tokens)],["最近输入",show(u.last_prompt_tokens)],["配置上下文",u.context_window_tokens==null?"未配置":show(u.context_window_tokens)],["参考剩余",u.context_remaining_tokens==null?"未知":show(u.context_remaining_tokens)]];
+  if(u.cost_budget_configured)rows.push(["费用预算", "$"+u.cost_budget_usd+" USD"]);
+  if(u.cost_status==="known")rows.push(["估算费用", "$"+u.cost_usd+" USD"]);
+  else if(u.cost_status==="unknown")rows.push(["估算费用", "未知"]);
+  else if(u.cost_status==="not_started")rows.push(["估算费用", "尚无模型调用"]);
+  Object.keys(u.cost_by_model_usd||{}).sort().forEach(function(k){rows.push([k,"$"+u.cost_by_model_usd[k]+" USD"])});
+  if(u.cost_budget_invalid)rows.push(["费用预算配置", "无效；模型调用已阻止"]);
+  if(u.cost_budget_configured)rows.push(["预算余量", u.cost_budget_remaining_usd==null?"未知":"$"+u.cost_budget_remaining_usd+" USD"]);
   rows.forEach(function(r){box.appendChild(el("span")).textContent=r[0];box.appendChild(el("span")).textContent=r[1]});
-  hint.textContent=(u.missing_calls?u.missing_calls+" 次 API 响应未报告用量；累计值不完整。":"仅统计模型报告的 token。")+(u.context_remaining_tokens==null?" 无法确认上下文剩余。":" 余量按最近请求的输入 tokens 估算，不含输出和下一轮输入。")+" 自动压缩次数："+count+"（需要显式启用）。"}
+  hint.textContent=(u.missing_calls?u.missing_calls+" 次 API 响应未报告用量；累计值不完整。":"仅统计模型报告的 token。")+(u.context_remaining_tokens==null?" 无法确认上下文剩余。":" 余量按最近请求的输入 tokens 估算，不含输出和下一轮输入。")+(u.cost_budget_configured?" 费用按配置单价事后核算，达到阈值后阻止后续调用；在途请求可能超出，重启会重置内存账本。":"")+" 自动压缩次数："+count+"（需要显式启用）。"}
 function renderSide(v){renderUsage(v.usage,v.auto_compact_count||0);var p=$("plan");
   if(v.plan){p.innerHTML="";var t=el("div",null);var interrupted=v.plan.state==="interrupted";t.innerHTML="<b></b> <span class='st "+(v.plan.state==="running"?"wait":interrupted?"err":"ok")+"'>"+(v.plan.state==="running"?"进行中":interrupted?"已中断":"已结束")+"</span>";t.querySelector("b").textContent=v.plan.title;p.appendChild(t);var ol=el("ol");v.plan.steps.forEach(function(s){var li=el("li");li.textContent=s;ol.appendChild(li)});p.appendChild(ol)}
   else p.innerHTML='<div class="empty">这个会话还没有调用 plan。</div>';
