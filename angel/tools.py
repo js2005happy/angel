@@ -602,7 +602,7 @@ def _tool_web_search(ctx: ToolContext, query: str, count: int = 8) -> str:
 
 def _tool_memory_append(ctx: ToolContext, text: str) -> str:
     _check_approval(ctx, "memory_append", f"写入记忆：{text[:60]}")
-    append_memory(text)
+    append_memory(text, path=ctx.memory_path)
     return "已写入长期记忆"
 
 
