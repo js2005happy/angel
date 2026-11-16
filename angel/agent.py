@@ -24,6 +24,7 @@ from .mcp import MCPToolManager, load_mcp_servers
 from .console import configure_stream
 from .usage import UsageTracker
 from .checkpoints import CheckpointStore
+from .tool_journal import ToolJournal, JournalError
 
 
 class AgentError(Exception):
@@ -97,8 +98,11 @@ class Agent:
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
         checkpoint_store: CheckpointStore | None = None,
         poppy_enabled: bool = False,
+        tool_journal: ToolJournal | None = None,
     ) -> None:
         self.provider = provider
+        # Explicit opt-in only. No journal is created for existing callers.
+        self.tool_journal = tool_journal
         self.poppy_enabled = bool(poppy_enabled)
         self.usage = UsageTracker(configured_window=context_window_tokens)
         self.auto_compact_enabled = bool(auto_compact_enabled)
@@ -346,6 +350,17 @@ class Agent:
                         "arguments": args if isinstance(args, dict) else args_raw,
                     },
                 )
+                # Fail closed: an enabled journal must persist intent BEFORE
+                # any approval callback, MCP invocation or built-in tool.
+                # A failed intent must not fall through to execution.
+                journal_call = None
+                if self.tool_journal is not None:
+                    try:
+                        journal_call = self.tool_journal.begin(fn_name)
+                    except (JournalError, OSError) as exc:
+                        raise AgentError(
+                            "工具调用未执行：无法持久化执行意图；请检查日志"
+                        ) from exc
                 if args is None or not isinstance(args, dict):
                     result = "错误：工具参数不是合法的 JSON 对象"
                 elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
@@ -365,6 +380,22 @@ class Agent:
                 else:
                     result = execute_tool(fn_name, args, self.ctx)
 
+                # A result record is only a report, not proof of external
+                # side effects. If recording fails, stop rather than claim
+                # completion or silently retry the operation.
+                if journal_call is not None:
+                    try:
+                        self.tool_journal.finish(
+                            journal_call, fn_name,
+                            success=not (
+                                isinstance(result, str) and result.startswith("错误：")
+                            ),
+                        )
+                    except (JournalError, OSError) as exc:
+                        raise AgentError(
+                            "工具可能已执行，但结果日志写入失败；状态未知，"
+                            "禁止自动重试，请人工核查"
+                        ) from exc
                 self._emit(
                     "tool_result",
                     {"id": tc.get("id", ""), "name": fn_name, "result": result},
@@ -418,6 +449,8 @@ class Agent:
             auto_compact_threshold=self.auto_compact_threshold,
             checkpoint_store=self.checkpoints,
             poppy_enabled=self.poppy_enabled,
+            # Child sessions require independent explicit journal opt-in.
+            tool_journal=None,
         )
         try:
             return child.run(task)
