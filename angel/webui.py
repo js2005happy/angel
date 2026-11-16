@@ -33,6 +33,7 @@ from . import __version__
 from . import config as config_module
 from . import memory as memory_module
 from .agent import Agent, AgentError
+from .groups import GroupStore, GroupError
 from .config import (
     PROVIDERS,
     VALID_MODES,
@@ -102,6 +103,7 @@ class UIState:
     ) -> None:
         self.workdir = Path(workdir)
         self.mode = validate_mode(mode)
+        self.groups = GroupStore(config_module.ANGEL_HOME / "groups")
         self.token = token or secrets.token_urlsafe(24)
         self.provider_name = provider_name
         self.model = model
@@ -525,10 +527,38 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(HTTPStatus.OK, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
         if path == "/favicon.ico":
             return self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
+        if path == "/groups":
+            if not self._token_ok(allow_query=True):
+                return self._send(
+                    HTTPStatus.FORBIDDEN, FORBIDDEN_PAGE.encode("utf-8"),
+                    "text/html; charset=utf-8", {"Content-Security-Policy": GROUP_CSP},
+                )
+            html = (Path(__file__).parent / "group_ui.html").read_bytes()
+            return self._send(
+                HTTPStatus.OK, html, "text/html; charset=utf-8",
+                {"Content-Security-Policy": GROUP_CSP},
+            )
+        if path == "/group-ui.js":
+            code = (Path(__file__).parent / "group-ui.js").read_bytes()
+            return self._send(
+                HTTPStatus.OK, code, "text/javascript; charset=utf-8",
+            )
         if not path.startswith("/api/"):
             return self._error(HTTPStatus.NOT_FOUND, "未找到")
         if not self._token_ok():
             return self._error(HTTPStatus.FORBIDDEN, "token 无效")
+        if path == "/api/groups":
+            return self._json(
+                HTTPStatus.OK, {"groups": self.state.groups.list_rooms()}
+            )
+        match = re.fullmatch(r"/api/groups/([a-z][a-z0-9_-]{0,31})", path)
+        if match:
+            try:
+                return self._json(
+                    HTTPStatus.OK, self.state.groups.get(match.group(1))
+                )
+            except GroupError as exc:
+                return self._error(HTTPStatus.NOT_FOUND, str(exc))
         if path == "/api/info":
             return self._json(HTTPStatus.OK, self.state.info())
         if path == "/api/sessions":
@@ -555,6 +585,23 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
         except (ValueError, UnicodeDecodeError) as exc:
             return self._error(HTTPStatus.BAD_REQUEST, f"请求无效：{exc}")
+        if path == "/api/groups":
+            try:
+                room = self.state.groups.create(
+                    body.get("id"), body.get("name"), body.get("bots")
+                )
+            except GroupError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return self._json(HTTPStatus.CREATED, room)
+        match = re.fullmatch(r"/api/groups/([a-z][a-z0-9_-]{0,31})/messages", path)
+        if match:
+            try:
+                result = self.state.groups.send(
+                    match.group(1), body.get("text"), body.get("rounds", 1)
+                )
+            except GroupError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return self._json(HTTPStatus.OK, result)
         if path == "/api/sessions":
             return self._json(HTTPStatus.CREATED, {"id": self.state.new_session()})
         if path == "/api/mode":
@@ -696,6 +743,8 @@ CSP = (
     "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
     "frame-ancestors 'none'"
 )
+# Group UI uses a separate first-party JavaScript asset instead of inline JS.
+GROUP_CSP = CSP.replace("script-src 'unsafe-inline'", "script-src 'self'")
 
 FORBIDDEN_PAGE = """<!doctype html><meta charset="utf-8"><title>Angel</title>
 <body style="font:16px system-ui;padding:40px;color:#111A42;background:#FAF8F4">

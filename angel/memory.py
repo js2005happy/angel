@@ -13,12 +13,13 @@ GLOBAL_AGENTS_PATH = ANGEL_HOME / "AGENTS.md"
 SESSIONS_DIR = ANGEL_HOME / "sessions"
 
 
-def load_memory_summary(max_lines: int = 40) -> str:
-    """Return the last requested lines of memory, trimming blank edge lines."""
-    if not MEMORY_PATH.exists() or max_lines <= 0:
+def load_memory_summary(max_lines: int = 40, path: Path | None = None) -> str:
+    """Return recent lines from the chosen bot's memory (global by default)."""
+    target = path if path is not None else MEMORY_PATH
+    if not target.exists() or max_lines <= 0:
         return ""
 
-    lines = MEMORY_PATH.read_text(
+    lines = target.read_text(
         encoding="utf-8", errors="replace"
     ).splitlines()[-max_lines:]
 
@@ -30,15 +31,16 @@ def load_memory_summary(max_lines: int = 40) -> str:
     return "\n".join(lines)
 
 
-def append_memory(text: str) -> None:
-    """Append a timestamped, single-line entry to persistent memory."""
+def append_memory(text: str, path: Path | None = None) -> None:
+    """Append to the chosen bot's memory (global by default)."""
     text = " ".join(text.splitlines()).strip()
     if not text:
         return
 
-    ANGEL_HOME.mkdir(parents=True, exist_ok=True)
+    target = path if path is not None else MEMORY_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    with MEMORY_PATH.open("a", encoding="utf-8") as handle:
+    with target.open("a", encoding="utf-8") as handle:
         handle.write(f"- [{timestamp}] {text}\n")
 
 

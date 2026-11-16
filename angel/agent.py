@@ -2,6 +2,8 @@
 
 import json
 import sys
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -20,8 +22,32 @@ class AgentError(Exception):
     pass
 
 
+# Limit recursive delegation and its billing impact across a *single* root task.
+# All children share the same counter; each new root run gets a fresh allowance.
+MAX_DELEGATE_DEPTH = 3
+MAX_DELEGATE_CALLS = 8
+MAX_DELEGATE_TURNS = 12
+
+
+@dataclass
+class _DelegationBudget:
+    remaining: int = MAX_DELEGATE_CALLS
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def reset(self) -> None:
+        with self.lock:
+            self.remaining = MAX_DELEGATE_CALLS
+
+    def consume(self) -> bool:
+        with self.lock:
+            if self.remaining <= 0:
+                return False
+            self.remaining -= 1
+            return True
+
+
 SYSTEM_PROMPT_BASE: str = """你是 Angel，一个全能 AI 助手，通过调用工具完成任务，而不是只靠说话。
-多步骤任务先调用 plan 写计划，再按计划执行；复杂子任务可以用 delegate 交给子 agent。
+多步骤任务先调用 plan 写计划，再按计划执行；复杂子任务可以用 delegate 交给子 agent；每次任务最多 8 个子 agent，最多嵌套 3 层，每个子任务最多 12 轮。
 需要读取文件、执行命令、联网查资料时直接调用工具；不要猜测文件内容，不要编造信息。
 修改文件前先调用 read_file 了解现状；edit_file 的 old_text 必须精确匹配且唯一。
 shell 命令保持简单、安全，不执行破坏性命令。
@@ -54,8 +80,18 @@ class Agent:
         backend: object | None = None,
         on_event: Callable[[str, dict], None] | None = None,
         approve_fn: Callable[[str, str], bool] | None = None,
+        delegate_depth: int = 0,
+        delegate_budget: _DelegationBudget | None = None,
+        system_instructions: str = "",
+        memory_path: str | Path | None = None,
     ) -> None:
         self.provider = provider
+        self.system_instructions = system_instructions
+        self.memory_path = Path(memory_path) if memory_path is not None else ANGEL_HOME / "MEMORY.md"
+        self.delegate_depth = delegate_depth
+        self._delegate_budget = (
+            delegate_budget if delegate_budget is not None else _DelegationBudget()
+        )
         # Optional observer for front ends (REPL grouping, web UI). It only
         # sees events; it never changes how the loop runs.
         self.on_event = on_event
@@ -81,7 +117,7 @@ class Agent:
             workdir=self.workdir,
             mode=mode,
             interactive=interactive,
-            memory_path=ANGEL_HOME / "MEMORY.md",
+            memory_path=self.memory_path,
             skills_dir=ANGEL_HOME / "skills",
             delegate_fn=self.delegate,
             evidence=self.evidence,
@@ -116,6 +152,8 @@ class Agent:
 
     def build_system_prompt(self, task: str) -> str:
         sections = [SYSTEM_PROMPT_BASE, MODE_NOTES.get(self.mode, "")]
+        if self.system_instructions:
+            sections.append("## 当前机器人的独立身份与目标\n" + self.system_instructions)
         if self.backend is not None:
             sections.append(
                 f"当前执行后端是 {self.backend.name} 沙盒："
@@ -133,13 +171,20 @@ class Agent:
                 "## 相关技能\n" + "\n\n".join(render_skill(s) for s in matched)
             )
 
-        memory = load_memory_summary()
+        memory = (
+            load_memory_summary()
+            if self.memory_path == ANGEL_HOME / "MEMORY.md"
+            else load_memory_summary(path=self.memory_path)
+        )
         if memory:
             sections.append("## 长期记忆\n" + memory)
 
         return "\n\n".join(sections)
 
     def run(self, task: str) -> str:
+        if self.delegate_depth == 0:
+            # Each top-level user request starts a fresh child-agent allowance.
+            self._delegate_budget.reset()
         system = self.build_system_prompt(task)
         messages: list[dict] = (
             [{"role": "system", "content": system}]
@@ -228,6 +273,19 @@ class Agent:
         return "（已达到最大轮数，任务未完成，请拆分任务或提高 --max-turns 后重试）"
 
     def delegate(self, task: str, max_turns: int = 6) -> str:
+        if not isinstance(task, str) or not task.strip():
+            return "错误：子任务必须是非空字符串"
+        if (
+            isinstance(max_turns, bool)
+            or not isinstance(max_turns, int)
+            or not 1 <= max_turns <= MAX_DELEGATE_TURNS
+        ):
+            return f"错误：子任务 max_turns 必须在 1 到 {MAX_DELEGATE_TURNS} 之间"
+        if self.delegate_depth >= MAX_DELEGATE_DEPTH:
+            return f"错误：子任务已达到最大委派深度（{MAX_DELEGATE_DEPTH} 层）"
+        if not self._delegate_budget.consume():
+            return f"错误：本次任务最多创建 {MAX_DELEGATE_CALLS} 个子 Agent"
+
         child = Agent(
             provider=self.provider,
             workdir=self.workdir,
@@ -239,6 +297,10 @@ class Agent:
             mcp_manager=self.mcp_manager,
             backend=self.backend,
             approve_fn=self.ctx.approve_fn,
+            delegate_depth=self.delegate_depth + 1,
+            delegate_budget=self._delegate_budget,
+            system_instructions=self.system_instructions,
+            memory_path=self.memory_path,
         )
         try:
             return child.run(task)

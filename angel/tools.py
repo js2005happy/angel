@@ -194,12 +194,17 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "delegate",
-            "description": "把子任务交给一个子 agent 执行并返回结果摘要",
+            "description": (
+                "把子任务交给子 agent 执行并返回摘要；每次主任务最多 "
+                "8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string"},
-                    "max_turns": {"type": "integer", "default": 6},
+                    "task": {"type": "string", "minLength": 1},
+                    "max_turns": {
+                        "type": "integer", "default": 6, "minimum": 1, "maximum": 12
+                    },
                 },
                 "required": ["task"],
             },
@@ -597,7 +602,7 @@ def _tool_web_search(ctx: ToolContext, query: str, count: int = 8) -> str:
 
 def _tool_memory_append(ctx: ToolContext, text: str) -> str:
     _check_approval(ctx, "memory_append", f"写入记忆：{text[:60]}")
-    append_memory(text)
+    append_memory(text, path=ctx.memory_path)
     return "已写入长期记忆"
 
 

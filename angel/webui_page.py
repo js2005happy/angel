@@ -103,6 +103,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
   <div class="brand"><svg width="22" height="22" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#111A42"/><ellipse cx="32" cy="15" rx="13" ry="4.2" fill="none" stroke="#EAC45F" stroke-width="3"/><path d="M32 24 L44 52 H38.6 L35.9 45.4 H28.1 L25.4 52 H20 Z M29.8 41 H34.2 L32 35.4 Z" fill="#FAF8F4"/></svg>Angel <small id="ver"></small></div>
   <span class="pill prov" id="prov"><i class="dot"></i><span>…</span></span>
   <span class="spacer"></span>
+  <a class="ibtn" id="groupLink" href="/groups" style="text-decoration:none">机器人群聊</a>
   <label class="pill" title="审批模式">模式
     <select class="ibtn" id="mode" aria-label="审批模式"></select></label>
   <button class="ibtn" id="toggle-right" aria-label="检查器">检查器</button>
@@ -142,6 +143,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
 "use strict";
 var params=new URLSearchParams(location.search);
 var TOKEN=params.get("token")||"";
+document.getElementById("groupLink").href="/groups?token="+encodeURIComponent(TOKEN);
 var state={sid:null,next:0,live:[],status:"idle",timer:null,info:null,pending:null};
 var $=function(id){return document.getElementById(id)};
 function api(path,opts){opts=opts||{};opts.headers=Object.assign({"X-Angel-Token":TOKEN,"Content-Type":"application/json"},opts.headers||{});
