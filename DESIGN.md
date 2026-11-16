@@ -74,6 +74,16 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 厂商锁定：不绑定任何一家模型；Claude Code 的专有配置方式也不采纳。
 - **浏览器工具（BrowserNavigate / BrowserClick / BrowserScreenshot 等）**：IllusionAgent 0.5.0 的核心是内置真浏览器，Angel 在 v2 里**不做假的**：没有真实浏览器驱动就无法实现导航、点击、截图，`web_fetch` 的纯文本抓取不能冒充浏览器。已记入路线图，待有浏览器驱动（如 Playwright/Chromium）再做。
 
+## 多 Agent 群聊架构（可运行 MVP）
+
+- `angel/groups.py`（Python）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
+- `angel/group-ui.html` + `angel/group-ui.js`（原生 HTML/CSS/JavaScript）：独立群聊 UI、组员列表、各成员模型配置与发送消息；不强制所有代码使用 Python，前端无需重新编译。
+- `angel/webui.py`：沿用现有同源 token 安全边界，提供 `GET/POST /api/groups`、`GET /api/groups/<id>`、`POST /api/groups/<id>/messages`。前端以 `textContent` 显示不可信的群消息，避免 HTML 注入。
+- 机器人身份和记忆分离：不同成员的 `Agent` 实例、模型会话 ID、群内 workspace 与 `MEMORY.md` 相互独立；共享的只有群消息记录。
+- 资源限制：每群最多 6 人、每条消息最多 2 轮、每个机器人每次最多 3 轮模型调用；独立的 `delegate` 工具有共享子任务预算/递归深度限制。
+- 当前选择串行逐个响应，以便后续成员能看到前一个人的意见，也便于控制模型调用成本。可并行的独立任务队列、WebSocket/SSE 推送与多机器人实际代码执行放入后续迭代，不虚称已实现。
+- 语言路线：保留 Python 标准库 agent / 协议适配，交互层使用 JavaScript；当有具体并发或性能瓶颈，再评估 TypeScript、Go、Rust，而不是先重写。
+
 ## 安全模型
 
 - **Key 不落地**：只从环境变量或已保存的安全连接器读取；绝不打印、记日志、写进项目文件。
