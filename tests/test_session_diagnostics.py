@@ -85,6 +85,65 @@ class SessionDiagnosisTests(unittest.TestCase):
         with self.assertRaises(SessionDiagnosisError):
             inspect_session("alias", root=self.root)
 
+
+    def test_empty_final_or_missing_user_requires_review(self):
+        for name, messages in (
+            ("empty", []),
+            ("blank", [{"role": "user", "content": "x"}, {"role": "assistant", "content": " "}]),
+            ("no-user", [{"role": "assistant", "content": "done"}]),
+        ):
+            with self.subTest(name=name):
+                self.write(name, messages)
+                self.assertEqual(inspect_session(name, root=self.root)["state"], "needs_review")
+
+    def test_reused_call_id_after_prior_result_is_rejected(self):
+        self.write("reuse", [
+            {"role": "user", "content": "x"},
+            {"role": "assistant", "tool_calls": [{"id": "one"}]},
+            {"role": "tool", "tool_call_id": "one", "content": "ok"},
+            {"role": "assistant", "tool_calls": [{"id": "one"}]},
+            {"role": "tool", "tool_call_id": "one", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ])
+        with self.assertRaises(SessionDiagnosisError):
+            inspect_session("reuse", root=self.root)
+
+    def test_out_of_order_assistant_marks_sequence_ambiguous(self):
+        self.write("ambiguous", [
+            {"role": "user", "content": "x"},
+            {"role": "assistant", "tool_calls": [{"id": "one"}]},
+            {"role": "assistant", "content": "early"},
+            {"role": "tool", "tool_call_id": "one", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ])
+        report = inspect_session("ambiguous", root=self.root)
+        self.assertTrue(report["ambiguous_tool_sequence"])
+        self.assertEqual(report["state"], "needs_review")
+        self.assertEqual(report["unmatched_tool_calls"], 0)
+
+    def test_complete_tool_sequence_is_only_conversation_ended(self):
+        self.write("normal", [
+            {"role": "user", "content": "x"},
+            {"role": "assistant", "tool_calls": [{"id": "one"}]},
+            {"role": "tool", "tool_call_id": "one", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ])
+        report = inspect_session("normal", root=self.root)
+        self.assertEqual(report["state"], "conversation_ended")
+        self.assertFalse(report["execution_verified"])
+
+    def test_symlinked_parent_directory_is_rejected(self):
+        target = self.root / "real"
+        target.mkdir()
+        (target / "x.jsonl").write_text('{"role":"user"}\n', encoding="utf-8")
+        alias = self.root / "alias"
+        try:
+            alias.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks unavailable")
+        with self.assertRaises(SessionDiagnosisError):
+            inspect_session("x", root=alias)
+
     def test_cli_short_circuit_no_provider_or_network(self):
         self.write("done", [
             {"role": "user", "content": "a"},
