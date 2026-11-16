@@ -361,24 +361,31 @@ class Agent:
                         raise AgentError(
                             "工具调用未执行：无法持久化执行意图；请检查日志"
                         ) from exc
-                if args is None or not isinstance(args, dict):
-                    result = "错误：工具参数不是合法的 JSON 对象"
-                elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
-                    # MCP servers can expose side-effecting tools without declaring
-                    # it in their schema. Never trust their names as proof of safety.
-                    # Approval must happen at the same boundary as built-in tools.
-                    try:
-                        _check_approval(
-                            self.ctx,
-                            "mcp",
-                            f"调用外部 MCP 工具：{fn_name}（可能产生外部副作用）",
-                        )
-                    except ToolError as exc:
-                        result = f"错误：{exc}"
+                # Distinguish an exception from a returned tool result.
+                # Never expose raw exception details: they may contain
+                # credentials or remote response bodies.
+                tool_exception = None
+                try:
+                    if args is None or not isinstance(args, dict):
+                        result = "错误：工具参数不是合法的 JSON 对象"
+                    elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
+                        # External MCP tools may have side effects regardless
+                        # of their names; keep the existing approval boundary.
+                        try:
+                            _check_approval(
+                                self.ctx,
+                                "mcp",
+                                f"调用外部 MCP 工具：{fn_name}（可能产生外部副作用）",
+                            )
+                        except ToolError as exc:
+                            result = f"错误：{exc}"
+                        else:
+                            result = self.mcp_manager.execute(fn_name, args)
                     else:
-                        result = self.mcp_manager.execute(fn_name, args)
-                else:
-                    result = execute_tool(fn_name, args, self.ctx)
+                        result = execute_tool(fn_name, args, self.ctx)
+                except Exception as exc:
+                    tool_exception = exc
+                    result = "错误：工具调用抛出异常，执行结果需人工核查"
 
                 # A result record is only a report, not proof of external
                 # side effects. If recording fails, stop rather than claim
@@ -387,8 +394,12 @@ class Agent:
                     try:
                         self.tool_journal.finish(
                             journal_call, fn_name,
-                            success=not (
-                                isinstance(result, str) and result.startswith("错误：")
+                            success=(
+                                tool_exception is None
+                                and not (
+                                    isinstance(result, str)
+                                    and result.startswith("错误：")
+                                )
                             ),
                         )
                     except (JournalError, OSError) as exc:
@@ -396,6 +407,13 @@ class Agent:
                             "工具可能已执行，但结果日志写入失败；状态未知，"
                             "禁止自动重试，请人工核查"
                         ) from exc
+                if tool_exception is not None:
+                    # An exception may happen after an external side effect.
+                    # Stop, do not replay, and do not claim task completion.
+                    raise AgentError(
+                        "工具调用发生异常；日志仅记录报告错误，"
+                        "外部副作用状态未知，禁止自动重试，请人工核查"
+                    ) from None
                 self._emit(
                     "tool_result",
                     {"id": tc.get("id", ""), "name": fn_name, "result": result},
