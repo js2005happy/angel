@@ -27,6 +27,7 @@ from .console import configure_stream, format_provider_fallback, format_trace_sp
 from .usage import CostLedger, UsageTracker
 from .checkpoints import CheckpointStore
 from .knowledge import KNOWLEDGE_TOOL_SCHEMA, KnowledgeStore, format_search_results
+from .traces import TraceStore
 
 
 class AgentError(Exception):
@@ -199,6 +200,9 @@ class Agent:
         self._last_model_span_id: str | None = None
         self.last_trace_id: str | None = None
         self._trace_outcome: str | None = None
+        self.trace_store = (
+            TraceStore() if self.trace_enabled and delegate_depth == 0 else None
+        )
         self.poppy_enabled = bool(poppy_enabled)
         self.allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else None
         self.session_dir = Path(session_dir) if session_dir is not None else None
@@ -269,6 +273,16 @@ class Agent:
         )
 
     def _emit(self, kind: str, data: dict) -> None:
+        if self.trace_store is not None and kind in ("trace_start", "trace_span"):
+            try:
+                self.trace_store.append(kind, data)
+            except Exception as exc:
+                print(
+                    f"警告：本次执行追踪未能完整写入本地记录（{type(exc).__name__}）",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                self.trace_store = None
         if self.on_event is None:
             if kind == "provider_fallback":
                 print(format_provider_fallback(data), file=sys.stderr, flush=True)

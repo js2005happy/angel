@@ -53,9 +53,17 @@ EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络�
 | 优先级 | 能力 | 状态与边界 |
 |---|---|---|
 | 1 | Linux 本地 shell 真沙箱 | 本分支 Bubblewrap MVP 已实现，待运行验证；只隔离 shell/grep/git_status，工作目录可写、网络隔离；文件/MCP/HTTP 工具仍在本机，尚无 seccomp 与资源配额 |
-| 2 | Agent 执行追踪 | 本分支已实现，待验证；trace_id 串起模型、工具与委派子 Agent，记录实际 Token、耗时、状态和兜底摘要，不记录 prompt/参数/结果 |
+| 2 | Agent 执行追踪 | 本分支已实现本地有界历史 MVP，待验证；`angel trace list/show` 可查元数据，不记录 prompt/参数/结果；OTLP 与并行任务聚合待开发 |
 | 3 | SQLite 语义检索 | 本分支项目文档 MVP 已实现，待验证；手动索引 Markdown/文本，embedding 仅走本机 Ollama，SQLite 精确扫描并公开线性规模边界；长期记忆语义索引仍待后续设计 |
 | 4 | 并行 Agent 编排 | 本分支已实现最多 8 人群聊、最多 4 并发及协作式停止 MVP，待验证；后台任务、实时流式状态、在途请求硬取消、并发成本看板和父子 trace 仍待开发 |
+
+## 公开需求信号（2026-11-17）
+
+- [LangChain State of Agent Engineering（2026-06-12，1,300+ 受访者）](https://www.langchain.com/state-of-agent-engineering)：32% 将质量列为生产阻碍，延迟为第二大阻碍（20%）；观测性采用率约 89%，高于评估的 52%。方向：继续补可追溯执行、评估和响应延迟；这是组织级开发者调研，不等同于个人消费者排序。
+- [Temporal State of Development 2026（2026-08-25，554 名美英工程师/负责人）](https://temporal.io/reports/state-of-development-2026)：受访者提到使用更多 Agent 的主要阻碍包括状态追踪、调试和费用；79.8% 称 Token/算力费用具有限制性。方向：长任务状态、失败恢复与成本透明仍值得优先迭代。
+- 个体问题信号：[OpenAI Agents SDK #793](https://github.com/openai/openai-agents-python/issues/793) 曾请求历史 trace 检索/导出；[LangGraph #7417](https://github.com/langchain-ai/langgraph/issues/7417) 报告长工具调用在恢复后重复执行并增加成本。Issue 只代表具体部署经历，不作为需求流行度统计。
+
+本分支本轮据此补上本地受限 trace 历史；接下来重点看长任务恢复的幂等边界、可验证结果与响应延迟，不把外部框架的单个 issue 直接照搬成 Angel 的功能规格。
 
 ## 第一梯队
 

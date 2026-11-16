@@ -124,15 +124,17 @@ python3 -m angel                 # 然后输入 /status
 
 ### 轻量执行追踪
 
-使用 `--trace`（Web UI 使用 `angel ui --trace`）时，每次 Agent 执行都会生成 `trace_id`，并为任务、模型请求、工具调用和委派子 Agent 建立可关联的 span。span 记录本地计时、状态、模型 API 实际返回的 token 数，以及兜底尝试的安全摘要；不记录提示词、工具参数或工具结果。终端显示摘要（一次性模式写到 stderr），Web UI 会话和 `--json --trace` 事件流提供结构化详情。当前不落独立追踪文件，也不提供 OpenTelemetry 导出。
+使用 `--trace`（Web UI 使用 `angel ui --trace`）时，每次 Agent 执行都会生成 `trace_id`，并为任务、模型请求、工具调用和委派子 Agent 建立可关联的 span。span 记录本地计时、状态、模型 API 实际返回的 token 数，以及兜底尝试的安全摘要；不记录提示词、工具参数或工具结果。终端显示摘要（一次性模式写到 stderr），Web UI 会话和 `--json --trace` 事件流提供结构化详情。追踪元数据另存于 `~/.angel/traces/`，POSIX 系统目录权限为 0700、文件为 0600；最多保留 500 条或 30 天，并可用 `angel trace list` / `angel trace show <trace_id>` 检查。
 
 ```bash
 python3 -m angel --trace "检查这个项目"
 python3 -m angel --json --trace "列出项目结构"
 python3 -m angel ui --trace
+python3 -m angel trace list
+python3 -m angel trace show <trace_id>
 ```
 
-工具 span 以产生该工具调用的模型 span 为父级；委派子 Agent 的根 span 以 `delegate` 工具 span 为父级。API 未返回 token 用量时，trace 中保持缺失，不估算。
+工具 span 以产生该工具调用的模型 span 为父级；委派子 Agent 的根 span 以 `delegate` 工具 span 为父级。API 未返回 token 用量时，trace 中保持缺失，不估算。当前不提供 OpenTelemetry 导出；如果记录写入失败，Agent 会继续工作并在 stderr 提示。
 
 ### 真实任务评估集
 

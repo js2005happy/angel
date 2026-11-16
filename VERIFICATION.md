@@ -40,8 +40,9 @@
 ## 待验证：轻量 Agent 执行追踪（开发分支）
 
 - `--trace` 覆盖一次 Agent 任务；模型、工具、委派子 Agent spans 通过 parent_span_id 组成父子树，含模型用量/耗时和失败上下文。
-- 结构化事件不得包含 prompt、工具参数或工具结果；缺失的 API Token 用量保持未知。
-- 本地本轮未运行测试或 CI；本条是验证范围，不代表已通过验证。
+- `TraceStore` 使用字段白名单仅保存 span 元数据到 `~/.angel/traces/`，POSIX 权限 0700/0600；单文件上限 256 KiB，保留 30 天及最近 500 条，`angel trace list|show` 提供本地检查入口。
+- 结构化事件不得包含 prompt、工具参数、工具结果、会话 ID 或响应正文；缺失的 API Token 用量保持未知。
+- 本地本轮未运行测试或 CI；仍需验证中断写入、Windows ACL、保留清理与委派 trace 的完整父子关系。本条不代表已通过运行验证。
 
 ## 已验证：EigenFlux 逐机器人网络行为上限（PR #22）
 

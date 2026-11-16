@@ -431,6 +431,10 @@ def main(argv: list[str] | None = None) -> int:
         from .evaluation import main as evaluation_main
 
         return evaluation_main(raw[1:])
+    if raw and raw[0] == "trace":
+        from .traces import main as trace_main
+
+        return trace_main(raw[1:])
 
     parser = build_parser()
     if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):

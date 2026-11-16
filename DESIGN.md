@@ -107,7 +107,8 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 - `--trace` 为每次 `Agent.run()` 生成一个 `trace_id`；根 Agent、模型请求、工具执行和同步委派子 Agent 通过 `span_id` / `parent_span_id` 组成一棵执行树。模型请求记录本地耗时、Provider/model、状态、API 已报告的 token 数；工具 span 只记工具名、耗时和状态。
 - trace 同时经过终端 observer、Web UI 事件和 JSON Lines 输出；Provider 兜底记录失败 Provider 与原因摘要。失败信息不包含响应正文，trace 不包含 prompt、工具参数或工具结果。
-- 目前 trace 只在当前输出事件/网页执行记录中可见，不写入独立历史文件，也没有 OTLP 导出、跨进程收集或并行任务合并；这是可观测性 MVP，不等于完整 OpenTelemetry 实现。
+- `TraceStore` 将显式开启的 trace 元数据按 `trace_id` 写入 `~/.angel/traces/<id>.jsonl`，提供 `angel trace list|show`。POSIX 目录/文件权限为 0700/0600；单条追踪最多 256 KiB，自动清理 30 天前或超出最近 500 条的记录。写入使用字段白名单，不落 session id、prompt、工具参数/结果或 API 响应正文。
+- 这是本机可查历史的 MVP，没有 OTLP 导出、跨进程聚合、并行任务合并或防篡改能力；权限也不能阻止当前用户或恶意本地进程读取/修改文件。
 
 ## 自动上下文压缩（可选）
 

@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（本地执行追踪历史）
+
+- `--trace` 除实时终端/Web/JSONL 事件外，将安全元数据保存至 `~/.angel/traces/<trace_id>.jsonl`；新增 `angel trace list|show` 查看耗时、状态、模型用量与父子 spans。
+- 存储字段白名单排除 prompt、工具参数/结果、会话 ID 和响应正文；POSIX 权限为 0700/0600，单 trace 上限 256 KiB，保留 30 天并最多留 500 条。
+- 追踪存储失败不会打断 Agent 任务。当前未运行测试或 CI；Windows 权限、异常中断恢复和长期清理待验证。
+
 ## 未发布（Linux Bubblewrap 本地 shell 隔离 MVP）
 
 - 新增可选 `--sandbox bwrap` 和 `sandbox: "bwrap"` 配置。启动前检查 Linux、`bwrap` 可执行文件及所需 user namespace；预检失败即停止，不回退到未隔离 shell。
@@ -48,7 +54,7 @@
 
 - 使用 `--trace` 时，为每次 Agent 执行生成 trace_id，并用 span/parent_span_id 关联模型请求、工具调用和委派子 Agent。
 - 按模型请求记录 API 实际返回的 Token、耗时、Provider/model、状态和兜底尝试；失败仅记录安全的错误类别，不留存 prompt、工具参数或结果。
-- 终端、Web UI 与 `--json --trace` 可见追踪摘要；默认关闭以保持既有事件流兼容，当前不保存独立历史 trace 文件，也不导出 OpenTelemetry。
+- 终端、Web UI 与 `--json --trace` 可见追踪摘要；默认关闭以保持既有事件流兼容。另见本文件顶部的本地追踪历史增量；仍不导出 OpenTelemetry。
 
 ## 未发布（可配置模型故障兜底）
 
