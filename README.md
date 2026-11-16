@@ -1,5 +1,10 @@
 # Angel 👼
 
+## 工具执行元数据日志基础（尚未接入主循环）
+
+新增可选的 `angel.tool_journal.ToolJournal` Python 模块：显式 `begin(tool)` 记录执行意图，工具结束后 `finish(call_id, tool, success=...)` 记录报告结果，`inspect()` 只返回计数及未知结果。日志默认不创建文件，不记录提示词、参数或输出，也不启动工具或模型。崩溃在 intent 与 result 之间时，结果为 unknown，**绝不自动重试**。这只是下一阶段的底层组件，尚未集成进 Agent 的工具调用路径或 CLI，尚未运行测试，不能宣称实现断点续跑。
+
+
 一个全能 AI 助手命令行工具：集开源 agent 之长（Codex、OpenCode、Pi、Goose、OpenHands、Hermes Agent、Grokbot、Hermes 模型），用 Python 标准库从零写成。没有 pip 依赖，有 Python 3 就能跑。
 
 > Angel 的代码全部是原创（见 [DESIGN.md](DESIGN.md) 的来源说明），只借鉴了各项目的设计思想，没有复制任何源码。
