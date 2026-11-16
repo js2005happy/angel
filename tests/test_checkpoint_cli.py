@@ -108,6 +108,21 @@ class CheckpointCLITests(unittest.TestCase):
         self.assertFalse((self.project / "first.txt").exists())
         self.assertFalse((self.project / "second.txt").exists())
 
+    def test_diff_command_shows_latest_checkpoint_and_updates_after_undo(self):
+        code, output = self.run_cli(
+            ["create", "/diff", "/undo", "/diff", "/exit"],
+            [
+                {"content": "", "tool_calls": [call("new.txt", "hello\\n", "c1")]},
+                {"content": "written"},
+            ],
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("最近检查点", output)
+        self.assertIn("+++ b/new.txt", output)
+        self.assertIn("+hello", output)
+        self.assertIn("没有可查看的本地文件检查点", output)
+        self.assertFalse((self.project / "new.txt").exists())
+
     def test_invalid_rewind_count_never_modifies_file(self):
         code, output = self.run_cli(
             ["create", "/rewind nope", "/rewind 99", "/exit"],
