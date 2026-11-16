@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 未发布：MCP 启动授权与进程生命周期
+
+- 回归测试文件 `tests/test_mcp_startup.py`：覆盖 readonly 不启动、无人值守 auto 不启动、交互 auto 拒绝/批准、full 启动、未知模式拒绝与 REPL 模式切换关闭旧 MCP 服务。
+- 使用本机模拟 MCP stdio 进程和启动标记验证确实没有启动未经同意的程序；无需模型 API Key。
+- 需以该 PR 的 GitHub Actions Linux/Windows 结果为合并依据；未独立进行真实第三方 MCP 服务的端到端验证。
+
+
 ## 未发布：MCP 子进程环境隔离验证
 
 - 新增单元测试 `tests/test_mcp_environment.py`：验证默认不继承模型 API Key、显式环境传递、配置格式错误及实际 Python MCP stdio 子进程的环境可见性。
