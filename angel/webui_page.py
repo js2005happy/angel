@@ -69,7 +69,7 @@ main{display:grid;grid-template-rows:1fr auto;min-height:0;min-width:0}
 .tool .body{border-top:1px solid var(--line);padding:8px 12px;font-size:12px}
 .tool pre{margin:4px 0 8px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;background:var(--panel);padding:8px;border-radius:8px}
 .approve{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border-top:1px solid var(--line);background:rgba(234,196,95,.12)}
-.approve p{margin:0;flex:1;min-width:200px;font-size:13px}
+.approve p{margin:0;flex:1;min-width:200px;font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);max-height:360px;overflow:auto}
 .yes,.no{border-radius:8px;padding:6px 14px;font-weight:600;cursor:pointer;border:1px solid}
 .yes{background:var(--ok);border-color:var(--ok);color:#fff}.no{background:var(--surface);border-color:var(--bad);color:var(--bad)}
 .err-line{max-width:760px;margin:0 auto 12px;color:var(--bad);font-size:13px;padding-left:36px}

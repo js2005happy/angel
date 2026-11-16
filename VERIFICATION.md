@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 已验证：单文件 apply_patch、审批 diff 和 /diff（PR #16）
+
+- `tests/test_apply_patch.py`：严格 hunk 匹配、多段修改/插入/删除、过期文件、错误行号、LF/CRLF、无尾换行、越界保护、权限审批、审批中并发修改、检查点撤销及 Web UI 多行预览。
+- `tests/test_checkpoint_cli.py`：实际 REPL `/diff` 查看最新检查点，并在 `/undo` 后不再显示原差异。
+- GitHub Actions [PR #16 CI 43814541490](https://github.com/js2005happy/angel/actions/runs/43814541490)：Ubuntu Python 3.10、Ubuntu Python 3.12 和 Windows Python 3.12 全部通过，Windows unittest 日志显示 265 项通过。测试用假 Provider，没有实际模型 API 消费。
+- 限制：不增加 Shell、MCP、E2B 写入能力，也不提供跨文件补丁原子事务、完整工作树 diff 或 OS 级沙箱。
+
 ## 已验证：本地文件检查点与 /undo、/rewind（PR #15）
 
 - `tests/test_checkpoints.py` 验证新建/覆盖/编辑/plan 以及二进制原件恢复、一次任务多次写入只有一条检查点、子 Agent 继承、跨轮 rewind、重启后的恢复。

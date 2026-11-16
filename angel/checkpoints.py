@@ -6,6 +6,7 @@ side effects are NOT captured. A checkpoint is one top-level Agent.run task.
 """
 
 import base64
+from .patches import unified_preview
 import hashlib
 import json
 import os
@@ -201,6 +202,37 @@ class CheckpointStore:
                 {"id": path.stem, "files": len(record["files"])}
                 for path, record in self._records() if not record["undone"]
             ]
+
+    def latest_diff(self, max_chars: int = 12000) -> str:
+        """Show changes from the newest not-undone checkpoint only.
+
+        If any target was altered after Angel wrote it, report a conflict
+        instead of presenting somebody else's edits as Angel's own diff.
+        """
+        with self._lock:
+            active = [(p, r) for p, r in self._records() if not r["undone"]]
+            if not active:
+                return "（当前会话没有可查看的本地文件检查点）"
+            manifest, record = active[-1]
+            pieces = [f"最近检查点：{manifest.stem}（{len(record['files'])} 个文件）"]
+            for relative, entry in sorted(record["files"].items()):
+                target = self._safe_path(relative)
+                current = self._content(target)
+                if _digest(current) != entry.get("after_sha"):
+                    pieces.append(f"{relative}：冲突——文件已被外部修改，无法可靠展示 Angel 的最终 diff")
+                    continue
+                raw = entry.get("before")
+                try:
+                    original = base64.b64decode(raw, validate=True) if isinstance(raw, str) else None
+                except (ValueError, TypeError) as exc:
+                    raise CheckpointError("检查点备份数据损坏") from exc
+                if _digest(original) != entry.get("before_sha"):
+                    raise CheckpointError("检查点备份数据校验失败")
+                pieces.append(unified_preview(relative, original, current, max_chars=6000))
+            result = "\n\n".join(pieces)
+            if len(result) > max_chars:
+                result = result[:max_chars] + "\n...（检查点 diff 总长度过长，已截断）"
+            return result
 
     def undo(self, count: int = 1) -> dict:
         """Fail closed if ANY affected file changed since its last Angel write.
