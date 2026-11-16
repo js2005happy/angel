@@ -3,6 +3,8 @@
 from contextlib import ExitStack
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -209,6 +211,21 @@ class JsonModeTests(unittest.TestCase):
         self.assertNotIn(secret, json.dumps(events))
         self.assertEqual(events[-1]["error"]["code"], "runtime_error")
         self.assertIn("RuntimeError", stderr)
+
+    def test_real_module_entrypoint_emits_jsonl_on_invalid_invocation(self):
+        # This exercises python -m angel, not only the in-process main function.
+        completed = subprocess.run(
+            [sys.executable, "-m", "angel", "--json"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            capture_output=True, text=True, timeout=15,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        records = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["type"], "run_failed")
+        self.assertEqual(records[0]["exit_code"], 2)
+        self.assertEqual(records[0]["schema_version"], 1)
 
     def test_json_mode_rejects_invalid_context_and_output_is_machine_readable(self):
         code, events, _, _ = self.run_json(
