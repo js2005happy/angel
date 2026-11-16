@@ -67,6 +67,24 @@ python3 -m angel --mode readonly "看看这个目录里有什么"
 python3 -m angel --mode full "整理下载目录"
 ```
 
+**MCP 启动环境隔离**：默认启动 MCP 子进程时，只传递运行所需的少量系统环境变量（如 `PATH`、`HOME`、Windows 系统路径等）和显式配置的 `env`，不再自动传递 DeepSeek/OpenAI 等 API Key。确实需要额外环境变量的服务器可以在各自的配置中明确声明 `inherit_env`：
+
+```json
+{
+  "mcp_enabled": true,
+  "mcp_servers": {
+    "example": {
+      "command": "python",
+      "args": ["server.py"],
+      "inherit_env": ["EXAMPLE_API_KEY"],
+      "env": {"EXAMPLE_MODE": "safe"}
+    }
+  }
+}
+```
+
+`inherit_env` 是精确变量名白名单，不支持 `*`；`env` 中显式值优先。**这仅减少凭证意外传递，不是进程沙箱**：MCP 服务本身仍能以当前用户身份访问本机文件和网络，应仅连接可信程序。
+
 **MCP 工具审批**：启用 MCP 后，第三方工具可能读取或修改外部系统，因此即使工具名称看起来是只读，Angel 也按可能产生副作用处理：`readonly` 禁止调用；`auto` 每次交互确认（无人值守时拒绝）；`full` 才允许直接调用。开启 MCP 连接会启动你配置的服务器命令，请只连接可信服务器。
 
 ## 交互命令
