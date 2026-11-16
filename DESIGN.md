@@ -1,5 +1,10 @@
 # Angel 设计文档
 
+## Agent 工具日志执行边界（2026-11-17）
+
+`Agent(..., tool_journal=...)` 为显式可选注入，默认关闭。工具执行前写 intent，执行返回后写 result；写 intent 失败阻断执行，写 result 失败停止并提示可能执行但结果未知。当前未开放 CLI 参数，子 Agent 不自动继承日志，尚未实现跨进程锁或真正的断点恢复；工具返回错误的分类仍使用 `错误：` 字符串前缀，未来需结构化结果。
+
+
 ## 工具执行元数据日志（开发中）
 
 `angel/tool_journal.py` 是独立、显式启用的本地事件数据层：每次 `begin` 产生随机 call_id 并记录 `intent`，`finish` 记录 `result_ok` 或 `result_error`。单条事件通过独立排他创建的文件写入并 fsync，文件名随机，读取时按 call_id 分组，不能按文件名推断时序。任何丢失结果都保留 unknown；`execution_verified` 与 `safe_to_auto_resume` 恒为 false。只存 tool 名、事件类型、时间戳和随机调用 ID，不存模型对话、参数、输出和凭据。
