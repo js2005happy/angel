@@ -1,10 +1,11 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
-## 待验证：精确会话授权及 Shell 起始目录约束
+## 已验证：精确会话授权及 Shell 起始目录约束（PR #14）
 
 - `tests/test_workspace_writes.py` 更新原有会话授权行为：`a` 仅对同一文件和工具有效，换文件/工具再批准；Shell 同时匹配规范化 cwd、timeout、后端和命令文本。
 - 新增工作区外的 ../、绝对路径、符号链接的 shell cwd 拒绝测试；模拟 E2B 拒绝工作区外 cwd、合法相对 cwd 可执行；Web UI 回调不会被旧授权绕过。
-- 尚不测试或承诺完整的 OS 沙箱与远端符号链接隔离；等待本次 PR 的 Linux Python 3.10/3.12、Windows Python 3.12 CI 后合并。
+- GitHub Actions [PR #14 CI 43804261790](https://github.com/js2005happy/angel/actions/runs/43804261790)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过；Windows 日志显示 227 项 unittest 通过。测试使用临时目录和 fake backend，无真实 API 调用。
+- 已知限制：尚不测试或承诺 OS 沙箱、命令内部的跨目录访问或远端 E2B 符号链接隔离。
 
 
 ## 待验证：工作目录内置文件限制与会话审批
