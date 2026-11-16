@@ -1,6 +1,7 @@
 """Angel 的工具驱动代理循环、系统提示词和子任务委派。"""
 
 import json
+import sys
 from pathlib import Path
 
 from .config import ANGEL_HOME, load_config
@@ -11,6 +12,7 @@ from .memory import load_memory_summary, load_agents_md, new_session_id, save_se
 from .compact import compact_messages
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
+from .console import configure_stream
 
 
 class AgentError(Exception):
@@ -240,6 +242,9 @@ def build_mcp_manager(
         return None
 
     if mode == "auto":
+        # Core API use may bypass cli.main() which normally configures stdio.
+        # Make startup consent usable on legacy Windows code-page consoles.
+        configure_stream(sys.stdout)
         approved = {}
         for name, server in servers.items():
             # Server commands and env can contain secrets; only show the name.
