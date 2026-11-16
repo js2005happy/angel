@@ -233,7 +233,7 @@ class ScopedApprovalTest(unittest.TestCase):
         self.assertEqual(prompts.call_count, 3)
         self.assertEqual(
             self.ctx.approved_file_tools,
-            {("write_file", str(self.root / "one.txt"), str(self.root), id(None))},
+            {("write_file", str((self.root / "one.txt").resolve()), str(self.root.resolve()), id(None))},
         )
         fresh = ToolContext(
             workdir=self.root, mode="auto", interactive=True,
@@ -267,7 +267,7 @@ class ScopedApprovalTest(unittest.TestCase):
         self.assertIn("用户拒绝", different_timeout)
         self.assertEqual(prompts.call_count, 4)
         self.assertEqual(self.ctx.approved_shell_commands, {
-            ("echo 42", str(self.root), str(self.root), 60, id(None))
+            ("echo 42", str(self.root.resolve()), str(self.root.resolve()), 60, id(None))
         })
 
     def test_auto_noninteractive_and_readonly_cannot_use_cached_grants(self):
