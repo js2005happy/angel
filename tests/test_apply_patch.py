@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from angel.agent import Agent
 from angel.checkpoints import CheckpointStore
 from angel.patches import PatchError, apply_unified_patch, unified_preview
 from angel.tools import ToolContext, execute_tool
@@ -104,6 +105,9 @@ class ParserTest(unittest.TestCase):
             "a.txt", b"A\n" * 400, b"B\n" * 400, max_chars=80
         ))
         self.assertIn("二进制", unified_preview("binary", b"\x00", b"abc"))
+        self.assertIn("128 KiB", unified_preview(
+            "huge.txt", b"a" * 200000, b"b" * 200000,
+        ))
 
 
 class ToolPatchTest(unittest.TestCase):
@@ -238,6 +242,18 @@ class ToolPatchTest(unittest.TestCase):
         self.ctx.workdir = Path("/home/user")
         self.assertIn("只支持本地", self.apply())
         self.assertEqual(backend.writes, [])
+
+    def test_local_only_tool_is_not_advertised_for_remote_backend(self):
+        local = Agent(object(), workdir=self.workdir, mode="readonly",
+                      interactive=False, skills_dirs=[])
+        remote = Agent(object(), workdir=self.workdir, mode="readonly",
+                       interactive=False, skills_dirs=[], backend=object())
+        self.assertIn("apply_patch", [
+            x["function"]["name"] for x in local.tool_schemas()
+        ])
+        self.assertNotIn("apply_patch", [
+            x["function"]["name"] for x in remote.tool_schemas()
+        ])
 
     def test_web_ui_supports_multiline_approval_previews(self):
         self.assertIn("white-space:pre-wrap", PAGE_HTML)
