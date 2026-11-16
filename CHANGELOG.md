@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（长任务恢复基础：会话状态只读诊断）
+
+- 新增 `python -m angel session-status SESSION_ID`，只读检查已保存 JSONL 会话的角色、工具调用与工具响应配对，识别需要人工核对的中断状态。
+- 不打印对话或工具内容，不运行模型、网络或 Shell；拒绝非法会话 ID、符号链接、损坏及超过大小限制的会话文件。
+- 输出明确区分 `conversation_ended` 和真正执行成功；当前 `execution_verified=false`、`safe_to_auto_resume=false`，不擅自重放有副作用的工具。附静态编写的回归测试，尚未执行。
+
 ## 未发布（EigenFlux 逐机器人网络权限上限）
 
 - 新增 `angel eigenflux policy show|allow|deny|audit`，为每个主/群聊 Agent 显式记录固定网络行为的本地意向；默认拒绝，allow 需要 `--confirm`，deny 即时本地撤销，带 SHA-256 并发检查与有界审计。
