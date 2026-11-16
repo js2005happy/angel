@@ -115,8 +115,15 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise
 
 
-def _fetch_public_https(url: str, *, allow_redirect: bool = True) -> tuple[str, bytes]:
-    """Fetch bounded JSON with HTTPS-only redirects and pinned public DNS."""
+def _fetch_public_https(
+    url: str, *, allow_redirect: bool = True, allow_not_found: bool = False,
+) -> tuple[str, bytes | None]:
+    """Fetch bounded JSON with HTTPS-only redirects and pinned public DNS.
+
+    Only OAuth discovery may opt into a distinct 404 result. Any other HTTP
+    error, invalid response, or timeout fails closed; 404 is never confused
+    with a connectivity failure or a valid empty document.
+    """
     current = url
     for redirects in range(MAX_REDIRECTS + 1):
         parsed = _checked_https(current)
@@ -141,8 +148,10 @@ def _fetch_public_https(url: str, *, allow_redirect: bool = True) -> tuple[str, 
                 current = urljoin(current, destination)
                 _checked_https(current)
                 continue
+            if response.status == 404 and allow_not_found:
+                return current, None
             if response.status != 200:
-                raise PoppyError(f"站点没有可用的 Poppy 文件（HTTP {response.status}）")
+                raise PoppyError(f"站点元数据读取失败（HTTP {response.status}）")
             length = response.getheader("Content-Length")
             if length is not None:
                 try:
@@ -255,6 +264,10 @@ def _summary(data: dict, final_url: str) -> dict:
         "channels": channels[:MAX_CAPABILITIES],
         "scopes": scoped,
         "auth_advertised": bool(auth) and auth.get("disabled") is not True,
+        "auth_disabled": auth.get("disabled") is True,
+        "auth_issuer_hint": (
+            auth.get("issuer") if isinstance(auth.get("issuer"), str) else None
+        ),
         "read_only_discovery": True,
         "status": "metadata_only",
         "warning": (

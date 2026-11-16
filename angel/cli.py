@@ -318,6 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="仅检查站点 Poppy 元数据后退出，无需模型 API Key",
     )
     parser.add_argument(
+        "--inspect-poppy-identity", metavar="HTTPS_SITE", default=None,
+        help="只读核验 Poppy 公司域名与 OAuth issuer 的元数据归属，无需模型 Key",
+    )
+    parser.add_argument(
         "--plan", dest="plan_mode", action="store_true",
         help="先只读分析，生成工作目录中的 plan.md，不执行任务",
     )
@@ -405,6 +409,29 @@ def main(argv: list[str] | None = None) -> int:
             return invalid_arguments(sys.stdout)
     else:
         args = parser.parse_args(raw)
+
+    if args.inspect_poppy_identity is not None:
+        if args.json_mode:
+            from .json_mode import invalid_arguments
+            return invalid_arguments(
+                sys.stdout, "--inspect-poppy-identity 不能与 --json 混用"
+            )
+        if (
+            args.discover_poppy is not None or args.prompt is not None
+            or args.plan_mode or args.execute_plan or args.approve_plan
+        ):
+            print("错误：--inspect-poppy-identity 是独立的只读诊断命令", file=sys.stderr)
+            return 2
+        import json
+        from .poppy_identity import inspect_poppy_identity
+        from .poppy import PoppyError
+        try:
+            result = inspect_poppy_identity(args.inspect_poppy_identity)
+        except (PoppyError, OSError) as exc:
+            print(f"Poppy 身份核验失败：{exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.discover_poppy is not None:
         if args.json_mode:

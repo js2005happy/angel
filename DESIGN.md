@@ -103,6 +103,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## Poppy OAuth issuer 元数据双向核验（第三阶段第一增量）
+
+- `poppy_identity.py` 实现 1.0 §3.2 与 RFC 9728 / RFC 8414 的公共身份发现：公司文档 `organization.domain` → 域名 `oauth-protected-resource`，验证 `resource` 精确公司 origin；选择该元数据 `authorization_servers` 中被 `auth.issuer` 指定的发行方（只有一个时可省略）；读取发行方 `oauth-authorization-server`，精确匹配 `issuer` 且验证 `protected_resources` 回指公司。验证双向归属后才对外报告发行方身份。
+- 资源 404 / 合法空授权服务器列表只报告未检测到 issuer 的 signed-out-only 元数据；已声明 `auth.issuer` 时拒绝这种降级。任何超时、非 404 HTTP 错误、错配、非法元数据或重定向均拒绝，不默默把此前已知 issuer 当作不存在。未来增加跨会话已知 issuer 锁定和变更审计。
+- 同时验证 issuer 必备的 `token_endpoint`、`revocation_endpoint`、`grant_types_supported` 包含 `refresh_token`，对 authorization_code 和 device_code 的对应端点进行检查。端点只展示或验证格式，不请求任何 token，也不发送请求到资源 API。
+- `poppy.py` 继续使用固定公网 IP/TLS SNI 的标准库 HTTPS，只在显式允许的资源元数据查询中将 HTTP 404 返回为 `None`；普通 Poppy 发现依旧把 404 当失败。元数据请求不跟随重定向、不发送凭据。CLI `--inspect-poppy-identity` 不依赖 Provider，Agent 工具 `poppy_identity_check` 只在 `--poppy` 时开放。
+- 本期不产生可用 Poppy Session；Session 的 ES256 委派签名、OAuth private_key_jwt、持久用户 ID/多 issuer 绑定、DPoP 和 HTTP MCP 都需要后续分步交付及专项安全测试，不能以无签名 token 冒充标准实现。此处元数据只能建立公开发行方**声明**的双向信任链，不是用户登录或合法执行许可。
+
 ## Poppy 用户授权意向账本（第二阶段）
 
 - 新增 `poppy_permissions.py`：独立按 `(公开 HTTPS 精确主机, visitor 或 account:<本地别名>, OAuth scope)` 保存本地授权意向，默认拒绝、禁止通配 scope、子域名/账户不共享。**不是 Poppy Session / OAuth 权限记录**，即使存在 local_intent 也始终将 `may_execute_remote_action` 标记为 false。
