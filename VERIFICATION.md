@@ -1,5 +1,14 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 未发布：多机器人群聊与独立 Agent 验证
+
+- `tests/test_group_chat.py`：成员独立 system 身份、会话文件与 workspace、私有记忆、不同模型、@mention 路由、持久化、创建校验和讨论上限。
+- `tests/test_group_webui.py`：本地 HTTP 服务测试群聊创建/发送/获取、 token 鉴权、独立 JavaScript 静态资源与 CSP。
+- `tests/test_delegation_budget.py`：子 Agent 委派次数、递归深度、最大轮数以及角色和记忆继承。
+- 通过 GitHub Actions Ubuntu Python 3.10、3.12 与 Windows Python 3.12 的跨平台验证后才合并；测试使用假模型而不花 API 费用。
+- 群聊 MVP 默认只读且串行回应，不代表真实生产多 Agent 并行执行或自主后台运行已完成。
+
+
 ## 未发布：MCP 启动授权（含新 Web UI 兼容性）
 
 - `tests/test_mcp_startup.py` 使用真实本地模拟 MCP stdio 进程启动标记，覆盖 readonly/非交互 auto 未启动、终端交互逐台批准、full 启动、旧 Windows 输出编码及 REPL 模式切换。
