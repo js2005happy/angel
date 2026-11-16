@@ -309,6 +309,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="触发自动压缩的上下文占比，0.50 到 0.95（默认 0.80）",
     )
     parser.add_argument(
+        "--poppy", action="store_true",
+        help="显式启用只读 Poppy 1.0 公共协议发现工具（默认关闭）",
+    )
+    parser.add_argument(
+        "--discover-poppy", metavar="HTTPS_SITE", default=None,
+        help="仅检查站点 Poppy 元数据后退出，无需模型 API Key",
+    )
+    parser.add_argument(
         "--plan", dest="plan_mode", action="store_true",
         help="先只读分析，生成工作目录中的 plan.md，不执行任务",
     )
@@ -392,6 +400,21 @@ def main(argv: list[str] | None = None) -> int:
             return invalid_arguments(sys.stdout)
     else:
         args = parser.parse_args(raw)
+
+    if args.discover_poppy is not None:
+        if (args.prompt is not None or args.plan_mode or args.execute_plan
+                or args.approve_plan or args.json_mode):
+            print("错误：--discover-poppy 是独立只读命令，不能混用任务或 JSONL")
+            return 2
+        import json
+        from .poppy import PoppyError, discover_poppy
+        try:
+            result = discover_poppy(args.discover_poppy)
+        except PoppyError as exc:
+            print(f"Poppy 发现失败：{exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if args.json_mode:
         from .json_mode import invalid_arguments, run_json
@@ -635,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
         context_window_tokens=window,
         auto_compact_enabled=enabled_auto_compact,
         auto_compact_threshold=threshold,
+        poppy_enabled=args.poppy,
     )
 
     try:
