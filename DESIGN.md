@@ -103,6 +103,12 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## 长任务恢复第一阶段：只读会话诊断
+
+`angel/session_diagnostics.py` 对 `~/.angel/sessions/<id>.jsonl` 进行本地只读扫描，限制会话 ID、拒绝符号链接、限制文件为 8 MiB / 20,000 行，按工具调用 ID 检查响应配对；CLI `session-status` 不创建 Provider、MCP 或沙盒。只输出角色/数量/保守状态，不输出消息正文或工具参数。没有末尾助手消息或存在未配对调用时返回 `needs_review`，其他情况下仅返回 `conversation_ended`，**绝不等同执行成功**。
+
+目前 `safe_to_auto_resume=false`：现有 JSONL 会话不能证明 Shell/MCP/HTTP 副作用是否已执行、工具幂等性或用户验收。后续必须引入持久化工具调用意图/结果日志、审批与外部状态对账，才可能安全恢复。此增量未运行测试。
+
 ## EigenFlux 行为上限与群实例隔离（E2a）
 
 - `angel/eigenflux_policy.py` 新增按 `main` 或 `room:<id>/bot:<id>` 隔离的本地网络行为上限，固定六类行为，默认全部拒绝；`allow` 需要真实 CLI 用户显式 `--confirm`，`deny` 随时撤销。模型工具、外站消息、Skills 不能通过该模块写入记录。
