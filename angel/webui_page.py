@@ -226,6 +226,17 @@ function renderTranscript(messages){var log=$("log");log.innerHTML="";
 function applyEvent(ev){var d=ev.data||{};
   if(ev.type==="user")addMsg("user",d.content);
   else if(ev.type==="assistant"||ev.type==="final"){if(d.content)addMsg("assistant",d.content)}
+  else if(ev.type==="trace_start")addMsg("assistant","执行追踪："+String(d.trace_id||"").slice(0,12));
+  else if(ev.type==="trace_span"){
+    var ms=Number(d.duration_ms);var elapsed=Number.isFinite(ms)?(ms<1000?Math.round(ms)+" ms":(ms/1000).toFixed(2)+" s"):"时长未知";var line="";
+    if(d.kind==="model"){
+      var u=d.usage||{};var toks=u.total_tokens==null?"token 未报告":(Number(u.total_tokens).toLocaleString()+" tokens");
+      line="模型 "+(d.provider||"?")+" / "+(d.model||"?")+" · "+elapsed+" · "+toks;
+      if(d.attempts&&d.attempts.length>1)line+=" · 兜底尝试 "+d.attempts.length+" 次";
+    }else if(d.kind==="tool")line="工具 "+(d.name||"?")+" · "+elapsed+" · "+(d.status||"unknown");
+    else line="任务追踪结束 · "+(d.status||"unknown")+" · "+elapsed;
+    addMsg("assistant",line);
+  }
   else if(ev.type==="provider_fallback"){
     var failures=(d.failed||[]).map(function(x){return x.provider+"："+x.reason}).join("、");
     addMsg("assistant","模型自动兜底："+d.from_provider+" / "+d.from_model+" → "+d.to_provider+" / "+d.to_model+(failures?"（"+failures+"）":""));

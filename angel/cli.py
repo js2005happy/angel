@@ -306,6 +306,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="单次非交互任务输出 JSON Lines（机器可读事件 + 稳定退出码）",
     )
     parser.add_argument(
+        "--trace", action="store_true",
+        help="输出本次任务的模型与工具执行追踪（token/耗时/状态，不含提示词和工具结果）",
+    )
+    parser.add_argument(
         "--auto-compact", action="store_true",
         help="达到配置的上下文阈值时自动压缩（需要设置 --context-window，可能增加模型费用）",
     )
@@ -713,6 +717,7 @@ def main(argv: list[str] | None = None) -> int:
         auto_compact_enabled=enabled_auto_compact,
         auto_compact_threshold=threshold,
         poppy_enabled=args.poppy,
+        trace_enabled=args.trace,
     )
 
     try:

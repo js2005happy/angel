@@ -3,6 +3,8 @@
 import json
 import sys
 import threading
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -21,13 +23,31 @@ from .compact import (
 )
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
-from .console import configure_stream, format_provider_fallback
+from .console import configure_stream, format_provider_fallback, format_trace_span
 from .usage import UsageTracker
 from .checkpoints import CheckpointStore
 
 
 class AgentError(Exception):
     pass
+
+
+def _reported_usage(response: object) -> dict:
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return {}
+    counters = {}
+    for key, aliases in (
+        ("prompt_tokens", ("prompt_tokens", "input_tokens")),
+        ("completion_tokens", ("completion_tokens", "output_tokens")),
+        ("total_tokens", ("total_tokens",)),
+    ):
+        for alias in aliases:
+            value = usage.get(alias)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                counters[key] = value
+                break
+    return counters
 
 
 # Limit recursive delegation and its billing impact across a *single* root task.
@@ -52,6 +72,19 @@ class _DelegationBudget:
                 return False
             self.remaining -= 1
             return True
+
+
+class _TracedProvider:
+    """Route Agent model calls through its lightweight trace recorder."""
+
+    def __init__(self, agent: "Agent") -> None:
+        self._agent = agent
+
+    def __getattr__(self, name):
+        return getattr(self._agent.provider, name)
+
+    def chat(self, messages, tools=None, timeout=120.0):
+        return self._agent._chat_with_trace(messages, tools=tools, timeout=timeout)
 
 
 SYSTEM_PROMPT_BASE: str = """你是 Angel，一个全能 AI 助手，通过调用工具完成任务，而不是只靠说话。
@@ -97,8 +130,22 @@ class Agent:
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
         checkpoint_store: CheckpointStore | None = None,
         poppy_enabled: bool = False,
+        trace_id: str | None = None,
+        trace_parent_span_id: str | None = None,
+        trace_enabled: bool = False,
     ) -> None:
         self.provider = provider
+        self._traced_provider = _TracedProvider(self)
+        self.trace_enabled = bool(trace_enabled)
+        self._trace_id = trace_id
+        self._trace_parent_span_id = trace_parent_span_id
+        self._trace_root_span_id: str | None = None
+        self._trace_root_name: str | None = None
+        self._trace_started: float | None = None
+        self._active_tool_span_id: str | None = None
+        self._last_model_span_id: str | None = None
+        self.last_trace_id: str | None = None
+        self._trace_outcome: str | None = None
         self.poppy_enabled = bool(poppy_enabled)
         self.usage = UsageTracker(configured_window=context_window_tokens)
         self.auto_compact_enabled = bool(auto_compact_enabled)
@@ -154,6 +201,8 @@ class Agent:
         if self.on_event is None:
             if kind == "provider_fallback":
                 print(format_provider_fallback(data), file=sys.stderr, flush=True)
+            elif kind == "trace_span":
+                print(format_trace_span(data), file=sys.stderr, flush=True)
             return
         try:
             self.on_event(kind, data)
@@ -178,18 +227,126 @@ class Agent:
     def compact(self, keep_last: int = 4) -> dict:
         """压缩当前会话：模型摘要 + 保留最近几条消息，并保存。"""
         new_messages, info = compact_messages(
-            self.provider, self.messages, keep_last=keep_last
+            self._traced_provider, self.messages, keep_last=keep_last
         )
         self._emit_provider_fallback()
         self.messages = new_messages
         save_session(self.session_id, self.messages)
         return info
 
-    def _emit_provider_fallback(self) -> None:
+    def _emit_provider_fallback(self, span_id: str | None = None) -> dict | None:
         consume = getattr(self.provider, "consume_fallback_event", None)
         event = consume() if callable(consume) else None
         if event:
+            event = dict(event)
+            if self._trace_id:
+                event["trace_id"] = self._trace_id
+            if span_id:
+                event["span_id"] = span_id
             self._emit("provider_fallback", event)
+        return event
+
+    def _chat_with_trace(self, messages, tools=None, timeout=120.0):
+        if not self.trace_enabled:
+            return self.provider.chat(messages, tools=tools, timeout=timeout)
+        owns_scope = self._trace_root_span_id is None
+        if owns_scope:
+            self._begin_trace("model.operation")
+        span_id = uuid.uuid4().hex[:16]
+        parent_span_id = self._trace_root_span_id
+        started = time.perf_counter()
+        self._last_model_span_id = span_id
+        status = "error"
+        try:
+            response = self.provider.chat(messages, tools=tools, timeout=timeout)
+            fallback = self._emit_provider_fallback(span_id)
+            data = {
+                "trace_id": self._trace_id,
+                "span_id": span_id,
+                "parent_span_id": parent_span_id,
+                "kind": "model",
+                "name": "model.chat",
+                "status": "ok",
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "provider": getattr(self.provider, "name", None),
+                "model": getattr(self.provider, "model", None),
+            }
+            usage = _reported_usage(response)
+            if usage:
+                data["usage"] = usage
+            if fallback and fallback.get("failed"):
+                data["attempts"] = fallback["failed"] + [{
+                    "provider": fallback.get("to_provider"),
+                    "model": fallback.get("to_model"),
+                    "reason": "success",
+                }]
+            self._emit("trace_span", data)
+            status = "completed"
+            return response
+        except Exception as exc:
+            error = {
+                "error_type": type(exc).__name__,
+            }
+            if isinstance(exc, ProviderError):
+                if exc.failure_reason:
+                    error["failure_reason"] = exc.failure_reason
+                if exc.status_code is not None:
+                    error["status_code"] = exc.status_code
+                if exc.attempts:
+                    error["attempts"] = exc.attempts
+            self._emit("trace_span", {
+                "trace_id": self._trace_id,
+                "span_id": span_id,
+                "parent_span_id": parent_span_id,
+                "kind": "model",
+                "name": "model.chat",
+                "status": "error",
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "provider": getattr(self.provider, "name", None),
+                "model": getattr(self.provider, "model", None),
+                **error,
+            })
+            raise
+        finally:
+            if owns_scope:
+                self._finish_trace("completed" if status == "completed" else "error")
+
+    def _begin_trace(self, name: str) -> None:
+        if self.delegate_depth == 0 or not self._trace_id:
+            self._trace_id = uuid.uuid4().hex
+        self.last_trace_id = self._trace_id
+        self._trace_root_span_id = uuid.uuid4().hex[:16]
+        self._trace_root_name = name
+        self._trace_started = time.perf_counter()
+        self._trace_outcome = None
+        self._emit("trace_start", {
+            "trace_id": self._trace_id,
+            "span_id": self._trace_root_span_id,
+            "parent_span_id": self._trace_parent_span_id,
+            "kind": "agent",
+            "name": name,
+            "session_id": self.session_id,
+        })
+
+    def _finish_trace(self, status: str) -> None:
+        if self._trace_root_span_id and self._trace_id:
+            self._emit("trace_span", {
+                "trace_id": self._trace_id,
+                "span_id": self._trace_root_span_id,
+                "parent_span_id": self._trace_parent_span_id,
+                "kind": "agent",
+                "name": self._trace_root_name or "agent.run",
+                "status": status,
+                "duration_ms": round((time.perf_counter() - self._trace_started) * 1000, 2)
+                if self._trace_started is not None else None,
+            })
+        self._trace_root_span_id = None
+        self._trace_root_name = None
+        self._trace_started = None
+
+    def _forward_child_event(self, kind: str, data: dict) -> None:
+        if kind in ("trace_start", "trace_span", "provider_fallback"):
+            self._emit(kind, data)
 
     def _maybe_auto_compact(self, messages: list[dict]) -> list[dict]:
         """Summarize a full, completed exchange before the next model request.
@@ -224,7 +381,7 @@ class Agent:
                     self._emit("usage", self.usage.snapshot())
 
             compressed_old, info = compact_messages(
-                self.provider, older, keep_last=0,
+                self._traced_provider, older, keep_last=0,
                 strict=True, on_response=account,
             )
             self._emit_provider_fallback()
@@ -292,6 +449,18 @@ class Agent:
         return "\n\n".join(sections)
 
     def run(self, task: str) -> str:
+        if not self.trace_enabled:
+            return self._run_task(task)
+        self._begin_trace("agent.run")
+        outcome = "error"
+        try:
+            result = self._run_task(task)
+            outcome = self._trace_outcome or "completed"
+            return result
+        finally:
+            self._finish_trace(outcome)
+
+    def _run_task(self, task: str) -> str:
         if self.delegate_depth == 0:
             # Each top-level user request starts a fresh child-agent allowance.
             self._delegate_budget.reset()
@@ -311,9 +480,8 @@ class Agent:
             ):
                 attempted_auto_compact = True  # At most one extra paid call per run.
                 messages = self._maybe_auto_compact(messages)
-                self._emit_provider_fallback()
             try:
-                resp = self.provider.chat(messages, tools=self.tool_schemas())
+                resp = self._traced_provider.chat(messages, tools=self.tool_schemas())
             except ProviderError as exc:
                 raise AgentError(str(exc)) from exc
             self._emit_provider_fallback()
@@ -340,6 +508,7 @@ class Agent:
                 self._emit("final", {"content": final})
                 self.messages = messages[1:]
                 save_session(self.session_id, self.messages)
+                self._trace_outcome = "completed"
                 return final
 
             for tc in tool_calls:
@@ -350,36 +519,94 @@ class Agent:
                 except Exception:
                     args = None
 
+                tool_span_id = uuid.uuid4().hex[:16] if self.trace_enabled else None
+                parent_span_id = (
+                    self._last_model_span_id or self._trace_root_span_id
+                    if self.trace_enabled else None
+                )
+                tool_event = {
+                    "id": tc.get("id", ""),
+                    "name": fn_name,
+                    "arguments": args if isinstance(args, dict) else args_raw,
+                }
+                if self.trace_enabled:
+                    tool_event.update({
+                        "trace_id": self._trace_id,
+                        "span_id": tool_span_id,
+                        "parent_span_id": parent_span_id,
+                    })
                 self._emit(
                     "tool_start",
-                    {
-                        "id": tc.get("id", ""),
-                        "name": fn_name,
-                        "arguments": args if isinstance(args, dict) else args_raw,
-                    },
+                    tool_event,
                 )
-                if args is None or not isinstance(args, dict):
-                    result = "错误：工具参数不是合法的 JSON 对象"
-                elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
-                    # MCP servers can expose side-effecting tools without declaring
-                    # it in their schema. Never trust their names as proof of safety.
-                    # Approval must happen at the same boundary as built-in tools.
-                    try:
-                        _check_approval(
-                            self.ctx,
-                            "mcp",
-                            f"调用外部 MCP 工具：{fn_name}（可能产生外部副作用）",
-                        )
-                    except ToolError as exc:
-                        result = f"错误：{exc}"
+                tool_started = time.perf_counter()
+                prior_tool_span = self._active_tool_span_id
+                if self.trace_enabled:
+                    self._active_tool_span_id = tool_span_id
+                try:
+                    if args is None or not isinstance(args, dict):
+                        result = "错误：工具参数不是合法的 JSON 对象"
+                    elif fn_name.startswith("mcp_") and self.mcp_manager is not None:
+                        # MCP servers can expose side-effecting tools without declaring
+                        # it in their schema. Never trust their names as proof of safety.
+                        # Approval must happen at the same boundary as built-in tools.
+                        try:
+                            _check_approval(
+                                self.ctx,
+                                "mcp",
+                                f"调用外部 MCP 工具：{fn_name}（可能产生外部副作用）",
+                            )
+                        except ToolError as exc:
+                            result = f"错误：{exc}"
+                        else:
+                            result = self.mcp_manager.execute(fn_name, args)
                     else:
-                        result = self.mcp_manager.execute(fn_name, args)
-                else:
-                    result = execute_tool(fn_name, args, self.ctx)
+                        result = execute_tool(fn_name, args, self.ctx)
+                except Exception as exc:
+                    if self.trace_enabled:
+                        self._emit("trace_span", {
+                            "trace_id": self._trace_id,
+                            "span_id": tool_span_id,
+                            "parent_span_id": parent_span_id,
+                            "kind": "tool",
+                            "name": fn_name,
+                            "status": "error",
+                            "duration_ms": round((time.perf_counter() - tool_started) * 1000, 2),
+                            "error_type": type(exc).__name__,
+                        })
+                    raise
+                finally:
+                    if self.trace_enabled:
+                        self._active_tool_span_id = prior_tool_span
 
+                tool_incomplete = isinstance(result, str) and result.startswith("（已达到最大轮数")
+                tool_failed = isinstance(result, str) and result.startswith((
+                    "错误：", "执行失败：", "子任务失败：", "子任务异常：",
+                ))
+                if self.trace_enabled:
+                    self._emit("trace_span", {
+                        "trace_id": self._trace_id,
+                        "span_id": tool_span_id,
+                        "parent_span_id": parent_span_id,
+                        "kind": "tool",
+                        "name": fn_name,
+                        "status": (
+                            "incomplete" if tool_incomplete else
+                            "error" if tool_failed else "completed"
+                        ),
+                        "duration_ms": round((time.perf_counter() - tool_started) * 1000, 2),
+                    })
+
+                result_event = {"id": tc.get("id", ""), "name": fn_name, "result": result}
+                if self.trace_enabled:
+                    result_event.update({
+                        "trace_id": self._trace_id,
+                        "span_id": tool_span_id,
+                        "parent_span_id": parent_span_id,
+                    })
                 self._emit(
                     "tool_result",
-                    {"id": tc.get("id", ""), "name": fn_name, "result": result},
+                    result_event,
                 )
                 messages.append(
                     {
@@ -394,6 +621,7 @@ class Agent:
         self.messages = messages[1:]
         save_session(self.session_id, self.messages)
         self._emit("max_turns", {"max_turns": self.max_turns})
+        self._trace_outcome = "incomplete"
         return "（已达到最大轮数，任务未完成，请拆分任务或提高 --max-turns 后重试）"
 
     def delegate(self, task: str, max_turns: int = 6) -> str:
@@ -430,6 +658,10 @@ class Agent:
             auto_compact_threshold=self.auto_compact_threshold,
             checkpoint_store=self.checkpoints,
             poppy_enabled=self.poppy_enabled,
+            on_event=self._forward_child_event if self.trace_enabled else None,
+            trace_id=self._trace_id if self.trace_enabled else None,
+            trace_parent_span_id=self._active_tool_span_id if self.trace_enabled else None,
+            trace_enabled=self.trace_enabled,
         )
         try:
             return child.run(task)

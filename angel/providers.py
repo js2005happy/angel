@@ -17,11 +17,13 @@ class ProviderError(Exception):
         retryable: bool = False,
         status_code: int | None = None,
         failure_reason: str | None = None,
+        attempts: list[dict] | None = None,
     ) -> None:
         super().__init__(message)
         self.retryable = retryable
         self.status_code = status_code
         self.failure_reason = failure_reason
+        self.attempts = attempts or []
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -291,6 +293,15 @@ class FallbackProvider:
             retryable=last_error.retryable,
             status_code=last_error.status_code,
             failure_reason=last_error.failure_reason,
+            attempts=[
+                {
+                    "provider": self.providers[index].name,
+                    "model": self.providers[index].model,
+                    "status_code": error.status_code,
+                    "reason": error.failure_reason or "provider error",
+                }
+                for index, error in failures
+            ],
         ) from None
 
 

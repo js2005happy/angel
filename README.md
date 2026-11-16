@@ -104,7 +104,7 @@ python3 -m angel --workdir . --execute-plan --approve-plan 完整SHA256
 
 ## Token 用量与上下文状态
 
-Angel 现在会统计模型 API **实际返回** 的 Token 用量。交互终端输入 `/status` 即可查看调用次数、输入/输出 Token、最近一次请求的输入长度及参考上下文余量；Web UI 右侧新增 **Token 用量** 状态面板。单次任务结束时，统计信息输出到 **stderr**，不污染 stdout 的任务结果，适合未来的脚本/JSON 模式。
+Angel 现在会统计模型 API **实际返回** 的 Token 用量。交互终端输入 `/status` 即可查看调用次数、输入/输出 Token、最近一次请求的输入长度及参考上下文余量；Web UI 右侧新增 **Token 用量** 状态面板。单次任务结束时，统计信息输出到 **stderr**，不污染 stdout 的任务结果。
 
 ```bash
 python3 -m angel --context-window 8192 "检查这个项目"
@@ -113,7 +113,19 @@ python3 -m angel                 # 然后输入 /status
 
 如果你知道当前模型官方的上下文上限，可以设置 `--context-window N` 或在 `~/.angel/config.json` 中设置 `"context_window_tokens": 8192`（数字仅为示例，不是对任何模型上限的断言）。没配置时会明确显示 **未知**；如果 API 没有提供 usage 字段，也不会用字符数伪造精确 Token。**上下文参考余量**按最近一次请求的输入 Token 减去已配置窗口计算，不包含最新生成、下一轮新输入以及模型额外的保留量，因此不能当成严格的剩余可用 Token。累计值只统计当前 Agent 进程中的模型回复；历史会话重新载入不自动补算之前的调用。
 
-后续迭代按 [ROADMAP.md](ROADMAP.md) 排序，下一项是基于真实用量和保守阈值的自动会话压缩。
+### 轻量执行追踪
+
+使用 `--trace`（Web UI 使用 `angel ui --trace`）时，每次 Agent 执行都会生成 `trace_id`，并为任务、模型请求、工具调用和委派子 Agent 建立可关联的 span。span 记录本地计时、状态、模型 API 实际返回的 token 数，以及兜底尝试的安全摘要；不记录提示词、工具参数或工具结果。终端显示摘要（一次性模式写到 stderr），Web UI 会话和 `--json --trace` 事件流提供结构化详情。当前不落独立追踪文件，也不提供 OpenTelemetry 导出。
+
+```bash
+python3 -m angel --trace "检查这个项目"
+python3 -m angel --json --trace "列出项目结构"
+python3 -m angel ui --trace
+```
+
+工具 span 以产生该工具调用的模型 span 为父级；委派子 Agent 的根 span 以 `delegate` 工具 span 为父级。API 未返回 token 用量时，trace 中保持缺失，不估算。
+
+后续迭代按 [ROADMAP.md](ROADMAP.md) 排序。
 
 ## Poppy OAuth issuer 双向核验（第三阶段首个安全增量）
 

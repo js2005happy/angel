@@ -56,17 +56,35 @@ class JsonLines:
 
     def agent_event(self, kind: str, data: dict) -> None:
         """Expose useful events, but never dump raw tool arguments or results."""
-        if kind in ("usage", "auto_compact", "auto_compact_failed", "auto_compact_skipped"):
+        if kind in (
+            "usage", "auto_compact", "auto_compact_failed", "auto_compact_skipped",
+            "trace_start", "trace_span",
+        ):
             self.emit(kind, **data)
         elif kind == "tool_start":
-            self.emit("tool_start", id=data.get("id", ""), name=data.get("name", ""))
+            payload = {"id": data.get("id", ""), "name": data.get("name", "")}
+            if data.get("trace_id"):
+                payload.update({
+                    "trace_id": data["trace_id"], "span_id": data.get("span_id"),
+                    "parent_span_id": data.get("parent_span_id"),
+                })
+            self.emit("tool_start", **payload)
         elif kind == "tool_result":
             result = data.get("result", "")
             # Raw tool output can contain API keys, private files or secrets.
-            self.emit(
-                "tool_result", id=data.get("id", ""), name=data.get("name", ""),
-                ok=not (isinstance(result, str) and result.startswith("错误：")),
-            )
+            payload = {
+                "id": data.get("id", ""), "name": data.get("name", ""),
+                "ok": not (isinstance(result, str) and result.startswith((
+                    "错误：", "执行失败：", "子任务失败：", "子任务异常：",
+                    "（已达到最大轮数",
+                ))),
+            }
+            if data.get("trace_id"):
+                payload.update({
+                    "trace_id": data["trace_id"], "span_id": data.get("span_id"),
+                    "parent_span_id": data.get("parent_span_id"),
+                })
+            self.emit("tool_result", **payload)
         elif kind == "assistant":
             self.emit("assistant", content=data.get("content", ""))
         elif kind == "provider_fallback":
@@ -75,12 +93,16 @@ class JsonLines:
             self.incomplete = True
             self.emit("turn_limit", max_turns=data.get("max_turns"))
 
-    def failed(self, code: str, message: str, exit_code: int) -> int:
-        self.emit(
-            "run_failed",
-            error={"code": code, "message": message},
-            exit_code=exit_code,
-        )
+    def failed(
+        self, code: str, message: str, exit_code: int, trace_id: str | None = None
+    ) -> int:
+        payload = {
+            "error": {"code": code, "message": message},
+            "exit_code": exit_code,
+        }
+        if trace_id:
+            payload["trace_id"] = trace_id
+        self.emit("run_failed", **payload)
         return exit_code
 
 
@@ -184,6 +206,7 @@ def run_json(args) -> int:
                 auto_compact_threshold=threshold,
                 on_event=out.agent_event,
                 poppy_enabled=args.poppy,
+                trace_enabled=bool(getattr(args, "trace", False)),
             )
             out.emit(
                 "run_started", session_id=agent.session_id,
@@ -192,24 +215,35 @@ def run_json(args) -> int:
             answer = agent.run(args.prompt)
             usage = agent.usage.snapshot()
             if out.incomplete:
-                out.emit(
-                    "run_incomplete", exit_code=EXIT_INCOMPLETE,
-                    output=answer, usage=usage,
-                )
+                payload = {
+                    "exit_code": EXIT_INCOMPLETE, "output": answer, "usage": usage,
+                }
+                if agent.last_trace_id:
+                    payload["trace_id"] = agent.last_trace_id
+                out.emit("run_incomplete", **payload)
                 return EXIT_INCOMPLETE
-            out.emit(
-                "run_completed", exit_code=EXIT_SUCCESS,
-                output=answer, usage=usage,
-            )
+            payload = {"exit_code": EXIT_SUCCESS, "output": answer, "usage": usage}
+            if agent.last_trace_id:
+                payload["trace_id"] = agent.last_trace_id
+            out.emit("run_completed", **payload)
             return EXIT_SUCCESS
         except KeyboardInterrupt:
-            return out.failed("interrupted", "任务已中断", EXIT_INTERRUPTED)
+            return out.failed(
+                "interrupted", "任务已中断", EXIT_INTERRUPTED,
+                agent.last_trace_id if agent is not None else None,
+            )
         except (AgentError, E2BError) as exc:
-            return out.failed("runtime_error", str(exc), EXIT_RUNTIME)
+            return out.failed(
+                "runtime_error", str(exc), EXIT_RUNTIME,
+                agent.last_trace_id if agent is not None else None,
+            )
         except Exception as exc:
             # Unknown errors can embed file contents or credentials in str(exc).
             print(f"Angel JSONL runtime exception: {type(exc).__name__}", file=sys.stderr)
-            return out.failed("runtime_error", "执行失败，请查看 stderr", EXIT_RUNTIME)
+            return out.failed(
+                "runtime_error", "执行失败，请查看 stderr", EXIT_RUNTIME,
+                agent.last_trace_id if agent is not None else None,
+            )
         finally:
             if mcp_manager is not None:
                 try:

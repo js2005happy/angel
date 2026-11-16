@@ -100,7 +100,13 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - `angel/usage.py` 仅累计 OpenAI 兼容响应中的 usage / prompt_tokens / completion_tokens / total_tokens（也接受 input_tokens / output_tokens），并标明未报告的响应数。未报告的数字不得估算为精确值。
 - `Agent.usage` 负责每个 Agent 实例的实时计量；用于 CLI `/status`、一次性任务 stderr 与 Web UI 会话的 status API，原有会话存储与普通 stdout 文本接口保持兼容。
 - 仅当配置中存在已核实的 `context_window_tokens`（或 CLI 的 `--context-window`）且 API 返回输入 Token，才能计算参考余量。每个模型有不同限制，需随具体模型调整配置；参考值不包括下一次输入和输出。
-- 下一步自动压缩应当在请求前预估或根据上轮 usage 守护阈值，遇到模型未报告用量时需显式保守处理，不得伪装为准确 token 计算。
+- 自动压缩由 `Agent.run()` 基于最近一次 API 报告的输入 token 和用户配置的上下文上限触发；用量缺失时不会伪装为准确 token 计算。
+
+## 轻量执行追踪（显式开启）
+
+- `--trace` 为每次 `Agent.run()` 生成一个 `trace_id`；根 Agent、模型请求、工具执行和同步委派子 Agent 通过 `span_id` / `parent_span_id` 组成一棵执行树。模型请求记录本地耗时、Provider/model、状态、API 已报告的 token 数；工具 span 只记工具名、耗时和状态。
+- trace 同时经过终端 observer、Web UI 事件和 JSON Lines 输出；Provider 兜底记录失败 Provider 与原因摘要。失败信息不包含响应正文，trace 不包含 prompt、工具参数或工具结果。
+- 目前 trace 只在当前输出事件/网页执行记录中可见，不写入独立历史文件，也没有 OTLP 导出、跨进程收集或并行任务合并；这是可观测性 MVP，不等于完整 OpenTelemetry 实现。
 
 ## 自动上下文压缩（可选）
 

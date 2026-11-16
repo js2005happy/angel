@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（轻量 Agent 执行追踪）
+
+- 使用 `--trace` 时，为每次 Agent 执行生成 trace_id，并用 span/parent_span_id 关联模型请求、工具调用和委派子 Agent。
+- 按模型请求记录 API 实际返回的 Token、耗时、Provider/model、状态和兜底尝试；失败仅记录安全的错误类别，不留存 prompt、工具参数或结果。
+- 终端、Web UI 与 `--json --trace` 可见追踪摘要；默认关闭以保持既有事件流兼容，当前不保存独立历史 trace 文件，也不导出 OpenTelemetry。
+
 ## 未发布（可配置模型故障兜底）
 
 - 支持在全局配置或 Provider 档案中按顺序列出最多 3 个备用模型，默认不启用，避免隐式切换到可能收费的模型。

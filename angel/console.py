@@ -94,6 +94,22 @@ def format_provider_fallback(data: dict) -> str:
     return f"模型自动兜底：{source} → {target}{suffix}"
 
 
+def format_trace_span(data: dict) -> str:
+    duration = data.get("duration_ms")
+    elapsed = f"{duration:g} ms" if isinstance(duration, (int, float)) else ""
+    status = data.get("status", "unknown")
+    if data.get("kind") == "model":
+        target = f"{data.get('provider') or '?'} / {data.get('model') or '?'}"
+        usage = data.get("usage") or {}
+        tokens = usage.get("total_tokens")
+        token_note = f" · {tokens} tokens" if isinstance(tokens, int) else ""
+        return f"追踪 模型 {target} · {status} · {elapsed}{token_note}"
+    if data.get("kind") == "tool":
+        return f"追踪 工具 {data.get('name') or '?'} · {status} · {elapsed}"
+    trace_id = data.get("trace_id", "")
+    return f"追踪任务 {trace_id[:12]} · {status} · {elapsed}"
+
+
 class ToolPrinter:
     """Print grouped tool-call activity for the REPL (an Agent on_event hook)."""
 
@@ -107,6 +123,8 @@ class ToolPrinter:
     def __call__(self, kind: str, data: dict) -> None:
         if kind == "provider_fallback":
             line = self._s(format_provider_fallback(data), "gold")
+        elif kind == "trace_span":
+            line = self._s(format_trace_span(data), "dim")
         elif kind == "tool_start":
             name = data.get("name", "")
             args = one_line(data.get("arguments", ""), 70)

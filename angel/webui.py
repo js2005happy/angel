@@ -108,6 +108,7 @@ class UIState:
         context_window_tokens: int | None = None,
         auto_compact_enabled: bool = False,
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
+        trace_enabled: bool = False,
     ) -> None:
         self.workdir = Path(workdir)
         self.mode = validate_mode(mode)
@@ -120,6 +121,7 @@ class UIState:
         self.context_window_tokens = context_limit(context_window_tokens)
         self.auto_compact_enabled = bool(auto_compact_enabled)
         self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
+        self.trace_enabled = bool(trace_enabled)
         self.mcp_manager = mcp_manager
         self._provider_factory = provider_factory
         self._provider = None
@@ -369,6 +371,7 @@ class UIState:
                     context_window_tokens=self.context_window_tokens,
                     auto_compact_enabled=self.auto_compact_enabled,
                     auto_compact_threshold=self.auto_compact_threshold,
+                    trace_enabled=self.trace_enabled,
                 )
             else:
                 run.agent.mode = self.mode
@@ -776,6 +779,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider", default=None, help="模型 provider")
     parser.add_argument("--model", default=None, help="模型 id")
     parser.add_argument("--profile", default=None, help="provider 档案")
+    parser.add_argument("--trace", action="store_true", help="在网页执行记录中显示模型/工具耗时与 Token 追踪")
     parser.add_argument("--verbose", action="store_true", help="打印请求日志（不含 token）")
     return parser
 
@@ -810,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
         auto_compact_threshold=validate_auto_compact_threshold(
             cfg.get("auto_compact_threshold", DEFAULT_AUTO_COMPACT_THRESHOLD)
         ),
+        trace_enabled=args.trace,
     )
     try:
         server = make_server(args.host, args.port, state, verbose=args.verbose)
