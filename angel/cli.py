@@ -698,6 +698,9 @@ def main(argv: list[str] | None = None) -> int:
                             mode=new_mode, interactive=interactive
                         )
                         agent.mcp_manager = mcp_manager
+                    if agent.mode != new_mode:
+                        agent.ctx.approved_file_tools.clear()
+                        agent.ctx.approved_shell_commands.clear()
                     agent.mode = new_mode
                     agent.ctx.mode = new_mode
                     print(f"已切换为 {new_mode} 模式")
@@ -735,11 +738,15 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             elif line == "/clear":
                 agent.messages = []
+                agent.ctx.approved_file_tools.clear()
+                agent.ctx.approved_shell_commands.clear()
                 agent.usage = UsageTracker(configured_window=window)
                 print("已清空对话历史")
                 continue
             elif line == "/new":
                 agent.messages = []
+                agent.ctx.approved_file_tools.clear()
+                agent.ctx.approved_shell_commands.clear()
                 agent.usage = UsageTracker(configured_window=window)
                 agent.session_id = new_session_id()
                 print(f"已开始新会话：{agent.session_id}")
