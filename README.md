@@ -40,6 +40,15 @@ python3 -m angel --list-sessions
 
 Angel 支持单次任务的机器可读事件输出。每行是一个完整的 UTF-8 JSON 对象（schema_version=1，seq 从 1 递增），不混入 banner、工具日志或普通文本。输出通过 stdout，人工诊断通过 stderr。
 
+```bash
+python3 -m angel --json --mode readonly --max-turns 6 "检查这个仓库"
+python3 -m angel --json "分析测试结果" > run.jsonl
+```
+
+事件包括 run_started、tool_start、tool_result、usage、assistant、auto_compact、turn_limit、run_completed、run_incomplete、run_failed。工具事件只包含工具名称/调用 ID/成功状态，不直接记录原始参数或返回的敏感内容。最终答案可从 run_completed.output 获取；每个事件包含 schema_version、seq 和 type。
+
+固定退出码：0 表示完成；1 表示运行失败；2 表示参数/配置/凭证问题；3 表示达到最大轮数但尚未完成；130 表示任务被中断。调用者应同时检查退出码和最终事件。非交互 auto 模式继续拒绝需要人工确认的写操作；如显式使用 full 模式，请先隔离运行环境并确认授权范围。--json 不支持交互式 REPL、schedule/ui 子命令，也不与 --list-*、--compact 混用。
+
 
 Angel 现在会统计模型 API **实际返回** 的 Token 用量。交互终端输入 `/status` 即可查看调用次数、输入/输出 Token、最近一次请求的输入长度及参考上下文余量；Web UI 右侧新增 **Token 用量** 状态面板。单次任务结束时，统计信息输出到 **stderr**，不污染 stdout 的任务结果，适合未来的脚本/JSON 模式。
 
