@@ -54,6 +54,8 @@ class ToolContext:
     poppy_enabled: bool = False
     # Optional retrieval over a user-indexed local document collection.
     knowledge_search_fn: Callable[[str, int], str] | None = None
+    # Optional host-local shell namespace; file tools keep their own local checks.
+    shell_backend: object | None = None
 
 
 POPPY_TOOL_SCHEMA = {
@@ -407,6 +409,15 @@ def _resolve_backend_path(ctx: ToolContext, path: str) -> str:
     return posixpath.normpath(posixpath.join(base, target))
 
 
+def _resolve_execution_path(ctx: ToolContext, path: str) -> str:
+    """Map tool paths for either the remote backend or local shell namespace."""
+    if ctx.shell_backend is not None:
+        mapper = getattr(ctx.shell_backend, "sandbox_path", None)
+        if callable(mapper):
+            return mapper(_resolve_path(ctx, path))
+    return _resolve_backend_path(ctx, path)
+
+
 def _resolve_path(ctx: ToolContext, path: str) -> Path:
     if Path(path).is_absolute():
         return Path(path)
@@ -717,9 +728,10 @@ def _tool_shell(
         ctx, "shell", f"执行命令：{command}（cwd: {resolved_cwd}；timeout: {timeout}s）",
         command=command, cwd=str(resolved_cwd), timeout=timeout,
     )
-    if ctx.backend is not None:
+    execution_backend = ctx.shell_backend or ctx.backend
+    if execution_backend is not None:
         return _truncate(
-            ctx.backend.run_command(command, cwd=str(resolved_cwd), timeout=timeout)
+            execution_backend.run_command(command, cwd=str(resolved_cwd), timeout=timeout)
         ) or "（无输出）"
     try:
         result = subprocess.run(
@@ -929,7 +941,8 @@ def _tool_grep_search(
     case_sensitive: bool = False,
     max_results: int = 50,
 ) -> str:
-    if ctx.backend is not None:
+    execution_backend = ctx.shell_backend or ctx.backend
+    if execution_backend is not None:
         if regex:
             try:
                 re.compile(pattern, 0 if case_sensitive else re.IGNORECASE)
@@ -945,9 +958,11 @@ def _tool_grep_search(
         )
         command = (
             f"grep {' '.join(flags)} {excludes} -- "
-            f"{shlex.quote(pattern)} {shlex.quote(_resolve_backend_path(ctx, path))}"
+            f"{shlex.quote(pattern)} {shlex.quote(_resolve_execution_path(ctx, path))}"
         )
-        out = ctx.backend.run_command(command, cwd=_resolve_backend_path(ctx, "."), timeout=30)
+        out = execution_backend.run_command(
+            command, cwd=_resolve_execution_path(ctx, "."), timeout=30
+        )
         if "No such file or directory" in out:
             return f"错误：路径不存在：{path}"
         lines = [line for line in out.splitlines() if line.strip()]
@@ -1000,18 +1015,19 @@ def _tool_grep_search(
 
 
 def _tool_git_status(ctx: ToolContext, path: str = ".") -> str:
-    if ctx.backend is not None:
-        target = _resolve_backend_path(ctx, path)
-        out = ctx.backend.run_command(
+    execution_backend = ctx.shell_backend or ctx.backend
+    if execution_backend is not None:
+        target = _resolve_execution_path(ctx, path)
+        out = execution_backend.run_command(
             f"git -C {shlex.quote(str(target))} status --short --branch",
-            cwd=_resolve_backend_path(ctx, "."),
+            cwd=_resolve_execution_path(ctx, "."),
             timeout=15,
         )
         if "fatal: not a git repository" in out or "不是一个 git 仓库" in out:
             return "错误：该目录不是 git 仓库（或 git 报错）"
-        diff = ctx.backend.run_command(
+        diff = execution_backend.run_command(
             f"git -C {shlex.quote(str(target))} diff --stat",
-            cwd=_resolve_backend_path(ctx, "."),
+            cwd=_resolve_execution_path(ctx, "."),
             timeout=15,
         )
         combined = out.strip() or "（工作区干净）"

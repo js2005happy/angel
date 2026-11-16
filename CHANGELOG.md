@@ -1,5 +1,12 @@
 # Angel 变更记录
 
+## 未发布（Linux Bubblewrap 本地 shell 隔离 MVP）
+
+- 新增可选 `--sandbox bwrap` 和 `sandbox: "bwrap"` 配置。启动前检查 Linux、`bwrap` 可执行文件及所需 user namespace；预检失败即停止，不回退到未隔离 shell。
+- shell、`grep_search` 与 `git_status` 在独立 user/PID/network/IPC/UTS 命名空间运行；工作目录为唯一可写宿主挂载，系统运行时只读，不继承宿主环境变量，网络隔离；stdout 与 stderr 各最多捕获 512 KiB（总计 1 MiB）。
+- CLI、JSON、网页界面、群聊机器人和调度任务接入该 shell 后端；网页配置显示实际隔离状态。内置文件工具仍由 Angel 本机执行并遵守原有路径检查与审批。
+- 限制：没有 seccomp/syscall 过滤或 CPU/内存配额；不隔离 MCP、HTTP、Angel 数据目录或整个进程；依赖 Linux 内核与 Bubblewrap。仅完成静态语法/差异检查，未运行测试、Bubblewrap 预检、CI 或真实命令。
+
 ## 未发布（模型费用核算与停止阈值 MVP）
 
 - 新增按 `provider/model` 显式输入/输出 USD 每百万 Token 单价计算费用；普通 Agent 的 CLI、JSONL、Web UI、自动/手动压缩与调度任务共用当前 Agent 的费用账本。

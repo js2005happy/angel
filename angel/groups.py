@@ -138,9 +138,11 @@ class GroupStore:
         self,
         root: str | Path,
         provider_factory: Callable[[Bot], object] | None = None,
+        shell_backend_factory: Callable[[Path], object] | None = None,
     ):
         self.root = Path(root)
         self.provider_factory = provider_factory
+        self.shell_backend_factory = shell_backend_factory
         self._locks: dict[str, threading.RLock] = {}
         self._active_cancels: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
@@ -279,6 +281,10 @@ class GroupStore:
             messages=_recent_messages(session),
             system_instructions=instructions,
             memory_path=memory_path,
+            shell_backend=(
+                self.shell_backend_factory(workdir)
+                if self.shell_backend_factory is not None else None
+            ),
         )
         if cancel_event is not None and cancel_event.is_set():
             raise _GroupCancelled

@@ -236,7 +236,8 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - **MCP 子进程环境最小化**：启动时不直接复制整个 `os.environ`，只传系统启动所需变量与每个服务器明确声明的 `inherit_env`、`env`。后者优先级更高。这降低 Agent 自身模型 Key 意外被 MCP 子进程继承的风险；子进程仍以同一系统用户运行，**没有文件系统与网络隔离**，不能替代沙箱。
 - **MCP 启动和调用均经过授权**：MCP 进程启动本身就可能有副作用。readonly 不启动、非交互 auto 不启动、终端交互 auto 逐项确认启动并对工具逐次确认、full 自动启动。终端 `/mode` 切换会关闭旧 MCP 进程并按模式重新加载；Web UI 在 auto/readonly 不自动启动 MCP，切换 full 才可启动，活跃任务期间拒绝切换以避免竞态。提示仅展示服务器/工具名，**该策略不是进程沙箱**。
 - **shell 黑名单**：`rm -rf /`、`rm -rf ~`、`mkfs`、`dd` 写设备、关机/重启、fork 炸弹等一律拒绝（见 `tools.py` 的 `_check_shell_denied`）。
-- **无真沙箱（诚实说明）**：MVP 没有实现容器/命名空间级沙箱，命令以运行 Angel 的用户身份执行。这是路线图第一项；在此之前，请只在信任的目录用 full 模式。
+- **Linux Bubblewrap shell 沙箱（可选 MVP）**：`--sandbox bwrap` 在任务启动前要求 `bwrap` 成功创建 user/PID/network/IPC/UTS 命名空间，并预检 `/bin/true`；失败即拒绝启动，不降级到本机 shell。shell、`grep_search` 与 `git_status` 命令只获得只读系统运行时、独立临时目录和唯一可写的工作目录挂载；不继承宿主环境变量，禁用网络，并每条输出流最多捕获 512 KiB（总计最多 1 MiB）并限制执行时间。默认后端仍为 `local`。
+- **沙箱边界**：仅命令式工具进入 Bubblewrap。内置 read/write/edit/list/plan 文件工具仍在 Angel 进程中运行并依靠路径检查与审批；MCP 子进程、HTTP、记忆/技能/证据/会话存储也不隔离。当前不配置 seccomp、cgroup CPU/内存配额或 syscall 过滤；它依赖 Linux 内核、Bubblewrap 和 unprivileged user namespace，不能承诺抵御内核漏洞或资源耗尽。E2B 仍是独立远程执行后端。
 
 ## 路线图
 
@@ -246,7 +247,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 
 评估 runner 从版本化 JSON 任务集中读取有界 fixture，在临时目录中创建只读 Agent。除 `list_dir`、`read_file` 外，工具既不会向模型公布，也会在调用分发时拒绝；MCP、联网、委派、搜索与写入全部关闭。结果以确定性字符串包含判据评分，记录模型请求、Provider 尝试、工具步数、耗时和 API 报告 Token。没有内置模型价格：只有显式输入/输出单价、没有触发跨模型兜底且用量完整时才报告核算成本；它不提供预算硬封顶。摘要文件只记录任务 ID 和指标，不保存提示词、fixture 或答案；会话存储在独立临时目录并在正常结束时删除，强制终止时临时目录可能残留。默认评估集首期为小型工作流基准，词面判据和单次真实运行都不等价于统计学质量结论；需要人工复核任务集，并针对目标模型重复运行建立基线。
 
-1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
+1. **真沙箱**：Linux Bubblewrap shell 隔离 MVP 已实现（开发分支，待运行验证）；仍需评估 syscall/seccomp 策略、资源配额和其他平台实现。当前只隔离命令式工具，不代表整个 Angel 进程已沙箱化。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。
 3. **GEPA 式自动学习**：任务成功后自动提炼技能（现在是模型主动调 `save_skill`，未来是成功后自动总结+评估）。
 4. **桌面 UI**（部分完成）：本地网页界面 `python3 -m angel ui` 已可用（2026-11-16：会话列表、对话与工具卡片、网页内审批、证据与计划检查器，纯标准库、默认只听 127.0.0.1 + 启动 token）；技能浏览、独立桌面应用、按品牌形象的完整三栏 App 尚未开始。

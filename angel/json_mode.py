@@ -18,6 +18,7 @@ from pathlib import Path
 import sys
 
 from .agent import Agent, AgentError, build_mcp_manager
+from .bubblewrap_backend import BubblewrapError, connect_bubblewrap
 from .compact import DEFAULT_AUTO_COMPACT_THRESHOLD, validate_auto_compact_threshold
 from .config import (
     load_config, resolve_profile, resolve_provider_chain, resolve_sandbox, validate_mode,
@@ -118,6 +119,7 @@ def run_json(args) -> int:
     """Execute one prompt and emit deterministic, versioned JSON Lines."""
     out = JsonLines(sys.stdout)
     backend = None
+    shell_backend = None
     mcp_manager = None
     agent = None
 
@@ -178,7 +180,7 @@ def run_json(args) -> int:
                     Path(args.workdir) if args.workdir != "."
                     else Path(DEFAULT_SANDBOX_WORKDIR)
                 ) if settings.backend == "e2b" else Path(args.workdir).resolve()
-                if settings.backend == "local" and not workdir.is_dir():
+                if settings.backend != "e2b" and not workdir.is_dir():
                     raise ValueError("工作目录不存在")
                 messages = None
                 if args.resume:
@@ -198,12 +200,15 @@ def run_json(args) -> int:
 
             if settings.backend == "e2b":
                 backend = connect_backend(settings)
+            elif settings.backend == "bwrap":
+                shell_backend = connect_bubblewrap(workdir)
             # Non-interactive auto/readonly never starts MCP processes.
             mcp_manager = build_mcp_manager(mode=mode, interactive=False)
             agent = Agent(
                 provider=provider, workdir=workdir, mode=mode,
                 max_turns=max_turns, session_id=args.resume, messages=messages,
                 interactive=False, backend=backend, mcp_manager=mcp_manager,
+                shell_backend=shell_backend,
                 context_window_tokens=window,
                 auto_compact_enabled=auto_compact,
                 auto_compact_threshold=threshold,
@@ -241,7 +246,7 @@ def run_json(args) -> int:
                 "interrupted", "任务已中断", EXIT_INTERRUPTED,
                 agent.last_trace_id if agent is not None else None,
             )
-        except (AgentError, E2BError) as exc:
+        except (AgentError, E2BError, BubblewrapError) as exc:
             return out.failed(
                 "runtime_error", str(exc), EXIT_RUNTIME,
                 agent.last_trace_id if agent is not None else None,

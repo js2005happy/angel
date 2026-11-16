@@ -1,6 +1,7 @@
 """Angel 命令行入口，支持单次任务执行与交互式会话。"""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from .config import (
     validate_mode,
 )
 from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
+from .bubblewrap_backend import BubblewrapError, connect_bubblewrap
 from .providers import ProviderError, build_provider, describe_provider
 from .agent import Agent, AgentError, build_mcp_manager
 from .compact import compact_session_file
@@ -111,6 +113,11 @@ def _make_task_agent(task: dict, workdir: Path) -> Agent:
     )
     if not provider.has_credentials():
         raise AgentError(f"定时任务 {task['name']} 没有可用的模型凭证")
+    sandbox = resolve_sandbox(config=config)
+    shell_backend = (
+        connect_bubblewrap(workdir)
+        if sandbox.backend == "bwrap" else None
+    )
     return Agent(
         provider=provider,
         workdir=workdir,
@@ -119,6 +126,7 @@ def _make_task_agent(task: dict, workdir: Path) -> Agent:
         interactive=False,
         model_pricing=config.get("model_pricing"),
         cost_budget_usd=config.get("cost_budget_usd"),
+        shell_backend=shell_backend,
     )
 
 
@@ -353,9 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument(
         "--sandbox",
-        choices=("local", "e2b"),
+        choices=("local", "e2b", "bwrap"),
         default=None,
-        help="执行后端：local 本地执行 / e2b 在 E2B 沙盒里执行（默认 local）",
+        help="执行后端：local 本机执行 / bwrap Linux 本地隔离 / e2b 远端沙盒",
     )
     parser.add_argument(
         "--sandbox-id",
@@ -515,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         if args.plan_mode:
-            if args.sandbox == "e2b" or args.sandbox_id or args.sandbox_template or args.sandbox_timeout:
+            if args.sandbox in {"e2b", "bwrap"} or args.sandbox_id or args.sandbox_template or args.sandbox_timeout:
                 print("错误：计划生成阶段只支持本地只读分析，不启动沙盒")
                 return 2
             try:
@@ -561,8 +569,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             args.prompt = approved_execution_task(approved)
             args.mode = args.mode or "auto"
-            # Do not inherit a saved e2b setting when the approval is local.
-            args.sandbox = "local"
+            # Preserve explicit/configured bwrap; do not inherit E2B for a local plan.
+            if args.sandbox is None:
+                selected = os.environ.get("ANGEL_SANDBOX") or load_config().get("sandbox")
+                args.sandbox = "bwrap" if selected == "bwrap" else "local"
 
     try:
         sandbox_settings = resolve_sandbox(
@@ -716,6 +726,7 @@ def main(argv: list[str] | None = None) -> int:
         session_id = args.resume
 
     backend = None
+    shell_backend = None
     if sandbox_settings.backend == "e2b":
         try:
             backend = connect_backend(sandbox_settings)
@@ -727,6 +738,17 @@ def main(argv: list[str] | None = None) -> int:
             f"（超时 {sandbox_settings.timeout} 秒，到期自动销毁）"
         )
         print("文件与命令将在沙盒里执行，不在本地机器上。")
+    elif sandbox_settings.backend == "bwrap":
+        try:
+            shell_backend = connect_bubblewrap(workdir)
+        except BubblewrapError as exc:
+            print(f"错误：{exc}")
+            return 1
+        print(
+            "本地 shell 已启用 Bubblewrap：仅工作目录可写，网络已隔离；"
+            "Angel 的文件工具仍使用自身路径检查。",
+            file=sys.stderr,
+        )
     mcp_manager = build_mcp_manager(mode=mode, interactive=interactive)
     agent = Agent(
         provider=provider,
@@ -738,6 +760,7 @@ def main(argv: list[str] | None = None) -> int:
         messages=messages,
         mcp_manager=mcp_manager,
         backend=backend,
+        shell_backend=shell_backend,
         context_window_tokens=window,
         auto_compact_enabled=enabled_auto_compact,
         auto_compact_threshold=threshold,

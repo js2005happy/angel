@@ -1,5 +1,11 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：Linux Bubblewrap 本地 shell 隔离 MVP（开发分支）
+
+- `--sandbox bwrap` 与 `sandbox: "bwrap"` 配置接入 CLI、JSON、Web UI、群聊子 Agent 和调度任务；启动前要求 bubblewrap user namespace 预检成功，失败关闭。
+- 仅 `shell`、`grep_search`、`git_status` 在隔离命名空间执行；工作目录是唯一可写宿主挂载，网络 namespace 隔离，stdout 与 stderr 各最多捕获 512 KiB（总计 1 MiB）。Angel 内置文件工具及 MCP/HTTP 不进入此沙箱。
+- 本轮尚未运行 Bubblewrap 预检、真实命令、测试或 CI。需在支持 user namespace 的 Linux 主机验证 mount 视图、符号链接边界、进程超时/清理和不同发行版依赖；当前没有 seccomp 或资源配额。
+
 ## 待验证：模型费用核算与停止阈值 MVP（开发分支）
 
 - 显式按 `provider/model` 单价和 Provider 返回的输入/输出 Token 统计费用；覆盖 CLI/JSONL/Web Agent、压缩及调度入口，Web 侧栏展示金额、阈值和余量。
@@ -294,7 +300,7 @@ python3 -m angel --list-mcp
 2. **MCP 未接真实服务器验证**：只用假 stdio 服务器测过协议；真实 MCP 服务器的兼容性以实际接入为准。
 3. **调度器是 naive 本地时间**：不处理时区；daemon 需自己保持进程运行（systemd/后台运行另行配置）。
 4. **无真浏览器**：浏览器类工具（navigate/click/screenshot）未做，记入路线图；证据链是截图留档的轻量版。
-5. 其余 v1 限制（无真沙箱、模型调用计费、auto + 非交互）仍适用，见下。
+5. 其余 v1 限制（默认 `local` shell 未隔离、模型调用计费、auto + 非交互）仍适用，见下；Linux 可选 Bubblewrap shell MVP 尚待运行验证。
 
 ---
 
@@ -385,7 +391,7 @@ python3 -m angel --list-sessions
 ## 已知限制（诚实记录）
 
 1. **web_search 被 DuckDuckGo 拦截**：本机出口 IP 触发 DuckDuckGo 人机验证，搜索返回明确错误而非结果。换网络或接正式搜索 API 可解决；Muse 已补一处判断，让报错原因可读。这不是解析 bug。
-2. **无真沙箱**：shell 以运行 Angel 的用户身份执行，MVP 只靠审批 + 黑名单挡危险命令；真沙箱在路线图第一项。full 模式请只在信任目录使用。
+2. **本机 shell 默认未隔离**：`local` 模式仍以运行 Angel 的用户身份执行；Linux 可选 Bubblewrap 隔离 shell、grep 与 git 状态命令，但内置文件工具、MCP、HTTP 与 Angel 数据目录不在该命名空间中，且没有 seccomp 或资源配额。
 3. **memory_append / save_skill 未进单元测试**：这两个工具会写 `~/.angel/` 下的真实文件，单元测试里未覆盖；其代码路径已随主循环跑通过（工具分发表无问题），但未单独断言。
 4. **模型调用要花钱**：软件免费，推理按 token 计费。本次验证总计只用了几百 token 的 deepseek-flash，成本可忽略；日常使用建议默认 flash 模型。
 5. **auto + 非交互**：cron/管道运行时 auto 模式遇到写操作会明确报错退出，不会悄悄写入；后台任务请用 `--mode full`。

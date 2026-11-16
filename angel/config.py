@@ -29,7 +29,7 @@ DEFAULT_CONFIG = {
 }
 
 VALID_MODES = ("readonly", "auto", "full")
-VALID_SANDBOXES = ("local", "e2b")
+VALID_SANDBOXES = ("local", "e2b", "bwrap")
 
 PROVIDERS = {
     "deepseek": {
@@ -279,7 +279,7 @@ def resolve_profile(
 
 @dataclass
 class SandboxSettings:
-    """Where file and shell tools run: locally, or in an E2B sandbox."""
+    """Select local execution, a Linux Bubblewrap shell, or a remote E2B sandbox."""
 
     backend: str = "local"
     sandbox_id: str | None = None
@@ -298,7 +298,7 @@ def resolve_sandbox(
 
     Precedence: explicit arguments, then ANGEL_SANDBOX / ANGEL_E2B_*
     environment variables, then ~/.angel/config.json, then defaults.
-    Raises ValueError for an unknown backend.
+    Raises ValueError for an unknown backend or E2B-only options with bwrap.
     """
     cfg = config if config is not None else load_config()
     chosen = (
@@ -312,6 +312,10 @@ def resolve_sandbox(
             f"Invalid sandbox backend: {chosen}. "
             f"Valid backends: {', '.join(VALID_SANDBOXES)}"
         )
+    if chosen == "bwrap" and any(
+        value is not None for value in (sandbox_id, template, timeout)
+    ):
+        raise ValueError("--sandbox-id/template/timeout 只适用于 E2B")
     env_timeout = os.environ.get("ANGEL_E2B_TIMEOUT")
     resolved_timeout = timeout
     if resolved_timeout is None and env_timeout is not None:

@@ -13,6 +13,7 @@
 ## 新功能（0.2.0 / 0.3.0）
 
 - **E2B 沙盒**（0.3.0）：`--sandbox e2b` 让文件读写与 shell 在 E2B 沙盒里执行，不碰本机；详见下文「E2B 沙盒」一节。
+- **Linux 本地 shell 隔离**（可选）：`--sandbox bwrap` 通过 Bubblewrap 为 shell 建立文件系统与网络命名空间，工作目录可写；内置文件工具仍使用原有路径检查。
 - **MCP 客户端**：接标准 MCP 服务器（stdio JSON-RPC），配置里 `mcp_enabled: true` 并配好 `mcp_servers` 后，服务器的工具会以 `mcp_<服务器>_<工具>` 出现在工具列表里。默认关闭，需显式启用。
 - **内置调度器**：`angel schedule add --name 每日整理 --prompt "整理下载目录" --every 86400`，再 `angel schedule daemon` 跑守护进程；任务存在 `~/.angel/schedule.json`，支持间隔或每天固定时间（`--at 08:30`）。
 - **会话压缩**：`python3 -m angel --compact <会话 id>` 或 REPL 里 `/compact`，模型把长会话摘要成要点再继续；模型失败时本地回退保留首尾消息。
@@ -334,7 +335,7 @@ Angel 增加了 `apply_patch` 工具：严格使用单文件 unified diff 编辑
 
 交互式 `auto` 的 `a`（本次会话始终允许）现在仅对**同一文件、同一种工具**生效；路径在授权前被规范化，因此相同文件的等价相对/绝对路径不需要重复审批，其他文件仍要重新批准。对于 shell，缓存授权绑定**完全相同命令文本、规范化起始目录、超时时长、执行后端及工作区**。换目录、换后端、提高超时不会沿用旧授权；Web UI 的逐项审批回调始终优先于缓存。
 
-shell 的起始 `cwd` 现在必须位于 `--workdir` 内；绝对外部路径、`../` 和现有指向外部的符号链接会在执行与人工审批前拒绝。**这只限制 shell 从哪里启动**，命令内部仍可以通过 `cd`、绝对路径、重定向或其他程序访问工作目录之外。它不构成 shell/OS 沙箱；后续仍需进程隔离和工具执行审计。
+shell 的起始 `cwd` 现在必须位于 `--workdir` 内；绝对外部路径、`../` 和现有指向外部的符号链接会在执行与人工审批前拒绝。`local` 模式下，这只限制 shell 从哪里启动；选择 `bwrap` 时，Bubblewrap 会进一步限制 shell 进程的挂载视图与网络命名空间，见下文。
 
 ## 工作目录写入边界与本次会话批准
 
@@ -342,7 +343,7 @@ shell 的起始 `cwd` 现在必须位于 `--workdir` 内；绝对外部路径、
 
 在交互式 `auto` 模式下，每次文件写入或 shell 命令会提示 `[y/N/a]`：`y` 仅批准一次，`a` 表示**本次会话始终批准**此种文件工具（write_file/edit_file/plan 按具体工具分别记录），或者 shell 的**完全相同命令字符串及 cwd 工作目录**。不把一个 shell 前缀视为可任意执行的白名单；MCP、HTTP POST、记忆与技能操作继续逐次审批。`/new`、`/clear`、`/mode` 切换会清除会话批准；后台非交互 `auto` 和 `readonly` 绝不会因为缓存批准而执行写入。网页审批仍按每次工具调用请求授权。
 
-**边界说明**：工作目录写入检查只覆盖上述内置文件工具，不限制已有的 `shell` 在执行时使用绝对路径、改变目录或启动其他程序；`memory_append`、`save_skill` 和证据/会话存储本来就会写入 Angel 的专用数据目录，属于已知例外。E2B 的词法检查无法识别远端符号链接，检查与写入之间也可能存在竞态，因此这不是完整操作系统沙箱。需要运行不可信代码时，使用受保护的隔离环境，并继续审阅命令。更强的 shell 沙箱与精确命令白名单列在后续安全迭代。
+**边界说明**：Bubblewrap 只覆盖 shell、`grep_search` 和 `git_status` 这些命令式工具。内置读写文件工具仍在 Angel 本机运行，并依赖自身路径校验和审批；MCP、HTTP、记忆、技能、证据与会话也不进入该命名空间。E2B 的词法检查无法识别远端符号链接，检查与写入之间也可能存在竞态。Bubblewrap 没有 seccomp 或资源配额，依赖 Linux 内核与 user namespace 的隔离强度；它不是抵御内核漏洞或资源耗尽的完整容器边界。
 
 ## 审批模式
 
@@ -446,6 +447,17 @@ Angel 有 14 个工具：`read_file`、`write_file`、`edit_file`、`list_dir`�
 - **Windows 终端编码**：旧代码页无法表示中文时，CLI/调度器会以 `\\uXXXX` 转义显示而不是崩溃。建议终端使用 UTF-8（如 PowerShell 设置 `$env:PYTHONIOENCODING="utf-8"`），以直接显示中文。
 - **调度器**：`python3 -m angel schedule list/add/remove/run/daemon`，见 `angel schedule --help`。
 - **会话压缩**：`python3 -m angel --compact <会话 id>` 或 REPL `/compact`。
+- **本地 Bubblewrap shell 隔离**（Linux，可选）：
+
+```bash
+# 需要系统已安装 Bubblewrap，且 Linux 允许 unprivileged user namespaces
+python3 -m angel --sandbox bwrap --workdir . "检查并修复这个项目"
+```
+
+启动前 Angel 会运行一次隔离预检；预检失败时拒绝启动任务。shell、grep 和 git 状态命令只看到只读系统运行时、临时 `/tmp` 与可写 `/workspace`，并运行在禁用外网的网络命名空间中。stdout 与 stderr 各有 512 KiB 捕获上限（总计最多 1 MiB），命令超时仍受限。`--sandbox bwrap` 不会把 Angel 的内置文件工具、MCP 或 HTTP 工具移入沙箱；那些仍按各自审批和路径规则执行。Linux 内核、Bubblewrap 与 user namespace 是隔离基础，当前不含 seccomp、CPU/内存配额或内核漏洞防护；默认 `local` 模式也不启用该隔离。
+
+可在 `~/.angel/config.json` 设置 `"sandbox": "bwrap"`，让 CLI、JSON 模式、网页界面及定时任务使用它。非 Linux 系统、缺少 `bwrap` 或 user namespace 不可用时会失败关闭，不会静默退回本机 shell。
+
 - **E2B 沙盒**（0.3.0）：文件读写与 shell 命令可以在 E2B 沙盒里执行，不碰本机：
 
 ```bash

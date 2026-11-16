@@ -38,12 +38,14 @@ from .memory_browser import (
 )
 from .agent import Agent, AgentError, recover_interrupted_tool_calls
 from .groups import GroupStore, GroupError
+from .bubblewrap_backend import BubblewrapBackend, BubblewrapError, connect_bubblewrap
 from .config import (
     PROVIDERS,
     VALID_MODES,
     load_config,
     resolve_profile,
     resolve_provider_chain,
+    resolve_sandbox,
     validate_mode,
 )
 from .providers import FallbackProvider, Provider, build_provider, describe_provider
@@ -114,10 +116,16 @@ class UIState:
         trace_enabled: bool = False,
         model_pricing: dict | None = None,
         cost_budget_usd: object | None = None,
+        shell_backend=None,
+        shell_backend_factory: Callable[[Path], object] | None = None,
     ) -> None:
         self.workdir = Path(workdir)
         self.mode = validate_mode(mode)
-        self.groups = GroupStore(config_module.ANGEL_HOME / "groups")
+        self.shell_backend = shell_backend
+        self.groups = GroupStore(
+            config_module.ANGEL_HOME / "groups",
+            shell_backend_factory=shell_backend_factory,
+        )
         self.token = token or secrets.token_urlsafe(24)
         self.provider_name = provider_name
         self.model = model
@@ -207,6 +215,7 @@ class UIState:
                 "cost_budget_usd": self.cost_budget_usd,
                 "mcp_enabled": bool(cfg.get("mcp_enabled")),
                 "sandbox": cfg.get("sandbox") or "local",
+                "shell_sandbox_active": self.shell_backend is not None,
                 "profiles": sorted(profiles) if isinstance(profiles, dict) else [],
             }
         except Exception:
@@ -414,6 +423,7 @@ class UIState:
                     trace_enabled=self.trace_enabled,
                     model_pricing=self.model_pricing,
                     cost_budget_usd=self.cost_budget_usd,
+                    shell_backend=self.shell_backend,
                 )
             else:
                 run.agent.mode = self.mode
@@ -950,9 +960,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         profile = resolve_profile(args.profile, cfg)
         mode = validate_mode(args.mode or profile["mode"] or "auto")
+        sandbox = resolve_sandbox(config=cfg)
     except ValueError as exc:
         print(f"错误：{exc}")
         return 1
+    shell_backend = None
+    shell_backend_factory = None
+    if sandbox.backend == "bwrap":
+        try:
+            shell_backend = connect_bubblewrap(workdir)
+        except BubblewrapError as exc:
+            print(f"错误：{exc}")
+            return 1
+        shell_backend_factory = lambda root: BubblewrapBackend(root)
     from .agent import build_mcp_manager
 
     # The browser cannot approve local MCP process startup. Auto/readonly
@@ -973,6 +993,8 @@ def main(argv: list[str] | None = None) -> int:
         trace_enabled=args.trace,
         model_pricing=cfg.get("model_pricing"),
         cost_budget_usd=cfg.get("cost_budget_usd"),
+        shell_backend=shell_backend,
+        shell_backend_factory=shell_backend_factory,
     )
     try:
         server = make_server(args.host, args.port, state, verbose=args.verbose)

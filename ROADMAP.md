@@ -52,9 +52,10 @@ EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络�
 
 | 优先级 | 能力 | 状态与边界 |
 |---|---|---|
-| 1 | Agent 执行追踪 | 本分支已实现，待验证；trace_id 串起模型、工具与委派子 Agent，记录实际 Token、耗时、状态和兜底摘要，不记录 prompt/参数/结果 |
-| 2 | SQLite 语义检索 | 本分支项目文档 MVP 已实现，待验证；手动索引 Markdown/文本，embedding 仅走本机 Ollama，SQLite 精确扫描并公开线性规模边界；长期记忆语义索引仍待后续设计 |
-| 3 | 并行 Agent 编排 | 本分支已实现最多 8 人群聊、最多 4 并发及协作式停止 MVP，待验证；后台任务、实时流式状态、在途请求硬取消、并发成本看板和父子 trace 仍待开发 |
+| 1 | Linux 本地 shell 真沙箱 | 本分支 Bubblewrap MVP 已实现，待运行验证；只隔离 shell/grep/git_status，工作目录可写、网络隔离；文件/MCP/HTTP 工具仍在本机，尚无 seccomp 与资源配额 |
+| 2 | Agent 执行追踪 | 本分支已实现，待验证；trace_id 串起模型、工具与委派子 Agent，记录实际 Token、耗时、状态和兜底摘要，不记录 prompt/参数/结果 |
+| 3 | SQLite 语义检索 | 本分支项目文档 MVP 已实现，待验证；手动索引 Markdown/文本，embedding 仅走本机 Ollama，SQLite 精确扫描并公开线性规模边界；长期记忆语义索引仍待后续设计 |
+| 4 | 并行 Agent 编排 | 本分支已实现最多 8 人群聊、最多 4 并发及协作式停止 MVP，待验证；后台任务、实时流式状态、在途请求硬取消、并发成本看板和父子 trace 仍待开发 |
 
 ## 第一梯队
 
@@ -64,7 +65,7 @@ EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络�
 | 2 | 自动压缩会话 | 已合并 PR #10 | 先保证统计可用；阈值命中时触发 compact，防止反复压缩 |
 | 3 | 非交互 --json 输出 | 已实现 PR #11 | JSON Lines 事件协议与稳定退出码，stdout 不掺杂普通日志 |
 | 4 | 计划模式 | 已实现 PR #12 | 规划阶段阻止所有副作用；审批后进入执行 |
-| 5 | 工作目录写入限制 + 细粒度审批 | 进一步缩小授权作用域（部分，OS 沙箱未完成） | 保护绝对路径与符号链接逃逸；按工具/命令授权 |
+| 5 | 工作目录写入限制 + 细粒度审批 | 已有内置文件路径检查；本分支另有 Bubblewrap 命令行隔离 MVP（待运行验证） | 文件工具仍在 Angel 进程执行；Bubblewrap 目前只隔离 shell/grep/git_status |
 | 6 | 检查点与 /undo、/rewind | 已实现 PR #15：本地内置文件版（部分） | 写入前快照，多文件改动可回滚且不丢非本任务改动 |
 | 7 | apply_patch /diff | 已实现 PR #16：本地单文件补丁与审批 diff（部分） | 原子补丁、精确上下文与审批时查看差异 |
 | 8 | /init 与自定义命令 | 待开发 | AGENTS.md 模板与 commands/*.md |
@@ -73,7 +74,7 @@ EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络�
 
 ## 第二梯队
 
-流式输出、图片输入、会话全文搜索、Angel MCP Server、HTTP MCP、Linux 本地沙箱、真实浏览器工具、编辑器集成。并行 Agent 编排已提升至上表第 3 项。
+流式输出、图片输入、会话全文搜索、Angel MCP Server、HTTP MCP、真实浏览器工具、编辑器集成。并行 Agent 编排已提升至上表第 4 项。
 
 ## 开发原则
 

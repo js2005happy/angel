@@ -185,6 +185,7 @@ class Agent:
         cost_ledger: CostLedger | None = None,
         cost_budget_usd: object | None = None,
         model_pricing: dict | None = None,
+        shell_backend=None,
     ) -> None:
         self.provider = provider
         self._traced_provider = _TracedProvider(self)
@@ -240,6 +241,7 @@ class Agent:
         self.skills: list[Skill] = load_skills(self.skills_dirs)
         self.mcp_manager = mcp_manager
         self.backend = backend
+        self.shell_backend = shell_backend
         self.checkpoints = (
             checkpoint_store if checkpoint_store is not None else
             CheckpointStore(ANGEL_HOME / "checkpoints", self.session_id, self.workdir)
@@ -255,6 +257,7 @@ class Agent:
             delegate_fn=self.delegate,
             evidence=self.evidence,
             backend=backend,
+            shell_backend=shell_backend,
             approve_fn=approve_fn,
             checkpoint=self.checkpoints,
             poppy_enabled=self.poppy_enabled,
@@ -831,6 +834,7 @@ class Agent:
             allowed_tools=self.allowed_tools,
             session_dir=self.session_dir,
             cost_ledger=self.cost_ledger,
+            shell_backend=self.shell_backend,
         )
         try:
             return child.run(task)
