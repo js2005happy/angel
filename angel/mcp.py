@@ -78,6 +78,9 @@ class MCPClient:
         try:
             env = os.environ.copy()
             env.update(self.config.env)
+            # Python-based MCP servers must write UTF-8 JSON-RPC on Windows too.
+            # Keep explicitly configured overrides intact.
+            env.setdefault("PYTHONIOENCODING", "utf-8")
             self.process = subprocess.Popen(
                 [self.config.command] + self.config.args,
                 stdin=subprocess.PIPE,
