@@ -226,6 +226,11 @@ function renderTranscript(messages){var log=$("log");log.innerHTML="";
 function applyEvent(ev){var d=ev.data||{};
   if(ev.type==="user")addMsg("user",d.content);
   else if(ev.type==="assistant"||ev.type==="final"){if(d.content)addMsg("assistant",d.content)}
+  else if(ev.type==="provider_fallback"){
+    var failures=(d.failed||[]).map(function(x){return x.provider+"："+x.reason}).join("、");
+    addMsg("assistant","模型自动兜底："+d.from_provider+" / "+d.from_model+" → "+d.to_provider+" / "+d.to_model+(failures?"（"+failures+"）":""));
+    loadInfo();
+  }
   else if(ev.type==="tool_start")toolCard(d.id,d.name,d.arguments);
   else if(ev.type==="tool_result")setResult(findCard(d.id),d.result);
   else if(ev.type==="approval")approvalBox($("log").querySelector(".tool:last-of-type"),d);

@@ -20,11 +20,11 @@ import sys
 from .agent import Agent, AgentError, build_mcp_manager
 from .compact import DEFAULT_AUTO_COMPACT_THRESHOLD, validate_auto_compact_threshold
 from .config import (
-    load_config, resolve_profile, resolve_provider, resolve_sandbox, validate_mode,
+    load_config, resolve_profile, resolve_provider_chain, resolve_sandbox, validate_mode,
 )
 from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .memory import load_session
-from .providers import Provider
+from .providers import build_provider
 from .usage import context_limit
 
 SCHEMA_VERSION = 1
@@ -69,6 +69,8 @@ class JsonLines:
             )
         elif kind == "assistant":
             self.emit("assistant", content=data.get("content", ""))
+        elif kind == "provider_fallback":
+            self.emit("provider_fallback", **data)
         elif kind == "max_turns":
             self.incomplete = True
             self.emit("turn_limit", max_turns=data.get("max_turns"))
@@ -142,9 +144,10 @@ def run_json(args) -> int:
                     args.auto_compact_threshold if args.auto_compact_threshold is not None
                     else config.get("auto_compact_threshold", DEFAULT_AUTO_COMPACT_THRESHOLD)
                 )
-                provider_config = resolve_provider(
+                provider_configs = resolve_provider_chain(
                     args.provider or profile["provider"],
                     args.model or profile["model"],
+                    profile["fallback_providers"],
                 )
                 workdir = (
                     Path(args.workdir) if args.workdir != "."
@@ -160,7 +163,7 @@ def run_json(args) -> int:
             except ValueError as exc:
                 return out.failed("invalid_configuration", str(exc), EXIT_ARGUMENT)
 
-            provider = Provider(provider_config)
+            provider = build_provider(provider_configs)
             if not provider.has_credentials():
                 return out.failed(
                     "missing_credentials",

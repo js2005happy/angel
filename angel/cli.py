@@ -5,19 +5,19 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .console import ToolPrinter, configure_stdio, style, use_color
+from .console import ToolPrinter, configure_stdio, format_provider_fallback, style, use_color
 from .config import (
     ANGEL_HOME,
     VALID_MODES,
     list_profiles,
     load_config,
     resolve_profile,
-    resolve_provider,
+    resolve_provider_chain,
     resolve_sandbox,
     validate_mode,
 )
 from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
-from .providers import Provider, ProviderError, describe_provider
+from .providers import ProviderError, build_provider, describe_provider
 from .agent import Agent, AgentError, build_mcp_manager
 from .compact import compact_session_file
 from .scheduler import (
@@ -106,7 +106,9 @@ def _make_task_agent(task: dict, workdir: Path) -> Agent:
     provider_name = task.get("provider") or profile["provider"]
     model = task.get("model") or profile["model"]
     mode = task.get("mode") or profile["mode"] or "full"
-    provider = Provider(resolve_provider(provider_name, model))
+    provider = build_provider(
+        resolve_provider_chain(provider_name, model, profile["fallback_providers"])
+    )
     if not provider.has_credentials():
         raise AgentError(f"定时任务 {task['name']} 没有可用的模型凭证")
     return Agent(
@@ -498,16 +500,20 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 config = load_config()
                 profile = resolve_profile(args.profile, config)
-                provider_cfg = resolve_provider(
+                provider_cfgs = resolve_provider_chain(
                     args.provider or profile["provider"],
                     args.model or profile["model"],
+                    profile["fallback_providers"],
                 )
-                provider = Provider(provider_cfg)
+                provider = build_provider(provider_cfgs)
                 if not provider.has_credentials():
                     print_setup_help(provider.name)
                     return 2
                 root = Path(args.workdir).resolve()
                 details = build_plan(provider, args.prompt, root)
+                fallback = provider.consume_fallback_event() if hasattr(provider, "consume_fallback_event") else None
+                if fallback:
+                    print(format_provider_fallback(fallback), file=sys.stderr)
                 digest = save_plan(root, render_plan(args.prompt, details))
             except (PlanError, ValueError, ProviderError, OSError) as exc:
                 print(f"规划失败：{exc}")
@@ -621,15 +627,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        provider_cfg = resolve_provider(
+        provider_cfgs = resolve_provider_chain(
             args.provider or profile["provider"],
             args.model or profile["model"],
+            profile["fallback_providers"],
         )
     except ValueError as exc:
         print(f"错误：{exc}")
         return 1
 
-    provider = Provider(provider_cfg)
+    provider = build_provider(provider_cfgs)
     if not provider.has_credentials():
         print_setup_help(provider.name)
         return 1
@@ -652,6 +659,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.compact:
         try:
             info = compact_session_file(args.compact, provider)
+            consume = getattr(provider, "consume_fallback_event", None)
+            fallback = consume() if callable(consume) else None
+            if fallback:
+                print(format_provider_fallback(fallback), file=sys.stderr)
         except FileNotFoundError as exc:
             print(f"错误：{exc}")
             return 1

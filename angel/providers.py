@@ -10,7 +10,18 @@ from .net import build_opener_for
 
 
 class ProviderError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = False,
+        status_code: int | None = None,
+        failure_reason: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status_code = status_code
+        self.failure_reason = failure_reason
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -158,24 +169,147 @@ class Provider:
                 message = f"请求过于频繁 (HTTP 429)：请稍后再试。详情：{body}"
             else:
                 message = f"API 请求失败 (HTTP {exc.code})：{body}"
-            raise ProviderError(message) from None
+            retryable = exc.code in (402, 408, 425, 429) or 500 <= exc.code <= 599
+            raise ProviderError(
+                message,
+                retryable=retryable,
+                status_code=exc.code,
+                failure_reason=f"HTTP {exc.code}",
+            ) from None
 
         except urllib.error.URLError as exc:
             # socket.timeout is an alias of TimeoutError in Python 3.12.
             if isinstance(exc.reason, TimeoutError):
-                raise ProviderError("API 请求超时，请稍后重试") from None
+                raise ProviderError(
+                    "API 请求超时，请稍后重试",
+                    retryable=True,
+                    failure_reason="timeout",
+                ) from None
             message = self._redact(
                 f"网络错误，无法连接到 {self.base_url}：{exc.reason}",
                 request,
             )
-            raise ProviderError(message) from None
+            raise ProviderError(
+                message, retryable=True, failure_reason="network error"
+            ) from None
 
         except TimeoutError:
-            raise ProviderError("API 请求超时，请稍后重试") from None
+            raise ProviderError(
+                "API 请求超时，请稍后重试",
+                retryable=True,
+                failure_reason="timeout",
+            ) from None
 
 
-def describe_provider(provider: Provider) -> str:
+class FallbackProvider:
+    """Ordered, opt-in provider failover for transient API failures.
+
+    Once a backup succeeds, it stays active for the rest of this provider
+    instance. Permanent request/configuration errors never trigger failover.
+    """
+
+    def __init__(self, providers: list[Provider]) -> None:
+        if len(providers) < 2:
+            raise ValueError("FallbackProvider needs a primary and at least one backup")
+        self.providers = list(providers)
+        self.active_index = 0
+        self._pending_fallback: dict | None = None
+
+    @property
+    def active(self) -> Provider:
+        return self.providers[self.active_index]
+
+    @property
+    def name(self) -> str:
+        return self.active.name
+
+    @property
+    def model(self) -> str:
+        return self.active.model
+
+    @property
+    def base_url(self) -> str:
+        return self.active.base_url
+
+    def _redact(self, text: str, request=None) -> str:
+        return self.active._redact(text, request)
+
+    def has_credentials(self) -> bool:
+        return self.providers[0].has_credentials()
+
+    def consume_fallback_event(self) -> dict | None:
+        event, self._pending_fallback = self._pending_fallback, None
+        return event
+
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        timeout: float = 120.0,
+    ) -> dict:
+        self._pending_fallback = None
+        start = self.active_index
+        failures: list[tuple[int, ProviderError]] = []
+        for index in range(start, len(self.providers)):
+            try:
+                response = self.providers[index].chat(
+                    messages, tools=tools, timeout=timeout
+                )
+            except ProviderError as exc:
+                failures.append((index, exc))
+                if not exc.retryable or index == len(self.providers) - 1:
+                    break
+                continue
+
+            if index > start:
+                self.active_index = index
+                self._pending_fallback = {
+                    "from_provider": self.providers[start].name,
+                    "from_model": self.providers[start].model,
+                    "to_provider": self.providers[index].name,
+                    "to_model": self.providers[index].model,
+                    "failed": [
+                        {
+                            "provider": self.providers[failed_index].name,
+                            "model": self.providers[failed_index].model,
+                            "reason": error.failure_reason or "transient error",
+                        }
+                        for failed_index, error in failures
+                    ],
+                }
+            return response
+
+        if len(failures) == 1:
+            raise failures[0][1]
+        details = "; ".join(
+            f"{self.providers[index].name} / {self.providers[index].model}: {error}"
+            for index, error in failures
+        )
+        last_error = failures[-1][1]
+        raise ProviderError(
+            "当前模型和已配置的备用模型均失败：" + details,
+            retryable=last_error.retryable,
+            status_code=last_error.status_code,
+            failure_reason=last_error.failure_reason,
+        ) from None
+
+
+def build_provider(configs: list[ProviderConfig]) -> Provider | FallbackProvider:
+    """Build one provider or an explicit ordered failover chain."""
+    providers = [Provider(config) for config in configs]
+    if len(providers) == 1:
+        return providers[0]
+    return FallbackProvider(providers)
+
+
+def describe_provider(provider: Provider | FallbackProvider) -> str:
     summary = provider._redact(
         f"{provider.name} / {provider.model} @ {provider.base_url}"
     )
-    return " ".join(summary.splitlines())
+    summary = " ".join(summary.splitlines())
+    if isinstance(provider, FallbackProvider):
+        backups = provider.providers[provider.active_index + 1:]
+        if backups:
+            route = " → ".join(f"{item.name} / {item.model}" for item in backups)
+            summary += f" · 故障兜底：{route}"
+    return summary

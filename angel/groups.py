@@ -19,9 +19,9 @@ import threading
 from typing import Callable
 
 from .agent import Agent, AgentError
-from .config import resolve_provider, validate_mode
+from .config import resolve_provider_chain, validate_mode
 from .memory import load_session
-from .providers import Provider
+from .providers import build_provider
 
 _ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _MENTION = re.compile(r"(?<![A-Za-z0-9_])@([a-z][a-z0-9_-]{0,31})")
@@ -217,7 +217,7 @@ class GroupStore:
         provider = (
             self.provider_factory(bot)
             if self.provider_factory is not None
-            else Provider(resolve_provider(bot.provider, bot.model))
+            else build_provider(resolve_provider_chain(bot.provider, bot.model))
         )
         check = getattr(provider, "has_credentials", None)
         if callable(check) and not check():

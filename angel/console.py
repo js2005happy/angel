@@ -82,6 +82,18 @@ def one_line(value, limit: int = 80) -> str:
     return text
 
 
+def format_provider_fallback(data: dict) -> str:
+    source = f"{data.get('from_provider')} / {data.get('from_model')}"
+    target = f"{data.get('to_provider')} / {data.get('to_model')}"
+    failed = data.get("failed") or []
+    reasons = ", ".join(
+        f"{item.get('provider')}: {item.get('reason')}"
+        for item in failed if isinstance(item, dict)
+    )
+    suffix = f"（{reasons}）" if reasons else ""
+    return f"模型自动兜底：{source} → {target}{suffix}"
+
+
 class ToolPrinter:
     """Print grouped tool-call activity for the REPL (an Agent on_event hook)."""
 
@@ -93,7 +105,9 @@ class ToolPrinter:
         return style(text, *names, enabled=self.color)
 
     def __call__(self, kind: str, data: dict) -> None:
-        if kind == "tool_start":
+        if kind == "provider_fallback":
+            line = self._s(format_provider_fallback(data), "gold")
+        elif kind == "tool_start":
             name = data.get("name", "")
             args = one_line(data.get("arguments", ""), 70)
             line = f"{self._s('┌', 'dim')} {self._s(name, 'cyan', 'bold')} {self._s(args, 'dim')}"

@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
     "context_window_tokens": None,  # Set only to verified model input limit.
     "auto_compact_enabled": False,  # Opt-in: summarizing makes an extra paid call.
     "auto_compact_threshold": 0.80,
+    "fallback_providers": [],  # Explicit ordered failover only; no hidden provider spend.
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
@@ -187,6 +188,41 @@ def resolve_provider(
     )
 
 
+def resolve_provider_chain(
+    provider_name: str | None = None,
+    model: str | None = None,
+    fallback_providers: list[dict] | None = None,
+) -> list[ProviderConfig]:
+    """Resolve a primary provider and up to three explicitly configured backups."""
+    primary = resolve_provider(provider_name, model)
+    if fallback_providers is None:
+        fallback_providers = load_config().get("fallback_providers", [])
+    if not isinstance(fallback_providers, list):
+        raise ValueError("fallback_providers 必须是有序列表")
+    if len(fallback_providers) > 3:
+        raise ValueError("最多配置 3 个模型备用项")
+
+    chain = [primary]
+    seen = {(primary.name, primary.model)}
+    for index, item in enumerate(fallback_providers, 1):
+        if not isinstance(item, dict) or set(item) != {"provider", "model"}:
+            raise ValueError(
+                f"第 {index} 个备用模型必须只包含 provider 和 model"
+            )
+        name, backup_model = item.get("provider"), item.get("model")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"第 {index} 个备用模型缺少 provider")
+        if not isinstance(backup_model, str) or not backup_model.strip():
+            raise ValueError(f"第 {index} 个备用模型缺少 model")
+        resolved = resolve_provider(name, backup_model)
+        key = (resolved.name, resolved.model)
+        if key in seen:
+            raise ValueError(f"备用模型重复：{resolved.name} / {resolved.model}")
+        seen.add(key)
+        chain.append(resolved)
+    return chain
+
+
 def list_profiles(config: dict | None = None) -> list[str]:
     """Return the names of configured provider profiles."""
     cfg = config if config is not None else load_config()
@@ -213,6 +249,7 @@ def resolve_profile(
         "provider": cfg.get("provider") or "deepseek",
         "model": cfg.get("model"),
         "mode": cfg.get("mode") or "auto",
+        "fallback_providers": cfg.get("fallback_providers", []),
     }
     name = (
         profile_name
@@ -233,6 +270,8 @@ def resolve_profile(
     for key in ("provider", "model", "mode"):
         if prof.get(key):
             merged[key] = prof[key]
+    if "fallback_providers" in prof:
+        merged["fallback_providers"] = prof["fallback_providers"]
     return merged
 
 

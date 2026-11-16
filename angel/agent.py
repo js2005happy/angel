@@ -21,7 +21,7 @@ from .compact import (
 )
 from .evidence import EvidenceStore
 from .mcp import MCPToolManager, load_mcp_servers
-from .console import configure_stream
+from .console import configure_stream, format_provider_fallback
 from .usage import UsageTracker
 from .checkpoints import CheckpointStore
 
@@ -152,6 +152,8 @@ class Agent:
 
     def _emit(self, kind: str, data: dict) -> None:
         if self.on_event is None:
+            if kind == "provider_fallback":
+                print(format_provider_fallback(data), file=sys.stderr, flush=True)
             return
         try:
             self.on_event(kind, data)
@@ -178,9 +180,16 @@ class Agent:
         new_messages, info = compact_messages(
             self.provider, self.messages, keep_last=keep_last
         )
+        self._emit_provider_fallback()
         self.messages = new_messages
         save_session(self.session_id, self.messages)
         return info
+
+    def _emit_provider_fallback(self) -> None:
+        consume = getattr(self.provider, "consume_fallback_event", None)
+        event = consume() if callable(consume) else None
+        if event:
+            self._emit("provider_fallback", event)
 
     def _maybe_auto_compact(self, messages: list[dict]) -> list[dict]:
         """Summarize a full, completed exchange before the next model request.
@@ -218,6 +227,7 @@ class Agent:
                 self.provider, older, keep_last=0,
                 strict=True, on_response=account,
             )
+            self._emit_provider_fallback()
             reduced = [*compressed_old, *active]
             new_size = len(json.dumps(reduced, ensure_ascii=False))
             if new_size >= old_size:
@@ -301,10 +311,12 @@ class Agent:
             ):
                 attempted_auto_compact = True  # At most one extra paid call per run.
                 messages = self._maybe_auto_compact(messages)
+                self._emit_provider_fallback()
             try:
                 resp = self.provider.chat(messages, tools=self.tool_schemas())
             except ProviderError as exc:
                 raise AgentError(str(exc)) from exc
+            self._emit_provider_fallback()
 
             self.usage.record(resp)
             if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):

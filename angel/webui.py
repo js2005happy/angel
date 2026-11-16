@@ -42,10 +42,10 @@ from .config import (
     VALID_MODES,
     load_config,
     resolve_profile,
-    resolve_provider,
+    resolve_provider_chain,
     validate_mode,
 )
-from .providers import Provider, describe_provider
+from .providers import FallbackProvider, Provider, build_provider, describe_provider
 from .usage import context_limit
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 from .webui_page import PAGE_HTML
@@ -136,10 +136,11 @@ class UIState:
             else:
                 cfg = load_config()
                 prof = resolve_profile(self.profile, cfg)
-                self._provider = Provider(
-                    resolve_provider(
+                self._provider = build_provider(
+                    resolve_provider_chain(
                         self.provider_name or prof["provider"],
                         self.model or prof["model"],
+                        prof["fallback_providers"],
                     )
                 )
                 if self.max_turns is None:
@@ -160,7 +161,7 @@ class UIState:
             prov = self.provider()
             out["provider"] = getattr(prov, "name", "?")
             out["model"] = getattr(prov, "model", "?")
-            if isinstance(prov, Provider):
+            if isinstance(prov, (Provider, FallbackProvider)):
                 out["provider_desc"] = describe_provider(prov)
                 out["credentials"] = bool(prov.has_credentials())
             else:
