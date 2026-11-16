@@ -17,6 +17,7 @@ from .skills import save_skill_file
 from .evidence import EvidenceStore
 from .net import open_url
 from .checkpoints import CheckpointError
+from .patches import PatchError, apply_unified_patch, unified_preview
 
 
 class ToolError(Exception):
@@ -50,6 +51,7 @@ class ToolContext:
 MUTATING_TOOLS = {
     "write_file",
     "edit_file",
+    "apply_patch",
     "shell",
     "memory_append",
     "save_skill",
@@ -101,6 +103,25 @@ TOOL_SCHEMAS = [
                     "new_text": {"type": "string"},
                 },
                 "required": ["path", "old_text", "new_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": (
+                "严格应用单个本地文件的 unified diff 补丁；"
+                "必须包含 --- a/相对路径、+++ b/相对路径 和精确 @@ 行号。"
+                "拒绝模糊替换、多文件、新建/删除和远端执行；按当前权限审批并写入检查点"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "patch": {"type": "string"},
+                },
+                "required": ["path", "patch"],
             },
         },
     },
@@ -497,9 +518,28 @@ def _write_local_text(ctx: ToolContext, target: Path, content: str) -> None:
         target.write_text(content, encoding="utf-8")
 
 
+def _change_preview(ctx: ToolContext, target: Path | str, new_content: str) -> str:
+    """Preview an approved *local* write without leaking remote sandbox data."""
+    if ctx.backend is not None:
+        return "（远端文件不支持本地 diff 预览，请确认写入范围）"
+    if not target.exists():
+        old_bytes = None
+    elif not target.is_file():
+        raise ToolError("只能修改普通文件")
+    elif target.stat().st_size > 2 * 1024 * 1024:
+        return "（原文件超过 2 MiB，无法展示完整预览）"
+    else:
+        old_bytes = target.read_bytes()
+    rel = target.relative_to(ctx.workdir.resolve()).as_posix()
+    return unified_preview(rel, old_bytes, new_content.encode("utf-8"))
+
+
 def _tool_write_file(ctx: ToolContext, path: str, content: str) -> str:
     target = _workspace_write_path(ctx, path)
-    _check_approval(ctx, "write_file", f"写入文件：{path}（{len(content)} 字符）", file_target=target)
+    summary = f"写入文件：{path}（{len(content)} 字符）"
+    if ctx.mode == "auto" and ctx.interactive:
+        summary += "\n" + _change_preview(ctx, target, content)
+    _check_approval(ctx, "write_file", summary, file_target=target)
     if ctx.backend is not None:
         return ctx.backend.write_file(str(target), content)
     _write_local_text(ctx, target, content)
@@ -510,7 +550,6 @@ def _tool_edit_file(
     ctx: ToolContext, path: str, old_text: str, new_text: str
 ) -> str:
     target = _workspace_write_path(ctx, path)
-    _check_approval(ctx, "edit_file", f"编辑文件：{path}", file_target=target)
     if ctx.backend is not None:
         resolved = str(target)
         content = ctx.backend.read_file(resolved)
@@ -521,7 +560,12 @@ def _tool_edit_file(
             return "错误：未找到要替换的文本"
         if count > 1:
             return f"错误：找到 {count} 处匹配，请提供更精确的 old_text"
-        return ctx.backend.write_file(resolved, content.replace(old_text, new_text, 1))
+        changed = content.replace(old_text, new_text, 1)
+        _check_approval(
+            ctx, "edit_file", f"编辑文件：{path}\n（远端文件不支持本地 diff 预览）",
+            file_target=target,
+        )
+        return ctx.backend.write_file(resolved, changed)
     if not target.is_file():
         return f"错误：文件不存在：{path}"
     content = target.read_text(encoding="utf-8")
@@ -530,8 +574,42 @@ def _tool_edit_file(
         return "错误：未找到要替换的文本"
     if count > 1:
         return f"错误：找到 {count} 处匹配，请提供更精确的 old_text"
-    _write_local_text(ctx, target, content.replace(old_text, new_text, 1))
+    changed = content.replace(old_text, new_text, 1)
+    summary = f"编辑文件：{path}"
+    if ctx.mode == "auto" and ctx.interactive:
+        summary += "\n" + unified_preview(
+            target.relative_to(ctx.workdir.resolve()).as_posix(),
+            content.encode("utf-8"), changed.encode("utf-8"),
+        )
+    _check_approval(ctx, "edit_file", summary, file_target=target)
+    if target.read_text(encoding="utf-8") != content:
+        raise ToolError("审批期间文件已发生变化，请重新生成补丁")
+    _write_local_text(ctx, target, changed)
     return f"已编辑 {path}"
+
+
+def _tool_apply_patch(ctx: ToolContext, path: str, patch: str) -> str:
+    # One local file per invocation: the checkpoint store tracks the original
+    # bytes and the strict parser rejects stale hunk context.
+    if ctx.backend is not None:
+        raise ToolError("apply_patch 当前只支持本地工作目录，不支持 E2B")
+    target = _workspace_write_path(ctx, path)
+    if not target.is_file():
+        raise ToolError("补丁目标必须是已存在的普通本地文件")
+    before = target.read_bytes()
+    try:
+        relative = target.relative_to(ctx.workdir.resolve()).as_posix()
+        replacement = apply_unified_patch(before.decode("utf-8"), patch, relative)
+    except (UnicodeDecodeError, PatchError) as exc:
+        raise ToolError(f"补丁无效：{exc}") from exc
+    preview = unified_preview(relative, before, replacement.encode("utf-8"))
+    _check_approval(
+        ctx, "apply_patch", f"应用补丁：{relative}\n{preview}", file_target=target,
+    )
+    if target.read_bytes() != before:
+        raise ToolError("审批期间目标文件已发生变化，拒绝应用过期补丁")
+    _write_local_text(ctx, target, replacement)
+    return f"已应用补丁 {relative}"
 
 
 def _tool_list_dir(ctx: ToolContext, path: str = ".") -> str:
@@ -749,12 +827,15 @@ def _tool_plan(
     path: str = "plan.md",
 ) -> str:
     target = _workspace_write_path(ctx, path)
-    _check_approval(ctx, "plan", f"写入计划文件：{path}", file_target=target)
     content = (
         f"# {title}\n\n"
         + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
         + "\n"
     )
+    summary = f"写入计划文件：{path}"
+    if ctx.mode == "auto" and ctx.interactive:
+        summary += "\n" + _change_preview(ctx, target, content)
+    _check_approval(ctx, "plan", summary, file_target=target)
     if ctx.backend is not None:
         ctx.backend.write_file(str(target), content)
         return f"已写入计划 {path}（{len(steps)} 步）"
@@ -919,6 +1000,7 @@ def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
         "read_file": _tool_read_file,
         "write_file": _tool_write_file,
         "edit_file": _tool_edit_file,
+        "apply_patch": _tool_apply_patch,
         "list_dir": _tool_list_dir,
         "shell": _tool_shell,
         "web_fetch": _tool_web_fetch,
