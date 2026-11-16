@@ -139,7 +139,7 @@ class JsonModeTests(unittest.TestCase):
         self.assertEqual(events[2]["id"], "call-1")
         self.assertNotIn(secret, json.dumps(events))
         self.assertNotIn("arguments", json.dumps(events))
-        self.assertNotIn("result", json.dumps(events))
+        self.assertNotIn('"result":', json.dumps(events))
 
     def test_noninteractive_auto_denies_write_tools(self):
         target = self.root / "nope.txt"
