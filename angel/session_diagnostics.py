@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 from pathlib import Path
 import re
 import sys
@@ -29,8 +31,12 @@ def inspect_session(session_id: str, *, root: Path | None = None) -> dict:
     if not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
         raise SessionDiagnosisError("会话 ID 格式无效")
     base = Path(root) if root is not None else ANGEL_HOME / "sessions"
-    if base.is_symlink():
-        raise SessionDiagnosisError("会话目录不能是符号链接")
+    # Refuse symlinked ancestors as well as the final session file.
+    current = base
+    while current != current.parent:
+        if current.is_symlink():
+            raise SessionDiagnosisError("会话路径不能包含符号链接")
+        current = current.parent
     path = base / (session_id + ".jsonl")
     if path.is_symlink():
         raise SessionDiagnosisError("会话文件不能是符号链接")
@@ -42,13 +48,31 @@ def inspect_session(session_id: str, *, root: Path | None = None) -> dict:
     count = 0
     last_role = None
     pending: set[str] = set()
+    seen_calls: set[str] = set()
+    total_bytes = 0
+    last_assistant_final = False
+    structural_ambiguity = False
     tool_calls = 0
     tool_responses = 0
     user_messages = 0
     assistant_final_messages = 0
     try:
-        with path.open("rb") as handle:
+        # O_NOFOLLOW (when available) closes the final-component symlink
+        # race between path inspection and opening. Never follow aliases.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise SessionDiagnosisError("会话不是普通文件")
+            if metadata.st_size > MAX_SESSION_BYTES:
+                raise SessionDiagnosisError("会话文件超过 8 MiB，只读检查已拒绝")
             for raw in handle:
+                total_bytes += len(raw)
+                if total_bytes > MAX_SESSION_BYTES:
+                    raise SessionDiagnosisError("读取过程中会话超过 8 MiB")
                 count += 1
                 if count > MAX_MESSAGES:
                     raise SessionDiagnosisError("会话超过 20000 条记录")
@@ -65,9 +89,14 @@ def inspect_session(session_id: str, *, root: Path | None = None) -> dict:
                 role = msg.get("role")
                 if role not in ("user", "assistant", "tool", "system"):
                     raise SessionDiagnosisError("会话包含未知消息角色")
-                last_role = role
+                # Any message following a final assistant response means
+                # that response is no longer a terminal completion marker.
+                last_assistant_final = False
                 if role == "user":
                     user_messages += 1
+                if role == "assistant" and pending:
+                    structural_ambiguity = True
+                last_role = role
                 if role == "assistant":
                     calls = msg.get("tool_calls", [])
                     if not isinstance(calls, list):
@@ -77,12 +106,14 @@ def inspect_session(session_id: str, *, root: Path | None = None) -> dict:
                             if not isinstance(call, dict) or not isinstance(call.get("id"), str):
                                 raise SessionDiagnosisError("工具调用缺少 ID")
                             identifier = call["id"]
-                            if not identifier or identifier in pending:
+                            if not identifier or identifier in seen_calls:
                                 raise SessionDiagnosisError("重复或空工具调用 ID")
+                            seen_calls.add(identifier)
                             pending.add(identifier)
                             tool_calls += 1
                     elif isinstance(msg.get("content"), str) and msg["content"].strip():
                         assistant_final_messages += 1
+                        last_assistant_final = True
                 if role == "tool":
                     identifier = msg.get("tool_call_id")
                     if not isinstance(identifier, str) or identifier not in pending:
@@ -94,7 +125,10 @@ def inspect_session(session_id: str, *, root: Path | None = None) -> dict:
 
     # A final assistant message is only a conversational marker, never proof
     # that an external side effect happened or its verification passed.
-    needs_review = bool(pending) or last_role != "assistant"
+    needs_review = (
+        count == 0 or user_messages == 0 or bool(pending)
+        or structural_ambiguity or not last_assistant_final
+    )
     return {
         "session_id": session_id,
         "source": "local_session_jsonl",
@@ -103,13 +137,14 @@ def inspect_session(session_id: str, *, root: Path | None = None) -> dict:
         "tool_calls": tool_calls,
         "tool_responses": tool_responses,
         "unmatched_tool_calls": len(pending),
+        "ambiguous_tool_sequence": structural_ambiguity,
         "assistant_text_messages": assistant_final_messages,
         "last_role": last_role,
         "state": "needs_review" if needs_review else "conversation_ended",
         "execution_verified": False,
         "safe_to_auto_resume": False,
         "reason": (
-            "日志存在未配对工具调用或未以助手消息结束；不得自动重试副作用"
+            "会话为空、缺少明确最终回复或工具链存在歧义；不得自动重试副作用"
             if needs_review else
             "只确认会话有助手末尾消息，无法据此证明任务或外部副作用完成"
         ),
