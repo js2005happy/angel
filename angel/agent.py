@@ -202,7 +202,8 @@ class Agent:
                 raise AgentError(str(exc)) from exc
 
             self.usage.record(resp)
-            self._emit("usage", self.usage.snapshot())
+            if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
+                self._emit("usage", self.usage.snapshot())
             choice = resp["choices"][0]
             msg = choice.get("message") or {}
             assistant_msg: dict = {
