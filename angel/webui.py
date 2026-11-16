@@ -32,6 +32,9 @@ from typing import Callable
 from . import __version__
 from . import config as config_module
 from . import memory as memory_module
+from .memory_browser import (
+    MemoryBrowserError, MemoryConflict, inspect_memory, replace_memory,
+)
 from .agent import Agent, AgentError
 from .groups import GroupStore, GroupError
 from .config import (
@@ -233,6 +236,51 @@ class UIState:
                     run.agent.ctx.mode = new_mode
                     run.agent.mcp_manager = manager
             return new_mode
+
+    # -- persistent memory --------------------------------------------------
+    def memory_scopes(self) -> list[dict]:
+        """Known, existing memory owners; never enumerate arbitrary paths."""
+        scopes = [{"scope": "global", "label": "Angel · 全局记忆"}]
+        for room in self.groups.list_rooms()[:50]:
+            try:
+                details = self.groups.get(room["id"])
+            except GroupError:
+                continue
+            for bot in details.get("bots", []):
+                if not isinstance(bot, dict):
+                    continue
+                scopes.append({
+                    "scope": "bot", "room": room["id"], "bot": bot["id"],
+                    "label": f"{room['name']} · {bot.get('name', bot['id'])}",
+                })
+        return scopes
+
+    def memory_target(self, scope: str, room: str | None,
+                      bot: str | None) -> tuple[Path, Path | None]:
+        if scope == "global" and room is None and bot is None:
+            return memory_module.MEMORY_PATH, None
+        if scope != "bot" or not isinstance(room, str) or not isinstance(bot, str):
+            raise MemoryBrowserError("记忆范围无效")
+        try:
+            data = self.groups.get(room)
+        except GroupError as exc:
+            raise MemoryBrowserError("机器人群不存在") from exc
+        if not any(
+            isinstance(entry, dict) and entry.get("id") == bot
+            for entry in data.get("bots", [])
+        ):
+            raise MemoryBrowserError("指定机器人不属于该群")
+        return self.groups.root / room / "bots" / bot / "MEMORY.md", self.groups.root
+
+    def memory_view(self, scope: str, room: str | None,
+                    bot: str | None) -> dict:
+        path, root = self.memory_target(scope, room, bot)
+        return inspect_memory(path, root=root)
+
+    def memory_save(self, scope: str, room: str | None, bot: str | None,
+                    revision: str, content: str) -> dict:
+        path, root = self.memory_target(scope, room, bot)
+        return replace_memory(path, revision, content, root=root)
 
     # -- sessions -----------------------------------------------------------
     def get_run(self, session_id: str, create: bool = True) -> Run | None:
@@ -579,6 +627,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.NOT_FOUND, str(exc))
         if path == "/api/info":
             return self._json(HTTPStatus.OK, self.state.info())
+        if path == "/api/memory/scopes":
+            return self._json(
+                HTTPStatus.OK, {"scopes": self.state.memory_scopes()}
+            )
+        if path == "/api/memory":
+            scope = (query.get("scope") or ["global"])[0]
+            room = (query.get("room") or [None])[0]
+            bot = (query.get("bot") or [None])[0]
+            try:
+                result = self.state.memory_view(scope, room, bot)
+            except (MemoryBrowserError, OSError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return self._json(HTTPStatus.OK, result)
         if path == "/api/sessions":
             return self._json(HTTPStatus.OK, {"sessions": memory_module.list_sessions()})
         match = re.fullmatch(r"/api/sessions/([^/]+)", path)
@@ -603,6 +664,17 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
         except (ValueError, UnicodeDecodeError) as exc:
             return self._error(HTTPStatus.BAD_REQUEST, f"请求无效：{exc}")
+        if path == "/api/memory":
+            try:
+                result = self.state.memory_save(
+                    body.get("scope", "global"), body.get("room"), body.get("bot"),
+                    body.get("revision"), body.get("content"),
+                )
+            except MemoryConflict as exc:
+                return self._error(HTTPStatus.CONFLICT, str(exc))
+            except (MemoryBrowserError, OSError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return self._json(HTTPStatus.OK, result)
         if path == "/api/groups":
             try:
                 room = self.state.groups.create(

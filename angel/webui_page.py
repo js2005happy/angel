@@ -92,6 +92,14 @@ dialog{border:1px solid var(--line);border-radius:16px;background:var(--surface)
 dialog::backdrop{background:rgba(11,16,48,.45)}
 dialog h2{margin:0 0 4px;font-size:18px}
 table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{text-align:left;padding:6px 4px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-weight:600}
+#memory-dialog{max-width:700px}
+#memory-dialog h2{margin-bottom:6px}
+.memory-field{display:grid;gap:5px;margin:10px 0}
+.memory-field label{font-size:12px;color:var(--muted)}
+#memory-scope{width:100%;background:var(--surface);color:var(--text);padding:8px;border:1px solid var(--line);border-radius:8px}
+#memory-content{display:block;width:100%;min-height:240px;max-height:52vh;resize:vertical;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;font:12.5px/1.6 var(--mono);white-space:pre;overflow:auto}
+.memory-footer{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:12px}
+#memory-status{flex:1;min-width:150px;font-size:12px;color:var(--muted)}
 .menu{display:none}
 @media (max-width:1100px){.shell{grid-template-columns:230px 1fr}.right{display:none}.shell.show-right .right{display:block;position:fixed;right:0;top:52px;bottom:0;width:300px;z-index:5;box-shadow:-10px 0 30px rgba(0,0,0,.15)}}
 @media (max-width:720px){.shell{grid-template-columns:1fr}.left{display:none}.shell.show-left .left{display:block;position:fixed;left:0;top:52px;bottom:0;width:260px;z-index:5;box-shadow:10px 0 30px rgba(0,0,0,.15)}.menu{display:inline-block}.pill.prov{display:none}}
@@ -104,6 +112,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
   <span class="pill prov" id="prov"><i class="dot"></i><span>…</span></span>
   <span class="spacer"></span>
   <a class="ibtn" id="groupLink" href="/groups" style="text-decoration:none">机器人群聊</a>
+  <button class="ibtn" id="open-memory" aria-label="查看和管理长期记忆">长期记忆</button>
   <label class="pill" title="审批模式">模式
     <select class="ibtn" id="mode" aria-label="审批模式"></select></label>
   <button class="ibtn" id="toggle-right" aria-label="检查器">检查器</button>
@@ -132,6 +141,24 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
     <div class="card"><h4>证据</h4><div id="evidence"><div class="empty">联网抓取的页面原文会作为证据列在这里。</div></div></div>
   </aside>
 </div>
+<dialog id="memory-dialog">
+  <h2>长期记忆</h2>
+  <p class="hint">这里编辑的是磁盘上的完整 MEMORY.md，不是聊天记录。模型通常只读取最后 40 行；压缩会话不会修改此文件。内容可能敏感，请勿公开分享。</p>
+  <div class="memory-field">
+    <label for="memory-scope">记忆所属机器人</label>
+    <select id="memory-scope"></select>
+  </div>
+  <div class="memory-field">
+    <label for="memory-content">Markdown 记忆内容（完整文本）</label>
+    <textarea id="memory-content" spellcheck="false" aria-label="编辑长期记忆"></textarea>
+  </div>
+  <div class="memory-footer">
+    <span id="memory-status" role="status" aria-live="polite">尚未载入</span>
+    <button class="ibtn" id="memory-refresh" type="button">重新读取</button>
+    <button class="ibtn" id="memory-save" type="button">保存修改</button>
+    <button class="ibtn" id="memory-close" type="button">关闭</button>
+  </div>
+</dialog>
 <dialog id="settings">
   <h2>设置</h2>
   <p style="color:var(--muted);margin:0 0 10px;font-size:13px">只读视图：来自 <code>~/.angel/config.json</code> 与环境变量。Key 只显示是否已配置，从不显示其值。</p>
@@ -238,6 +265,31 @@ function send(){var t=$("input").value.trim();if(!t||state.status==="running")re
   .then(function(r){if(r.status==="error"){$("log").appendChild(el("div","err-line")).textContent="错误："+r.error;return}state.status="running";setBusy(true);poll()})
   .catch(function(e){$("log").appendChild(el("div","err-line")).textContent="错误："+e.message})}
 function autosize(){var i=$("input");i.style.height="auto";i.style.height=Math.min(i.scrollHeight,180)+"px"}
+var memoryView={scope:null,revision:null,content:null,loading:false};
+function memoryParams(){if(!memoryView.scope)return "";var s=memoryView.scope;return "?scope="+encodeURIComponent(s.scope)+(s.room?"&room="+encodeURIComponent(s.room):"")+(s.bot?"&bot="+encodeURIComponent(s.bot):"")}
+function setMemoryStatus(msg){$("memory-status").textContent=msg}
+function memoryDirty(){return memoryView.content!==null&&$("memory-content").value!==memoryView.content}
+function readMemory(){if(!memoryView.scope)return Promise.resolve();memoryView.loading=true;$("memory-save").disabled=true;setMemoryStatus("正在读取…");
+  return api("/api/memory"+memoryParams()).then(function(v){memoryView.revision=v.revision;memoryView.content=v.content;$("memory-content").value=v.content;
+    setMemoryStatus((v.exists?"已载入":"暂无记忆文件")+" · "+v.bytes+" 字节 · 模型参考最后 "+v.summary_lines+" 行");
+  }).catch(function(e){memoryView.revision=null;memoryView.content=null;setMemoryStatus("读取失败："+e.message)}).finally(function(){memoryView.loading=false;$("memory-save").disabled=false})}
+function openMemory(){return api("/api/memory/scopes").then(function(data){var sel=$("memory-scope");sel.innerHTML="";
+    var current=sel.value;data.scopes.forEach(function(s,i){var opt=document.createElement("option");opt.value=String(i);opt.textContent=s.label;sel.appendChild(opt)});
+    if(!data.scopes.length)throw new Error("没有可用记忆范围");
+    var ix=data.scopes.findIndex(function(s){return memoryView.scope&&s.scope===memoryView.scope.scope&&s.room===memoryView.scope.room&&s.bot===memoryView.scope.bot});
+    sel.value=String(ix<0?0:ix);memoryView.scope=data.scopes[Number(sel.value)];memoryView.scopes=data.scopes;
+    $("memory-dialog").showModal();return readMemory();
+  }).catch(function(e){setMemoryStatus("加载失败："+e.message);$("memory-dialog").showModal()})}
+function saveMemory(){if(memoryView.loading||memoryView.revision===null||!memoryView.scope)return;
+  var text=$("memory-content").value;
+  if(!text&&memoryView.content&& !window.confirm("确定清空该机器人全部长期记忆吗？"))return;
+  $("memory-save").disabled=true;setMemoryStatus("正在保存…");
+  return api("/api/memory",{method:"POST",body:JSON.stringify({
+    scope:memoryView.scope.scope,room:memoryView.scope.room,bot:memoryView.scope.bot,
+    revision:memoryView.revision,content:text,
+  })}).then(function(v){memoryView.revision=v.revision;memoryView.content=v.content;setMemoryStatus("已保存 · "+v.bytes+" 字节。下次模型请求可使用更新后的记忆。")})
+    .catch(function(e){setMemoryStatus("保存失败（本地编辑仍保留）："+e.message+"；请先复制本地修改，再重新读取合并。")})
+    .finally(function(){$("memory-save").disabled=false})}
 function loadInfo(){return api("/api/info").then(function(i){state.info=i;$("ver").textContent="v"+i.version;
   var p=$("prov");p.querySelector("span").textContent=i.provider?(i.provider+" / "+i.model):"provider 未配置";p.querySelector(".dot").className="dot "+(i.credentials?"on":"off");p.title=i.provider_desc||i.provider_error||"";
   var sel=$("mode");sel.innerHTML="";i.modes.forEach(function(m){var o=el("option");o.value=m;o.textContent=m;if(m===i.mode)o.selected=true;sel.appendChild(o)});
@@ -251,6 +303,15 @@ $("input").addEventListener("input",autosize);
 $("new-session").onclick=function(){newSession();$("shell").classList.remove("show-left")};
 $("mode").onchange=function(){api("/api/mode",{method:"POST",body:JSON.stringify({mode:this.value})}).then(loadInfo)};
 $("open-settings").onclick=function(){$("settings").showModal()};$("close-settings").onclick=function(){$("settings").close()};
+$("open-memory").onclick=openMemory;
+$("memory-refresh").onclick=function(){if(memoryDirty()&&!window.confirm("有未保存的编辑，确定丢弃并重新读取吗？"))return;readMemory()};
+$("memory-save").onclick=saveMemory;
+$("memory-close").onclick=function(){if(memoryDirty()&&!window.confirm("有未保存的编辑，确定关闭吗？"))return;$("memory-dialog").close()};
+$("memory-scope").onchange=function(){
+  if(memoryDirty()&&!window.confirm("切换机器人会丢弃未保存的编辑，是否继续？")){var ix=memoryView.scopes.findIndex(function(s){return s===memoryView.scope});this.value=String(ix);return}
+  memoryView.scope=memoryView.scopes[Number(this.value)];readMemory()
+};
+$("memory-dialog").addEventListener("cancel",function(e){if(memoryDirty()&&!window.confirm("有未保存的编辑，确定关闭吗？"))e.preventDefault()});
 $("toggle-right").onclick=function(){$("shell").classList.toggle("show-right")};$("toggle-left").onclick=function(){$("shell").classList.toggle("show-left")};
 loadInfo().then(loadSessions).then(function(){renderTranscript([])}).catch(function(e){$("log").innerHTML="";$("log").appendChild(el("div","err-line")).textContent="无法连接 Angel：" + e.message});
 })();
