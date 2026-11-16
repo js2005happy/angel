@@ -155,7 +155,10 @@ class Agent:
 
     def tool_schemas(self) -> list[dict]:
         """内置工具 + 已启动的 MCP 服务器工具。"""
-        schemas = list(TOOL_SCHEMAS)
+        schemas = [
+            schema for schema in TOOL_SCHEMAS
+            if self.backend is None or schema["function"]["name"] != "apply_patch"
+        ]
         if self.mcp_manager is not None and self.mcp_manager.has_tools():
             schemas.extend(self.mcp_manager.tool_schemas)
         return schemas
