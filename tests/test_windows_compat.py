@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from angel.console import configure_stream
 from angel.mcp import MCPClient, MCPError, MCPServerConfig
@@ -25,6 +26,16 @@ class ConsoleEncodingTest(unittest.TestCase):
         configure_stream(stream)
         stream.write("中文")
         self.assertEqual(stream.getvalue(), "中文")
+
+
+class BackendPosixPathTest(unittest.TestCase):
+    def test_sandbox_paths_are_posix_even_on_windows(self):
+        from angel.tools import _resolve_backend_path
+
+        ctx = SimpleNamespace(workdir=Path("/home/user"))
+        self.assertEqual(_resolve_backend_path(ctx, "child.txt"), "/home/user/child.txt")
+        self.assertEqual(_resolve_backend_path(ctx, "nested\\\\folder.txt"), "/home/user/nested/folder.txt")
+        self.assertEqual(_resolve_backend_path(ctx, "/tmp/../home/user"), "/home/user")
 
 
 class MCPStdioCompatibilityTest(unittest.TestCase):
