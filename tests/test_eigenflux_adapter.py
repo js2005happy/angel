@@ -29,6 +29,9 @@ class _EigenFluxFixture:
     def tearDown(self):
         self.temp.cleanup()
 
+class EigenFluxHomeTests(_EigenFluxFixture, unittest.TestCase):
+    """Tests of home identity isolation."""
+
     def test_main_home_is_stable_not_session_or_cwd_dependent(self):
         first = eigenflux.home_for_agent(root=self.root)
         self.assertEqual(first.name, ".eigenflux")
@@ -102,10 +105,6 @@ class _EigenFluxFixture:
             eigenflux.EigenFluxAdapterError, "符号链接"
         ):
             eigenflux.home_for_agent(root=self.root, room="alpha", bot="lead")
-
-
-class EigenFluxHomeTests(_EigenFluxFixture, unittest.TestCase):
-    """Tests of home identity isolation."""
 
 
 class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
