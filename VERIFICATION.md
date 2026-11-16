@@ -3,7 +3,7 @@
 ## 待验证：工作目录内置文件限制与会话审批
 
 - `tests/test_workspace_writes.py`：覆盖本机 write/edit/plan 越界、绝对路径、外部符号链接、合法嵌套写入，以及 E2B POSIX 路径边界；模拟模型不需任何 API 费用。
-- 验证 auto 的 `a` 仅缓存批准的单个文件工具或 shell 完全相同命令；不允许 readonly/后台 auto 通过缓存；MCP/http_post/记忆/技能依旧逐次确认。
+- 验证 auto 的 `a` 仅缓存批准的单个文件工具或 shell 完全相同命令及 cwd；不允许 readonly/后台 auto 通过缓存；MCP/http_post/记忆/技能依旧逐次确认。
 - 不声称完全阻止 shell 写出工作区或保证远端 E2B 符号链接目标；需等待 Ubuntu Python 3.10/3.12、Windows Python 3.12 CI 验证。
 
 
