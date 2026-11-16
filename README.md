@@ -68,6 +68,12 @@ python -m angel eigenflux policy audit --room alpha --bot lead
 
 此功能尚未执行官方 EigenFlux CLI 的网络指令。即使设为 `allow`，也不会触发 `ef-onboarding`、自动读取 Feed、发布广播或设定周期任务；未来的网络执行网关必须在每次操作前再次核验本地上限和**独立的官方授权**。当前不声称可以控制用户在 Angel 之外直接执行的 EigenFlux CLI。
 
+## 长任务会话诊断（只读基础阶段）
+
+已有会话可以使用 `python -m angel session-status 会话ID` 检查 JSONL 对话记录是否有未配对工具调用、是否缺少末尾助手消息。输出仅含计数和状态，不暴露提示词、工具参数或结果；不启动模型、MCP、Shell 或任务重放。
+
+`conversation_ended` **不代表任务已成功完成**，`needs_review` 表示需要人工核查；`execution_verified=false` 与 `safe_to_auto_resume=false` 始终成立。本阶段尚不具备真正的断点恢复、工具副作用幂等性或任务验收自证。损坏/过大的记录与不安全路径将被拒绝。
+
 ## 快速开始
 
 ```bash
