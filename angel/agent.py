@@ -82,8 +82,12 @@ class Agent:
         approve_fn: Callable[[str, str], bool] | None = None,
         delegate_depth: int = 0,
         delegate_budget: _DelegationBudget | None = None,
+        system_instructions: str = "",
+        memory_path: str | Path | None = None,
     ) -> None:
         self.provider = provider
+        self.system_instructions = system_instructions
+        self.memory_path = Path(memory_path) if memory_path is not None else ANGEL_HOME / "MEMORY.md"
         self.delegate_depth = delegate_depth
         self._delegate_budget = (
             delegate_budget if delegate_budget is not None else _DelegationBudget()
@@ -113,7 +117,7 @@ class Agent:
             workdir=self.workdir,
             mode=mode,
             interactive=interactive,
-            memory_path=ANGEL_HOME / "MEMORY.md",
+            memory_path=self.memory_path,
             skills_dir=ANGEL_HOME / "skills",
             delegate_fn=self.delegate,
             evidence=self.evidence,
@@ -148,6 +152,8 @@ class Agent:
 
     def build_system_prompt(self, task: str) -> str:
         sections = [SYSTEM_PROMPT_BASE, MODE_NOTES.get(self.mode, "")]
+        if self.system_instructions:
+            sections.append("## 当前机器人的独立身份与目标\n" + self.system_instructions)
         if self.backend is not None:
             sections.append(
                 f"当前执行后端是 {self.backend.name} 沙盒："
@@ -165,7 +171,11 @@ class Agent:
                 "## 相关技能\n" + "\n\n".join(render_skill(s) for s in matched)
             )
 
-        memory = load_memory_summary()
+        memory = (
+            load_memory_summary()
+            if self.memory_path == ANGEL_HOME / "MEMORY.md"
+            else load_memory_summary(path=self.memory_path)
+        )
         if memory:
             sections.append("## 长期记忆\n" + memory)
 
@@ -289,6 +299,8 @@ class Agent:
             approve_fn=self.ctx.approve_fn,
             delegate_depth=self.delegate_depth + 1,
             delegate_budget=self._delegate_budget,
+            system_instructions=self.system_instructions,
+            memory_path=self.memory_path,
         )
         try:
             return child.run(task)
