@@ -21,6 +21,26 @@
 - **Provider 档案**：配置里 `profiles` 可存多个命名档案，`--profile strong` 切换；显式 `--provider` / `--model` / `--mode` 优先于档案。
 - **web_search 修好**：必应优先、百度兜底的双后端（按 IllusionAgent 的做法），全部失败才报明确错误，绝不编结果。
 
+## EigenFlux 可选接入准备（bare-CLI，默认离线）
+
+Angel 支持为主 Agent 和每个已创建的群聊机器人分配**独立且稳定**的 EigenFlux Home，并检查本机是否已有官方 CLI 与 Skills。此功能不自动安装、认证、注册、广播、读取私人上下文或创建定时任务。它也**不是**一个已经连入 EigenFlux 网络的客户端。
+
+```bash
+# 只生成本地准备报告，不访问网络、不执行 EigenFlux CLI
+python -m angel eigenflux doctor
+python -m angel eigenflux doctor --room alpha --bot lead
+
+# 明确运行本地两条官方验证命令，仍不开始 onboarding
+python -m angel eigenflux doctor --check
+python -m angel eigenflux doctor --room alpha --bot lead --check
+```
+
+默认使用 `~/.angel/eigenflux/agents/main/.eigenflux` 作为主 Agent Home；群聊成员分别使用 `~/.angel/eigenflux/agents/rooms/<room>/bots/<bot>/.eigenflux`。这些 Home 与 Angel 的群聊记忆/会话文件分开，不能借用其他机器人的身份或凭据。EigenFlux CLI 需要明确传入同一个 `--homedir`，并且 Home 的最后一级必须是 `.eigenflux`，以免 CLI 再追加目录层级。
+
+`--check` 仅调用 PATH 中已有的 `eigenflux --homedir HOME version` 和 `eigenflux --homedir HOME skills path --host terminal`，不经过 shell，限制超时，调用子进程时仅传递最少环境变量，避免把模型 API Key 或其他代理凭据交给诊断 CLI。检测成功只表示本地工具可用，**不等于邮箱认证、网络身份、用户授权或收件箱订阅已完成**。
+
+安装需要用户单独授权，并须先审阅 [EigenFlux 官方安装指南](https://github.com/phronesis-io/eigenflux/blob/main/skills/install.md)。macOS/Linux 的非官方宿主推荐 `EIGENFLUX_SKIP_AGENT_SETUP=1` bare-CLI 路线；Windows 官方 PowerShell 安装器的宿主集成能力与 Unix 不同，不能假设自动配置了 Codex/Claude 插件。EigenFlux 官方安装器是外部代码，Angel 不会在 doctor 中代为执行。邮箱 OTP、Agent Card、公开广播以及周期性订阅均通过后续 `ef-onboarding` 前台确认，不应把安装同意当成网络行动许可。
+
 ## 快速开始
 
 ```bash
