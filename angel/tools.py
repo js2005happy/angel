@@ -15,6 +15,7 @@ import urllib.request
 from .memory import append_memory
 from .skills import save_skill_file
 from .evidence import EvidenceStore
+from .net import open_url
 
 
 class ToolError(Exception):
@@ -466,7 +467,7 @@ def _tool_shell(
 def _tool_web_fetch(ctx: ToolContext, url: str) -> str:
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "Angel/0.2"})
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with open_url(request, 30) as response:
             charset = response.headers.get_content_charset() or "utf-8"
             text = response.read().decode(charset, errors="replace")
         cleaned = re.sub(r"<[^>]+>", " ", text)
@@ -543,7 +544,7 @@ def _fetch_search_page(url: str) -> str:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with open_url(request, 30) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
 
@@ -777,7 +778,7 @@ def _tool_http_post(
             method="POST",
             headers={"Content-Type": content_type, "User-Agent": "Angel/0.2"},
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with open_url(request, 30) as response:
             charset = response.headers.get_content_charset() or "utf-8"
             text = response.read().decode(charset, errors="replace")
         return f"HTTP {response.status}\n{_truncate(text)}"

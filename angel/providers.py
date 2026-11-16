@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from .config import ProviderConfig
+from .net import build_opener_for
 
 
 class ProviderError(Exception):
@@ -125,7 +126,7 @@ class Provider:
             raise ProviderError("该 provider 的认证方式无效")
 
         try:
-            with urllib.request.build_opener(_NoRedirect()).open(
+            with build_opener_for(request.full_url, _NoRedirect()).open(
                 request, timeout=timeout
             ) as response:
                 raw_body = response.read()

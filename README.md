@@ -50,6 +50,8 @@ python3 -m angel --provider deepseek "做点什么"
 python3 -m angel --provider xai --model grok-4.5 "做点什么"
 ```
 
+发往本机地址（如本地 Ollama 的 `localhost:11434`）的请求总是直连，不受 `HTTP_PROXY` / `HTTPS_PROXY` 影响；其他地址照常遵守代理设置。
+
 Key 只从环境变量或已保存的连接器读取，**绝不会**打印、记录或写进项目文件。配置存在 `~/.angel/config.json`（不含任何 Key）。
 
 ## 审批模式
@@ -128,7 +130,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 62 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 83 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -151,6 +153,7 @@ angel/
 │   ├── mcp.py         MCP 客户端（stdio JSON-RPC）
 │   ├── scheduler.py   内置调度器（文件式任务 + daemon）
 │   ├── compact.py     会话压缩（模型摘要 + 本地回退）
+│   ├── net.py         网络小工具（本机地址直连、不走代理）
 │   └── evidence.py    会话内证据链
 ├── skills/            自带示例技能
 ├── tests/             mock 测试
