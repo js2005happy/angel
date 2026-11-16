@@ -1,5 +1,12 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：会话状态诊断安全加固（2026-11-17）
+
+- 静态审阅 `angel/session_diagnostics.py`：新增整段工具调用 ID 去重、空会话/空白最终回复拒绝、工具链乱序标记；所有状态继续 `execution_verified=false`、`safe_to_auto_resume=false`。
+- 文件路径对祖先目录及最终文件检查符号链接；在支持 `O_NOFOLLOW` 的平台拒绝末尾符号链接竞态，打开后用 `fstat` 复核普通文件和大小，并限制读取累计字节。祖先目录跨进程替换竞态尚未由目录句柄逐级锁定，不能声称完全消除 TOCTOU。
+- 新增 `tests/test_session_diagnostics.py` 回归用例：空会话、无用户消息、空白助手结尾、重复工具调用 ID、乱序工具结果、合法配对及父目录符号链接。
+- **未执行测试、构建或 CI**；尚需 Windows/Linux 兼容性验证，尤其是 Windows 文件标志与路径竞态。不得将本轮标记为已验证。
+
 ## 待验证：长任务会话状态只读诊断（2026-11-17）
 
 - 本轮仅进行源码与文档静态审阅，**没有运行测试、构建、安装或 GitHub Actions**。新增 `tests/test_session_diagnostics.py`，覆盖末尾消息、未配对工具调用、孤立工具结果、损坏 JSONL、超限文件、符号链接、CLI 绕过 Provider/MCP 与隐私字段不外泄。
