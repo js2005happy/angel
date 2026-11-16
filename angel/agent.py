@@ -174,6 +174,18 @@ class Agent:
         ):
             return messages
 
+        # Compress *older* completed turns only. Never replace the current
+        # user request or any of its assistant/tool_call/tool-result exchange:
+        # the active task must remain explicit and the tool IDs must match.
+        current_start = next(
+            (i for i in range(len(before) - 1, -1, -1)
+             if before[i].get("role") == "user"), 0
+        )
+        older, active = before[:current_start], before[current_start:]
+        if len(older) < 3:
+            self._emit("auto_compact_skipped", {"reason": "no_prior_history"})
+            return messages
+
         old_size = len(json.dumps(before, ensure_ascii=False))
         try:
             def account(response: dict) -> None:
@@ -181,10 +193,11 @@ class Agent:
                 if isinstance(response, dict) and isinstance(response.get("usage"), dict):
                     self._emit("usage", self.usage.snapshot())
 
-            reduced, info = compact_messages(
-                self.provider, before, keep_last=0,
+            compressed_old, info = compact_messages(
+                self.provider, older, keep_last=0,
                 strict=True, on_response=account,
             )
+            reduced = [*compressed_old, *active]
             new_size = len(json.dumps(reduced, ensure_ascii=False))
             if new_size >= old_size:
                 self._emit("auto_compact_skipped", {"reason": "no_size_reduction"})
