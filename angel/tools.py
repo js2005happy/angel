@@ -20,6 +20,7 @@ from .checkpoints import CheckpointError
 from .patches import PatchError, apply_unified_patch, unified_preview
 from .poppy import PoppyError, discover_poppy
 from .poppy_permissions import PermissionError, PermissionLedger
+from .poppy_identity import IdentityError, inspect_poppy_identity
 
 
 class ToolError(Exception):
@@ -68,6 +69,25 @@ POPPY_TOOL_SCHEMA = {
                     "type": "string",
                     "description": "公开 HTTPS 站点，如 https://example.com",
                 },
+            },
+            "required": ["site"],
+        },
+    },
+}
+
+
+POPPY_IDENTITY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "poppy_identity_check",
+        "description": (
+            "只读验证 Poppy 公司域名与其 OAuth issuer 的双向元数据绑定。"
+            "即使验证通过，也没有 OAuth 访问令牌、Poppy Session 或执行权限。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "site": {"type": "string"},
             },
             "required": ["site"],
         },
@@ -1058,6 +1078,17 @@ def _tool_poppy_discover(ctx: ToolContext, site: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _tool_poppy_identity_check(ctx: ToolContext, site: str) -> str:
+    if not ctx.poppy_enabled:
+        raise ToolError("Poppy OAuth 元数据核验未启用，需显式 --poppy")
+    try:
+        result = inspect_poppy_identity(site)
+    except IdentityError as exc:
+        raise ToolError(str(exc)) from exc
+    import json
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _tool_poppy_permission_check(
     ctx: ToolContext, site: str, scope: str, account: str | None = None,
 ) -> str:
@@ -1090,6 +1121,7 @@ def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
         "http_post": _tool_http_post,
         "poppy_discover": _tool_poppy_discover,
         "poppy_permission_check": _tool_poppy_permission_check,
+        "poppy_identity_check": _tool_poppy_identity_check,
     }
     tool = dispatch.get(name)
     if tool is None:
