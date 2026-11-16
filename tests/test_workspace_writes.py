@@ -147,6 +147,60 @@ class WorkspaceWriteTest(unittest.TestCase):
         self.assertIn("已写入", ok)
         self.assertEqual(backend.files, {"/home/user/src/readme.md": "ok"})
 
+    def test_shell_rejects_workspace_escape_before_approval_or_execution(self):
+        outside_dir = self.root
+        link = self.workdir / "linked-dir"
+        try:
+            link.symlink_to(outside_dir, target_is_directory=True)
+            symlinks = ["linked-dir"]
+        except (OSError, NotImplementedError):
+            symlinks = []
+        self.ctx.mode = "auto"
+        self.ctx.interactive = True
+        with patch("builtins.input") as prompt, \
+             patch("angel.tools.subprocess.run") as spawn:
+            for cwd in ["..", str(outside_dir), *symlinks]:
+                with self.subTest(cwd=cwd):
+                    response = execute_tool(
+                        "shell", {"command": "echo check", "cwd": cwd}, self.ctx
+                    )
+                    self.assertIn("工作目录之外", response)
+        prompt.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_shell_normalizes_cwd_for_local_execution(self):
+        nested = self.workdir / "nested"
+        nested.mkdir()
+        with patch("angel.tools.subprocess.run") as spawn:
+            spawn.return_value.stdout = "ok"
+            spawn.return_value.stderr = ""
+            output = execute_tool("shell", {
+                "command": "echo test", "cwd": "nested/../nested",
+            }, self.ctx)
+        self.assertIn("ok", output)
+        self.assertEqual(spawn.call_args.kwargs["cwd"], nested.resolve())
+
+    def test_backend_shell_rejects_outside_cwd_without_running(self):
+        backend = RecordingBackend()
+        ctx = ToolContext(
+            workdir=Path("/home/user"), mode="full", interactive=False,
+            backend=backend, memory_path=self.root / "memory",
+            skills_dir=self.root / "skills",
+        )
+        for cwd in ("../elsewhere", "/etc", "../../home"):
+            with self.subTest(cwd=cwd):
+                response = execute_tool(
+                    "shell", {"command": "echo test", "cwd": cwd}, ctx
+                )
+                self.assertIn("工作目录之外", response)
+        self.assertEqual(backend.commands, [])
+        self.assertEqual(
+            execute_tool("shell", {
+                "command": "echo test", "cwd": "nested/../nested",
+            }, ctx), "ok"
+        )
+        self.assertEqual(backend.commands, [("echo test", "/home/user/nested")])
+
 
 class ScopedApprovalTest(unittest.TestCase):
     def setUp(self):
@@ -243,6 +297,27 @@ class ScopedApprovalTest(unittest.TestCase):
                 prompt.assert_called_once()
         self.assertEqual(self.ctx.approved_file_tools, set())
         self.assertEqual(self.ctx.approved_shell_commands, set())
+
+    def test_backend_replacement_never_reuses_file_approval(self):
+        first, second = RecordingBackend(), RecordingBackend()
+        self.ctx.workdir = Path("/home/user")
+        self.ctx.backend = first
+        with patch("builtins.input", return_value="a"), \
+             patch("sys.stdout", new_callable=io.StringIO):
+            result = execute_tool("write_file", {
+                "path": "config.txt", "content": "first",
+            }, self.ctx)
+        self.assertIn("已写入", result)
+        self.assertEqual(first.files, {"/home/user/config.txt": "first"})
+        self.ctx.backend = second
+        with patch("builtins.input", return_value="n") as prompt, \
+             patch("sys.stdout", new_callable=io.StringIO):
+            result = execute_tool("write_file", {
+                "path": "config.txt", "content": "second",
+            }, self.ctx)
+        self.assertIn("用户拒绝", result)
+        prompt.assert_called_once()
+        self.assertEqual(second.files, {})
 
     def test_callback_always_runs_even_when_grants_are_already_cached(self):
         self.ctx.approved_file_tools.add(
