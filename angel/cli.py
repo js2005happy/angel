@@ -402,9 +402,14 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(raw)
 
     if args.discover_poppy is not None:
+        if args.json_mode:
+            from .json_mode import invalid_arguments
+            return invalid_arguments(
+                sys.stdout, "--discover-poppy 不能与 --json 混用"
+            )
         if (args.prompt is not None or args.plan_mode or args.execute_plan
-                or args.approve_plan or args.json_mode):
-            print("错误：--discover-poppy 是独立只读命令，不能混用任务或 JSONL")
+                or args.approve_plan):
+            print("错误：--discover-poppy 是独立只读命令，不能混用任务执行")
             return 2
         import json
         from .poppy import PoppyError, discover_poppy
