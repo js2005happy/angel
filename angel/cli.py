@@ -304,6 +304,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-compact-threshold", type=float, default=None,
         help="触发自动压缩的上下文占比，0.50 到 0.95（默认 0.80）",
     )
+    parser.add_argument(
+        "--plan", dest="plan_mode", action="store_true",
+        help="先只读分析，生成工作目录中的 plan.md，不执行任务",
+    )
+    parser.add_argument(
+        "--execute-plan", action="store_true",
+        help="执行经 SHA-256 校验值批准的 plan.md（工具仍受审批模式约束）",
+    )
+    parser.add_argument(
+        "--approve-plan", default=None, metavar="SHA256",
+        help="批准完整 plan.md 的 SHA-256 校验值，仅用于 --execute-plan",
+    )
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument(
         "--sandbox",
@@ -378,9 +390,82 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(raw)
 
     if args.json_mode:
-        from .json_mode import run_json
+        from .json_mode import invalid_arguments, run_json
 
+        if args.plan_mode or args.execute_plan or args.approve_plan:
+            return invalid_arguments(
+                sys.stdout, "--json 与 --plan/--execute-plan 不能组合使用"
+            )
         return run_json(args)
+
+    # Plan generation is a separate code path: no Agent, MCP server,
+    # E2B sandbox, session store, shell, or mutating tool is instantiated.
+    # Only plan.md is persisted in the selected working directory.
+    if args.plan_mode or args.execute_plan or args.approve_plan:
+        from .plan_mode import (
+            PlanError, build_plan, render_plan, save_plan,
+            read_approved_plan, approved_execution_task,
+        )
+
+        plan_flags = (
+            args.compact or args.list_mcp or args.list_profiles
+            or args.list_skills or args.list_sessions or args.resume
+        )
+        if (
+            (args.plan_mode and args.execute_plan)
+            or (args.approve_plan and not args.execute_plan)
+            or plan_flags
+            or (args.plan_mode and (not args.prompt or args.approve_plan))
+            or (args.execute_plan and (args.prompt is not None or not args.approve_plan))
+        ):
+            print("错误：--plan 需要任务文本；--execute-plan 需要 --approve-plan SHA256，且不能混用其他会话命令")
+            return 2
+
+        if args.plan_mode:
+            if args.sandbox == "e2b" or args.sandbox_id or args.sandbox_template or args.sandbox_timeout:
+                print("错误：计划生成阶段只支持本地只读分析，不启动沙盒")
+                return 2
+            try:
+                config = load_config()
+                profile = resolve_profile(args.profile, config)
+                provider_cfg = resolve_provider(
+                    args.provider or profile["provider"],
+                    args.model or profile["model"],
+                )
+                provider = Provider(provider_cfg)
+                if not provider.has_credentials():
+                    print_setup_help(provider.name)
+                    return 2
+                root = Path(args.workdir).resolve()
+                details = build_plan(provider, args.prompt, root)
+                digest = save_plan(root, render_plan(args.prompt, details))
+            except (PlanError, ValueError, ProviderError, OSError) as exc:
+                print(f"规划失败：{exc}")
+                return 1
+            print(f"已生成只读计划：{root / 'plan.md'}")
+            print(f"SHA-256：{digest}")
+            print(f"审核内容后执行：python -m angel --workdir {str(root)!r} --execute-plan --approve-plan {digest}")
+            print("执行阶段默认 auto：写入/命令仍需逐项确认，除非明确选择 --mode full。")
+            return 0
+
+        if args.execute_plan:
+            if args.sandbox == "e2b" or args.sandbox_id or args.sandbox_template or args.sandbox_timeout:
+                print("错误：当前计划执行只支持本地工作目录，请先审核计划并在本机运行")
+                return 2
+            if args.mode == "readonly":
+                print("错误：readonly 不适合执行写入计划，请使用默认 auto 模式")
+                return 2
+            try:
+                approved = read_approved_plan(
+                    Path(args.workdir).resolve(), args.approve_plan
+                )
+            except (PlanError, OSError) as exc:
+                print(f"计划审批失败：{exc}")
+                return 2
+            args.prompt = approved_execution_task(approved)
+            args.mode = args.mode or "auto"
+            # Do not inherit a saved e2b setting when the approval is local.
+            args.sandbox = "local"
 
     try:
         sandbox_settings = resolve_sandbox(
