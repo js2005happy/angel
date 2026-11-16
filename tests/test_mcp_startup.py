@@ -82,8 +82,8 @@ class MCPStartupPolicyTest(unittest.TestCase):
         self.assertFalse((self.root / "bad.started").exists())
 
     def test_interactive_auto_denial_prevents_startup(self):
-        with patch("angel.agent.load_config", return_value=self.config("no")), \\
-             patch("builtins.input", return_value="n") as answer, \\
+        with patch("angel.agent.load_config", return_value=self.config("no")), \
+             patch("builtins.input", return_value="n") as answer, \
              patch("sys.stdout", new_callable=io.StringIO) as output:
             result = build_mcp_manager(mode="auto", interactive=True)
         self.assertIsNone(result)
@@ -93,7 +93,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
         self.assertFalse((self.root / "no.started").exists())
 
     def test_interactive_auto_starts_only_approved_servers(self):
-        with patch("angel.agent.load_config", return_value=self.config("no", "yes")), \\
+        with patch("angel.agent.load_config", return_value=self.config("no", "yes")), \
              patch("builtins.input", side_effect=["no", "yes"]) as answer:
             manager = build_mcp_manager(mode="auto", interactive=True)
         self.assertIsNotNone(manager)
@@ -107,7 +107,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
             manager.stop_all()
 
     def test_full_mode_starts_without_prompt(self):
-        with patch("angel.agent.load_config", return_value=self.config("yes")), \\
+        with patch("angel.agent.load_config", return_value=self.config("yes")), \
              patch("builtins.input", side_effect=AssertionError("unexpected prompt")):
             manager = build_mcp_manager(mode="full", interactive=False)
         self.assertIsNotNone(manager)
@@ -134,11 +134,11 @@ class MCPStartupPolicyTest(unittest.TestCase):
         with patch("angel.cli.load_config", return_value={
             "provider": "deepseek", "model": "deepseek-flash",
             "mode": "full", "max_turns": 3, "profiles": {},
-        }), \\
-             patch("angel.cli.Provider") as provider_class, \\
-             patch("angel.cli.Agent", return_value=agent), \\
-             patch("angel.cli.build_mcp_manager", side_effect=[manager, None]) as start, \\
-             patch("builtins.input", side_effect=["/mode readonly", "/exit"]), \\
+        }), \
+             patch("angel.cli.Provider") as provider_class, \
+             patch("angel.cli.Agent", return_value=agent), \
+             patch("angel.cli.build_mcp_manager", side_effect=[manager, None]) as start, \
+             patch("builtins.input", side_effect=["/mode readonly", "/exit"]), \
              patch("sys.stdout", new_callable=io.StringIO):
             provider_class.return_value.has_credentials.return_value = True
             provider_class.return_value.name = "deepseek"
