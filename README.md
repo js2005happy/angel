@@ -21,6 +21,10 @@
 - **Provider 档案**：配置里 `profiles` 可存多个命名档案，`--profile strong` 切换；显式 `--provider` / `--model` / `--mode` 优先于档案。
 - **web_search 修好**：必应优先、百度兜底的双后端（按 IllusionAgent 的做法），全部失败才报明确错误，绝不编结果。
 
+## 会话诊断：安全保守的结束状态判断
+
+`python -m angel session-status SESSION_ID` 只读检查 JSONL 会话的工具配对与最终回复，不运行模型或重试工具。空会话、空白助手结尾、重复工具调用 ID 或乱序工具结果不会被误报为正常结束；文件和符号链接路径受大小与路径限制。即使输出 `conversation_ended`，也只表示对话结构完整，不代表任务执行成功；`execution_verified` 与 `safe_to_auto_resume` 始终为 `false`。这项加固尚未运行跨平台测试。
+
 ## EigenFlux 可选接入准备（bare-CLI，默认离线）
 
 Angel 支持为主 Agent 和每个已创建的群聊机器人分配**独立且稳定**的 EigenFlux Home，并检查本机是否已有官方 CLI 与 Skills。此功能不自动安装、认证、注册、广播、读取私人上下文或创建定时任务。它也**不是**一个已经连入 EigenFlux 网络的客户端。
