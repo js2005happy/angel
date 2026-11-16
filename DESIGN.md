@@ -103,6 +103,14 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 默认 `auto_compact_enabled=false`，需明确配置或传 `--auto-compact` 并给出经核实的上下文窗口，防止用户无意消费 API。摘要请求的真实 usage 也累计在 Agent 用量计数里。
 - 自动触发依赖**上一次**请求用量，而不是未发送的下一次请求的精确长度；在一次长输入突增时依然可能遇到模型上下文异常，不承诺绝对避免溢出。压缩摘要自身有信息损失风险，应配合定期历史备份。
 
+## Poppy 用户授权意向账本（第二阶段）
+
+- 新增 `poppy_permissions.py`：独立按 `(公开 HTTPS 精确主机, visitor 或 account:<本地别名>, OAuth scope)` 保存本地授权意向，默认拒绝、禁止通配 scope、子域名/账户不共享。**不是 Poppy Session / OAuth 权限记录**，即使存在 local_intent 也始终将 `may_execute_remote_action` 标记为 false。
+- `angel permissions list|check|grant|revoke|audit` 在创建 Provider、MCP 进程或任何网络请求之前直接执行。只有显式用户 CLI `grant --confirm` 能新增记录；Agent 的 `--poppy` 工具仅支持 `poppy_permission_check` 只读查询，不包含 grant/revoke。
+- JSON 持久化存于 `~/.angel/poppy/permissions.json`，私有权限 0600（POSIX）、同目录临时文件加 `os.replace`，进程内锁序列化更改。`--expect-revision` 可对存储字节执行 SHA-256 乐观并发校验。有界审计事件与账本同一次原子替换，限制站点/身份/scope 数量及 256 KiB 容量；文件/目录已有符号链接会拒绝。
+- `classify_scope` 符合 Poppy 1.0 §4.7：未知 changes 按 irreversible，缺少 personal_data 视作未知；任何非 `none` 或未知个人数据都标记为日后执行时必须人工确认。`poppy.py` 的 discovery 摘要也避免将缺失提示降级为安全，不信任网站描述本身等于用户授权。
+- **尚未落地的 runtime gate**：现阶段没有 Poppy HTTP MCP/OAuth Session/远端操作，所以账本不使任何远程操作实际可执行。真正的 transport 必须核验公司 issuer、运行时 token 实际 scopes、Session 身份归属、用户明确批准和高风险每次操作审批，且支持撤销后的实时阻断。多进程竞争与具备本地磁盘权限的恶意修改不由本期彻底解决。
+
 ## Poppy 协议发现薄层（首阶段，默认关闭）
 
 - 官方参考：`https://personalagentprotocol.org/docs/1.0/spec`。新增 `angel/poppy.py` 只做不带登录身份的公共 `/.well-known/poppy.json` 发现，检查文档版本、实际服务主机与 `organization.domain` 一致、重定向最终 well-known 路径精确且无 query。首选非 1.0 时若 `supported_versions` 指向同主机的 1.0 备选文件，则按规范拒绝备选重定向并校验它的版本。

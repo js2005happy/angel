@@ -253,7 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Angel — 全能 AI 助手",
         epilog=(
             "子命令：angel schedule <list|add|remove|run|daemon> 管理定时任务；"
-            "angel ui [--host 127.0.0.1] [--port 8765] [--open] 启动本地网页界面"
+            "angel ui [--host 127.0.0.1] [--port 8765] [--open] 启动本地网页界面；"
+            "angel permissions <list|check|grant|revoke|audit> 管理 Poppy 站点授权意向"
         ),
     )
     parser.add_argument(
@@ -385,6 +386,10 @@ def main(argv: list[str] | None = None) -> int:
         from .webui import main as ui_main
 
         return ui_main(raw[1:])
+    if raw and raw[0] == "permissions":
+        from .poppy_permissions_cli import main as permissions_main
+
+        return permissions_main(raw[1:])
 
     parser = build_parser()
     if "--json" in raw and not any(flag in raw for flag in ("--help", "-h")):

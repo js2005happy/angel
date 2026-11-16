@@ -229,12 +229,20 @@ def _summary(data: dict, final_url: str) -> dict:
         if not isinstance(name, str):
             continue
         hint = hints.get(name, {}) if isinstance(hints.get(name), dict) else {}
+        change = hint.get("changes")
+        personal = hint.get("personal_data")
+        unknown = change not in ("none", "reversible", "irreversible")
+        if unknown:
+            change = "irreversible"  # Poppy 1.0 section 4.7 fail-closed.
+        if not isinstance(personal, bool):
+            personal = None
+            unknown = True
         scoped.append({
             "scope": name[:150], "description": str(description)[:300],
-            "changes": hint.get("changes") if hint.get("changes") in (
-                "none", "reversible", "irreversible",
-            ) else "unknown",
-            "personal_data": hint.get("personal_data") is True,
+            "changes": change,
+            "personal_data": personal,
+            "unknown_hints": unknown,
+            "requires_human_approval": (change != "none" or personal is not False),
         })
     return {
         "discovery_url": final_url,

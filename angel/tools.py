@@ -19,6 +19,7 @@ from .net import open_url
 from .checkpoints import CheckpointError
 from .patches import PatchError, apply_unified_patch, unified_preview
 from .poppy import PoppyError, discover_poppy
+from .poppy_permissions import PermissionError, PermissionLedger
 
 
 class ToolError(Exception):
@@ -69,6 +70,31 @@ POPPY_TOOL_SCHEMA = {
                 },
             },
             "required": ["site"],
+        },
+    },
+}
+
+
+POPPY_PERMISSION_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "poppy_permission_check",
+        "description": (
+            "只读检查一个精确 Poppy 站点、账户别名和 scope 是否登记了"
+            "本地用户授权意向；不代表 OAuth 登录、Session 或实际执行授权。"
+            "模型不能通过此工具授予或撤销权限。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "site": {"type": "string"},
+                "scope": {"type": "string"},
+                "account": {
+                    "type": "string",
+                    "description": "可选本地账户别名；不传则是游客身份",
+                },
+            },
+            "required": ["site", "scope"],
         },
     },
 }
@@ -1032,6 +1058,19 @@ def _tool_poppy_discover(ctx: ToolContext, site: str) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+def _tool_poppy_permission_check(
+    ctx: ToolContext, site: str, scope: str, account: str | None = None,
+) -> str:
+    if not ctx.poppy_enabled:
+        raise ToolError("Poppy 发现和权限检查未启用，请显式设置 --poppy")
+    try:
+        result = PermissionLedger().check(site, scope, account=account)
+    except (PermissionError, OSError) as exc:
+        raise ToolError(str(exc)) from exc
+    import json
+    return json.dumps(result, ensure_ascii=False)
+
+
 def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
     dispatch: dict[str, Callable[..., str]] = {
         "read_file": _tool_read_file,
@@ -1050,6 +1089,7 @@ def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
         "git_status": _tool_git_status,
         "http_post": _tool_http_post,
         "poppy_discover": _tool_poppy_discover,
+        "poppy_permission_check": _tool_poppy_permission_check,
     }
     tool = dispatch.get(name)
     if tool is None:
