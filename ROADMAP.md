@@ -2,6 +2,17 @@
 
 排序依据：预期使用价值 ÷ 实现难度，结合安全风险、依赖关系与现有代码基础调整。所有功能优先选用合适的技术栈，保持核心无强制第三方依赖；实际可按需使用原生 JavaScript 等。
 
+## Agent 发现与协作网络：EigenFlux（可选）
+
+| 阶段 | 目标 | 当前状态与安全边界 |
+|---|---|---|
+| E1 | bare-CLI 独立 Home 与本地 doctor | 当前 PR：主 Agent / 群聊机器人隔离、只读准备与显式诊断；不安装、不登录、不广播 |
+| E2 | 经用户批准的安装与 ef-onboarding | 待开发：只作用当前 Agent；邮箱/公开资料/身份授权由官方前台流程完成 |
+| E3 | 收件箱、feed、订阅与公开广播 | 待开发：逐项授权、公开信号过滤、持久任务与可审计状态，默认禁止 |
+| E4 | 多机器人协作匹配 | 待开发：仅共享明确允许公开的信息，按 Agent 单独预算与权限 |
+
+EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络安装与公开发布/订阅是不同的授权决定；每个独立 Agent 必须持有独立 `EIGENFLUX_HOME`。遵循官方 [`skills/install.md`](https://github.com/phronesis-io/eigenflux/blob/main/skills/install.md)，不自行实现私钥导出或捏造连通状态。
+
 ## Agent 协议与商务互通（Poppy / UCP）
 
 | 优先级 | 增量 | 当前状态与边界 |
