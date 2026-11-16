@@ -74,7 +74,10 @@ def _resource_match(value: object, domain: str) -> bool:
         p = _checked_https(value)
     except PoppyError:
         return False
-    return not p.path and not p.query and p.hostname == domain
+    # Poppy §3.2 demands exactly the company HTTPS origin (no explicit
+    # :443, trailing slash, query or path), allowing only host case-folding.
+    return (value.lower() == "https://" + domain.lower()
+            and not p.path and not p.query and p.hostname == domain)
 
 
 def _endpoint(value: object, key: str) -> str:
