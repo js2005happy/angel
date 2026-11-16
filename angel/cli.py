@@ -33,6 +33,7 @@ from .scheduler import (
 )
 from .skills import load_skills
 from .memory import list_sessions, load_session, new_session_id
+from .usage import UsageTracker, context_limit, format_usage
 
 
 REPL_COMMANDS = (
@@ -41,6 +42,7 @@ REPL_COMMANDS = (
     ("/skills", "列出已加载的技能"),
     ("/sessions", "列出历史会话"),
     ("/compact", "压缩当前会话（模型摘要 + 保留最近消息）"),
+    ("/status", "显示模型调用与 Token 用量、参考上下文余量"),
     ("/clear", "清空当前对话历史"),
     ("/new", "开始一个新会话"),
     ("/exit 或 /quit", "退出"),
@@ -285,6 +287,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-turns", type=int, default=None, help="最大执行轮数"
     )
+    parser.add_argument(
+        "--context-window", type=int, default=None,
+        help="已确认的模型上下文窗口 token 上限（未知时不估算）",
+    )
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument(
         "--sandbox",
@@ -412,6 +418,13 @@ def main(argv: list[str] | None = None) -> int:
 
     mode = validate_mode(args.mode or profile["mode"] or "auto")
     max_turns = args.max_turns or config.get("max_turns") or 20
+    if args.context_window is not None and context_limit(args.context_window) is None:
+        print("错误：--context-window 必须为正整数")
+        return 1
+    window = context_limit(
+        args.context_window if args.context_window is not None
+        else config.get("context_window_tokens")
+    )
 
     try:
         provider_cfg = resolve_provider(
@@ -491,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
         messages=messages,
         mcp_manager=mcp_manager,
         backend=backend,
+        context_window_tokens=window,
     )
 
     try:
@@ -502,6 +516,9 @@ def main(argv: list[str] | None = None) -> int:
             except AgentError as exc:
                 print(f"错误：{exc}")
                 return 1
+            finally:
+                # One-shot stdout remains answer-only; metrics go to stderr.
+                print("本次运行用量：\n" + format_usage(agent.usage.snapshot()), file=sys.stderr)
 
         color = use_color()
         print(
@@ -576,6 +593,12 @@ def main(argv: list[str] | None = None) -> int:
                     for s in sessions:
                         print(f"- {s['id']}（{s['count']} 条消息）{s['preview']}")
                 continue
+            elif line == "/status":
+                print(
+                    f"会话：{agent.session_id}；模型：{provider.name} / {provider.model}；模式：{agent.mode}\n"
+                    + format_usage(agent.usage.snapshot())
+                )
+                continue
             elif line == "/compact":
                 info = agent.compact()
                 print(
@@ -585,10 +608,12 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             elif line == "/clear":
                 agent.messages = []
+                agent.usage = UsageTracker(configured_window=window)
                 print("已清空对话历史")
                 continue
             elif line == "/new":
                 agent.messages = []
+                agent.usage = UsageTracker(configured_window=window)
                 agent.session_id = new_session_id()
                 print(f"已开始新会话：{agent.session_id}")
                 continue
