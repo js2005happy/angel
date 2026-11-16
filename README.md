@@ -1,5 +1,10 @@
 # Angel 👼
 
+## 工具日志接入 Agent 主循环（默认关闭）
+
+通过 Python API 显式传入 `Agent(..., tool_journal=ToolJournal(session_id))` 可在工具调用前记录 intent，调用返回后记录 result。无法持久化 intent 时不执行工具，无法记录 result 时停止并报告结果未知，不自动重试。CLI 暂无开关，子 Agent 不继承；本轮未运行测试，不能把元数据日志当作真实执行成功的证明或安全断点恢复。
+
+
 ## 工具执行元数据日志基础（尚未接入主循环）
 
 新增可选的 `angel.tool_journal.ToolJournal` Python 模块：显式 `begin(tool)` 记录执行意图，工具结束后 `finish(call_id, tool, success=...)` 记录报告结果，`inspect()` 只返回计数及未知结果。日志默认不创建文件，不记录提示词、参数或输出，也不启动工具或模型。崩溃在 intent 与 result 之间时，结果为 unknown，**绝不自动重试**。这只是下一阶段的底层组件，尚未集成进 Agent 的工具调用路径或 CLI，尚未运行测试，不能宣称实现断点续跑。
