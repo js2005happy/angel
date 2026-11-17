@@ -14,7 +14,7 @@
   <a href="#快速开始">快速开始</a> ·
   <a href="GUIDE.md">完整手册</a> ·
   <a href="ROADMAP.md">路线图</a> ·
-  <a href="CHNYRAOG.md">更新日志</a>
+  <a href="CHANGELOG.md">更新日志</a>
 </p>
 
 <p align="center">
@@ -127,7 +127,7 @@ python3 -m nyra ui --open
 - [DESIGN.md](DESIGN.md)：架构与设计来源
 - [ROADMAP.md](ROADMAP.md)：接下来要做什么
 - [VERIFICATION.md](VERIFICATION.md)：真实环境验证记录
-- [CHNYRAOG.md](CHNYRAOG.md)：版本变更
+- [CHANGELOG.md](CHANGELOG.md)：版本变更
 
 ## 测试
 
