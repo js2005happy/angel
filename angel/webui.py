@@ -147,6 +147,22 @@ class UIState:
         self.lock = threading.Lock()
         self._mode_lock = threading.Lock()
 
+    def _on_switch(self, record) -> None:
+        """Report a provider switch to the server log and to the chat.
+
+        The stderr notice keeps the CLI behaviour; the model_switch event
+        goes into every currently running run so the page shows the switch
+        inline instead of silently answering from another model.
+        """
+        _fallback_notice(record)
+        with self.lock:
+            runs = list(self.runs.values())
+        for run in runs:
+            with run.lock:
+                running = run.status == "running"
+            if running:
+                self._record(run, "model_switch", record)
+
     # -- provider -----------------------------------------------------------
     def provider(self):
         if self._provider is None:
@@ -160,13 +176,16 @@ class UIState:
                     self.model or prof["model"],
                 )
                 # Same fallback chain as the CLI entries: on a recoverable
-                # failure the call moves to the next provider. The chain
+                # failure the call moves to the next provider. Fallback is
+                # off by default and only the allowlist in
+                # `fallback_providers` may be switched to. The chain
                 # object is cached, but every chat() starts from the
-                # primary again; switches are printed to the server log.
+                # primary again; switches are printed to the server log
+                # and recorded as model_switch events in the running chat.
                 self._provider = build_provider_chain(
                     primary_cfg,
                     resolve_fallback_chain(primary_cfg.name, cfg),
-                    on_switch=_fallback_notice,
+                    on_switch=self._on_switch,
                     provider_cls=Provider,
                     resolver=resolve_provider,
                 )
@@ -861,12 +880,14 @@ class Handler(BaseHTTPRequestHandler):
                 data = scheduler_module.load_schedule()
                 action = str(body.get("action") or "")
                 if action == "add":
-                    task = body.get("task")
-                    if not isinstance(task, dict):
-                        return self._error(HTTPStatus.BAD_REQUEST, "任务内容无效")
-                    scheduler_module.add_task(data, task)
-                    scheduler_module.save_schedule(data)
-                    return self._json(HTTPStatus.CREATED, {"task": data["tasks"][-1]})
+                    # 网页端新建定时任务暂缓开放：等任务队列合并（E）后恢复。
+                    # 现在 main 上的任务默认用 full 模式，E 合并后会拒绝这种
+                    # 情况；请用 `angel schedule add` 命令添加。
+                    return self._error(
+                        HTTPStatus.CONFLICT,
+                        "网页端新建定时任务暂缓开放，等任务队列合并（E）后恢复；"
+                        "请用 angel schedule add 命令添加",
+                    )
                 if action == "toggle":
                     name = str(body.get("name") or "")
                     for task in data.get("tasks", []):

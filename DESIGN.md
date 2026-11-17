@@ -216,7 +216,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。
 3. **GEPA 式自动学习**：任务成功后自动提炼技能（现在是模型主动调 `save_skill`，未来是成功后自动总结+评估）。
 4. **桌面 UI**（部分完成）：本地网页界面 `python3 -m angel ui` 已可用（2026-11-16：会话列表、对话与工具卡片、网页内审批、证据与计划检查器，纯标准库、默认只听 127.0.0.1 + 启动 token）；技能浏览、独立桌面应用、按品牌形象的完整三栏 App 尚未开始。
-5. **多模型路由**：按任务难度自动选便宜/强的模型（待做）。基础版已做完：主模型遇 402/429/5xx/超时/网络错误时自动按链切换（默认 DeepSeek flash → Grok → 本地 Ollama），401/403 不切换，每次切换打印明确提示；见 `providers.py` 的 `FallbackProvider` 与 README「模型自动兜底」一节。通用接入已做完：13 个内置预设（DeepSeek、Grok、OpenRouter、Ollama、OpenAI、Qwen、Kimi、GLM、Gemini、Mistral、Groq、Together、custom）+ 配置里 `custom_providers` 可自定义任意 OpenAI 兼容接口并进 fallback 链；见 README「自定义 provider 与列出模型」一节。明文 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`），外网地址必须用 `https://`，否则 API Key 会明文传输；校验在配置解析（`config.py`）与发请求前（`providers.py`）各做一道，两处报错文本一致。兜底链已接到的入口：命令行（REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面、群聊；定时任务仍用单个 provider（调度器正在另一路开发中）。
+5. **多模型路由**：按任务难度自动选便宜/强的模型（待做）。基础版已做完：主模型遇 402/429/5xx/超时/网络错误时自动按链切换（默认 DeepSeek flash → Grok → 本地 Ollama），401/403 不切换，每次切换打印明确提示；**兜底默认关闭**（2026-11-17 用户定安全事项）：只由用户自己开启（配置 `fallback_enabled: true` / `--fallback` / 环境变量），只切换到 `fallback_providers` 允许列表里的服务商，未知名字与未配置 Key 的备用会被跳过并记日志，网页聊天流与群聊回复里都会显示切换提示，定时任务与队列里不切换；见 `providers.py` 的 `FallbackProvider` 与 README「模型自动兜底」一节。通用接入已做完：13 个内置预设（DeepSeek、Grok、OpenRouter、Ollama、OpenAI、Qwen、Kimi、GLM、Gemini、Mistral、Groq、Together、custom）+ 配置里 `custom_providers` 可自定义任意 OpenAI 兼容接口并进 fallback 链；见 README「自定义 provider 与列出模型」一节。明文 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`），外网地址必须用 `https://`，否则 API Key 会明文传输；校验在配置解析（`config.py`）与发请求前（`providers.py`）各做一道，两处报错文本一致。兜底链已接到的入口：命令行（REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面、群聊；定时任务仍用单个 provider（调度器正在另一路开发中）。
 6. **多会话并发**：每会话独立引擎（IllusionAgent 的做法），目前 Angel 一次只跑一个会话。
 7. **hooks / 插件**：任务前后钩子与第三方插件加载。
 
@@ -282,7 +282,7 @@ Angel 的整个 UI 由我们自己设计：头像 logo、产品界面、布局�
 - 审批是一等公民：危险操作以卡片形式出现在对话流里（允许/拒绝/追问），不用弹窗挡路；批准卡片用珊瑚强调。
 - 处处可核查：结论附来源链接，沙盒状态用药丸标签显示（运行中/休眠中/唤醒中），工具执行过程一步一屏可见。
 - 字体：系统无衬线优先，数字与代码用等宽；中文按系统字体回落。
-- 面板全部接真实数据（2026-11-17 补完）：设置视图的 provider 下拉可真正切换（`POST /api/provider`，新会话生效、已有会话保持原 provider、重启恢复配置）、模型卡显示兜底链、定时任务行显示上次运行时间与摘要、群聊“打开”直达具体群；没有后端数据的面板（如费用看板、守护进程运行状态）不编造数据、如实留空待立项。
+- 面板全部接真实数据（2026-11-17 补完）：设置视图的 provider 下拉可真正切换（`POST /api/provider`，新会话生效、已有会话保持原 provider、重启恢复配置）、模型卡显示兜底链、定时任务行显示上次运行时间与摘要、群聊“打开”直达具体群；没有后端数据的面板（如费用看板、守护进程运行状态）不编造数据、如实留空待立项。网页端新建定时任务于 2026-11-17 暂缓开放（等任务队列合并 E 后恢复，添加表单已撤下、后端 add 返回 409），请用 `angel schedule add` 命令添加。
 
 **界面原型：** 交互原型见 artifact「Angel UI v2」（angel-ui-v2），按上面这套语言做第二版；原型是前端模拟规格、不是可直接粘贴的代码，落代码时补了原型没有的暗色模式。第一版原型「Angel UI Prototype」（angel-ui-prototype）已过时、不动。
 

@@ -343,6 +343,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="显式启用只读 Poppy 1.0 公共协议发现工具（默认关闭）",
     )
     parser.add_argument(
+        "--fallback", action="store_true",
+        help="显式启用模型自动兜底：主模型失败（402/429/5xx/超时/网络错误）时按允许列表切换备用模型（默认关闭）",
+    )
+    parser.add_argument(
         "--no-fallback", action="store_true",
         help="关闭模型自动兜底：主模型失败（402/429/5xx/超时/网络错误）时不再切换备用模型",
     )
@@ -424,6 +428,20 @@ def _fallback_notice(record) -> None:
         f"模型切换：{record['from']} 失败（{reason}），已切换到 {record['to']} 继续",
         file=sys.stderr,
     )
+
+
+def _fallback_enabled(args) -> bool | None:
+    """Resolve the fallback on/off switch for one CLI invocation.
+
+    Explicit `--fallback` enables, `--no-fallback` disables; when both
+    are given, the disable wins (fail closed). Otherwise None, letting
+    the config file / environment decide (default: off).
+    """
+    if getattr(args, "no_fallback", False):
+        return False
+    if getattr(args, "fallback", False):
+        return True
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -551,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
                     resolve_fallback_chain(
                         provider_cfg.name,
                         config,
-                        enabled=False if args.no_fallback else None,
+                        enabled=_fallback_enabled(args),
                     ),
                     on_switch=_fallback_notice,
                     provider_cls=Provider,
@@ -704,7 +722,7 @@ def main(argv: list[str] | None = None) -> int:
         resolve_fallback_chain(
             provider_cfg.name,
             config,
-            enabled=False if args.no_fallback else None,
+            enabled=_fallback_enabled(args),
         ),
         on_switch=_fallback_notice,
         provider_cls=Provider,

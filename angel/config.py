@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 import os
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -20,7 +21,7 @@ DEFAULT_CONFIG = {
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
-    "fallback_enabled": True,  # 主模型可恢复失败时自动切换备用模型。
+    "fallback_enabled": False,  # 默认关闭：模型自动兜底只由用户自己开启。
     "fallback_providers": ["deepseek", "xai", "ollama"],
     # 自定义 provider：名字 -> {base_url, default_model, env_key?, models?, allowed_hosts?}。
     # 任意走 OpenAI /v1/chat/completions 协议的模型都能接；Key 只从环境变量读。
@@ -367,12 +368,19 @@ def resolve_fallback_chain(
 ) -> list[str]:
     """Return the ordered provider names to try: primary first, then fallbacks.
 
-    Returns [primary_name] when fallback is disabled. Precedence for the
+    Returns [primary_name] when fallback is disabled. Fallback is OFF by
+    default: it only turns on when the user explicitly enables it — config
+    `fallback_enabled: true`, the `--fallback` CLI flag, or the
+    ANGEL_FALLBACK env var (1/true/yes/on enables). Precedence for the
     on/off switch: explicit `enabled` argument, ANGEL_FALLBACK env
-    (0/false/no/off disables), config `fallback_enabled`, default True.
+    (0/false/no/off disables), config `fallback_enabled`, default False.
     Chain order: ANGEL_FALLBACK_PROVIDERS env (comma-separated),
     config `fallback_providers`, default ["deepseek", "xai", "ollama"].
-    Unknown names are skipped; the primary is always first.
+    The allowlist is exactly `fallback_providers`: only names listed
+    there may be switched to, and an explicitly empty list means no
+    fallback at all (the built-in default is used only when the key is
+    absent). Unknown names are skipped and logged to stderr; the primary
+    is always first.
     """
     cfg = config if config is not None else load_config()
 
@@ -381,7 +389,7 @@ def resolve_fallback_chain(
         if env_flag is not None:
             enabled = env_flag.strip().lower() not in ("0", "false", "no", "off")
         else:
-            enabled = cfg.get("fallback_enabled", True)
+            enabled = cfg.get("fallback_enabled", False)
             if isinstance(enabled, str):
                 enabled = enabled.strip().lower() not in (
                     "0",
@@ -392,16 +400,28 @@ def resolve_fallback_chain(
     if not enabled:
         return [primary_name]
 
-    chain_names = cfg.get("fallback_providers") or ["deepseek", "xai", "ollama"]
+    configured_chain = cfg.get("fallback_providers")
+    if configured_chain is None:
+        chain_names = ["deepseek", "xai", "ollama"]
+    else:
+        chain_names = list(configured_chain)
     env_chain = os.environ.get("ANGEL_FALLBACK_PROVIDERS")
     if env_chain is not None:
         chain_names = [p.strip() for p in env_chain.split(",") if p.strip()]
 
     known = known_provider_names(cfg)
     names = [primary_name]
+    skipped = []
     for name in chain_names:
         if name in known and name not in names:
             names.append(name)
+        elif name not in known:
+            skipped.append(name)
+    if skipped:
+        print(
+            f"兜底允许列表里跳过了未知 provider：{', '.join(skipped)}",
+            file=sys.stderr,
+        )
     return names
 
 

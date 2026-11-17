@@ -171,7 +171,15 @@ def run_json(args) -> int:
                 resolve_fallback_chain(
                     provider_config.name,
                     config,
-                    enabled=False if getattr(args, "no_fallback", False) else None,
+                    enabled=(
+                        True
+                        if getattr(args, "fallback", False)
+                        else (
+                            False
+                            if getattr(args, "no_fallback", False)
+                            else None
+                        )
+                    ),
                 ),
                 on_switch=lambda record: out.emit("model_switch", **record),
                 provider_cls=Provider,

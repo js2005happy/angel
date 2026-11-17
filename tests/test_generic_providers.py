@@ -244,12 +244,14 @@ class TestCustomProviders(unittest.TestCase):
 class TestFallbackChainWithCustom(unittest.TestCase):
     def test_chain_includes_custom_names(self):
         cfg = _custom_config()
+        cfg["fallback_enabled"] = True
         cfg["fallback_providers"] = ["myllm", "deepseek"]
         chain = resolve_fallback_chain("myllm", cfg)
         self.assertEqual(chain, ["myllm", "deepseek"])
 
     def test_chain_skips_unknown_names(self):
         cfg = _custom_config()
+        cfg["fallback_enabled"] = True
         cfg["fallback_providers"] = ["nope", "deepseek"]
         chain = resolve_fallback_chain("deepseek", cfg)
         self.assertEqual(chain, ["deepseek"])

@@ -45,6 +45,13 @@
       const who = entry.sender === "user" ? "你" : (labels[entry.sender] || entry.sender);
       box.append(node("div", who + " · " + (entry.time || ""), "speaker"));
       box.append(node("div", entry.content, "content"));
+      if (entry.model_switches && entry.model_switches.length) {
+        const note = entry.model_switches.map(s =>
+          "模型已切换：" + s.from + " → " + s.to +
+          (s.error ? "（" + String(s.error).slice(0, 60) + "）" : "")
+        ).join("；");
+        box.append(node("div", note, "switch-note"));
+      }
       messages.append(box);
     }
     messages.scrollTop = messages.scrollHeight;

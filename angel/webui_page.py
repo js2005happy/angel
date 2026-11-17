@@ -103,6 +103,7 @@ main{min-height:0;min-width:0}
 .yes,.no{border-radius:8px;padding:6px 14px;font-weight:600;cursor:pointer;border:1px solid}
 .yes{background:var(--ok);border-color:var(--ok);color:#fff}.no{background:var(--surface);border-color:var(--bad);color:var(--bad)}
 .err-line{max-width:760px;margin:0 auto 12px;color:var(--bad);font-size:13px;padding-left:36px}
+.switch-line{max-width:760px;margin:0 auto 12px;color:var(--accent);font-size:13px;padding-left:36px}
 .composer{border-top:1px solid var(--line);padding:12px clamp(14px,4vw,48px) 14px;background:var(--bg)}
 .box{max-width:760px;margin:0 auto;display:flex;gap:8px;align-items:flex-end;border:1px solid var(--line);background:var(--surface);border-radius:14px;padding:8px}
 .box:focus-within{border-color:var(--accent)}
@@ -236,19 +237,9 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
     <div class="view" id="view-schedule">
       <div class="page" style="max-width:820px;margin:0 auto">
         <h2>定时任务</h2>
-        <p class="sub">任务存在 <code>~/.angel/schedule.json</code>，由 <code>angel schedule daemon</code> 守护进程执行；这里只做查看、开关与添加，执行仍需 daemon 在运行。</p>
+        <p class="sub">任务存在 <code>~/.angel/schedule.json</code>，由 <code>angel schedule daemon</code> 守护进程执行；这里只做查看、开关与删除，执行仍需 daemon 在运行。</p>
         <div id="sched-list"><div class="empty">加载中…</div></div>
-        <h3>添加任务</h3>
-        <form class="form-row" id="sched-form">
-          <input id="sched-name" required maxlength="80" placeholder="任务名">
-          <input id="sched-prompt" required maxlength="500" placeholder="要执行的任务（prompt）" style="flex:2">
-          <select id="sched-kind" aria-label="执行方式"><option value="at">每天固定时间</option><option value="every">每隔一段时间</option></select>
-          <input id="sched-when" required maxlength="20" placeholder="08:30" style="flex:0 0 110px">
-          <select id="sched-mode" aria-label="审批模式"><option value="auto">审批模式</option><option value="full">完整模式</option><option value="readonly">只读</option></select>
-          <select id="sched-provider" aria-label="Provider（可选，默认用当前）"></select>
-          <input id="sched-model" maxlength="180" placeholder="模型（可选）" style="flex:0 0 150px">
-          <button class="btn-primary" type="submit">添加</button>
-        </form>
+        <p class="hint">网页端新建定时任务暂缓开放，等任务队列合并（E）后恢复；请用 <code>angel schedule add</code> 命令添加。</p>
         <p class="hint" id="sched-status" role="status"></p>
       </div>
     </div>
@@ -297,6 +288,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
           <span class="hint" id="provider-status" style="margin:0" role="status"></span>
         </div>
         <p class="hint" style="margin:0 0 8px">切换后立即生效：新会话使用新 provider，已有会话保持原 provider；重启界面后恢复配置文件中的设置。</p>
+        <p class="hint" style="margin:0 0 8px">模型自动兜底默认关闭：主模型失败时不会自动换备用模型。开启方式：<code>~/.angel/config.json</code> 里设 <code>"fallback_enabled": true</code>，或启动时加 <code>--fallback</code>；只切换到 <code>fallback_providers</code> 允许列表里的服务商，队列与定时任务里不切换。发生切换时会在对话流里显示。</p>
         <div class="form-row" style="margin-bottom:8px">
           <label style="font-size:13px">审批模式</label>
           <div class="seg" id="mode-seg">
@@ -430,6 +422,7 @@ function applyEvent(ev){var d=ev.data||{};
   else if(ev.type==="tool_start")toolCard(d.id,d.name,d.arguments);
   else if(ev.type==="tool_result")setResult(findCard(d.id),d.result);
   else if(ev.type==="approval")approvalBox($("log").querySelector(".tool:last-of-type"),d);
+  else if(ev.type==="model_switch"){var n=el("div","switch-line");var why=(d.error||"").slice(0,60);n.textContent="模型已切换："+d.from+" → "+d.to+(why?"（"+why+"）":"");$("log").appendChild(n);loadInfo().catch(function(){})}
   else if(ev.type==="approval_result"){var b=$("log").querySelector('.approve[data-aid="'+d.id+'"]');if(b){b.querySelector("p").textContent=d.approved?"已批准":(d.timeout?"审批超时，已拒绝":"已拒绝");b.querySelectorAll("button").forEach(function(x){x.remove()})}}
 }
 function scrollEnd(){var l=$("log");l.scrollTop=l.scrollHeight}
@@ -502,14 +495,12 @@ function loadInfo(){return api("/api/info").then(function(i){state.info=i;$("ver
   var k=$("keys");k.innerHTML="";i.keys.forEach(function(x){var tr=el("tr");var st=x.env?(x.configured?"✓ 已配置":(x.connector?"未设置（可用已保存连接器）":(x.needs_key?"未设置":"无需 Key"))):"无需 Key";
     [x.provider,x.env||"—",st].forEach(function(v){tr.appendChild(el("td")).textContent=v});k.appendChild(tr)});
   var ps=$("provider-select");ps.innerHTML="";(i.providers||[]).forEach(function(pr){var o=el("option");o.value=pr.name;o.textContent=pr.name+(pr.default_model?" · "+pr.default_model:" · 自定义");if(pr.name===i.provider)o.selected=true;ps.appendChild(o)});
-  fillModelList();fillSchedProvider();
+  fillModelList();
   syncModeSeg(i.mode)})}
 function syncModeSeg(mode){document.querySelectorAll("#mode-seg button").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)})}
 function fillModelList(){var ps=$("provider-select");if(!ps)return;var name=ps.value;var pr=null;(state.info.providers||[]).forEach(function(p){if(p.name===name)pr=p});
   var dl=$("model-list");dl.innerHTML="";(pr&&pr.models||[]).forEach(function(m){var o=document.createElement("option");o.value=m;dl.appendChild(o)});
   var mi=$("model-input");if(mi&&!mi.dataset.touched)mi.value=(name===state.info.provider)?(state.info.model||(pr?pr.default_model||"":"")):(pr?pr.default_model||"":"")}
-function fillSchedProvider(){var sp=$("sched-provider");if(!sp)return;var cur=sp.value;sp.innerHTML="";var o0=el("option");o0.value="";o0.textContent="默认 provider";sp.appendChild(o0);
-  (state.info.providers||[]).forEach(function(pr){var o=el("option");o.value=pr.name;o.textContent=pr.name;sp.appendChild(o)});sp.value=cur||""}
 function loadSkills(){if(!state.info)return Promise.resolve();var i=state.info;
   var sl=$("skills-list");sl.innerHTML="";
   if(!(i.skills||[]).length)sl.innerHTML='<div class="empty">没有可用技能。</div>';
@@ -517,7 +508,7 @@ function loadSkills(){if(!state.info)return Promise.resolve();var i=state.info;
   var g=$("tools-grid");g.innerHTML="";$("tool-count").textContent=String((i.tools||[]).length);
   i.tools.forEach(function(t){var d=el("div","toolcard");d.innerHTML="<b></b> <span class='st "+(t.needs_approval?"wait":"ok")+"'>"+(t.needs_approval?"需批准":"只读")+"</span><p></p>";d.querySelector("b").textContent=t.name;d.querySelector("p").textContent=t.description||"";g.appendChild(d)})}
 function loadSchedule(){return api("/api/schedule").then(function(r){var box=$("sched-list");box.innerHTML="";
-  if(!r.tasks.length){box.innerHTML='<div class="empty">还没有定时任务。用下面的表单添加，或用 <code>angel schedule add</code> 命令添加。</div>';return}
+  if(!r.tasks.length){box.innerHTML='<div class="empty">还没有定时任务。用 <code>angel schedule add</code> 命令添加。</div>';return}
   r.tasks.forEach(function(t){var row=el("div","sched-row");
     var grow=el("div","grow");var b=el("b");b.textContent=t.name;grow.appendChild(b);
     var parts=[t.at?("每天 "+t.at):(t.every_seconds?("每 "+Math.round(t.every_seconds/60)+" 分钟"):""),t.mode+"模式"];
@@ -572,15 +563,6 @@ $("tab-evidence").onclick=function(){$("tab-evidence").classList.add("active");$
 $("tab-status").onclick=function(){$("tab-status").classList.add("active");$("tab-evidence").classList.remove("active");$("pane-status").hidden=false;$("pane-evidence").hidden=true};
 $("mascot-bunny").onclick=function(){setMascot("bunny")};
 $("mascot-bear").onclick=function(){setMascot("bear")};
-$("sched-form").addEventListener("submit",function(e){e.preventDefault();
-  var kind=$("sched-kind").value,when=$("sched-when").value.trim();
-  var task={name:$("sched-name").value.trim(),prompt:$("sched-prompt").value.trim(),mode:$("sched-mode").value};
-  if(kind==="at")task.at=when;else task.every_seconds=parseInt(when,10)*60;
-  var sprov=$("sched-provider").value;if(sprov)task.provider=sprov;
-  var smod=$("sched-model").value.trim();if(smod)task.model=smod;
-  if(kind==="every"&&!(task.every_seconds>0)){$("sched-status").textContent="间隔请填分钟数（正整数）。";return}
-  api("/api/schedule",{method:"POST",body:JSON.stringify({action:"add",task:task})}).then(function(){ $("sched-status").textContent="已添加。";$("sched-form").reset();loadSchedule()}).catch(function(err){$("sched-status").textContent="添加失败："+err.message})});
-$("sched-kind").addEventListener("change",function(){var w=$("sched-when");w.placeholder=this.value==="every"?"分钟数，如 30":"08:30"});
 try{var saved=localStorage.getItem("angel-mascot");if(saved==="bear"||saved==="bunny")state.mascot=saved}catch(e){}
 setMascot(state.mascot);
 renderSwatches();

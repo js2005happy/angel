@@ -127,7 +127,11 @@ class GroupChatTest(unittest.TestCase):
         )
         backup = ScriptedProvider("xai", "grok-4.3", ["备用模型答复"])
         fakes = {"deepseek": primary, "xai": backup}
-        config = {"fallback_providers": ["xai"], "profiles": {}}
+        config = {
+            "fallback_enabled": True,
+            "fallback_providers": ["xai"],
+            "profiles": {},
+        }
         bot = Bot(
             "lead", "组长", "拆分任务", "先确认目标。",
             provider="deepseek", model="deepseek-flash",
@@ -146,6 +150,36 @@ class GroupChatTest(unittest.TestCase):
             self.assertEqual(provider.name, "xai")
             self.assertEqual(primary.calls, 1)
             self.assertEqual(backup.calls, 1)
+
+    def test_bot_entry_carries_model_switches(self):
+        from angel.providers import FallbackProvider, ProviderError
+
+        def reply(content):
+            return {"choices": [{"message": {
+                "role": "assistant", "content": content,
+            }}]}
+
+        primary = ScriptedProvider(
+            "deepseek", "deepseek-flash",
+            [ProviderError("余额不足", status=402, kind="quota")],
+        )
+        backup = ScriptedProvider("xai", "grok-4.3", [reply("备用模型答复")])
+
+        def make_chain(bot):
+            return FallbackProvider([primary, backup])
+
+        store = GroupStore(self.root / "groups", provider_factory=make_chain)
+        store.create("dev", "开发群")
+        result = store.send("dev", "@lead 请回答")
+        bot_entries = [m for m in result["messages"] if m["sender"] == "lead"]
+        self.assertEqual(len(bot_entries), 1)
+        self.assertEqual(bot_entries[0]["content"], "备用模型答复")
+        switches = bot_entries[0].get("model_switches", [])
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0]["from"], "deepseek")
+        self.assertEqual(switches[0]["to"], "xai")
+        # The user entry carries no switch record.
+        self.assertNotIn("model_switches", result["messages"][0])
 
     def test_history_and_sessions_survive_store_recreation(self):
         self.store.create("dev", "开发群")

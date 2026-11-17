@@ -131,7 +131,7 @@ class JsonModeTests(unittest.TestCase):
         )
         code, events, _, _ = self.run_json(
             ["task"],
-            config={"fallback_providers": ["xai"]},
+            config={"fallback_enabled": True, "fallback_providers": ["xai"]},
             provider_factory=lambda cfg: fakes[cfg.name],
             resolver=self._chain_resolver,
         )
@@ -160,7 +160,7 @@ class JsonModeTests(unittest.TestCase):
         )
         code, events, _, _ = self.run_json(
             ["task"],
-            config={"fallback_providers": ["xai"]},
+            config={"fallback_enabled": True, "fallback_providers": ["xai"]},
             provider_factory=lambda cfg: fakes[cfg.name],
             resolver=self._chain_resolver,
         )
@@ -178,6 +178,39 @@ class JsonModeTests(unittest.TestCase):
         )
         code, events, _, _ = self.run_json(
             ["--no-fallback", "task"],
+            config={"fallback_enabled": True, "fallback_providers": ["xai"]},
+            provider_factory=lambda cfg: fakes[cfg.name],
+            resolver=self._chain_resolver,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(primary.calls, 1)
+        self.assertEqual(backup.calls, 0)
+        self.assertNotIn("model_switch", [event["type"] for event in events])
+
+    def test_json_fallback_flag_enables_switching(self):
+        # Default is off: only an explicit --fallback turns it on.
+        fakes, primary, backup = self._chain_fakes(
+            [ProviderError("余额不足", status=402, kind="quota")],
+            [assistant("备用模型答复")],
+        )
+        code, events, _, _ = self.run_json(
+            ["--fallback", "task"],
+            config={"fallback_providers": ["xai"]},
+            provider_factory=lambda cfg: fakes[cfg.name],
+            resolver=self._chain_resolver,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(primary.calls, 1)
+        self.assertEqual(backup.calls, 1)
+        self.assertIn("model_switch", [event["type"] for event in events])
+
+    def test_json_default_off_does_not_switch(self):
+        fakes, primary, backup = self._chain_fakes(
+            [ProviderError("余额不足", status=402, kind="quota")],
+            [assistant("不该被调用")],
+        )
+        code, events, _, _ = self.run_json(
+            ["task"],
             config={"fallback_providers": ["xai"]},
             provider_factory=lambda cfg: fakes[cfg.name],
             resolver=self._chain_resolver,

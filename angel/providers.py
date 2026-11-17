@@ -393,9 +393,12 @@ def build_provider_chain(
 
     `primary_cfg` is the resolved ProviderConfig for the primary provider;
     `chain_names` is the ordered provider names from resolve_fallback_chain
-    (primary first). Fallback entries use their own default models. Unknown
-    or unresolvable names are skipped; with a single provider left, the
-    plain Provider is returned unchanged.
+    (primary first). Fallback entries use their own default models. Unknown,
+    unresolvable, or credential-less names are skipped and logged to
+    stderr — nothing outside the allowlist is silently substituted in;
+    with a single provider left, the plain Provider is returned unchanged.
+    The primary itself is never skipped here: callers gate on its
+    credentials before the first call.
 
     `provider_cls` / `resolver` default to the real Provider /
     resolve_provider; callers pass their own namespace bindings so tests
@@ -406,9 +409,21 @@ def build_provider_chain(
     providers = [provider_cls(primary_cfg)]
     for name in chain_names[1:]:
         try:
-            providers.append(provider_cls(resolver(name)))
-        except (ValueError, ProviderError):
+            candidate = provider_cls(resolver(name))
+        except (ValueError, ProviderError) as exc:
+            print(
+                f"兜底允许列表里跳过了无法解析的 provider {name}：{exc}",
+                file=sys.stderr,
+            )
             continue
+        has = getattr(candidate, "has_credentials", None)
+        if callable(has) and not has():
+            print(
+                f"兜底允许列表里跳过了未配置 Key 的 provider {name}",
+                file=sys.stderr,
+            )
+            continue
+        providers.append(candidate)
     if len(providers) == 1:
         return providers[0]
     return FallbackProvider(providers, on_switch=on_switch)

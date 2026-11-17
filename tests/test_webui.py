@@ -198,7 +198,11 @@ class TokenAndHostTests(WebUITestCase):
         )
         backup = ScriptedProvider("xai", "grok-4.3", [reply("备用模型答复")])
         fakes = {"deepseek": primary, "xai": backup}
-        config = {"fallback_providers": ["xai"], "profiles": {}}
+        config = {
+            "fallback_enabled": True,
+            "fallback_providers": ["xai"],
+            "profiles": {},
+        }
 
         class _ProviderFactory:
             """Stand-in for webui.Provider: returns scripted fakes by name.
@@ -234,6 +238,98 @@ class TokenAndHostTests(WebUITestCase):
             self.assertEqual(len(info.get("model_switches", [])), 1)
             self.assertEqual(info["model_switches"][0]["from"], "deepseek")
             self.assertEqual(info["model_switches"][0]["to"], "xai")
+
+    def test_default_provider_does_not_switch(self):
+        from types import SimpleNamespace
+
+        from angel.providers import FallbackProvider, ProviderError
+
+        primary = ScriptedProvider(
+            "deepseek", "deepseek-flash",
+            [ProviderError("余额不足", status=402, kind="quota")],
+        )
+        backup = ScriptedProvider("xai", "grok-4.3", [reply("备用模型答复")])
+        fakes = {"deepseek": primary, "xai": backup}
+        # No fallback_enabled key: the default is off.
+        config = {"fallback_providers": ["xai"], "profiles": {}}
+
+        class _ProviderFactory:
+            def __new__(cls, cfg):
+                return fakes[cfg.name]
+
+        with mock.patch.object(webui, "load_config", return_value=config), \
+            mock.patch.object(webui, "resolve_profile", return_value={
+                "provider": "deepseek", "model": "deepseek-flash", "mode": "auto",
+            }), \
+            mock.patch.object(webui, "resolve_provider", side_effect=(
+                lambda name, model=None: SimpleNamespace(
+                    name=name, model=model or f"{name}-model")
+            )), \
+            mock.patch.object(webui, "Provider", new=_ProviderFactory):
+            state = webui.UIState(self.workdir, mode="auto", max_turns=6)
+            provider = state.provider()
+            self.assertNotIsInstance(provider, FallbackProvider)
+            with self.assertRaises(ProviderError):
+                provider.chat([{"role": "user", "content": "hi"}])
+            self.assertEqual(primary.calls, 1)
+            self.assertEqual(backup.calls, 0)
+
+    def test_model_switch_event_appears_in_session_poll(self):
+        from types import SimpleNamespace
+
+        from angel.providers import ProviderError
+
+        primary = ScriptedProvider(
+            "deepseek", "deepseek-flash",
+            [ProviderError("余额不足", status=402, kind="quota")],
+        )
+        backup = ScriptedProvider("xai", "grok-4.3", [reply("备用模型答复")])
+        fakes = {"deepseek": primary, "xai": backup}
+        config = {
+            "fallback_enabled": True,
+            "fallback_providers": ["xai"],
+            "profiles": {},
+        }
+
+        class _ProviderFactory:
+            def __new__(cls, cfg):
+                return fakes[cfg.name]
+
+        with mock.patch.object(webui, "load_config", return_value=config), \
+            mock.patch.object(webui, "resolve_profile", return_value={
+                "provider": "deepseek", "model": "deepseek-flash", "mode": "auto",
+            }), \
+            mock.patch.object(webui, "resolve_provider", side_effect=(
+                lambda name, model=None: SimpleNamespace(
+                    name=name, model=model or f"{name}-model")
+            )), \
+            mock.patch.object(webui, "Provider", new=_ProviderFactory):
+            state = webui.UIState(self.workdir, mode="auto", max_turns=6)
+            server = webui.make_server(
+                "127.0.0.1", 0, state, warn_stream=io.StringIO()
+            )
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.servers.append(server)
+            self.state = state
+            self.base = f"http://127.0.0.1:{server.server_address[1]}"
+            status, created = self.get_json("/api/sessions", method="POST", body={})
+            self.assertEqual(status, 201)
+            sid = created["id"]
+            status, _ = self.get_json(
+                f"/api/sessions/{sid}/messages",
+                method="POST", body={"text": "打个招呼"},
+            )
+            self.assertEqual(status, 202)
+            view = self.wait_for(sid, lambda v: v["status"] == "done")
+            switches = [
+                e for e in view["events"] if e["type"] == "model_switch"
+            ]
+            self.assertEqual(len(switches), 1)
+            self.assertEqual(switches[0]["data"]["from"], "deepseek")
+            self.assertEqual(switches[0]["data"]["to"], "xai")
+            self.assertEqual(
+                view["messages"][1]["content"], "备用模型答复"
+            )
 
     def test_foreign_host_header_rejected(self):
         self.start()
@@ -506,13 +602,23 @@ class UIv2Tests(WebUITestCase):
             self.start()
             status, data = self.get_json("/api/schedule")
             self.assertEqual((status, data["tasks"]), (200, []))
-            status, added = self.get_json("/api/schedule", method="POST", body={
+            # Web add is paused until the task queue (E) merges: 409,
+            # and nothing is stored.
+            status, body = self.get_json("/api/schedule", method="POST", body={
                 "action": "add",
                 "task": {"name": "t1", "prompt": "做点事", "at": "09:00"},
             })
-            self.assertEqual(status, 201)
-            self.assertEqual(added["task"]["name"], "t1")
-            self.assertTrue(added["task"]["enabled"])
+            self.assertEqual(status, 409)
+            self.assertIn("暂缓开放", body.get("error", ""))
+            status, data = self.get_json("/api/schedule")
+            self.assertEqual(data["tasks"], [])
+            # Toggle/remove/list still work for tasks added another way
+            # (e.g. `angel schedule add`).
+            data = scheduler_module.load_schedule()
+            scheduler_module.add_task(
+                data, {"name": "t1", "prompt": "做点事", "at": "09:00"}
+            )
+            scheduler_module.save_schedule(data)
             status, toggled = self.get_json("/api/schedule", method="POST", body={
                 "action": "toggle", "name": "t1",
             })
@@ -524,11 +630,6 @@ class UIv2Tests(WebUITestCase):
             self.assertEqual((status, removed["ok"]), (200, True))
             status, data = self.get_json("/api/schedule")
             self.assertEqual(data["tasks"], [])
-            status, _ = self.get_json("/api/schedule", method="POST", body={
-                "action": "add",
-                "task": {"name": "bad", "prompt": "x"},
-            })
-            self.assertEqual(status, 400)
             status, _ = self.get_json("/api/schedule", method="POST", body={
                 "action": "remove", "name": "nope",
             })
@@ -605,9 +706,13 @@ class UIv2Tests(WebUITestCase):
         self.assertIn('id="apply-provider"', html_text)
         self.assertIn('id="provider-status"', html_text)
         self.assertIn("已有会话保持原 provider", html_text)
-        # Schedule form has optional provider/model fields.
-        self.assertIn('id="sched-provider"', html_text)
-        self.assertIn('id="sched-model"', html_text)
+        # Schedule add form is paused until the task queue (E) merges:
+        # no form in the page, a notice instead.
+        self.assertNotIn('id="sched-form"', html_text)
+        self.assertNotIn('id="sched-provider"', html_text)
+        self.assertNotIn('id="sched-model"', html_text)
+        self.assertIn("暂缓开放", html_text)
+        self.assertIn("任务队列合并", html_text)
         # Group "open" links carry the room id for deep-linking.
         self.assertIn("&room=", html_text)
 
@@ -626,14 +731,25 @@ class UIv2Tests(WebUITestCase):
             scheduler_module, "SCHEDULE_PATH", self.home / "schedule.json"
         ):
             self.start()
-            status, added = self.get_json("/api/schedule", method="POST", body={
+            # Web add is paused until the task queue (E) merges, even
+            # with provider/model attached: 409, nothing stored.
+            status, body = self.get_json("/api/schedule", method="POST", body={
                 "action": "add",
                 "task": {"name": "t2", "prompt": "做点事", "at": "09:00",
                          "provider": "ollama", "model": "qwen2.5:7b"},
             })
-            self.assertEqual(status, 201)
-            self.assertEqual(added["task"]["provider"], "ollama")
-            self.assertEqual(added["task"]["model"], "qwen2.5:7b")
+            self.assertEqual(status, 409)
+            self.assertIn("暂缓开放", body.get("error", ""))
+            status, data = self.get_json("/api/schedule")
+            self.assertEqual(data["tasks"], [])
+            # Provider/model still round-trip when the task is added
+            # another way (e.g. `angel schedule add`).
+            stored = scheduler_module.load_schedule()
+            scheduler_module.add_task(
+                stored, {"name": "t2", "prompt": "做点事", "at": "09:00",
+                         "provider": "ollama", "model": "qwen2.5:7b"}
+            )
+            scheduler_module.save_schedule(stored)
             status, data = self.get_json("/api/schedule")
             self.assertEqual(data["tasks"][0]["provider"], "ollama")
             self.assertEqual(data["tasks"][0]["model"], "qwen2.5:7b")

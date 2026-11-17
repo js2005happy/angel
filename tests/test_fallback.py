@@ -264,13 +264,49 @@ class BuildProviderChainTest(unittest.TestCase):
         self.assertNotIsInstance(provider, FallbackProvider)
 
     def test_multiple_providers_returns_fallback_provider(self):
-        with mock.patch.dict(os.environ, {}, clear=False):
+        with mock.patch.dict(
+            os.environ, {"XAI_API_KEY": "test-key"}, clear=False
+        ):
             provider = build_provider_chain(
                 self._primary_cfg(), ["deepseek", "xai", "ollama"]
             )
         self.assertIsInstance(provider, FallbackProvider)
         self.assertEqual(
             [p.name for p in provider.providers], ["deepseek", "xai", "ollama"]
+        )
+
+    def test_fallback_without_credentials_is_skipped(self):
+        # A fallback entry that reports no credentials is skipped (and
+        # logged), not silently replaced by anything else. Fakes keep the
+        # test independent of ambient connector credentials.
+        class Fake:
+            def __init__(self, cfg):
+                self.name = cfg.name
+                self.model = cfg.model
+
+            def has_credentials(self):
+                return self.name != "xai"
+
+        def fake_resolver(name, model=None):
+            return ProviderConfig(
+                name=name,
+                base_url=f"https://{name}.example.com/v1",
+                model=f"{name}-model",
+                api_key=None,
+                auth="none",
+                connector_name=None,
+                allowed_hosts=[],
+            )
+
+        provider = build_provider_chain(
+            self._primary_cfg(),
+            ["deepseek", "xai", "ollama"],
+            provider_cls=Fake,
+            resolver=fake_resolver,
+        )
+        self.assertIsInstance(provider, FallbackProvider)
+        self.assertEqual(
+            [p.name for p in provider.providers], ["deepseek", "ollama"]
         )
 
     def test_unknown_names_are_skipped(self):
@@ -321,16 +357,25 @@ class BuildProviderChainTest(unittest.TestCase):
 
 
 class ResolveFallbackChainTest(unittest.TestCase):
-    def test_default_chain_for_deepseek(self):
+    def test_default_is_off(self):
+        # Fallback is off by default: no config key, no env, no flag.
         chain = resolve_fallback_chain("deepseek", config={})
+        self.assertEqual(chain, ["deepseek"])
+
+    def test_config_enables_fallback(self):
+        chain = resolve_fallback_chain(
+            "deepseek",
+            config={"fallback_enabled": True},
+        )
         self.assertEqual(chain, ["deepseek", "xai", "ollama"])
 
     def test_primary_first_for_other_providers(self):
         self.assertEqual(
-            resolve_fallback_chain("xai", config={}), ["xai", "deepseek", "ollama"]
+            resolve_fallback_chain("xai", config={"fallback_enabled": True}),
+            ["xai", "deepseek", "ollama"],
         )
         self.assertEqual(
-            resolve_fallback_chain("ollama", config={}),
+            resolve_fallback_chain("ollama", config={"fallback_enabled": True}),
             ["ollama", "deepseek", "xai"],
         )
 
@@ -343,13 +388,29 @@ class ResolveFallbackChainTest(unittest.TestCase):
     def test_config_chain_order(self):
         chain = resolve_fallback_chain(
             "deepseek",
-            config={"fallback_providers": ["ollama", "xai"]},
+            config={
+                "fallback_enabled": True,
+                "fallback_providers": ["ollama", "xai"],
+            },
         )
         self.assertEqual(chain, ["deepseek", "ollama", "xai"])
 
+    def test_explicit_empty_allowlist_means_primary_only(self):
+        # An explicitly empty fallback_providers list must NOT silently
+        # fall back to the built-in default list.
+        chain = resolve_fallback_chain(
+            "deepseek",
+            config={"fallback_enabled": True, "fallback_providers": []},
+        )
+        self.assertEqual(chain, ["deepseek"])
+
     def test_unknown_names_in_config_are_skipped(self):
         chain = resolve_fallback_chain(
-            "deepseek", config={"fallback_providers": ["nope", "xai"]}
+            "deepseek",
+            config={
+                "fallback_enabled": True,
+                "fallback_providers": ["nope", "xai"],
+            },
         )
         self.assertEqual(chain, ["deepseek", "xai"])
 
@@ -358,11 +419,18 @@ class ResolveFallbackChainTest(unittest.TestCase):
             chain = resolve_fallback_chain("deepseek", config={})
         self.assertEqual(chain, ["deepseek"])
 
+    def test_env_enables_fallback(self):
+        with mock.patch.dict(os.environ, {"ANGEL_FALLBACK": "1"}):
+            chain = resolve_fallback_chain("deepseek", config={})
+        self.assertEqual(chain, ["deepseek", "xai", "ollama"])
+
     def test_env_overrides_chain(self):
         with mock.patch.dict(
             os.environ, {"ANGEL_FALLBACK_PROVIDERS": "ollama, xai"}
         ):
-            chain = resolve_fallback_chain("deepseek", config={})
+            chain = resolve_fallback_chain(
+                "deepseek", config={"fallback_enabled": True}
+            )
         self.assertEqual(chain, ["deepseek", "ollama", "xai"])
 
     def test_explicit_enabled_argument_wins_over_env(self):
@@ -481,6 +549,68 @@ class AgentFallbackIntegrationTest(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0]["from"], "deepseek")
         self.assertEqual(seen[0]["to"], "xai")
+
+
+class CliFallbackFlagTest(unittest.TestCase):
+    def test_fallback_flag_precedence(self):
+        import angel.cli as cli_module
+
+        parser = cli_module.build_parser()
+        self.assertTrue(
+            cli_module._fallback_enabled(parser.parse_args(["--fallback", "hi"]))
+        )
+        self.assertFalse(
+            cli_module._fallback_enabled(parser.parse_args(["--no-fallback", "hi"]))
+        )
+        # Both flags: the disable wins (fail closed).
+        self.assertFalse(
+            cli_module._fallback_enabled(
+                parser.parse_args(["--fallback", "--no-fallback", "hi"])
+            )
+        )
+        self.assertIsNone(
+            cli_module._fallback_enabled(parser.parse_args(["hi"]))
+        )
+
+
+class ScheduledTaskNoFallbackTest(unittest.TestCase):
+    def test_scheduled_task_agent_uses_plain_provider(self):
+        # Even with fallback explicitly enabled in config, a scheduled
+        # task runs on the single provider it names: no chain, no switch.
+        from types import SimpleNamespace
+
+        import angel.cli as cli_module
+
+        tmp = Path(tempfile.mkdtemp())
+        config = {
+            "fallback_enabled": True,
+            "fallback_providers": ["xai", "ollama"],
+            "profiles": {},
+        }
+
+        class FakeProvider:
+            def __init__(self, cfg):
+                self.name = cfg.name
+                self.model = cfg.model
+
+            def has_credentials(self):
+                return True
+
+        with mock.patch.object(cli_module, "load_config", return_value=config), \
+            mock.patch.object(cli_module, "resolve_profile", return_value={
+                "provider": "deepseek", "model": "deepseek-flash",
+                "mode": "auto",
+            }), \
+            mock.patch.object(cli_module, "resolve_provider", side_effect=(
+                lambda name, model=None: SimpleNamespace(
+                    name=name, model=model or f"{name}-model")
+            )), \
+            mock.patch.object(cli_module, "Provider", new=FakeProvider):
+            agent = cli_module._make_task_agent(
+                {"name": "t1", "prompt": "做点事", "at": "09:00"}, tmp
+            )
+        self.assertNotIsInstance(agent.provider, FallbackProvider)
+        self.assertEqual(agent.provider.name, "deepseek")
 
 
 if __name__ == "__main__":

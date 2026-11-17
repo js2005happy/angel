@@ -308,15 +308,15 @@ Key 只从环境变量或已保存的连接器读取，**绝不会**打印、记
 
 ### 模型自动兜底
 
-主模型调用失败时，Angel 会自动按链切换到下一个模型重试一次，不用手动换模型。默认链是 DeepSeek flash → Grok → 本地 Ollama（主模型始终排第一，每次调用都从主模型开始试）。
+主模型调用失败时，Angel 可以自动按链切换到下一个模型重试一次，不用手动换模型。默认链是 DeepSeek flash → Grok → 本地 Ollama（主模型始终排第一，每次调用都从主模型开始试）。
 
 - 会兜底的失败：余额不足（402）、限流（429）、服务端错误（5xx）、超时、网络错误。
 - 不会兜底的失败：认证失败（401/403，换模型也解决不了）、配置问题（没设 Key、响应无法解析等）。
-- 每次切换都会在终端打印一条明确提示（走 stderr，一次性任务的 stdout 仍只有答案），例如：`模型切换：ollama 失败（网络错误……），已切换到 deepseek 继续`。
-- 默认开启。关闭方式（三选一）：`~/.angel/config.json` 里设 `"fallback_enabled": false`；环境变量 `ANGEL_FALLBACK=0`；单次加 `--no-fallback`。
-- 改链：`~/.angel/config.json` 里设 `"fallback_providers": ["deepseek", "xai", "ollama"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="deepseek,xai,ollama"`（逗号分隔，主模型自动排第一，未知名字会被跳过）。备用模型用各自的默认模型；自定义 provider 的名字也可以写进链里。
+- **默认关闭**，只由用户自己开启（三选一）：`~/.angel/config.json` 里设 `"fallback_enabled": true`；环境变量 `ANGEL_FALLBACK=1`；单次加 `--fallback`。关闭方式：`"fallback_enabled": false`、环境变量 `ANGEL_FALLBACK=0`，或单次加 `--no-fallback`（`--fallback` 与 `--no-fallback` 同时给时，以关闭为准）。
+- 允许列表：只切换到 `fallback_providers` 里列出的服务商。改链：`~/.angel/config.json` 里设 `"fallback_providers": ["deepseek", "xai", "ollama"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="deepseek,xai,ollama"`（逗号分隔，主模型自动排第一；未知名字会被跳过并记一条日志；显式写空列表表示不允许任何备用，不会静默补默认链）。链里写了未配置 Key 的服务商时也会被跳过并记日志。备用模型用各自的默认模型；自定义 provider 的名字也可以写进链里。
+- 每次切换都会明确提示：命令行走 stderr（一次性任务的 stdout 仍只有答案），例如：`模型切换：ollama 失败（网络错误……），已切换到 deepseek 继续`；`--json` 在输出里发 `model_switch` 事件；网页聊天流里出现一行“模型已切换：deepseek → xai（402 …）”并刷新模型卡；群聊里机器人的回复下方同样显示切换提示。
 - 全部备用模型都失败时，报错会列出每个模型失败的原因，不会静默失败。
-- 已接在命令行入口（交互 REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面和群聊：主模型遇可恢复失败时都按同一条链切换。`--json` 会在输出里如实写清最终用了哪个 provider（`run_started` 是起跑的主模型，`run_completed` / `run_incomplete` 是实际答复的模型，另有 `model_switch` 事件和 `model_switches` 列表）；网页界面的信息面板同样显示实际答复的模型与切换记录；群聊里切换提示写到服务端日志。定时任务仍用单个 provider（调度器正在另一路开发中，本轮未碰）。
+- 已接在命令行入口（交互 REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面和群聊：主模型遇可恢复失败时都按同一条链切换。`--json` 会在输出里如实写清最终用了哪个 provider（`run_started` 是起跑的主模型，`run_completed` / `run_incomplete` 是实际答复的模型，另有 `model_switch` 事件和 `model_switches` 列表）；网页界面的信息面板同样显示实际答复的模型与切换记录。定时任务与队列里不切换：定时任务仍用单个 provider（`cli.py` 的 `_make_task_agent` 直接构造 `Provider`，调度器正在另一路开发中，本轮未碰）。
 
 ## apply_patch 补丁编辑与 /diff
 
@@ -455,9 +455,9 @@ python3 -m angel ui --port 9000 --workdir ~/project --mode auto
 
 - **左栏**——品牌卡（毛绒小兔头像）与六视图导航（对话 / 技能与工具 / 定时任务 / 群聊 / 品牌与外观 / 设置），会话列表在对话视图内，可新建会话，也可点开历史会话继续。
 - **中栏：对话**——用户/助手消息（基本 Markdown 渲染），执行中轮询显示进度；每次工具调用是一张可折叠卡片（工具名、参数、结果摘要）。auto 模式下需要审批时卡片里出现“批准 / 拒绝”按钮，走的是和终端相同的审批门（`tools.py` 的 `_check_approval`），readonly / full 行为不变；10 分钟无人处理按拒绝处理。
-- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，Token 用量按 13 个 provider 预设 / 15 个内置工具更新。
+- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 13 个 provider 预设 / 15 个内置工具更新。
 - **技能与工具视图**——3 个内置技能与 15 个内置工具一览（每个工具标明是否需要审批）。
-- **定时任务视图**——读 `~/.angel/schedule.json`，可查看、添加、启用/停用、删除定时任务（走新增的 `/api/schedule`，只调 `scheduler.py` 的公开函数）；添加表单可填可选的 provider / 模型（不填用当前 provider），行里显示任务的 provider / 模型与上次运行时间、状态、摘要；“执行时间”按“每天 HH:MM / 每隔 N 分钟”切换提示。
+- **定时任务视图**——读 `~/.angel/schedule.json`，可查看、启用/停用、删除定时任务（走 `/api/schedule`，只调 `scheduler.py` 的公开函数）；网页端新建定时任务暂缓开放（等任务队列合并 E 后恢复，`POST /api/schedule` 的 add 返回 409），请用 `angel schedule add` 命令添加；行里显示任务的 provider / 模型与上次运行时间、状态、摘要。
 - **群聊视图**——群列表与“打开群聊页面”入口（带 `?room=<id>`，群聊页打开即选中该群，不存在时回退第一个）；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 13 个预设。
 - **品牌与外观视图**——11 色板、形象切换（默认奶油白毛绒小兔，备选蜜糖色毛绒小熊，localStorage 记忆选择）、字体示例与使用规则。
 - **设置视图**——provider 下拉可用（13 个预设，`/api/info` 返回，含各 provider 的模型列表做输入提示）：选 provider + 填模型后点“应用”调真实的 `POST /api/provider`，新会话立即生效，已有会话保持原 provider，重启后恢复配置文件中的设置；未知 provider / 明文 http 外网地址会直接报 400。模式三段切换（调真实 `/api/mode`，失败时界面自动回滚到实际值）；Keys 表含自定义 provider（来自 `get_provider_presets`）；MCP 与证据链状态只读；API Key 只显示是否已配置，**绝不回显值**。

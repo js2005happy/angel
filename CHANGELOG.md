@@ -1,5 +1,14 @@
 # Angel 变更记录
 
+## 未发布（兜底默认关闭 + 网页切换可见 + 网页端新建定时任务暂缓）
+
+- **模型自动兜底改默认关闭**（用户 2026-11-17 安全事项第 1 条）：`config.py` 的 `DEFAULT_CONFIG["fallback_enabled"]` 与 `resolve_fallback_chain` 的默认值由 True 改 False；开启只由用户自己做——`~/.angel/config.json` 里设 `"fallback_enabled": true`、环境变量 `ANGEL_FALLBACK=1`，或 CLI 新增 `--fallback`（`--no-fallback` 保留作显式关闭；两者同时给时以关闭为准，`cli.py` 新增 `_fallback_enabled()` 统一优先级，`json_mode.py` 同样处理）。网页端设置里没有兜底开关控件（只有一行状态说明），不存在默认开启或静默开启的路径。
+- **兜底链只认允许列表**：允许列表就是用户配置的 `fallback_providers`；`resolve_fallback_chain` 只在 key 缺失时才用内置默认链，显式写空列表表示不允许任何备用（不再静默补默认链）；未知名字跳过并写 stderr 日志；`build_provider_chain` 跳过未配置 Key 的备用（同样记日志），不静默补别的。`POST /api/provider` 的 `resolve_provider` 校验不变。
+- **网页端切换可见**：`webui.py` 的 `UIState` 新增 `_on_switch` 回调——切换时除写服务端日志外，还向当前运行中的会话追加一条 `model_switch` 事件（from/to/error/kind/status，复用 `--json` 的事件结构）；前端 `applyEvent` 渲染一行“模型已切换：deepseek → xai（402 …）”并刷新模型卡。群聊同样：`groups.py` 的 `_bot_response` 记录本次调用的 `switches`，`send()` 附加到机器人回复条目上（`model_switches` 字段），`group-ui.js` 在回复下方渲染切换提示；无切换时不附加字段。
+- **队列与定时任务不切换**（只读核查，未改 `scheduler.py`）：`cli.py` 的 `_make_task_agent` 仍直接构造单个 `Provider`，定时任务执行时用任务指定的 provider/model 原样跑、不包兜底链；`/api/schedule` 存下来的 provider/model 执行时同样不兜底。`runs.py` 在 main 上不存在，未新建。
+- **网页端新建定时任务暂缓开放**（用户安全事项第 2 条，E 合并前）：定时任务视图的添加表单已彻底撤下（不是置灰），换成一行说明“网页端新建定时任务暂缓开放，等任务队列合并（E）后恢复；请用 `angel schedule add` 命令添加”；后端 `POST /api/schedule` 的 action=add 返回 409 并写明原因（现在 main 上的任务默认用 full 模式，E 合并后会拒绝这种情况）。列表、开关、删除保持可用。
+- 新增 11 个测试：`tests/test_fallback.py`（默认关闭、配置显式开启、空允许列表只留主模型、环境变量开启、链里无 Key 的备用被跳过、CLI `--fallback`/`--no-fallback` 优先级、定时任务 agent 用单个 provider）、`tests/test_json_mode.py`（`--fallback` 开启切换、默认关闭不切换）、`tests/test_webui.py`（默认关闭不切换、会话轮询里出现 `model_switch` 事件、add 返回 409 且其余操作可用、表单已撤下）、`tests/test_group_chat.py`（机器人回复条目带 `model_switches`）。测试总数 472 → 483，全部通过；本地 Web UI 冒烟检查通过（见下）。
+
 ## 未发布（调度器健壮性）
 
 - `save_schedule` 改为原子写（同目录临时文件 + fsync + `os.replace`），崩溃或并发写入不再留下半截 JSON；失败时清理临时文件、旧文件保持不变。

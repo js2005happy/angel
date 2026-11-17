@@ -153,6 +153,11 @@ class GroupStore:
         self.provider_factory = provider_factory
         self._locks: dict[str, threading.RLock] = {}
         self._lock = threading.Lock()
+        # Switches recorded by the last _bot_response call (if its provider
+        # is a FallbackProvider); send() attaches them to the bot entry so
+        # the group page shows the switch instead of silently answering
+        # from another model.
+        self._last_switches: list = []
 
     def _guard(self, room_id: str) -> threading.RLock:
         _identifier(room_id, "群 ID")
@@ -272,8 +277,10 @@ class GroupStore:
             "提出建议、可验证的行动或不同意见，不要模仿其他成员。"
         )
         session = load_session(sid) or []
+        provider = self._provider(bot)
+        self._last_switches = []
         agent = Agent(
-            provider=self._provider(bot),
+            provider=provider,
             session_id=sid,
             workdir=workdir,
             mode=bot.mode,
@@ -283,7 +290,11 @@ class GroupStore:
             system_instructions=instructions,
             memory_path=memory_path,
         )
-        return agent.run(prompt)[:MAX_RESPONSE_CHARS] or "（无回复）"
+        reply = agent.run(prompt)[:MAX_RESPONSE_CHARS] or "（无回复）"
+        switches = getattr(provider, "switches", None)
+        if isinstance(switches, list):
+            self._last_switches = list(switches)
+        return reply
 
     def send(self, room_id: str, message: str, rounds: int = 1) -> dict:
         message = _text(message, "群消息", MAX_INPUT_CHARS)
@@ -308,6 +319,8 @@ class GroupStore:
                     try:
                         response = self._bot_response(room, bot, room["messages"])
                         entry = {"sender": bot.id, "content": response, "time": _stamp()}
+                        if self._last_switches:
+                            entry["model_switches"] = list(self._last_switches)
                     except (AgentError, GroupError) as exc:
                         entry = {
                             "sender": bot.id,
