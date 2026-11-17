@@ -4,6 +4,7 @@
 (() => {
   "use strict";
   const token = new URLSearchParams(window.location.search).get("token") || "";
+  const roomParam = new URLSearchParams(window.location.search).get("room") || "";
   const defaults = [
     {id:"lead",name:"组长",role:"任务拆解与团队协调",instructions:"先确认目标与可交付成果，分配关注点。允许其他成员反对你的方案。"},
     {id:"architect",name:"架构师",role:"独立技术方案",instructions:"关注整体架构、长期维护和权衡。可以明确不同意组长，不要盲从。"},
@@ -173,6 +174,9 @@
       if (activeId) await openRoom(activeId).catch(() => {});
     } finally { busy = false; el("sendBtn").disabled = false; }
   });
+  // Deep link from the main site's group list: ?room=<id> preselects
+  // that room (loadRooms falls back to the first room if it is unknown).
+  if (roomParam) activeId = roomParam;
   refreshProviders();
   loadRooms().catch(error => say(error.message));
 })();

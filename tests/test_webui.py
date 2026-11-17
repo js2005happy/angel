@@ -559,6 +559,121 @@ class UIv2Tests(WebUITestCase):
             self.assertIn(f'"{name}"', js, name)
         self.assertIn("/api/info", js)
 
+    def test_info_lists_models_and_fallback_chain(self):
+        self.start()
+        status, info = self.get_json("/api/info")
+        self.assertEqual(status, 200)
+        by_name = {p["name"]: p for p in info["providers"]}
+        self.assertEqual(
+            by_name["deepseek"]["models"], ["deepseek-flash", "deepseek-v4-pro"])
+        self.assertEqual(by_name["ollama"]["models"], ["qwen2.5:7b"])
+        self.assertEqual(by_name["custom"]["models"], [])
+        # Injected mock factory: single provider, chain is just itself.
+        self.assertEqual(info["fallback_chain"], ["mock"])
+
+    def test_info_keys_include_custom_providers(self):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text(json.dumps({
+            "custom_providers": {
+                "myllm": {
+                    "base_url": "https://llm.example.com/v1",
+                    "default_model": "myllm-1",
+                    "env_key": "MYLLM_API_KEY",
+                    "models": ["myllm-1"],
+                },
+            },
+        }), encoding="utf-8")
+        self.start()
+        status, info = self.get_json("/api/info")
+        self.assertEqual(status, 200)
+        self.assertEqual(info["provider_count"], 14)
+        by_name = {p["name"]: p for p in info["providers"]}
+        self.assertEqual(by_name["myllm"]["models"], ["myllm-1"])
+        keys = {k["provider"]: k for k in info["keys"]}
+        self.assertIn("myllm", keys)
+        self.assertEqual(keys["myllm"]["env"], "MYLLM_API_KEY")
+        self.assertFalse(keys["myllm"]["configured"])
+        self.assertTrue(keys["myllm"]["needs_key"])
+
+    def test_settings_view_has_usable_provider_controls(self):
+        html_text = webui.PAGE_HTML
+        # Provider select is enabled now (was disabled in v2.0), with a
+        # model input, an apply button and a status line.
+        self.assertIn('id="provider-select"', html_text)
+        self.assertNotIn('id="provider-select" disabled', html_text)
+        self.assertIn('id="model-input"', html_text)
+        self.assertIn('id="apply-provider"', html_text)
+        self.assertIn('id="provider-status"', html_text)
+        self.assertIn("已有会话保持原 provider", html_text)
+        # Schedule form has optional provider/model fields.
+        self.assertIn('id="sched-provider"', html_text)
+        self.assertIn('id="sched-model"', html_text)
+        # Group "open" links carry the room id for deep-linking.
+        self.assertIn("&room=", html_text)
+
+    def test_group_js_opens_room_from_query(self):
+        self.start()
+        status, raw, _ = self.request("/group-ui.js")
+        self.assertEqual(status, 200)
+        js = raw.decode("utf-8")
+        self.assertIn('get("room")', js)
+        self.assertIn("activeId = roomParam", js)
+
+    def test_schedule_add_with_provider_and_model(self):
+        import angel.scheduler as scheduler_module
+
+        with mock.patch.object(
+            scheduler_module, "SCHEDULE_PATH", self.home / "schedule.json"
+        ):
+            self.start()
+            status, added = self.get_json("/api/schedule", method="POST", body={
+                "action": "add",
+                "task": {"name": "t2", "prompt": "做点事", "at": "09:00",
+                         "provider": "ollama", "model": "qwen2.5:7b"},
+            })
+            self.assertEqual(status, 201)
+            self.assertEqual(added["task"]["provider"], "ollama")
+            self.assertEqual(added["task"]["model"], "qwen2.5:7b")
+            status, data = self.get_json("/api/schedule")
+            self.assertEqual(data["tasks"][0]["provider"], "ollama")
+            self.assertEqual(data["tasks"][0]["model"], "qwen2.5:7b")
+
+
+class ProviderSwitchTests(WebUITestCase):
+    """POST /api/provider switches the provider for new sessions."""
+
+    def test_switch_provider_via_api(self):
+        self.start()
+        status, switched = self.get_json("/api/provider", method="POST", body={
+            "provider": "ollama", "model": "qwen2.5:7b",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(switched["provider"], "ollama")
+        self.assertEqual(switched["model"], "qwen2.5:7b")
+        self.assertEqual(self.state.provider_name, "ollama")
+        self.assertEqual(self.state.model, "qwen2.5:7b")
+        # Unknown provider and missing provider are rejected.
+        status, _ = self.get_json("/api/provider", method="POST", body={
+            "provider": "no-such-provider",
+        })
+        self.assertEqual(status, 400)
+        status, _ = self.get_json("/api/provider", method="POST", body={})
+        self.assertEqual(status, 400)
+
+    def test_switch_provider_unit_without_factory(self):
+        # No injected factory: provider() really builds the new chain.
+        state = webui.UIState(self.workdir)
+        switched = state.set_provider("ollama", "qwen2.5:7b")
+        self.assertEqual(switched, {"provider": "ollama", "model": "qwen2.5:7b"})
+        self.assertEqual(state.provider().name, "ollama")
+        self.assertEqual(state.provider().model, "qwen2.5:7b")
+        info = state.info()
+        self.assertEqual(info["provider"], "ollama")
+        self.assertIn("ollama", info["fallback_chain"])
+        self.assertEqual(info["fallback_chain"][0], "ollama")
+        with self.assertRaises(ValueError):
+            state.set_provider("no-such-provider")
+
 
 if __name__ == "__main__":
     unittest.main()

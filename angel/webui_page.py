@@ -245,6 +245,8 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
           <select id="sched-kind" aria-label="执行方式"><option value="at">每天固定时间</option><option value="every">每隔一段时间</option></select>
           <input id="sched-when" required maxlength="20" placeholder="08:30" style="flex:0 0 110px">
           <select id="sched-mode" aria-label="审批模式"><option value="auto">审批模式</option><option value="full">完整模式</option><option value="readonly">只读</option></select>
+          <select id="sched-provider" aria-label="Provider（可选，默认用当前）"></select>
+          <input id="sched-model" maxlength="180" placeholder="模型（可选）" style="flex:0 0 150px">
           <button class="btn-primary" type="submit">添加</button>
         </form>
         <p class="hint" id="sched-status" role="status"></p>
@@ -283,13 +285,18 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
     <div class="view" id="view-settings">
       <div class="page" style="max-width:820px;margin:0 auto">
         <h2>设置</h2>
-        <p class="sub">只读视图：来自 <code>~/.angel/config.json</code> 与环境变量。Key 只显示是否已配置，从不显示其值。这里只改界面状态，不保存任何密钥。</p>
+        <p class="sub">模型与审批模式可在这里切换。Key 只显示是否已配置，从不显示其值。这里只改界面运行状态，不保存任何密钥、不改配置文件。</p>
         <h3>模型</h3>
         <div class="form-row" style="margin-bottom:8px">
           <label for="provider-select" style="font-size:13px">Provider</label>
-          <select id="provider-select" disabled aria-label="当前 provider（重启后生效）"></select>
-          <span class="hint" style="margin:0">切换 provider 需重启界面（<code>python3 -m angel ui --provider &lt;名字&gt;</code>）。</span>
+          <select id="provider-select" aria-label="当前 provider"></select>
+          <label for="model-input" style="font-size:13px">模型</label>
+          <input id="model-input" list="model-list" maxlength="180" style="flex:1;min-width:140px" aria-label="模型 id（留空用该 provider 的默认模型）">
+          <datalist id="model-list"></datalist>
+          <button class="btn-primary" id="apply-provider" type="button">应用</button>
+          <span class="hint" id="provider-status" style="margin:0" role="status"></span>
         </div>
+        <p class="hint" style="margin:0 0 8px">切换后立即生效：新会话使用新 provider，已有会话保持原 provider；重启界面后恢复配置文件中的设置。</p>
         <div class="form-row" style="margin-bottom:8px">
           <label style="font-size:13px">审批模式</label>
           <div class="seg" id="mode-seg">
@@ -392,6 +399,7 @@ function md(src){
 function argsLine(a){if(a==null)return "";if(typeof a==="string"){try{a=JSON.parse(a)}catch(e){return a}}
   if(typeof a!=="object")return String(a);return Object.keys(a).map(function(k){var v=a[k];if(typeof v==="object")v=JSON.stringify(v);v=String(v);return k+"="+(v.length>60?v.slice(0,59)+"…":v)}).join("  ")}
 function pretty(a){if(typeof a==="string"){try{a=JSON.parse(a)}catch(e){return a}}try{return JSON.stringify(a,null,2)}catch(e){return String(a)}}
+function fmtTime(iso){try{var d=new Date(iso);if(isNaN(d.getTime()))return iso;return d.toLocaleString()}catch(e){return iso}}
 function failed(r){return /^(错误：|执行失败：)/.test(String(r||""))}
 function addMsg(role,text){var m=el("div","msg "+role);
   if(role==="assistant"){var who=el("div","who");var im=document.createElement("img");im.className="mascot-img";im.alt="Angel";im.src=IMG[state.mascot]||IMG.bunny;who.appendChild(im);m.appendChild(who)}
@@ -488,13 +496,20 @@ function loadInfo(){return api("/api/info").then(function(i){state.info=i;$("ver
   var sel=$("mode");sel.innerHTML="";i.modes.forEach(function(m){var o=el("option");o.value=m;o.textContent=m;if(m===i.mode)o.selected=true;sel.appendChild(o)});
   var kv=$("model-kv");kv.innerHTML="";var rows=[["Provider",i.provider||"—"],["模型",i.model||"—"],["凭据",i.credentials?"已配置":"未配置"],["模式",i.mode],["工作目录",i.workdir]];
   if(i.model_switches&&i.model_switches.length)rows.push(["切换记录",i.model_switches.map(function(s){return s.from+" → "+s.to+"（"+s.error+"）"}).join("；")]);
+  if(i.fallback_chain&&i.fallback_chain.length)rows.push(["兜底链",i.fallback_chain.join(" → ")]);
   rows.forEach(function(r){kv.appendChild(el("span")).textContent=r[0];kv.appendChild(el("span")).textContent=r[1]});
   var c=$("cfg-kv");c.innerHTML="";var cfg=i.config||{};[["版本",i.version],["当前 provider",i.provider_desc||i.provider_error||"—"],["最大轮数",cfg.max_turns],["配置上下文窗口",cfg.context_window_tokens||"未知"],["自动压缩",cfg.auto_compact_enabled?("已启用 · "+cfg.auto_compact_threshold*100+"%"):"未启用"],["MCP",cfg.mcp_enabled?("已启用（"+i.mcp_tools+" 个工具）"):"未启用"],["沙盒（配置）",cfg.sandbox+"（网页界面在本地执行）"],["档案",(cfg.profiles||[]).join(", ")||"—"]].forEach(function(r){c.appendChild(el("span")).textContent=r[0];c.appendChild(el("span")).textContent=r[1]==null?"—":String(r[1])});
   var k=$("keys");k.innerHTML="";i.keys.forEach(function(x){var tr=el("tr");var st=x.env?(x.configured?"✓ 已配置":(x.connector?"未设置（可用已保存连接器）":(x.needs_key?"未设置":"无需 Key"))):"无需 Key";
     [x.provider,x.env||"—",st].forEach(function(v){tr.appendChild(el("td")).textContent=v});k.appendChild(tr)});
   var ps=$("provider-select");ps.innerHTML="";(i.providers||[]).forEach(function(pr){var o=el("option");o.value=pr.name;o.textContent=pr.name+(pr.default_model?" · "+pr.default_model:" · 自定义");if(pr.name===i.provider)o.selected=true;ps.appendChild(o)});
+  fillModelList();fillSchedProvider();
   syncModeSeg(i.mode)})}
 function syncModeSeg(mode){document.querySelectorAll("#mode-seg button").forEach(function(b){b.classList.toggle("active",b.dataset.mode===mode)})}
+function fillModelList(){var ps=$("provider-select");if(!ps)return;var name=ps.value;var pr=null;(state.info.providers||[]).forEach(function(p){if(p.name===name)pr=p});
+  var dl=$("model-list");dl.innerHTML="";(pr&&pr.models||[]).forEach(function(m){var o=document.createElement("option");o.value=m;dl.appendChild(o)});
+  var mi=$("model-input");if(mi&&!mi.dataset.touched)mi.value=(name===state.info.provider)?(state.info.model||(pr?pr.default_model||"":"")):(pr?pr.default_model||"":"")}
+function fillSchedProvider(){var sp=$("sched-provider");if(!sp)return;var cur=sp.value;sp.innerHTML="";var o0=el("option");o0.value="";o0.textContent="默认 provider";sp.appendChild(o0);
+  (state.info.providers||[]).forEach(function(pr){var o=el("option");o.value=pr.name;o.textContent=pr.name;sp.appendChild(o)});sp.value=cur||""}
 function loadSkills(){if(!state.info)return Promise.resolve();var i=state.info;
   var sl=$("skills-list");sl.innerHTML="";
   if(!(i.skills||[]).length)sl.innerHTML='<div class="empty">没有可用技能。</div>';
@@ -505,7 +520,12 @@ function loadSchedule(){return api("/api/schedule").then(function(r){var box=$("
   if(!r.tasks.length){box.innerHTML='<div class="empty">还没有定时任务。用下面的表单添加，或用 <code>angel schedule add</code> 命令添加。</div>';return}
   r.tasks.forEach(function(t){var row=el("div","sched-row");
     var grow=el("div","grow");var b=el("b");b.textContent=t.name;grow.appendChild(b);
-    var s=el("span");s.textContent=(t.at?("每天 "+t.at):(t.every_seconds?("每 "+Math.round(t.every_seconds/60)+" 分钟"):""))+" · "+t.mode+"模式"+(t.last_status?(" · 上次："+t.last_status):"");grow.appendChild(s);
+    var parts=[t.at?("每天 "+t.at):(t.every_seconds?("每 "+Math.round(t.every_seconds/60)+" 分钟"):""),t.mode+"模式"];
+    if(t.provider)parts.push(t.provider+(t.model?(" / "+t.model):""));
+    if(t.last_status)parts.push("上次："+t.last_status);
+    if(t.last_run)parts.push("上次运行："+fmtTime(t.last_run));
+    if(t.last_summary)parts.push("摘要："+String(t.last_summary).slice(0,80));
+    var s=el("span");s.textContent=parts.filter(Boolean).join(" · ");grow.appendChild(s);
     var p=el("div");p.textContent=t.prompt;p.style.cssText="font-size:12.5px;color:var(--muted);overflow-wrap:anywhere";grow.appendChild(p);
     row.appendChild(grow);
     var lab=el("label","switch");lab.innerHTML='<input type="checkbox"><span class="tr"></span>';
@@ -519,7 +539,7 @@ function loadGroups(){return api("/api/groups").then(function(r){var box=$("grou
   r.groups.forEach(function(g){var row=el("div","sched-row");var grow=el("div","grow");
     var b=el("b");b.textContent=g.name;grow.appendChild(b);
     var s=el("span");s.textContent=g.bots+" 位机器人";grow.appendChild(s);row.appendChild(grow);
-    var open=el("a","btn-primary");open.textContent="打开";open.href="/groups?token="+encodeURIComponent(TOKEN);open.style.textDecoration="none";row.appendChild(open);box.appendChild(row)})}).catch(function(e){$("group-list").innerHTML='<div class="empty">群列表读取失败：'+esc(e.message)+'</div>'})}
+    var open=el("a","btn-primary");open.textContent="打开";open.href="/groups?token="+encodeURIComponent(TOKEN)+"&room="+encodeURIComponent(g.id);open.style.textDecoration="none";row.appendChild(open);box.appendChild(row)})}).catch(function(e){$("group-list").innerHTML='<div class="empty">群列表读取失败：'+esc(e.message)+'</div>'})}
 function renderSwatches(){var data=[["背景","#F3F5F4","鼠尾草雾白"],["表面","#FFFFFF","卡片底"],["面板","#E9EDEA","侧栏底"],["文字","#2A2D34","柔炭黑"],["次要文字","#6E7278","说明文字"],["边框","#DEE3DE","分隔线"],["主色","#5F7D5C","鼠尾草绿"],["强调","#6B8CAE","雾蓝"],["暖色点缀","#E07856","蜜桃珊瑚，小面积"],["成功","#4C9A6C","完成态"],["危险","#C24B42","失败/拒绝"]];
   var box=$("swatches");box.innerHTML="";
   data.forEach(function(d){var s=el("div","swatch");var c=el("div","chip");c.style.background=d[1];s.appendChild(c);
@@ -529,8 +549,13 @@ $("input").addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKe
 $("input").addEventListener("input",autosize);
 $("chips").addEventListener("click",function(e){var b=e.target.closest(".chip");if(!b)return;$("input").value=b.dataset.prompt;autosize();$("input").focus()});
 $("new-session").onclick=function(){newSession();$("shell").classList.remove("show-left")};
-$("mode").onchange=function(){api("/api/mode",{method:"POST",body:JSON.stringify({mode:this.value})}).then(loadInfo)};
-$("mode-seg").addEventListener("click",function(e){var b=e.target.closest("button[data-mode]");if(!b)return;api("/api/mode",{method:"POST",body:JSON.stringify({mode:b.dataset.mode})}).then(loadInfo)});
+$("mode").onchange=function(){api("/api/mode",{method:"POST",body:JSON.stringify({mode:this.value})}).then(loadInfo).catch(function(){loadInfo()})};
+$("mode-seg").addEventListener("click",function(e){var b=e.target.closest("button[data-mode]");if(!b)return;api("/api/mode",{method:"POST",body:JSON.stringify({mode:b.dataset.mode})}).then(loadInfo).catch(function(){loadInfo()})});
+$("model-input").addEventListener("input",function(){this.dataset.touched="1"});
+$("provider-select").addEventListener("change",function(){var mi=$("model-input");if(mi)mi.dataset.touched="";fillModelList()});
+$("apply-provider").onclick=function(){var ps=$("provider-select");var mi=$("model-input");var st=$("provider-status");
+  st.textContent="切换中…";
+  api("/api/provider",{method:"POST",body:JSON.stringify({provider:ps.value,model:(mi.value||"").trim()||null})}).then(function(r){if(mi)mi.dataset.touched="";st.textContent="已切换到 "+r.provider+" / "+r.model+"，新会话生效。";loadInfo()}).catch(function(e){st.textContent="切换失败："+e.message})};
 $("open-settings").onclick=function(){showView("settings")};
 $("open-memory").onclick=openMemory;
 $("memory-refresh").onclick=function(){if(memoryDirty()&&!window.confirm("有未保存的编辑，确定丢弃并重新读取吗？"))return;readMemory()};
@@ -551,8 +576,11 @@ $("sched-form").addEventListener("submit",function(e){e.preventDefault();
   var kind=$("sched-kind").value,when=$("sched-when").value.trim();
   var task={name:$("sched-name").value.trim(),prompt:$("sched-prompt").value.trim(),mode:$("sched-mode").value};
   if(kind==="at")task.at=when;else task.every_seconds=parseInt(when,10)*60;
+  var sprov=$("sched-provider").value;if(sprov)task.provider=sprov;
+  var smod=$("sched-model").value.trim();if(smod)task.model=smod;
   if(kind==="every"&&!(task.every_seconds>0)){$("sched-status").textContent="间隔请填分钟数（正整数）。";return}
   api("/api/schedule",{method:"POST",body:JSON.stringify({action:"add",task:task})}).then(function(){ $("sched-status").textContent="已添加。";$("sched-form").reset();loadSchedule()}).catch(function(err){$("sched-status").textContent="添加失败："+err.message})});
+$("sched-kind").addEventListener("change",function(){var w=$("sched-when");w.placeholder=this.value==="every"?"分钟数，如 30":"08:30"});
 try{var saved=localStorage.getItem("angel-mascot");if(saved==="bear"||saved==="bunny")state.mascot=saved}catch(e){}
 setMascot(state.mascot);
 renderSwatches();

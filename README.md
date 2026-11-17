@@ -406,12 +406,12 @@ python3 -m angel ui --port 9000 --workdir ~/project --mode auto
 
 - **左栏**——品牌卡（毛绒小兔头像）与六视图导航（对话 / 技能与工具 / 定时任务 / 群聊 / 品牌与外观 / 设置），会话列表在对话视图内，可新建会话，也可点开历史会话继续。
 - **中栏：对话**——用户/助手消息（基本 Markdown 渲染），执行中轮询显示进度；每次工具调用是一张可折叠卡片（工具名、参数、结果摘要）。auto 模式下需要审批时卡片里出现“批准 / 拒绝”按钮，走的是和终端相同的审批门（`tools.py` 的 `_check_approval`），readonly / full 行为不变；10 分钟无人处理按拒绝处理。
-- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡与 Token 用量按 13 个 provider 预设 / 15 个内置工具更新。
+- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，Token 用量按 13 个 provider 预设 / 15 个内置工具更新。
 - **技能与工具视图**——3 个内置技能与 15 个内置工具一览（每个工具标明是否需要审批）。
-- **定时任务视图**——读 `~/.angel/schedule.json`，可查看、添加、启用/停用、删除定时任务（走新增的 `/api/schedule`，只调 `scheduler.py` 的公开函数）。
-- **群聊视图**——群列表与“打开群聊页面”入口；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 13 个预设。
+- **定时任务视图**——读 `~/.angel/schedule.json`，可查看、添加、启用/停用、删除定时任务（走新增的 `/api/schedule`，只调 `scheduler.py` 的公开函数）；添加表单可填可选的 provider / 模型（不填用当前 provider），行里显示任务的 provider / 模型与上次运行时间、状态、摘要；“执行时间”按“每天 HH:MM / 每隔 N 分钟”切换提示。
+- **群聊视图**——群列表与“打开群聊页面”入口（带 `?room=<id>`，群聊页打开即选中该群，不存在时回退第一个）；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 13 个预设。
 - **品牌与外观视图**——11 色板、形象切换（默认奶油白毛绒小兔，备选蜜糖色毛绒小熊，localStorage 记忆选择）、字体示例与使用规则。
-- **设置视图**——provider 预设列表（13 个，`/api/info` 返回）、模式三段切换（调真实 `/api/mode`）、MCP 与证据链状态只读；API Key 只显示是否已配置，**绝不回显值**。
+- **设置视图**——provider 下拉可用（13 个预设，`/api/info` 返回，含各 provider 的模型列表做输入提示）：选 provider + 填模型后点“应用”调真实的 `POST /api/provider`，新会话立即生效，已有会话保持原 provider，重启后恢复配置文件中的设置；未知 provider / 明文 http 外网地址会直接报 400。模式三段切换（调真实 `/api/mode`，失败时界面自动回滚到实际值）；Keys 表含自定义 provider（来自 `get_provider_presets`）；MCP 与证据链状态只读；API Key 只显示是否已配置，**绝不回显值**。
 - **顶栏**——小兔圆形头像、provider 芯片与模式芯片；配色为鼠尾草绿主色 + 雾蓝强调 + 蜜桃珊瑚小面积点缀（浅色底 `#F3F5F4`，另有深炭底暗色变体）；形象图以 base64 内嵌在页面里，不引用外部图片。
 
 安全：默认只监听 `127.0.0.1`（`--host` 改成非本机地址时会打印警告）；每次启动随机生成一个访问 token，页面链接通过 `?token=` 带入，所有 API 请求都必须在请求头里带上它（防 CSRF），监听本机地址时还会校验 `Host` 头。网页界面目前在本地执行工具（不接 E2B 沙盒），会按配置启动 MCP 服务器（默认关闭）。
@@ -460,7 +460,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 456 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 468 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 

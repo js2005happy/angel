@@ -201,14 +201,29 @@ class UIState:
             switches = getattr(prov, "switches", None)
             if switches:
                 out["model_switches"] = list(switches)
+            # The chain itself (primary first) so the model card can show
+            # the configured fallback order, not just the last answer.
+            chain = getattr(prov, "providers", None)
+            if isinstance(chain, list) and chain:
+                out["fallback_chain"] = [getattr(p, "name", "?") for p in chain]
+            else:
+                out["fallback_chain"] = [out["provider"]] if out.get("provider") else []
         except Exception as exc:  # unknown provider, bad profile …
             out["provider"] = None
             out["model"] = None
             out["provider_desc"] = ""
             out["credentials"] = False
             out["provider_error"] = str(exc)
+            out["fallback_chain"] = []
+        # Keys table: include custom providers too (built-ins alone would
+        # hide a configured custom provider). A malformed custom entry
+        # must not break /api/info, so fall back to the built-ins.
+        try:
+            key_presets = get_provider_presets(load_config())
+        except Exception:
+            key_presets = PROVIDERS
         keys = []
-        for name, preset in PROVIDERS.items():
+        for name, preset in key_presets.items():
             env_key = preset.get("env_key")
             keys.append(
                 {
@@ -277,6 +292,24 @@ class UIState:
                     run.agent.ctx.mode = new_mode
                     run.agent.mcp_manager = manager
             return new_mode
+
+    def set_provider(self, name: str, model: str | None = None) -> dict:
+        """Switch the provider used for new sessions/agents (runtime-only).
+
+        Validated with resolve_provider so unknown names, missing base
+        URLs and plaintext-http external hosts fail here with a clear
+        message instead of at the next chat call. Only the cached chain
+        is reset: agents that already exist keep the provider they started
+        with, so a switch never disturbs a running task. The switch does
+        not persist to config.json; a restart restores the configured
+        provider.
+        """
+        cfg = resolve_provider(name, model)
+        with self._mode_lock:
+            self.provider_name = cfg.name
+            self.model = cfg.model
+            self._provider = None
+        return {"provider": cfg.name, "model": cfg.model}
 
     # -- persistent memory --------------------------------------------------
     def memory_scopes(self) -> list[dict]:
@@ -550,6 +583,7 @@ def list_providers() -> list[dict]:
             "default_model": preset.get("default_model"),
             "env_key": env_key,
             "configured": bool(env_key and os.environ.get(env_key)),
+            "models": list(preset.get("models") or []),
         })
     return out
 
@@ -801,6 +835,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.OK, result)
         if path == "/api/sessions":
             return self._json(HTTPStatus.CREATED, {"id": self.state.new_session()})
+        if path == "/api/provider":
+            name = str(body.get("provider") or "").strip()
+            raw_model = body.get("model")
+            model = str(raw_model).strip() if isinstance(raw_model, str) else None
+            if not name:
+                return self._error(HTTPStatus.BAD_REQUEST, "请指定 provider")
+            try:
+                switched = self.state.set_provider(name, model or None)
+            except ValueError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return self._json(HTTPStatus.OK, switched)
+
         if path == "/api/mode":
             try:
                 mode = self.state.set_mode(str(body.get("mode", "")))

@@ -1,5 +1,15 @@
 # Angel 变更记录
 
+## 未发布（网页界面 UI v2 面板补完）
+
+- 设置视图的 provider 下拉真正可用（此前是 `disabled` 占位）：新增 `POST /api/provider {provider, model?}`（`webui.py` 的 `UIState.set_provider`，用 `resolve_provider` 校验，未知 provider / 明文 http 外网地址直接报 400，不触发兜底），前端启用下拉 + 模型输入（datalist 用该 provider 的 `models`，允许自定义填）+“应用”按钮 + 状态提示。切换只改运行状态：重置缓存的 provider 链，新会话用新 provider，已有会话保持原 provider，不写配置文件，重启后恢复配置。设置副标题“只读视图”改为准确描述。
+- `/api/info` 的 provider 列表每项增加 `models` 字段；新增 `fallback_chain` 字段（当前链的 provider 名，主模型排第一；单 provider 时为 `[name]`），模型卡加一行“兜底链：deepseek → xai → ollama”。Keys 表改用 `get_provider_presets`（失败回退内置），自定义 provider 不再被藏起来。
+- 群聊“打开”直达具体群：主站群聊视图的链接带 `?room=<id>`，`group-ui.js` 启动时读 `room` 参数并选中该群（不存在回退第一个）。
+- 定时任务行补上“上次运行：<时间>”与摘要（截断 80 字），API 早已返回 `last_run` / `last_status` / `last_summary`，此前行里只显示了 `last_status`。添加表单补 provider / model 两个可选字段（provider 下拉取 `/api/info`，不填则用当前 provider；POST 时只在填了才带），“执行时间”输入框按“每天 / 每隔一段时间”切换 placeholder（`08:30` / `分钟数，如 30`）。
+- 顶栏模式下拉与模式分段切换失败时不再错位显示：`api` 失败后调 `loadInfo()` 回滚到实际值。
+- 仍缺后端、如实留空（未编造数据）：守护进程运行状态（`scheduler.py` 无 pidfile/状态机制，且按分工归 GrokBot，面板上已写“执行仍需 daemon 在运行”）；费用看板（usage 只统计 token 数，无任何成本统计接口）。
+- 新增 7 个测试（`tests/test_webui.py`）：`/api/provider` 切换与拒绝、切换后链重排（新主模型排第一）、`models` / `fallback_chain` / 自定义 provider 进 Keys 表、设置与定时任务表单控件存在且 provider 下拉未禁用、群聊 JS 读 `room` 参数、定时任务添加带 provider/model。测试总数 461 → 468，全部通过；本地 Web UI 冒烟检查通过（页面 200、六视图齐全、`/api/info` 13 预设 / 15 工具 / 兜底链如实、`/api/provider` 切换后 info() 显示新 provider 与重排后的链、`/api/schedule` 添加带 provider 正常、群聊页 200、内联与群聊 JS 均过 `node --check`、无外部资源、暗色 CSS 存在，未真实调用模型）。
+
 ## 未发布（网页界面 UI v2）
 
 - 网页界面按原型「Angel UI v2」重做：新配色（浅色底 `#F3F5F4`、鼠尾草绿主色 `#5F7D5C`、雾蓝强调 `#6B8CAE`、蜜桃珊瑚 `#E07856` 只小面积点缀，另补一套深炭底 `#1F2420` 暗色变体——原型没有暗色模式），旧墨 `#111A42` / 金 `#EAC45F` / 暖纸白 `#FAF8F4` 已退役；三栏布局（268px 左侧栏 / 自适应主聊天区 / 324px 右侧检查器，52px 顶栏），六视图（对话、技能与工具、定时任务、群聊、品牌与外观、设置）。
