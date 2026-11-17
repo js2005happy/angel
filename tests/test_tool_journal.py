@@ -294,6 +294,37 @@ class JournalTests(unittest.TestCase):
         finally:
             event.chmod(original & 0o777)
 
+    def test_same_size_in_place_edit_during_read_is_rejected(self):
+        # Metadata timestamps catch a class of same-length in-place edits
+        # that identity/size checks alone cannot observe. This is not a
+        # tamper-proof guarantee against a same-user writer.
+        from angel import tool_journal as module
+        journal = ToolJournal("same-size-edit", root=self.root)
+        journal.begin("shell")
+        original = module.os.fstat
+        file_checks = [0]
+
+        class ChangedStat:
+            def __init__(self, value):
+                self._value = value
+
+            def __getattr__(self, name):
+                if name == "st_mtime_ns":
+                    return self._value.st_mtime_ns + 1
+                return getattr(self._value, name)
+
+        def modified(fd):
+            value = original(fd)
+            if __import__("stat").S_ISREG(value.st_mode):
+                file_checks[0] += 1
+                if file_checks[0] >= 2:
+                    return ChangedStat(value)
+            return value
+
+        with mock.patch.object(module.os, "fstat", side_effect=modified):
+            with self.assertRaisesRegex(JournalError, "读取期间发生变化"):
+                journal.inspect()
+
     def test_boolean_version_is_rejected(self):
         journal = ToolJournal("session1", root=self.root)
         call = journal.begin("shell")
