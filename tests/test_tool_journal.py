@@ -32,6 +32,39 @@ class JournalTests(unittest.TestCase):
         self.assertTrue(event_flags)
         self.assertTrue(all(flags & os.O_NONBLOCK for flags in event_flags))
 
+    def test_short_event_read_is_rejected_even_if_json_is_valid(self):
+        # A short read can omit trailing whitespace yet leave parseable JSON.
+        from angel import tool_journal as module
+        journal = ToolJournal("short-read", root=self.root)
+        journal.begin("shell")
+        original_fdopen = module.os.fdopen
+
+        class ShortReader:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                self.handle.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.handle.__exit__(*args)
+
+            def fileno(self):
+                return self.handle.fileno()
+
+            def read(self, limit):
+                data = self.handle.read(limit)
+                return data[:-1] if data.endswith(b"\\n") else data
+
+        def shortened(fd, mode):
+            handle = original_fdopen(fd, mode)
+            return ShortReader(handle) if mode == "rb" else handle
+
+        with mock.patch.object(module.os, "fdopen", side_effect=shortened):
+            with self.assertRaisesRegex(JournalError, "读取字节数"):
+                journal.inspect()
+
     def test_event_entry_swap_during_read_is_rejected(self):
         from angel import tool_journal as module
         journal = ToolJournal("entry-swap", root=self.root)
