@@ -1,5 +1,10 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：ToolJournal JSON 歧义字段拒绝（2026-11-17）
+
+- 静态审阅 object_pairs_hook 拒绝任意层级重复键，版本字段严格为 int 类型 1。
+- 编写重复键与布尔版本回归测试，未执行测试/CI；Windows/Linux 尚待验证，不构成防篡改保证。
+
 ## 待验证：POSIX 事件读取目录句柄（2026-11-17）
 
 - 静态审阅 `ToolJournal._records()`：POSIX 目录 fd 的 `fstat` 身份校验、`os.listdir(fd)`、相对 fd 打开事件文件、关闭句柄与读取中路径身份核验。
