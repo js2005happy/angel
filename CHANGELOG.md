@@ -1,5 +1,31 @@
 # Nyra 变更记录
 
+## 未发布（Linux 打包）
+
+- 新增 `scripts/build_package.sh`：从当前检出产出 `dist/nyra-<版本>.tar.gz`（解压即用，顶层目录 `nyra-<版本>/`）与 `dist/nyra_<版本>_all.deb`（装到 `/usr/share/nyra`，启动器 `/usr/bin/nyra`，只声明 `Depends: python3 (>= 3.10)`）；版本号只从 `nyra/__init__.py` 读；只打包白名单文件（`nyra/*.py`、`scripts/install.sh`、systemd unit、README/GUIDE/CHANGELOG/LICENSE、`docs/linux-*.md`），`.git`/`.venv`/`__pycache__`/`dist/` 不进包；没有 `dpkg-deb` 时只产出 tarball 并警告；无 maintainer 脚本，不碰用户 systemd 与 `~/.nyra`。
+- 新增 `docs/linux-packaging.md`：构建、核对（`tar -tzf` / `dpkg-deb --info`）、.deb 与 tarball 两种安装方式、卸载、安全说明；README 快速开始处加一行指向该文档。
+- 新增 `tests/test_packaging.py`（11 项）：`bash -n`、--help、未知选项失败、tarball 命名与白名单内容、解压后 `python3 -m nyra --version` 跑出版本、`--no-deb` 只产 tarball、.deb 的 control 字段与内容、解包后 payload 可运行；执行类测试只在 POSIX + bash/tar 环境跑。
+- 测试 562 → 573 项，全部通过；本机实测 tarball 与 .deb 均已产出并冒烟通过（`Nyra 0.3.0`）。
+- 本轮只做打包；Linux 平台部署三项（systemd 服务、安装脚本、打包）至此全部落地（另两项提交仍在本地未推，见下）。
+
+## 未发布（Linux 安装脚本）
+
+- 新增 `scripts/install.sh`：Linux 一键安装，只写 `$HOME`、不需要 root；把 Nyra 装到 `~/.local/share/nyra`（`--prefix` 可改），在 `~/.local/bin/nyra` 放启动器（`PYTHONPATH` 指到安装位置，cwd 无关），建 `~/.nyra`（0700），装完跑 `nyra --version` 自检；`--source` 支持本地目录（直接复制，去掉 `.git`/`.venv`/`__pycache__`）与仓库 URL（`git clone --depth 1`）；重复跑就是升级，`~/.nyra` 数据不动；`--uninstall` 删安装目录、启动器与服务文件，但保留 `~/.nyra`。
+- `--with-systemd`：把 `systemd/nyra-scheduler.service` 装到 `~/.config/systemd/user/`，按本次安装替换 `WorkingDirectory` 与 `ExecStart` 的 python 路径，再 `daemon-reload` + `enable --now`；没有用户 systemd 总线时只装文件并警告，不报错。
+- 安装脚本拒绝危险输入：python3 < 3.10、来源不存在、`--prefix` 为 `/`、`$HOME` 或含空格时报错退出；不装任何 pip 依赖、不联网（除 `git clone` 一步）、不用 sudo。
+- 新增 `docs/linux-install.md`：安装三种方式、选项表、升级、卸载、排错、安全说明；`docs/linux-systemd.md` 前置条件与 README 快速开始加指向安装脚本的说明；README 测试徽标 518 → 562。
+- 新增 `tests/test_install_script.py`（13 项）：`bash -n` 语法检查、`--help`、临时 HOME 真实安装（启动器在无关 cwd 下跑出 `Nyra 0.3.0`、`~/.nyra` 0700、默认不装服务）、重复安装幂等、`--with-systemd` 的 unit 路径替换与 systemctl 调用记录、`--uninstall` 删安装留数据、桩 python3 3.9 拒绝、来源不存在与危险 `--prefix` 拒绝；执行类测试只在 POSIX + bash 环境跑（安装脚本本身是 Linux 专用的）。
+- 测试 549 → 562 项，全部通过。
+- 本轮只做安装脚本；打包（.deb / 归档分发）仍未做；网页界面（`nyra ui`）的服务未做。
+
+## 未发布（systemd 用户服务：调度器 daemon）
+
+- 新增 `systemd/nyra-scheduler.service`：systemd `--user` 单元，`Type=simple`，跑 `python3 -m nyra schedule daemon`；`WorkingDirectory=%h/nyra`（默认检出位置 `~/nyra`，可改）、`Restart=on-failure`，加固 `NoNewPrivileges=true`、`PrivateTmp=true`、`ProtectSystem=true`；不需要 root、不写系统目录、不含密钥（Key 按文档用 drop-in 的 `Environment=` 补）。
+- 新增 `docs/linux-systemd.md`：安装、启动、`enable --now`、状态/日志查看、`loginctl enable-linger` 开机自启、改检查间隔、卸载、排错；README 快速开始处加一行指向该文档。
+- 新增 `tests/test_systemd_unit.py`（9 项）：解析 unit 断言关键字段、ExecStart 可执行文件真实存在且指向调度器 daemon、临时 HOME 空 schedule 下 daemon 短超时冒烟（`--interval 0.1 --rounds 1`，无任务、无模型调用）、`systemd-analyze verify` 通过。
+- 测试 540 → 549 项，全部通过；`systemd-analyze verify` 退出 0（本机无用户 systemd 总线，`systemd-analyze security` 跑不起来，改为人工复核：见上）。
+- 本轮只做调度器服务；网页界面（`nyra ui`）的服务、安装脚本与打包未做；调度器仍是 naive 本地时间（见 VERIFICATION.md 已知限制）。
+
 ## 未发布（官网重做 + 安装面板）
 
 - 官网 `docs/` 重做：新增常见问题、服务条款、隐私政策、可接受使用政策四个页面；首页加入可翻转的功能卡片、滚动显现、交互式审批示意和终端示意，遵守系统的减少动态效果设置，关闭 JavaScript 时内容仍完整可见。

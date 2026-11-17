@@ -19,7 +19,7 @@
 
 <p align="center">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 518 项" src="https://img.shields.io/badge/tests-518%20passing-0B0B0C">
+  <img alt="测试 573 项" src="https://img.shields.io/badge/tests-573%20passing-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -62,6 +62,11 @@ python3 -m nyra "解释一下这个项目的结构"   # 一次性任务
 python3 -m nyra                          # 交互模式
 python3 -m nyra ui --open                # 本地网页界面
 ```
+
+想一键装到 `~/.local/bin`（可选 systemd 服务）：见 [docs/linux-install.md](docs/linux-install.md)；已 clone 好仓库时跑 `./scripts/install.sh --source . --with-systemd`。
+
+想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
+想拿现成的发布包（tarball / .deb）：见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build_package.sh`。
 
 交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
 
@@ -132,7 +137,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 540 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 573 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可
