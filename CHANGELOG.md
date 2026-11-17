@@ -1,3 +1,7 @@
+## 未发布：ToolJournal 跨工具结果歧义保守计数（2026-11-18）
+
+- 当 result 与同一调用 ID 的 intent 工具名不一致时，`inspect()` 保留 `journal_ambiguous=true`，但不再将其计入 `reported_ok` 或 `reported_errors`，改计 `unknown_outcomes`。新增回归测试源码；仅静态检查，未执行测试或 CI。
+
 ## 未发布：ToolJournal 孤立结果计入未知状态（2026-11-18）
 
 - 当结果事件存在但对应 intent 缺失时，`inspect()` 将该孤立结果计入 `unknown_outcomes`，避免在 `journal_ambiguous=true` 时仍显示零未知结果。新增回归测试源码；仅静态审阅，未运行测试。
