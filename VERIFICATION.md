@@ -5,34 +5,34 @@
 - `tests/test_eigenflux_policy.py`：默认拒绝所有行为、必须用户 `--confirm`、群聊/机器人和能力隔离、撤销及审计、SHA-256 过期修改拒绝、私有权限文件、未知能力/账户拒绝、损坏文件和符号链接拒绝。
 - 验证删除同 ID 群并重建时，旧 Home 和旧本地网络意向不被继承。`tests/test_eigenflux_adapter.py` 同步验证新建群带随机实例标记，历史房间目录路径兼容。
 - `nyra eigenflux policy` CLI 的 allow/deny/show/audit 不调用 Provider、MCP、外部 EigenFlux CLI 或宿主 scheduler；无实际模型、网络或密钥操作，所有策略结果都不能声称完成 onboarding。
-- GitHub Actions [PR #22 运行 43832998445](https://github.com/js2005happy/angel/actions/runs/43832998445)：Ubuntu Python 3.10/3.12 与 Windows Python 3.12 全通过；Windows 共执行 356 项 unittest。模拟网络工具与子进程，无真实 EigenFlux 安装、登录、网络调用或付费模型费用。
+- GitHub Actions [PR #22 运行 43832998445](https://github.com/js2005happy/nyra/actions/runs/43832998445)：Ubuntu Python 3.10/3.12 与 Windows Python 3.12 全通过；Windows 共执行 356 项 unittest。模拟网络工具与子进程，无真实 EigenFlux 安装、登录、网络调用或付费模型费用。
 
 ## 已验证：EigenFlux bare-CLI 本地适配准备（PR #21）
 
 - `tests/test_eigenflux_adapter.py`：主 Agent Home 不随会话/cwd 变化；不同群/机器人成员 Home 无重叠；未知机器人、非法 ID、符号链接路径拒绝。
 - 默认 doctor 不读取 CLI 版本、不调用子进程且不创建任何身份目录；显式 `--check` 固定只允许两条本地 CLI 命令，传递凭据最小环境变量，并按超时或命令错误报告 incomplete，不虚报网络已连接。
 - CLI 集成不会创建模型 Provider、MCP 或 scheduler，全部测试采用临时目录与模拟命令，没有真实安装、EigenFlux 网络请求或模型调用。
-- GitHub Actions [PR #21 CI 43830402473](https://github.com/js2005happy/angel/actions/runs/43830402473)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过，Windows 运行 342 项 unittest。全部 EigenFlux 命令使用 mock，未进行实际安装、登录、网络发布或付费模型调用。
+- GitHub Actions [PR #21 CI 43830402473](https://github.com/js2005happy/nyra/actions/runs/43830402473)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过，Windows 运行 342 项 unittest。全部 EigenFlux 命令使用 mock，未进行实际安装、登录、网络发布或付费模型调用。
 
 ## 已验证：Poppy OAuth issuer 双向核验（PR #20）
 
 - `tests/test_poppy_identity.py` 检验公司域名 → protected resource → issuer metadata → issuer `protected_resources` 反向绑定，多个 issuer 的 `auth.issuer` 选择及单 issuer 自动确认。
 - 测试合法 404、合法无 issuer、非法 403/超时不降级；错误资源、错配发行方、无 `refresh_token`、无 revocation/token/authorization 端点和重定向均失败关闭。
 - CLI `--inspect-poppy-identity` 不调用 Provider/MCP/外部 API；只读 Agent 工具必须显式 `--poppy`；结果不声称已登录、获得 OAuth 令牌或支持远端操作。
-- GitHub Actions [PR #20 CI 43827185087](https://github.com/js2005happy/angel/actions/runs/43827185087)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部成功；Windows 运行 330 项 unittest。测试使用 mocked HTTPS，无真实 OAuth、远端 MCP 或付费模型调用。
+- GitHub Actions [PR #20 CI 43827185087](https://github.com/js2005happy/nyra/actions/runs/43827185087)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部成功；Windows 运行 330 项 unittest。测试使用 mocked HTTPS，无真实 OAuth、远端 MCP 或付费模型调用。
 
 ## 已验证：Poppy 站点授权意向账本（PR #19）
 
 - `tests/test_poppy_permissions.py`：默认拒绝、按完整站点/账户别名/scope 隔离，CLI grant 强制 `--confirm`，revoke 与审计，SHA-256 版本校验，损坏文件/符号链接拒绝、非公开域名/错误 scope 拒绝。
 - 只读 Agent 工具 `poppy_permission_check` 仅在 `--poppy` 开启，不能通过模型工具 grant/revoke，`local_intent=recorded` 依然 `may_execute_remote_action=false`。
 - Poppy 1.0 `scope_hints` 未知 changes 按不可逆、个人数据字段缺失按未知处理，均不等于真实远端授权。
-- GitHub Actions [PR #19 运行 43825501917](https://github.com/js2005happy/angel/actions/runs/43825501917)：Ubuntu Python 3.10/3.12 与 Windows Python 3.12 全通过，Windows 共执行 313 项测试。全部采用临时目录和 mock，无真实网络或模型 API 花费。
+- GitHub Actions [PR #19 运行 43825501917](https://github.com/js2005happy/nyra/actions/runs/43825501917)：Ubuntu Python 3.10/3.12 与 Windows Python 3.12 全通过，Windows 共执行 313 项测试。全部采用临时目录和 mock，无真实网络或模型 API 花费。
 - 后续 OAuth Session、HTTP MCP 与真实远端操作审批不在本 PR，不能把本地意向当作可执行授权。
 
 ## 已验证：Poppy 1.0 公共发现客户端首阶段（PR #18）
 
 - `tests/test_poppy.py` 验证：公共域名标准发现、精确重定向路径、Poppy 1.0 及同主机备选版本、组织域名绑定、HTTP/URL 凭据/端口拒绝、公开 DNS 检查与 pinned-IP TLS、默认隐藏工具/只读显式开启、无需 Provider 的 CLI 诊断。
-- GitHub Actions [PR #18 运行 43823881880](https://github.com/js2005happy/angel/actions/runs/43823881880)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过，Windows 测试共 299 项。无真实外站请求、付费模型调用或外部 MCP 连接；网络层使用模拟 HTTPS/DNS 回归。
+- GitHub Actions [PR #18 运行 43823881880](https://github.com/js2005happy/nyra/actions/runs/43823881880)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过，Windows 测试共 299 项。无真实外站请求、付费模型调用或外部 MCP 连接；网络层使用模拟 HTTPS/DNS 回归。
 - 已知限制：尚未实现 Poppy Session、OAuth issuer、DPoP、API 资源令牌或 UCP 商务调用；本阶段只发现而不执行。
 
 ## 已验证：长期记忆浏览器（PR #17）
@@ -40,14 +40,14 @@
 - `tests/test_memory_browser.py` 测试全局及独立机器人完整记忆读写、token 鉴权、未知机器人及路径穿越拒绝、符号链接不越界、超过 64 KiB 不允许网页编辑。
 - 模拟另一个 Agent 在读取与保存之间调用 `append_memory`：确认服务器返回 409 且不会覆盖新记忆；文件修订号按原始 UTF-8 字节 SHA-256 校验。
 - 测试手动与自动会话压缩不改动长期 MEMORY.md 原始内容，并且 Agent 下次任务仍加载所选记忆。测试使用假 Provider，不消耗真实模型 API。
-- GitHub Actions [PR #17 运行 43821614526](https://github.com/js2005happy/angel/actions/runs/43821614526)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过；Windows 运行 281 项 unittest。测试没有真实模型 API 费用。
+- GitHub Actions [PR #17 运行 43821614526](https://github.com/js2005happy/nyra/actions/runs/43821614526)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过；Windows 运行 281 项 unittest。测试没有真实模型 API 费用。
 - 保留限制：没有跨进程锁，也未实现所有历史记忆的语义自动检索；本期仅管理完整文件并保留原有最近 40 行注入策略。
 
 ## 已验证：单文件 apply_patch、审批 diff 和 /diff（PR #16）
 
 - `tests/test_apply_patch.py`：严格 hunk 匹配、多段修改/插入/删除、过期文件、错误行号、LF/CRLF、无尾换行、越界保护、权限审批、审批中并发修改、检查点撤销及 Web UI 多行预览。
 - `tests/test_checkpoint_cli.py`：实际 REPL `/diff` 查看最新检查点，并在 `/undo` 后不再显示原差异。
-- GitHub Actions [PR #16 CI 43814541490](https://github.com/js2005happy/angel/actions/runs/43814541490)：Ubuntu Python 3.10、Ubuntu Python 3.12 和 Windows Python 3.12 全部通过，Windows unittest 日志显示 265 项通过。测试用假 Provider，没有实际模型 API 消费。
+- GitHub Actions [PR #16 CI 43814541490](https://github.com/js2005happy/nyra/actions/runs/43814541490)：Ubuntu Python 3.10、Ubuntu Python 3.12 和 Windows Python 3.12 全部通过，Windows unittest 日志显示 265 项通过。测试用假 Provider，没有实际模型 API 消费。
 - 限制：不增加 Shell、MCP、E2B 写入能力，也不提供跨文件补丁原子事务、完整工作树 diff 或 OS 级沙箱。
 
 ## 已验证：本地文件检查点与 /undo、/rewind（PR #15）
@@ -55,7 +55,7 @@
 - `tests/test_checkpoints.py` 验证新建/覆盖/编辑/plan 以及二进制原件恢复、一次任务多次写入只有一条检查点、子 Agent 继承、跨轮 rewind、重启后的恢复。
 - 验证文件被用户修改、原始备份损坏、出现符号链接/越界时拒绝回滚，所有文件的冲突预检先于任何恢复；文件过大或轮次超限失败保护。E2B 写入不产生虚假的本地检查点。
 - `tests/test_checkpoint_cli.py` 使用假模型驱动交互 REPL 验证 /undo、/rewind 2、非法轮数、/new 会话隔离和撤销后会话通知。
-- GitHub Actions [PR #15 运行 43811411177](https://github.com/js2005happy/angel/actions/runs/43811411177)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过；Windows 运行 247 项 unittest。使用临时目录和假模型，无真实 API 费用。
+- GitHub Actions [PR #15 运行 43811411177](https://github.com/js2005happy/nyra/actions/runs/43811411177)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过；Windows 运行 247 项 unittest。使用临时目录和假模型，无真实 API 费用。
 - 限制：Shell/MCP/E2B/HTTP 不在范围内，多文件恢复不是 OS 事务，异常退出可能留下不能自动安全恢复的未完成记录。
 
 
@@ -63,7 +63,7 @@
 
 - `tests/test_workspace_writes.py` 更新原有会话授权行为：`a` 仅对同一文件和工具有效，换文件/工具再批准；Shell 同时匹配规范化 cwd、timeout、后端和命令文本。
 - 新增工作区外的 ../、绝对路径、符号链接的 shell cwd 拒绝测试；模拟 E2B 拒绝工作区外 cwd、合法相对 cwd 可执行；Web UI 回调不会被旧授权绕过。
-- GitHub Actions [PR #14 CI 43804261790](https://github.com/js2005happy/angel/actions/runs/43804261790)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过；Windows 日志显示 227 项 unittest 通过。测试使用临时目录和 fake backend，无真实 API 调用。
+- GitHub Actions [PR #14 CI 43804261790](https://github.com/js2005happy/nyra/actions/runs/43804261790)：Ubuntu Python 3.10/3.12 和 Windows Python 3.12 全部通过；Windows 日志显示 227 项 unittest 通过。测试使用临时目录和 fake backend，无真实 API 调用。
 - 已知限制：尚不测试或承诺 OS 沙箱、命令内部的跨目录访问或远端 E2B 符号链接隔离。
 
 
@@ -78,7 +78,7 @@
 
 - `tests/test_plan_mode.py` 使用模拟 Provider 测试只读工具白名单、路径穿越与符号链接、拒绝 shell/写入/MCP、旧计划在失败后不变、SHA-256 绑定批准。
 - CLI 测试验证规划阶段不实例化 Agent/MCP/E2B；执行默认 auto（包括全权配置的情况），错误哈希不启动 Agent，与 JSONL 冲突得到错误。
-- GitHub Actions [PR #12 CI 运行 43799280549](https://github.com/js2005happy/angel/actions/runs/43799280549)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过；Windows 日志显示 211 项 unittest 全部通过。测试使用假模型，无实际 API 费用。
+- GitHub Actions [PR #12 CI 运行 43799280549](https://github.com/js2005happy/nyra/actions/runs/43799280549)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 全部通过；Windows 日志显示 211 项 unittest 全部通过。测试使用假模型，无实际 API 费用。
 
 
 ## 未发布：memory_append / save_skill 测试补齐（2026-11-16）
@@ -119,7 +119,7 @@
 
 ## 未发布：跨平台稳定性修复（2026-11-16）
 
-- GitHub Actions [运行记录](https://github.com/js2005happy/angel/actions/runs/43778155074)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 均通过语法编译、单元测试、CLI 版本检查。
+- GitHub Actions [运行记录](https://github.com/js2005happy/nyra/actions/runs/43778155074)：Ubuntu Python 3.10、Ubuntu Python 3.12、Windows Python 3.12 均通过语法编译、单元测试、CLI 版本检查。
 - Windows 任务日志显示 `Ran 67 tests`，其中包含新增 5 项 Windows/MCP/沙盒路径回归测试；测试使用 mock 和本地子进程，不需要真实模型或 E2B 凭证。
 - 修复了 Windows 匿名管道无法使用 `select.select()` 的 MCP stdio 超时问题；Python MCP 服务默认使用 UTF-8 输出；旧代码页的 CLI/daemon 输出自动安全降级；E2B 路径始终按 Linux/POSIX 规则解析。
 - 本次证明的是跨平台模拟测试通过，**没有**重新进行真实模型 + E2B 端到端集成测试；v3 的既有端到端验证记录见下文。

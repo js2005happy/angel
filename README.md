@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://js2005happy.github.io/angel/">官网</a> ·
+  <a href="https://js2005happy.github.io/nyra/">官网</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="GUIDE.md">完整手册</a> ·
   <a href="ROADMAP.md">路线图</a> ·
@@ -55,7 +55,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/js2005happy/angel.git nyra && cd nyra
+git clone https://github.com/js2005happy/nyra.git nyra && cd nyra
 export DEEPSEEK_API_KEY=sk-...          # 或任意已支持的模型 Key
 
 python3 -m nyra "解释一下这个项目的结构"   # 一次性任务

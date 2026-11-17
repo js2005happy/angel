@@ -474,6 +474,7 @@ class CodexChatTests(unittest.TestCase):
                 FakePopen.returncode = 0
                 FakePopen.stderr_text = ""
 
+    @unittest.skipUnless(hasattr(os, "killpg"), "process groups are POSIX-only")
     def test_timeout_kills_process_group(self):
         FakePopen.raise_timeout = True
         with (
