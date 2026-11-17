@@ -89,6 +89,17 @@ Nyra 的代码全部是原创实现，没有复制任何项目的源码。下表
 - `--execute-plan --approve-plan SHA256` 用完整 64 位 SHA-256 校验文件所有字节。校验失败不会初始化执行 Agent；执行仅使用校验过的内存内容，不重新读取计划。
 - 批准计划不会提升工具权限；默认进入 `auto`，不继承配置中可能存在的 full；仅显式 `--mode full` 才取消工具级确认。本版本仅本地 CLI，不宣称 OS 沙箱或 Web UI 审批功能。
 
+### Worker 协议 v1（混合 Go 迁移第 1 批）
+
+Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent 会话。协议有版本号（`PROTOCOL_VERSION = 1`），完整格式见 `nyra/worker_protocol.py`；入口在 `nyra/worker.py`，用法 `python3 -m nyra.worker [--session ID] [--workdir DIR] [--provider NAME] [--model MODEL] [--mode MODE] [--max-turns N]`。
+
+- **通道**：请求走 stdin（一行一个 JSON），事件走 stdout（一行一个 JSON），日志走 stderr。Go 只负责传话，不做任何决定。
+- **请求**：`run`（`{prompt, session_id?, workdir?, provider?, model?, mode?, max_turns?, id?}`）、`approval_decision`（`{approval_id, approved}`）、`stop`、`ping`。`run` 只在 worker 启动时指定的单 provider 上跑，绝不兜底、不进定时任务。
+- **事件**：`run_started` / `run_completed` / `run_incomplete` / `run_failed` / `tool_start` / `tool_result` / `assistant` / `final` / `usage` / `approval_request` / `approval_result` / `model_switch` / `turn_limit` / `pong` / `error`。`approval_request` 的 `details` 里不含工具参数、不含执行结果。
+- **审批**：决定权永远在 Python 的 `tools.py`。worker 的 `approve_fn` 只把宿主（人）做的决定传进去，自己绝不批准；审批超时 600 秒、无匹配的决定、协议异常、stdin 关闭，一律按拒绝处理，绝不默认放行。
+- **入口形式**：设计文档写的是 `python3 -m nyra worker`（空格形式），但那要改 `nyra/__main__.py` 或 `nyra/cli.py`，第 1 批只新增文件、不改现有入口与冻结文件，所以先用模块形式 `python3 -m nyra.worker`，行为完全一致；空格形式等冻结解除后补，协议不变。
+- **测试**：`tests/test_worker_protocol.py`（22 项，协议编解码与校验、golden transcript、只读工具调用且不泄露参数与结果、2MB 大输出、非法输入与未知类型、无匹配的决定、`fallback: true` 与 provider 覆盖被拒、空 stdin 退出、审批通过/拒绝/超时交互式测试、真实子进程 ping/pong/stop 与 `--help`）。另有端到端冒烟：真实子进程 + 真实管道 + 本地桩 HTTP 模型，`run_completed` 输出 `smoke-ok`，usage total 13，零付费调用。
+
 ## 可编排 JSON Lines 执行协议
 
 - python3 -m nyra --json "任务" 通过独立的 json_mode.py 单次执行入口构造真实 Agent；Agent 仍走原有工具审批与 MCP 安全门，不因输出模式更换而提高权限。

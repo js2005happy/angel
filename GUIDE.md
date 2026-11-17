@@ -287,6 +287,20 @@ python3 -m nyra --provider codex "做点什么"
   4. **不进兜底链**：只能被显式选中（`--provider codex`、配置、`POST /api/provider`），绝不作为兜底目标；`resolve_fallback_chain("codex")` 只返回 `["codex"]`，链里出现 codex 会被跳过并记日志；定时任务与队列里绝不用——`Provider` 的直接构造在 auth 为 CLI 时会被拒绝，全仓库唯一的直接构造点正是定时任务的 `_make_task_agent`，所以定时任务选 codex 时会在启动前就报错。
 - **Claude 待办**：本轮只做了 Codex。Claude CLI（`claude`）尚未装到本机，且须先在用户电脑（Windows）上核查 `claude --version` 与登录情况，核查完再按同一套约束接进来。
 
+### Worker 协议 v1（混合 Go 迁移第 1 批）
+
+Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent 会话。协议有版本号（`PROTOCOL_VERSION = 1`），完整格式见 `nyra/worker_protocol.py`；入口在 `nyra/worker.py`：
+
+```bash
+python3 -m nyra.worker [--session ID] [--workdir DIR] [--provider NAME] [--model MODEL] [--mode MODE] [--max-turns N]
+```
+
+- **通道**：请求走 stdin（一行一个 JSON），事件走 stdout（一行一个 JSON），日志走 stderr。Go 只负责传话，不做任何决定。
+- **请求**：`run`（`{prompt, session_id?, workdir?, provider?, model?, mode?, max_turns?, id?}`）、`approval_decision`（`{approval_id, approved}`）、`stop`、`ping`。`run` 只在 worker 启动时指定的单 provider 上跑，绝不兜底、不进定时任务。
+- **事件**：`run_started` / `run_completed` / `run_incomplete` / `run_failed` / `tool_start` / `tool_result` / `assistant` / `final` / `usage` / `approval_request` / `approval_result` / `model_switch` / `turn_limit` / `pong` / `error`。`approval_request` 的 `details` 里不含工具参数、不含执行结果。
+- **审批**：决定权永远在 Python 的 `tools.py`。worker 的 `approve_fn` 只把宿主（人）做的决定传进去，自己绝不批准；审批超时 600 秒、无匹配的决定、协议异常、stdin 关闭，一律按拒绝处理，绝不默认放行。
+- **入口形式**：设计文档写的是 `python3 -m nyra worker`（空格形式），但那要改 `nyra/__main__.py` 或 `nyra/cli.py`，第 1 批只新增文件、不改现有入口与冻结文件，所以先用模块形式 `python3 -m nyra.worker`，行为完全一致；空格形式等冻结解除后补，协议不变。
+
 ### 模型自动兜底
 
 主模型调用失败时，Nyra 可以自动按链切换到下一个模型重试一次，不用手动换模型。默认链是 DeepSeek flash → Grok → 本地 Ollama（主模型始终排第一，每次调用都从主模型开始试）。

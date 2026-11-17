@@ -132,7 +132,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 518 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 540 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可

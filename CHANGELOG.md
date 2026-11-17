@@ -1,5 +1,14 @@
 # Nyra 变更记录
 
+## 未发布（worker 协议 + Python worker 入口，混合 Go 迁移第 1 批）
+
+- 新增 `nyra/worker_protocol.py`：协议 v1（`PROTOCOL_VERSION = 1`），子进程 + stdio JSONL；请求 `run` / `approval_decision` / `stop` / `ping`，事件 `run_started` / `run_completed` / `run_incomplete` / `run_failed` / `tool_start` / `tool_result` / `assistant` / `final` / `usage` / `approval_request` / `approval_result` / `model_switch` / `turn_limit` / `pong` / `error`；`APPROVAL_TIMEOUT = 600.0`（与 webui 一致）；`new_id`、`encode_line`、`decode_line`、`ensure_request_id`、`validate_run_request`、`validate_approval_decision`。
+- 新增 `nyra/worker.py`：`WorkerEmitter` 线程安全 stdout JSONL、`WorkerIO` 读线程 + 队列、reader 线程内直接回 `pong`、`Worker` 含 `approve_fn` / `on_agent_event` / `run_request` / `serve`、`build_agent` 用 `build_provider_chain` 传单元素链、永不兜底；`main()` 用 argparse；Agent 以 `interactive=True` 构造，审批才能到达 `approve_fn`。
+- 新增 `tests/test_worker_protocol.py`（22 项，见 DESIGN.md 的 Worker 协议一节）；端到端冒烟：真实子进程 + 真实管道 + 本地桩 HTTP 模型，`run_completed` 输出 `smoke-ok`，usage total 13，零付费调用。
+- 入口为模块形式 `python3 -m nyra.worker`（设计文档的空格形式 `python3 -m nyra worker` 须改 `nyra/__main__.py` 或 `nyra/cli.py`，第 1 批只新增文件、不改现有入口与冻结文件；行为一致，空格形式等冻结解除后补，协议不变）。
+- 审批决定权永远在 Python 的 `tools.py`：worker 的 `approve_fn` 只传话；审批超时、无匹配的决定、协议异常、stdin 关闭一律按拒绝处理。worker 不进兜底链、不进定时任务。
+- 测试 518 → 540 项，全部通过。
+
 ## 未发布（统一更名 Nyra + 官网新设计）
 
 - 全面使用 Nyra 名称：包目录 `nyra/`，命令 `python3 -m nyra`（子命令 `nyra schedule` / `nyra ui` / `nyra permissions` / `nyra eigenflux`），交互提示符 `nyra[auto] ›`，网页界面与文档同步。
