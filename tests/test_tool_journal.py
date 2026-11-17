@@ -15,6 +15,22 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_fdopen_failure_closes_opened_event_descriptor(self):
+        journal = ToolJournal("fdopen-failure", root=self.root)
+        journal.begin("shell")
+        opened = []
+
+        def fail_fdopen(fd, mode):
+            opened.append(fd)
+            raise OSError("simulated fdopen failure")
+
+        with mock.patch("angel.tool_journal.os.fdopen", side_effect=fail_fdopen):
+            with self.assertRaises(JournalError):
+                journal.inspect()
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(OSError):
+            os.fstat(opened[0])
+
     def test_new_session_directory_is_private_on_posix(self):
         # POSIX mkdir mode is reduced by umask, never widened by it.
         if os.name != "posix":
