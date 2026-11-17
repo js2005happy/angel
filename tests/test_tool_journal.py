@@ -38,6 +38,19 @@ class JournalTests(unittest.TestCase):
         # Fail closed without silently changing a pre-existing directory.
         self.assertEqual(__import__("stat").S_IMODE(path.stat().st_mode), 0o755)
 
+    def test_existing_permissive_event_file_is_rejected_on_posix(self):
+        if os.name != "posix":
+            self.skipTest("POSIX permissions only")
+        journal = ToolJournal("event-permissions", root=self.root)
+        call = journal.begin("shell")
+        event = journal.path / ("intent-" + call + ".json")
+        event.chmod(0o644)
+        with self.assertRaisesRegex(JournalError, "事件文件权限过宽"):
+            journal.inspect()
+        with self.assertRaisesRegex(JournalError, "事件文件权限过宽"):
+            journal.begin("shell")
+        self.assertEqual(__import__("stat").S_IMODE(event.stat().st_mode), 0o644)
+
     def test_posix_directory_fd_permissions_rechecked_after_open(self):
         # Simulate chmod after pathname validation but before fd validation.
         if os.name != "posix" or os.open not in os.supports_dir_fd:
