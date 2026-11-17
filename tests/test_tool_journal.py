@@ -122,6 +122,20 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(OSError):
             os.fstat(opened[0])
 
+    def test_mismatched_result_tool_is_unknown_not_reported_success(self):
+        journal = ToolJournal("mismatched-tool", root=self.root)
+        call = journal.begin("shell")
+        journal.finish(call, "shell", success=True)
+        result_path = journal.path / ("result-" + call + ".json")
+        record = json.loads(result_path.read_text(encoding="utf-8"))
+        record["tool"] = "http_post"
+        result_path.write_text(json.dumps(record), encoding="utf-8")
+        status = journal.inspect()
+        self.assertTrue(status["journal_ambiguous"])
+        self.assertEqual(status["unknown_outcomes"], 1)
+        self.assertEqual(status["reported_ok"], 0)
+        self.assertFalse(status["safe_to_auto_resume"])
+
     def test_new_session_directory_is_private_on_posix(self):
         # POSIX mkdir mode is reduced by umask, never widened by it.
         if os.name != "posix":
