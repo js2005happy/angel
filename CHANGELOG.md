@@ -1,5 +1,10 @@
 # Angel 变更记录
 
+## 未发布：日志文件名完整性（2026-11-17）
+- ToolJournal intent 改用 intent-<call_id>.json；读取时严格校验 intent/result 文件名与事件类型、call_id 对应，拒绝被重命名的结果事件。
+- 新增重命名、错配、重复 intent 的回归测试源码；未执行。不能防磁盘写入者删除文件，也未消除目录替换竞态。
+
+
 ## 未发布：工具日志跨进程结果槽去重（2026-11-17）
 
 - `ToolJournal` 的结果事件文件改为 `result-<call_id>.json`，使用标准库 `os.O_EXCL` 保证同一调用在多个进程竞争写结果时至多一个提交成功；intent 仍使用随机文件名。失败方抛出 `JournalError`，不覆盖已有结果。
