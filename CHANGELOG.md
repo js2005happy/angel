@@ -1,3 +1,7 @@
+## 未发布：ToolJournal Windows 目录联接失败关闭（2026-11-18）
+
+- 对日志目录及祖先路径增加标准库 `Path.is_junction()`（支持时）的 NTFS junction 检查，避免仅检查符号链接而遗漏目录联接。旧版 Python 无该 API 时保持原行为，不声称已解决 Windows ACL 或所有 reparse point。新增模拟回归测试源码；未运行测试/CI。
+
 ## 未发布：ToolJournal 跨工具结果歧义保守计数（2026-11-18）
 
 - 当 result 与同一调用 ID 的 intent 工具名不一致时，`inspect()` 保留 `journal_ambiguous=true`，但不再将其计入 `reported_ok` 或 `reported_errors`，改计 `unknown_outcomes`。新增回归测试源码；仅静态检查，未执行测试或 CI。
