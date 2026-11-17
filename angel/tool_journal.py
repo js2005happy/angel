@@ -106,8 +106,13 @@ class ToolJournal:
         }
         payload = (json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n").encode()
         # No append-in-place: a process crash never produces a partial JSON event.
-        # The final event filename is randomly unique; O_EXCL refuses overwrites.
-        filename = secrets.token_hex(16) + ".json"
+        # A deterministic result filename is the cross-process commit gate:
+        # only one writer can create a result for the same call_id. Intent
+        # files remain random. O_EXCL rejects a racing second finisher.
+        filename = (
+            secrets.token_hex(16) + ".json" if event == "intent"
+            else "result-" + call_id + ".json"
+        )
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
