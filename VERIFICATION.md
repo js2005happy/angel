@@ -1,3 +1,8 @@
+## 2026-11-17 ToolJournal 时间戳格式（仅静态审阅）
+
+- 静态核对写入格式 `datetime.now(timezone.utc).isoformat(timespec="seconds")`，读侧新增 `datetime.fromisoformat` 与 UTC/秒精度/规范化格式检查。
+- 新增非法日期、无时区、偏移时区、微秒和任意字符串的回归测试源码；未执行任何测试、编译或 CI。Windows ACL 与目录替换竞态仍未解决。
+
 ## 2026-11-17 ToolJournal 异常分类（仅静态审阅）
 
 - 确认 `_records()` 中 `JournalError` 是 `ValueError` 子类，原异常处理会将重复 JSON 字段等明确安全错误重新包装为泛化损坏错误；现在先原样抛出 `JournalError`。
