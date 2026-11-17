@@ -32,6 +32,29 @@ class JournalTests(unittest.TestCase):
         self.assertTrue(event_flags)
         self.assertTrue(all(flags & os.O_NONBLOCK for flags in event_flags))
 
+    def test_event_entry_swap_during_read_is_rejected(self):
+        from angel import tool_journal as module
+        journal = ToolJournal("entry-swap", root=self.root)
+        journal.begin("shell")
+        original = module.os.stat
+        seen = [0]
+
+        def changed(path, *args, **kwargs):
+            value = original(path, *args, **kwargs)
+            if str(path).endswith(".json") and kwargs.get("follow_symlinks") is False:
+                seen[0] += 1
+                if seen[0] == 2:
+                    from unittest.mock import Mock
+                    fake = Mock(wraps=value)
+                    fake.st_ino = value.st_ino + 1
+                    return fake
+            return value
+
+        with mock.patch.object(module.os, "stat", side_effect=changed):
+            with self.assertRaisesRegex(JournalError, "替换"):
+                journal.inspect()
+        self.assertEqual(seen[0], 2)
+
     def test_writer_fdopen_failure_closes_event_descriptor(self):
         # Both POSIX dir_fd and Windows path fallback share this ownership rule.
         journal = ToolJournal("write-fdopen-failure", root=self.root)
