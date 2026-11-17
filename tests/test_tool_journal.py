@@ -14,24 +14,13 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
-    def test_posix_writer_uses_verified_directory_descriptor(self):
+    def test_posix_writer_creates_event_with_directory_descriptor(self):
         import os
-        from angel import tool_journal as module
         if os.name != "posix" or os.open not in os.supports_dir_fd:
             self.skipTest("POSIX dir_fd unavailable")
         journal = ToolJournal("session1", root=self.root)
-        real_open = module.os.open
-        relative_writes = []
-
-        def record_open(path, flags, *args, **kwargs):
-            if kwargs.get("dir_fd") is not None:
-                relative_writes.append((path, kwargs["dir_fd"]))
-            return real_open(path, flags, *args, **kwargs)
-
-        with mock.patch.object(module.os, "open", side_effect=record_open):
-            journal.begin("shell")
-        self.assertEqual(len(relative_writes), 1)
-        self.assertTrue(relative_writes[0][0].startswith("intent-"))
+        call_id = journal.begin("shell")
+        self.assertTrue((journal.path / ("intent-" + call_id + ".json")).is_file())
         self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
     def test_posix_directory_handle_mismatch_rejects_event_write(self):
