@@ -38,6 +38,38 @@ def is_recoverable_provider_error(exc):
     return isinstance(exc, ProviderError) and exc.recoverable
 
 
+def _kind_for_status(code: int) -> str:
+    """Map an HTTP status code to a ProviderError kind."""
+    if code in (401, 403):
+        return "auth"
+    if code == 402:
+        return "quota"
+    if code == 429:
+        return "rate_limit"
+    if 500 <= code < 600:
+        return "server"
+    if 400 <= code < 500:
+        return "client"
+    return "server"
+
+
+def _http_error(code: int, body: str, action: str = "API 请求") -> ProviderError:
+    """Build a ProviderError for a failed HTTP response (body already redacted)."""
+    kind = _kind_for_status(code)
+    if kind == "auth":
+        message = (
+            f"认证失败 (HTTP {code})：API Key 无效或无权限，请检查凭证。"
+            f"详情：{body}"
+        )
+    elif kind == "quota":
+        message = f"余额不足 (HTTP 402)：请充值后再试。详情：{body}"
+    elif kind == "rate_limit":
+        message = f"请求过于频繁 (HTTP 429)：请稍后再试。详情：{body}"
+    else:
+        message = f"{action}失败 (HTTP {code})：{body}"
+    return ProviderError(message, status=code, kind=kind)
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ProviderError("API 请求被重定向，已拒绝", kind="redirect")
@@ -107,23 +139,12 @@ class Provider:
             text = text.replace(secret, "[已隐藏]")
         return text
 
-    def chat(
-        self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
-        timeout: float = 120.0,
-    ) -> dict:
-        payload = {"model": self.model, "messages": messages}
-        if tools is not None:
-            payload["tools"] = tools
+    def _apply_auth(self, request: urllib.request.Request) -> None:
+        """Add the Authorization header for this provider's auth method.
 
-        request = urllib.request.Request(
-            self.base_url + "/chat/completions",
-            method="POST",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-
+        Raises ProviderError(kind="config") when the key is missing or
+        the connector cannot be used. Shared by chat() and list_models().
+        """
         if self.auth == "env":
             if self.api_key is None:
                 name = self._redact(self.name)
@@ -152,6 +173,25 @@ class Provider:
         else:
             raise ProviderError("该 provider 的认证方式无效", kind="config")
 
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        timeout: float = 120.0,
+    ) -> dict:
+        payload = {"model": self.model, "messages": messages}
+        if tools is not None:
+            payload["tools"] = tools
+
+        request = urllib.request.Request(
+            self.base_url + "/chat/completions",
+            method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+
+        self._apply_auth(request)
+
         try:
             with build_opener_for(request.full_url, _NoRedirect()).open(
                 request, timeout=timeout
@@ -173,29 +213,7 @@ class Provider:
             finally:
                 exc.close()
             body = self._redact(body, request)[:1000]
-
-            if exc.code in (401, 403):
-                message = (
-                    f"认证失败 (HTTP {exc.code})："
-                    f"API Key 无效或无权限，请检查凭证。详情：{body}"
-                )
-                kind = "auth"
-            elif exc.code == 402:
-                message = f"余额不足 (HTTP 402)：请充值后再试。详情：{body}"
-                kind = "quota"
-            elif exc.code == 429:
-                message = f"请求过于频繁 (HTTP 429)：请稍后再试。详情：{body}"
-                kind = "rate_limit"
-            elif 500 <= exc.code < 600:
-                message = f"API 请求失败 (HTTP {exc.code})：{body}"
-                kind = "server"
-            elif 400 <= exc.code < 500:
-                message = f"API 请求失败 (HTTP {exc.code})：{body}"
-                kind = "client"
-            else:
-                message = f"API 请求失败 (HTTP {exc.code})：{body}"
-                kind = "server"
-            raise ProviderError(message, status=exc.code, kind=kind) from None
+            raise _http_error(exc.code, body) from None
 
         except urllib.error.URLError as exc:
             # socket.timeout is an alias of TimeoutError in Python 3.12.
@@ -209,6 +227,57 @@ class Provider:
 
         except TimeoutError:
             raise ProviderError("API 请求超时，请稍后重试", kind="timeout") from None
+
+    def list_models(self, timeout: float = 30.0) -> list[str]:
+        """Return model ids from GET {base_url}/models (OpenAI shape).
+
+        Works for any OpenAI-compatible endpoint (including local
+        Ollama). Raises ProviderError with the same error kinds as
+        chat(): auth failures are not recoverable, quota / rate limit /
+        server / timeout / network errors are. A response without a
+        `data` list, or entries without a string `id`, is a parse error.
+        """
+        request = urllib.request.Request(
+            self.base_url + "/models",
+            method="GET",
+            headers={"Content-Type": "application/json"},
+        )
+        self._apply_auth(request)
+
+        try:
+            with build_opener_for(request.full_url, _NoRedirect()).open(
+                request, timeout=timeout
+            ) as response:
+                raw_body = response.read()
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            finally:
+                exc.close()
+            body = self._redact(body, request)[:1000]
+            raise _http_error(exc.code, body, action="列出模型") from None
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise ProviderError("API 请求超时，请稍后重试", kind="timeout") from None
+            message = self._redact(
+                f"网络错误，无法连接到 {self.base_url}：{exc.reason}",
+                request,
+            )
+            raise ProviderError(message, kind="network") from None
+        except TimeoutError:
+            raise ProviderError("API 请求超时，请稍后重试", kind="timeout") from None
+
+        try:
+            result = json.loads(raw_body)
+        except (ValueError, UnicodeError):
+            raise ProviderError("API 返回了无法解析的响应", kind="parse") from None
+        if not isinstance(result, dict) or not isinstance(result.get("data"), list):
+            raise ProviderError("API 返回了无法解析的模型列表", kind="parse")
+        models = []
+        for item in result["data"]:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                models.append(item["id"])
+        return models
 
 
 def describe_provider(provider: Provider) -> str:
@@ -260,6 +329,9 @@ class FallbackProvider:
 
     def has_credentials(self):
         return self.providers[self.active_index].has_credentials()
+
+    def list_models(self, timeout=30.0):
+        return self.providers[self.active_index].list_models(timeout=timeout)
 
     def chat(self, messages, tools=None, timeout=120.0):
         attempted = []

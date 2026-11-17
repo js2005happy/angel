@@ -9,6 +9,7 @@ from .console import ToolPrinter, configure_stdio, style, use_color
 from .config import (
     ANGEL_HOME,
     VALID_MODES,
+    get_provider_presets,
     list_profiles,
     load_config,
     resolve_fallback_chain,
@@ -282,7 +283,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--provider",
-        help="模型 provider：deepseek / xai / openrouter / ollama / openai / custom",
+        help="模型 provider：deepseek / xai / openrouter / ollama / openai / qwen / kimi / glm / gemini / mistral / groq / together / custom（~/.angel/config.json 的 custom_providers 可自定义任意兼容接口）",
+    )
+    parser.add_argument(
+        "--list-providers",
+        action="store_true",
+        help="列出所有可用 provider（内置预设 + 自定义）及默认模型",
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="列出当前 provider 的 /models 接口返回的可用模型 id",
     )
     parser.add_argument("--model", help="模型 id")
     parser.add_argument(
@@ -638,6 +649,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"- {name}")
         return 0
 
+    if args.list_providers:
+        try:
+            presets = get_provider_presets(config)
+        except ValueError as exc:
+            print(f"错误：{exc}")
+            return 1
+        for name in sorted(presets):
+            preset = presets[name]
+            env_key = preset.get("env_key")
+            key_note = env_key if env_key else "无需 Key"
+            print(
+                f"- {name}：{preset.get('default_model')} @ {preset.get('base_url')}（{key_note}）"
+            )
+        print("自定义 provider：在 ~/.angel/config.json 的 custom_providers 里添加。")
+        return 0
+
     try:
         profile = resolve_profile(args.profile, config)
     except ValueError as exc:
@@ -688,6 +715,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     interactive = sys.stdin.isatty()
+    if args.list_models:
+        try:
+            models = provider.list_models()
+        except ProviderError as exc:
+            print(f"错误：{exc}")
+            return 1
+        if not models:
+            print(f"{provider.name} 未返回可用模型。")
+        else:
+            for model_id in models:
+                print(f"- {model_id}")
+        return 0
+
     if args.list_mcp:
         manager = build_mcp_manager(mode=mode, interactive=interactive)
         if manager is None:

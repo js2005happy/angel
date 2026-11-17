@@ -1,5 +1,14 @@
 # Angel 变更记录
 
+## 未发布（通用模型接入）
+
+- 新增 7 个内置 provider 预设（只写公开官方 endpoint 与默认模型，不写 Key）：Qwen（DashScope 兼容模式，`qwen-plus`）、Kimi（月之暗面中国区，`kimi-k3`）、GLM（智谱 BigModel，`glm-5.3`）、Gemini（Google OpenAI 兼容端点，`gemini-2.5-flash`）、Mistral（`mistral-small-latest`）、Groq（`llama-3.3-70b-versatile`）、Together（`meta-llama/Llama-3.3-70B-Instruct-Turbo`）；预设的 endpoint 与默认模型均经网页核实。内置预设共 13 个。
+- 新增配置项 `custom_providers`：`~/.angel/config.json` 里可自定义任意 OpenAI 兼容接口（`base_url` + `default_model` 必填，`env_key`/`models`/`allowed_hosts` 可选，未知字段忽略；同名覆盖内置预设；缺 `base_url`/`default_model` 或协议不是 http/https 时解析直接报错并点名）。自定义名字可进 fallback 链；`resolve_provider` 会校验 base_url 协议。
+- `Provider` 需要 Key 但环境变量没设时不再静默走无认证请求：`resolve_provider` 保持 `auth="env"` 且 Key 为空，`has_credentials()` 为 False（CLI 会显示配置提示），`chat()`/`list_models()` 直接报“未设置 API Key”的配置错误。无 Key 需求的 provider（如本地 Ollama）不受影响。
+- 新增 `Provider.list_models()`（`GET {base_url}/models`，OpenAI 形状，`FallbackProvider` 同样支持）：401/403 不兜底，402/429/5xx/超时/网络错误沿用上一轮的错误分类；无 `data` 列表或条目无字符串 `id` 时为解析错误。CLI 新增 `--list-providers`（列出全部 provider 与默认模型）与 `--list-models`（列出当前 provider 的实时模型 id）。
+- `providers.py` 内部整理：认证头逻辑抽为 `_apply_auth`，HTTP 状态到错误种类的映射抽为 `_kind_for_status` / `_http_error`，`chat()` 的报错文本与行为不变。
+- 新增 `tests/test_generic_providers.py`（29 个）：预设 endpoint/默认模型核实、自定义解析与容错、fallback 链含自定义名字、`list_models` 的 mock opener 映射、CLI 两个 flag。测试总数 407 → 436，全部通过。
+
 ## 未发布（模型自动兜底）
 
 - 新增 `angel/providers.py` 的 `FallbackProvider`：与 `Provider` 同样的 `chat()` 接口，按链逐个试模型；主模型遇可恢复失败（402 余额不足、429 限流、5xx、超时、网络错误）时自动切换到下一个并重试一次，每次切换记录到 `switches` 并经 `on_switch` 回调通知；认证失败（401/403）与配置问题（没设 Key、响应无法解析等）直接抛出，不兜底；全部模型都失败时报错列出每个模型的失败原因。每次调用都从主模型开始试。

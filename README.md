@@ -213,7 +213,37 @@ Angel 支持任何 OpenAI 兼容接口。配置方式按优先级：命令行参
 | openrouter | `OPENROUTER_API_KEY` | `nousresearch/hermes-4-14b` | 可用 Hermes 等开源权重模型 |
 | ollama（本地） | 无需 Key | `qwen2.5:7b` | 需本地跑 Ollama |
 | openai | `OPENAI_API_KEY` | `gpt-4o-mini` | |
-| custom | `ANGEL_API_KEY` + `ANGEL_BASE_URL` + `ANGEL_MODEL` | — | 任意兼容接口 |
+| qwen（通义千问） | `DASHSCOPE_API_KEY` | `qwen-plus` | 阿里 DashScope 兼容模式 |
+| kimi（Kimi） | `MOONSHOT_API_KEY` | `kimi-k3` | 月之暗面，中国区 endpoint |
+| glm（智谱） | `ZHIPU_API_KEY` | `glm-5.3` | 智谱 BigModel 兼容模式 |
+| gemini | `GEMINI_API_KEY` | `gemini-2.5-flash` | Google OpenAI 兼容端点 |
+| mistral | `MISTRAL_API_KEY` | `mistral-small-latest` | |
+| groq | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | 极快推理，免费额度 |
+| together | `TOGETHER_API_KEY` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | 一个 Key 用上百个开源模型 |
+| custom | `ANGEL_API_KEY` + `ANGEL_BASE_URL` + `ANGEL_MODEL` | — | 任意兼容接口（环境变量方式） |
+
+### 自定义 provider 与列出模型
+
+上面没有的模型也能接：只要它走 OpenAI `/v1/chat/completions` 协议，在 `~/.angel/config.json` 的 `custom_providers` 里加一条就行，Key 只从环境变量读，不写进配置：
+
+```json
+{
+  "custom_providers": {
+    "myllm": {
+      "base_url": "https://llm.example.com/v1",
+      "default_model": "myllm-1",
+      "env_key": "MYLLM_API_KEY",
+      "models": ["myllm-1", "myllm-2"]
+    }
+  }
+}
+```
+
+- `base_url` 和 `default_model` 必填，且 `base_url` 必须是 http/https；`env_key` 是存 Key 的环境变量名（不填则无需 Key，或用 `ANGEL_API_KEY`）；`models`、`allowed_hosts` 可选；未知字段会被忽略。
+- 同名自定义会覆盖内置预设（比如自己搭的 DeepSeek 兼容代理可以覆盖 `deepseek`）；写错的自定义（缺 `base_url`/`default_model`、协议不是 http/https）会在解析时直接报错并点名，不会静默失效。
+- 自定义 provider 可以进 fallback 链：`"fallback_providers": ["myllm", "deepseek"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="myllm,deepseek"`。
+- 某个 provider 需要 Key 但环境变量没设时，Angel 会直接报“未设置 API Key”并提示配置，不会先发一个无认证的请求再等服务端 401。
+- 列出可用模型：`python3 -m angel --list-providers` 看全部 provider 与默认模型；`python3 -m angel --provider qwen --list-models` 问该 endpoint 的 `/models` 接口拿实时模型列表（需要 Key，Ollama 本地不用）。
 
 也可以直接用已保存的连接器凭证：DeepSeek 和 xAI 的 Key 已通过安全流程保存，**不用再填 Key**，直接用：
 
@@ -234,7 +264,7 @@ Key 只从环境变量或已保存的连接器读取，**绝不会**打印、记
 - 不会兜底的失败：认证失败（401/403，换模型也解决不了）、配置问题（没设 Key、响应无法解析等）。
 - 每次切换都会在终端打印一条明确提示（走 stderr，一次性任务的 stdout 仍只有答案），例如：`模型切换：ollama 失败（网络错误……），已切换到 deepseek 继续`。
 - 默认开启。关闭方式（三选一）：`~/.angel/config.json` 里设 `"fallback_enabled": false`；环境变量 `ANGEL_FALLBACK=0`；单次加 `--no-fallback`。
-- 改链：`~/.angel/config.json` 里设 `"fallback_providers": ["deepseek", "xai", "ollama"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="deepseek,xai,ollama"`（逗号分隔，主模型自动排第一，未知名字会被跳过）。备用模型用各自的默认模型。
+- 改链：`~/.angel/config.json` 里设 `"fallback_providers": ["deepseek", "xai", "ollama"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="deepseek,xai,ollama"`（逗号分隔，主模型自动排第一，未知名字会被跳过）。备用模型用各自的默认模型；自定义 provider 的名字也可以写进链里。
 - 全部备用模型都失败时，报错会列出每个模型失败的原因，不会静默失败。
 - 目前只接在命令行入口（交互 REPL、一次性任务、`--plan`）；`--json` 单次模式、网页界面、群聊和定时任务仍用单个 provider，后续再接。
 
@@ -424,7 +454,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 407 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 436 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -438,7 +468,7 @@ angel/
 │   ├── __main__.py    入口：python3 -m angel
 │   ├── cli.py         参数解析 + 交互 REPL + schedule 子命令
 │   ├── agent.py       agent 主循环（plan → 工具调用 → 汇报）
-│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）
+│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）+ 通用 provider 预设与 /models 发现
 │   ├── commands.py    自定义斜杠命令 + /init 的 AGENTS.md 模板
 │   ├── tools.py       15 个工具 + 审批 + shell 黑名单
 │   ├── skills.py      技能加载 / 匹配 / 保存

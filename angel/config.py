@@ -21,6 +21,9 @@ DEFAULT_CONFIG = {
     "mcp_enabled": False,
     "fallback_enabled": True,  # 主模型可恢复失败时自动切换备用模型。
     "fallback_providers": ["deepseek", "xai", "ollama"],
+    # 自定义 provider：名字 -> {base_url, default_model, env_key?, models?, allowed_hosts?}。
+    # 任意走 OpenAI /v1/chat/completions 协议的模型都能接；Key 只从环境变量读。
+    "custom_providers": {},
     "sandbox": "local",
     "e2b_template": "base",
     "e2b_timeout": 3600,
@@ -74,6 +77,77 @@ PROVIDERS = {
         "allowed_hosts": [],
         "models": ["gpt-4o-mini"],
     },
+    # 以下预设只写公开的官方 endpoint 与默认模型，不写任何 Key。
+    # 模型名会随厂商更新而变化，可用 --model 或 --list-models 覆盖/查询。
+    "qwen": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "default_model": "qwen-plus",
+        "env_key": "DASHSCOPE_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["dashscope.aliyuncs.com"],
+        "models": ["qwen-plus", "qwen-turbo", "qwen3-max"],
+    },
+    "kimi": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "default_model": "kimi-k3",
+        "env_key": "MOONSHOT_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["api.moonshot.cn", "api.moonshot.ai"],
+        "models": ["kimi-k3", "kimi-k2.6", "kimi-k2.5"],
+    },
+    "glm": {
+        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+        "default_model": "glm-5.3",
+        "env_key": "ZHIPU_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["open.bigmodel.cn", "api.z.ai"],
+        "models": ["glm-5.3", "glm-5.2", "glm-4.7-flash", "glm-4.5-flash"],
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "default_model": "gemini-2.5-flash",
+        "env_key": "GEMINI_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["generativelanguage.googleapis.com"],
+        "models": ["gemini-2.5-flash", "gemini-2.5-pro"],
+    },
+    "mistral": {
+        "base_url": "https://api.mistral.ai/v1",
+        "default_model": "mistral-small-latest",
+        "env_key": "MISTRAL_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["api.mistral.ai"],
+        "models": [
+            "mistral-small-latest",
+            "mistral-medium-latest",
+            "mistral-large-latest",
+            "codestral-latest",
+        ],
+    },
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "default_model": "llama-3.3-70b-versatile",
+        "env_key": "GROQ_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["api.groq.com"],
+        "models": [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "openai/gpt-oss-120b",
+        ],
+    },
+    "together": {
+        "base_url": "https://api.together.xyz/v1",
+        "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "env_key": "TOGETHER_API_KEY",
+        "connector": None,
+        "allowed_hosts": ["api.together.xyz"],
+        "models": [
+            "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+            "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
+            "Qwen/Qwen2.5-72B-Instruct-Turbo",
+        ],
+    },
     "custom": {
         "base_url": None,
         "default_model": None,
@@ -83,6 +157,53 @@ PROVIDERS = {
         "models": [],
     },
 }
+
+
+def get_provider_presets(config: dict | None = None) -> dict:
+    """Return built-in presets merged with config["custom_providers"].
+
+    A custom provider entry must be an object with `base_url` and
+    `default_model` (both required, non-empty strings). Optional keys:
+    `env_key` (env var holding the API key), `models` (known model ids),
+    `allowed_hosts`, `connector`. Unknown fields are ignored. A custom
+    entry with the same name as a built-in preset overrides it.
+    Entries that are not objects, or miss base_url / default_model,
+    raise ValueError naming the provider. base_url must be http/https.
+    """
+    presets = {name: dict(preset) for name, preset in PROVIDERS.items()}
+    cfg = config if config is not None else {}
+    custom = cfg.get("custom_providers") or {}
+    if not isinstance(custom, dict):
+        raise ValueError("custom_providers must be an object")
+    for name, entry in custom.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"Custom provider {name} must be an object")
+        base_url = entry.get("base_url")
+        default_model = entry.get("default_model")
+        if not base_url or not isinstance(base_url, str):
+            raise ValueError(f"Custom provider {name} needs base_url")
+        if not default_model or not isinstance(default_model, str):
+            raise ValueError(f"Custom provider {name} needs default_model")
+        scheme = base_url.strip().lower().split("://", 1)[0]
+        if "://" not in base_url or scheme not in ("http", "https"):
+            raise ValueError(
+                f"Custom provider {name} base_url must start with http:// or https://"
+            )
+        merged = {
+            "base_url": base_url,
+            "default_model": default_model,
+            "env_key": entry.get("env_key"),
+            "connector": entry.get("connector"),
+            "allowed_hosts": list(entry.get("allowed_hosts") or []),
+            "models": list(entry.get("models") or []),
+        }
+        presets[name] = merged
+    return presets
+
+
+def known_provider_names(config: dict | None = None) -> set:
+    """Return every provider name Angel can resolve (built-in + custom)."""
+    return set(get_provider_presets(config))
 
 
 @dataclass
@@ -140,11 +261,12 @@ def resolve_provider(
         or get_config().get("provider")
         or "deepseek"
     )
-    if name not in PROVIDERS:
-        available = ", ".join(PROVIDERS)
+    presets = get_provider_presets(get_config())
+    if name not in presets:
+        available = ", ".join(sorted(presets))
         raise ValueError(f"Unknown provider: {name}. Available: {available}")
 
-    preset = PROVIDERS[name]
+    preset = presets[name]
 
     if name == "custom":
         base_url = os.environ.get("ANGEL_BASE_URL")
@@ -152,6 +274,12 @@ def resolve_provider(
             raise ValueError("Custom provider needs ANGEL_BASE_URL")
     else:
         base_url = preset["base_url"]
+
+    scheme = (base_url or "").strip().lower().split("://", 1)[0]
+    if "://" not in (base_url or "") or scheme not in ("http", "https"):
+        raise ValueError(
+            f"Provider {name} base_url must start with http:// or https://"
+        )
 
     resolved_model = model
     if resolved_model is None:
@@ -175,6 +303,12 @@ def resolve_provider(
         auth = "env"
     elif connector_name is not None:
         auth = "connector"
+    elif env_key is not None:
+        # Key env var is configured but unset: keep auth "env" with no
+        # key, so has_credentials() is False and chat() fails clearly
+        # ("未设置 API Key") instead of silently sending an
+        # unauthenticated request that only fails at the server.
+        auth = "env"
     else:
         auth = "none"
 
@@ -226,9 +360,10 @@ def resolve_fallback_chain(
     if env_chain is not None:
         chain_names = [p.strip() for p in env_chain.split(",") if p.strip()]
 
+    known = known_provider_names(cfg)
     names = [primary_name]
     for name in chain_names:
-        if name in PROVIDERS and name not in names:
+        if name in known and name not in names:
             names.append(name)
     return names
 
