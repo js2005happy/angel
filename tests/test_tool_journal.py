@@ -14,6 +14,47 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_posix_writer_uses_verified_directory_descriptor(self):
+        import os
+        from angel import tool_journal as module
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        journal = ToolJournal("session1", root=self.root)
+        real_open = module.os.open
+        relative_writes = []
+
+        def record_open(path, flags, *args, **kwargs):
+            if kwargs.get("dir_fd") is not None:
+                relative_writes.append((path, kwargs["dir_fd"]))
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch.object(module.os, "open", side_effect=record_open):
+            journal.begin("shell")
+        self.assertEqual(len(relative_writes), 1)
+        self.assertTrue(relative_writes[0][0].startswith("intent-"))
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
+    def test_posix_directory_handle_mismatch_rejects_event_write(self):
+        import os
+        from angel import tool_journal as module
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        journal = ToolJournal("session1", root=self.root)
+        original = module.os.fstat
+
+        def changed(fd):
+            value = original(fd)
+            class FakeStat:
+                st_mode = value.st_mode
+                st_dev = value.st_dev
+                st_ino = value.st_ino + 1
+            return FakeStat()
+
+        with mock.patch.object(module.os, "fstat", side_effect=changed):
+            with self.assertRaisesRegex(JournalError, "句柄"):
+                journal.begin("shell")
+        self.assertEqual(journal.inspect()["event_count"], 0)
+
     def test_directory_replacement_during_read_fails_closed(self):
         from angel import tool_journal as module
         journal = ToolJournal("session1", root=self.root)
