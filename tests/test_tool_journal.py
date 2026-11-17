@@ -43,10 +43,9 @@ class JournalTests(unittest.TestCase):
         journal = ToolJournal("preserve-reason", root=self.root)
         call = journal.begin("shell")
         event = journal.path / ("intent-" + call + ".json")
-        record = json.loads(event.read_text(encoding="utf-8"))
-        record["version"] = True
-        event.write_text(json.dumps(record), encoding="utf-8")
-        with self.assertRaisesRegex(JournalError, "事件值无效"):
+        raw = event.read_text(encoding="utf-8").strip()
+        event.write_text(raw[:-1] + ',"tool":"shell"}', encoding="utf-8")
+        with self.assertRaisesRegex(JournalError, "事件 JSON 存在重复字段"):
             journal.inspect()
 
     def test_existing_permissive_event_file_is_rejected_on_posix(self):
