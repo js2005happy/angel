@@ -237,6 +237,25 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(JournalError):
             journal.inspect()
 
+    def test_invalid_event_timestamps_are_rejected(self):
+        # Journal timestamps are UTC with second precision; neither arbitrary
+        # strings nor local/shifted times may masquerade as journal metadata.
+        for invalid in ("not-a-time", "2026-02-30T00:00:00+00:00",
+                        "2026-11-17T12:00:00", "2026-11-17T12:00:00+08:00",
+                        "2026-11-17T12:00:00.123456+00:00"):
+            with self.subTest(timestamp=invalid):
+                journal = ToolJournal("timestamps", root=self.root)
+                if journal.path.exists():
+                    for event in journal.path.iterdir():
+                        event.unlink()
+                call = journal.begin("shell")
+                event = journal.path / ("intent-" + call + ".json")
+                record = json.loads(event.read_text(encoding="utf-8"))
+                record["at"] = invalid
+                event.write_text(json.dumps(record), encoding="utf-8")
+                with self.assertRaisesRegex(JournalError, "事件时间戳无效"):
+                    journal.inspect()
+
     def test_boolean_version_is_rejected(self):
         journal = ToolJournal("session1", root=self.root)
         call = journal.begin("shell")
