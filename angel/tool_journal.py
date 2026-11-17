@@ -75,54 +75,90 @@ class ToolJournal:
         if not self.path.exists():
             return []
         identity = _directory_identity(self.path)
-        paths = list(self.path.iterdir())
-        if len(paths) > MAX_EVENTS:
-            raise JournalError("事件数量超限")
-        records = []
-        for path in sorted(paths):
-            if not path.name.endswith(".json") or path.is_symlink():
-                raise JournalError("日志目录存在不受支持的文件")
-            if not path.is_file() or path.stat().st_size > MAX_EVENT_BYTES:
-                raise JournalError("事件文件无效或超限")
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        # POSIX: enumerate and open relative to one stable directory fd.
+        # Windows retains the checked-path fallback; no unsafe dir_fd emulation.
+        use_dirfd = os.name == "posix" and os.open in os.supports_dir_fd
+        directory_fd = None
+        if use_dirfd:
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
             flags |= getattr(os, "O_NOFOLLOW", 0)
             try:
-                fd = os.open(path, flags)
-                with os.fdopen(fd, "rb") as handle:
-                    info = os.fstat(handle.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES:
-                        raise JournalError("事件文件类型或大小无效")
-                    raw = handle.read(MAX_EVENT_BYTES + 1)
-                if len(raw) > MAX_EVENT_BYTES:
-                    raise JournalError("事件文件过大")
-                item = json.loads(raw.decode("utf-8"))
-            except (OSError, UnicodeError, ValueError) as exc:
-                raise JournalError("事件文件损坏或不可读取") from exc
-            if not isinstance(item, dict) or set(item) != {
-                "version", "event", "call_id", "tool", "at"
-            }:
-                raise JournalError("事件字段无效")
-            if (item["version"] != 1 or item["event"] not in EVENT_TYPES
-                    or not isinstance(item["call_id"], str)
-                    or not _EVENT.fullmatch(item["call_id"])
-                    or not isinstance(item["tool"], str)
-                    or not _TOOL.fullmatch(item["tool"])
-                    or not isinstance(item["at"], str)
-                    or len(item["at"]) > 40):
-                raise JournalError("事件值无效")
-            # File names are part of the commit protocol, not cosmetic.
-            # Otherwise a renamed result can evade the O_EXCL result slot.
-            expected = (
-                "intent-" + item["call_id"] + ".json"
-                if item["event"] == "intent"
-                else "result-" + item["call_id"] + ".json"
-            )
-            if path.name != expected:
-                raise JournalError("事件文件名与事件类型或调用 ID 不一致")
-            records.append(item)
+                directory_fd = os.open(self.path, flags)
+                info = os.fstat(directory_fd)
+                if (not stat.S_ISDIR(info.st_mode)
+                        or (info.st_dev, info.st_ino) != identity):
+                    raise JournalError("日志读取目录句柄与路径不一致")
+                names = os.listdir(directory_fd)
+            except OSError as exc:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+                raise JournalError("无法安全打开日志目录") from exc
+            except BaseException:
+                if directory_fd is not None:
+                    os.close(directory_fd)
+                raise
+        else:
+            names = [p.name for p in self.path.iterdir()]
+        if len(names) > MAX_EVENTS:
+            if directory_fd is not None:
+                os.close(directory_fd)
+            raise JournalError("事件数量超限")
+        records = []
+        try:
+            for name in sorted(names):
+                if (not name.endswith(".json") or "/" in name or "\\" in name
+                        or name in (".", "..")):
+                    raise JournalError("日志目录存在不受支持的文件")
+                path = self.path / name
+                if directory_fd is None and path.is_symlink():
+                    raise JournalError("日志目录存在不受支持的文件")
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0)
+                try:
+                    if directory_fd is not None:
+                        fd = os.open(name, flags, dir_fd=directory_fd)
+                    else:
+                        fd = os.open(path, flags)
+                    with os.fdopen(fd, "rb") as handle:
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES:
+                            raise JournalError("事件文件类型或大小无效")
+                        raw = handle.read(MAX_EVENT_BYTES + 1)
+                    if len(raw) > MAX_EVENT_BYTES:
+                        raise JournalError("事件文件过大")
+                    item = json.loads(raw.decode("utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise JournalError("事件文件损坏或不可读取") from exc
+                if not isinstance(item, dict) or set(item) != {
+                    "version", "event", "call_id", "tool", "at"
+                }:
+                    raise JournalError("事件字段无效")
+                if (item["version"] != 1 or item["event"] not in EVENT_TYPES
+                        or not isinstance(item["call_id"], str)
+                        or not _EVENT.fullmatch(item["call_id"])
+                        or not isinstance(item["tool"], str)
+                        or not _TOOL.fullmatch(item["tool"])
+                        or not isinstance(item["at"], str)
+                        or len(item["at"]) > 40):
+                    raise JournalError("事件值无效")
+                expected = (
+                    "intent-" + item["call_id"] + ".json"
+                    if item["event"] == "intent"
+                    else "result-" + item["call_id"] + ".json"
+                )
+                if name != expected:
+                    raise JournalError("事件文件名与事件类型或调用 ID 不一致")
+                records.append(item)
+                _verify_directory(self.path, identity)
+                if directory_fd is not None:
+                    info = os.fstat(directory_fd)
+                    if (info.st_dev, info.st_ino) != identity:
+                        raise JournalError("日志读取目录句柄发生变化")
             _verify_directory(self.path, identity)
-        _verify_directory(self.path, identity)
-        return records
+            return records
+        finally:
+            if directory_fd is not None:
+                os.close(directory_fd)
 
     def _write(self, event: str, call_id: str, tool: str) -> None:
         if event not in EVENT_TYPES or not isinstance(call_id, str) or not _EVENT.fullmatch(call_id):
