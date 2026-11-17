@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（官网新设计 + Nyra 开场动画）
+
+- 官网 `docs/` 换成 Nyra 新设计：黑白极简、深色自适应、移动端适配，右上角语言切换器（10 种语言，默认简体中文，记住选择，支持 `?lang=`），新增 `docs/i18n.js`；数字同步为 14 个模型预设、518 项测试。
+- 新标志：实心圆里刻出一个光标（`docs/assets/nyra-mark.svg`，替换旧的 `angel-mark.svg`），深色模式自动反色。
+- 开场动画：圆点展开、光标飞入刻进圆里、轻点波纹、Nyra 字标浮入，约 3 秒；纯内联 SVG + JS，无外部资源。接入 Web UI（`python3 -m angel ui`）与官网首屏；每个浏览器会话只播一次，点击/按键/触摸可跳过，系统开启“减少动态效果”时直接显示定格画面。新增 `tests/test_splash.py`（2 项）。
+
 ## 未发布（Codex CLI provider，不用 API Key）
 
 - 新增 `codex` provider 预设（`config.py`）：`base_url` 为 `cli://codex` 标记（无 HTTP 端点）、`auth` 为 `"cli"`、`env_key` 为空、默认模型 `codex-default`。`resolve_provider` 在模型解析后加 CLI 分支：auth 为 CLI 时跳过 base_url 的 http/https 校验与明文检查，直接返回 `ProviderConfig(auth="cli", api_key=None)`；`resolve_fallback_chain` 加两条 CLI 排除（主 provider 是 CLI 时只返回 `[primary]`；链里出现 CLI 名字时跳过并记日志）。
