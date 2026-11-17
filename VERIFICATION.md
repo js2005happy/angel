@@ -1,5 +1,10 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 待验证：POSIX 目录句柄写入（2026-11-17）
+- 静态审阅 `ToolJournal._write`：在支持 dir_fd 的 POSIX 系统上核对目录句柄 `fstat`，相对该句柄 `O_EXCL` 创建事件文件并同步目录；Windows 保留旧路径方式。
+- 新增 POSIX 路径创建与句柄不一致失败关闭测试源码。**未执行任何测试、安装、CI 或发布**；还需真实 Linux/macOS 与 Windows 验证，读取侧仍是路径模式。
+
+
 ## 待验证：ToolJournal 目录身份变化检测（2026-11-17）
 - 仅静态审阅：新增 `tests/test_tool_journal.py` 两个模拟目录替换的测试；未执行 Python、单元测试或 CI。
 - 预期：读取期间目录设备号/inode 改变则拒绝结果；写入后目录改变则抛 `JournalError`，不把事件当作可靠提交。
