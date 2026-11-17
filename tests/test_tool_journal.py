@@ -38,6 +38,31 @@ class JournalTests(unittest.TestCase):
         # Fail closed without silently changing a pre-existing directory.
         self.assertEqual(__import__("stat").S_IMODE(path.stat().st_mode), 0o755)
 
+    def test_posix_directory_fd_permissions_rechecked_after_open(self):
+        # Simulate chmod after pathname validation but before fd validation.
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        from angel import tool_journal as module
+        journal = ToolJournal("fd-permissions", root=self.root)
+        journal.begin("shell")
+        original = module.os.fstat
+
+        def widened(fd):
+            info = original(fd)
+            if not __import__("stat").S_ISDIR(info.st_mode):
+                return info
+            class FakeStat:
+                st_mode = (info.st_mode & ~0o777) | 0o755
+                st_dev = info.st_dev
+                st_ino = info.st_ino
+            return FakeStat()
+
+        with mock.patch.object(module.os, "fstat", side_effect=widened):
+            with self.assertRaisesRegex(JournalError, "权限过宽"):
+                journal.inspect()
+            with self.assertRaisesRegex(JournalError, "权限过宽"):
+                journal.begin("shell")
+
     def test_posix_reader_uses_directory_relative_file_open(self):
         import os
         from angel import tool_journal as module
