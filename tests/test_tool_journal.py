@@ -15,6 +15,24 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_writer_fdopen_failure_closes_event_descriptor(self):
+        # Both POSIX dir_fd and Windows path fallback share this ownership rule.
+        journal = ToolJournal("write-fdopen-failure", root=self.root)
+        opened = []
+
+        def fail_fdopen(fd, mode):
+            opened.append(fd)
+            raise OSError("simulated writer fdopen failure")
+
+        with mock.patch("angel.tool_journal.os.fdopen", side_effect=fail_fdopen):
+            with self.assertRaises(JournalError):
+                journal.begin("shell")
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(OSError):
+            os.fstat(opened[0])
+        # The failed intent cannot authorize execution or automatic replay.
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
     def test_fdopen_failure_closes_opened_event_descriptor(self):
         journal = ToolJournal("fdopen-failure", root=self.root)
         journal.begin("shell")
