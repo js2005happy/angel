@@ -157,6 +157,10 @@ class ToolJournal:
                     if len(raw) > MAX_EVENT_BYTES:
                         raise JournalError("事件文件过大")
                     item = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
+                except JournalError:
+                    # Preserve explicit fail-closed reasons (permissions, inode,
+                    # size, duplicate keys) rather than masking them as corruption.
+                    raise
                 except (OSError, UnicodeError, ValueError) as exc:
                     raise JournalError("事件文件损坏或不可读取") from exc
                 if not isinstance(item, dict) or set(item) != {
