@@ -140,6 +140,10 @@ class ToolJournal:
                         if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES
                                 or info.st_nlink != 1):
                             raise JournalError("事件文件类型、大小或硬链接数量无效")
+                        # POSIX event metadata must remain private even when
+                        # a pre-existing file has been chmod-ed after creation.
+                        if os.name == "posix" and stat.S_IMODE(info.st_mode) & 0o077:
+                            raise JournalError("事件文件权限过宽")
                         # Cross-check the opened inode against its directory entry.
                         # This also detects some symlink swaps on Windows.
                         if directory_fd is not None:
