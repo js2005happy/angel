@@ -1,10 +1,43 @@
-# Angel 👼
+<p align="center">
+  <b>Nyra</b><br>
+  一个跑在你终端里的开源 AI agent<br>
+  <sub>原名 Angel · 纯 Python 标准库 · 零依赖</sub>
+</p>
 
-一个全能 AI 助手命令行工具：集开源 agent 之长（Codex、OpenCode、Pi、Goose、OpenHands、Hermes Agent、Grokbot、Hermes 模型），用 Python 标准库从零写成。没有 pip 依赖，有 Python 3 就能跑。
+<p align="center">
+  <a href="https://js2005happy.github.io/angel/">官网</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="ROADMAP.md">路线图</a> ·
+  <a href="CHANGELOG.md">更新日志</a>
+</p>
 
-> Angel 的代码全部是原创（见 [DESIGN.md](DESIGN.md) 的来源说明），只借鉴了各项目的设计思想，没有复制任何源码。
+---
 
-**官网：** <https://js2005happy.github.io/angel/>（中英双语）
+**Nyra** 是一个在本机运行的 AI 编程与研究 agent。它能读懂你的项目、修改代码、运行命令、联网查资料，并且每一次写文件、跑 shell 之前都先征求你的同意。只要有 Python 3 就能跑，不需要 `pip install` 任何东西。
+
+**Nyra** is a local AI agent for coding and research. It reads your project, edits files, runs commands and searches the web with cited sources, and it asks before every write or shell command. Pure Python standard library, zero dependencies.
+
+```bash
+git clone https://github.com/js2005happy/angel.git && cd angel
+python3 -m angel "解释一下这个项目的结构"
+```
+
+> 改名过渡期：命令仍是 `python3 -m angel`，包名与仓库名会在后续版本统一为 `nyra`。
+
+### 它能做什么
+
+- **先计划，后执行**：`--plan` 只读生成 `plan.md`，你审完用 SHA-256 批准，改一个字节旧批准就失效。
+- **每一步都问你**：写文件、跑命令默认逐项审批；`apply_patch` 编辑前自动存检查点，`/undo`、`/rewind` 随时回退。
+- **带证据的研究**：`web_search` / `web_fetch` 抓到的原文存为证据，结论必须附来源。
+- **接 MCP 与技能**：标准 MCP 服务器（stdio）即插即用，`skills/` 目录扩展能力。
+- **会自己干活**：内置调度器，按间隔或每天定时跑任务。
+- **多机器人群聊**：一个房间里多个 bot 分工，每个 bot 权限独立。
+- **任意模型**：DeepSeek、Grok、OpenAI、通义、Kimi、智谱、Gemini、本地 Ollama 等十多家 OpenAI 兼容接口；`profiles` 一键切换，失败自动换备用。
+- **可选 E2B 沙盒**：`--sandbox e2b` 让文件与 shell 不碰本机。
+- **用量透明**：`/status` 显示真实 Token 用量与上下文余量，`/compact` 压缩长会话。
+- **网页界面**：`python3 -m angel ui` 打开本地 Web UI。
+
+> 代码全部原创，只借鉴了 Codex、OpenCode、Goose、OpenHands 等开源 agent 的设计思想（来源见 [DESIGN.md](DESIGN.md)），没有复制任何源码。
 
 ## 官网
 
