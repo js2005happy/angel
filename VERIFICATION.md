@@ -1,3 +1,9 @@
+## 2026-11-17 ToolJournal 文件身份核对（仅静态审阅）
+
+- 打开事件文件后比较 fstat 与目录条目的 stat/lstat 身份，拒绝硬链接。
+- 新增 test_hardlinked_event_is_rejected 与 test_replaced_event_entry_is_rejected 测试源码。
+- 未运行测试、编译、安装或 CI。Windows 路径检查不是原子操作；外部工具执行状态不能据此自动恢复。
+
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
 ## 待验证：ToolJournal JSON 歧义字段拒绝（2026-11-17）

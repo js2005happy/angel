@@ -126,6 +126,36 @@ class JournalTests(unittest.TestCase):
         # A failed report does not justify replaying the tool.
         self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
+    def test_hardlinked_event_is_rejected(self):
+        journal = ToolJournal("session1", root=self.root)
+        call = journal.begin("shell")
+        event = journal.path / ("intent-" + call + ".json")
+        other = self.root / "outside-event.json"
+        try:
+            os.link(event, other)
+        except (OSError, NotImplementedError):
+            self.skipTest("hard links unavailable")
+        with self.assertRaises(JournalError):
+            journal.inspect()
+
+    def test_replaced_event_entry_is_rejected(self):
+        from angel import tool_journal as module
+        journal = ToolJournal("session1", root=self.root)
+        journal.begin("shell")
+        original = module.os.stat
+        def swapped(path, *args, **kwargs):
+            result = original(path, *args, **kwargs)
+            if kwargs.get("follow_symlinks") is False:
+                class Changed:
+                    st_mode = result.st_mode
+                    st_dev = result.st_dev
+                    st_ino = result.st_ino + 1
+                return Changed()
+            return result
+        with mock.patch.object(module.os, "stat", side_effect=swapped):
+            with self.assertRaises(JournalError):
+                journal.inspect()
+
     def test_duplicate_json_keys_are_rejected(self):
         journal = ToolJournal("session1", root=self.root)
         call = journal.begin("shell")

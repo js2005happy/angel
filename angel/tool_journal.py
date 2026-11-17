@@ -131,8 +131,18 @@ class ToolJournal:
                         fd = os.open(path, flags)
                     with os.fdopen(fd, "rb") as handle:
                         info = os.fstat(handle.fileno())
-                        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES:
-                            raise JournalError("事件文件类型或大小无效")
+                        if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES
+                                or info.st_nlink != 1):
+                            raise JournalError("事件文件类型、大小或硬链接数量无效")
+                        # Cross-check the opened inode against its directory entry.
+                        # This also detects some symlink swaps on Windows.
+                        if directory_fd is not None:
+                            entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                        else:
+                            entry = os.lstat(path)
+                        if (not stat.S_ISREG(entry.st_mode)
+                                or (entry.st_dev, entry.st_ino) != (info.st_dev, info.st_ino)):
+                            raise JournalError("事件文件在打开期间被替换")
                         raw = handle.read(MAX_EVENT_BYTES + 1)
                     if len(raw) > MAX_EVENT_BYTES:
                         raise JournalError("事件文件过大")
