@@ -1,3 +1,8 @@
+## 2026-11-18 ToolJournal fdopen 异常清理（仅静态审阅）
+
+- 静态核对：`os.fdopen` 失败后通过 `os.close(fd)` 释放此前打开的事件文件句柄；新增模拟失败并检查 fd 已关闭的测试源码。
+- **未运行测试、编译或 CI**；Windows ACL、稳定句柄、同用户篡改及外部副作用证据仍待处理。
+
 ## 2026-11-17 同大小原地修改检测（仅静态审阅）
 
 - 静态确认读取前后 fstat 的 mtime_ns/ctime_ns 对比；回归测试源码通过 mock fstat 模拟第二次文件元数据变化，预期抛出 JournalError。
