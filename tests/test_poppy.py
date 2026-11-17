@@ -11,11 +11,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-import angel.agent as agent_module
-import angel.cli as cli
-import angel.poppy as poppy
-from angel.agent import Agent
-from angel.tools import ToolContext, execute_tool
+import nyra.agent as agent_module
+import nyra.cli as cli
+import nyra.poppy as poppy
+from nyra.agent import Agent
+from nyra.tools import ToolContext, execute_tool
 
 
 def document(host="store.example.com", version="1.0", **fields):
@@ -161,7 +161,7 @@ class DiscoveryTests(unittest.TestCase):
             ["8.8.8.8", "10.0.0.1"],
         ):
             with self.subTest(ips=hosts), mock.patch(
-                "angel.poppy.socket.getaddrinfo",
+                "nyra.poppy.socket.getaddrinfo",
                 return_value=[
                     (2, 1, 6, "", (ip, 443))
                     for ip in hosts
@@ -191,9 +191,9 @@ class DiscoveryTests(unittest.TestCase):
             def close(self):
                 pass
 
-        with mock.patch("angel.poppy.socket.getaddrinfo", return_value=[
+        with mock.patch("nyra.poppy.socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("8.8.8.8", 443))
-        ]), mock.patch("angel.poppy._PinnedHTTPSConnection", FakeConn):
+        ]), mock.patch("nyra.poppy._PinnedHTTPSConnection", FakeConn):
             final, raw = poppy._fetch_public_https(
                 "https://store.example.com/.well-known/poppy.json"
             )
@@ -218,9 +218,9 @@ class DiscoveryTests(unittest.TestCase):
                 return RedirectResponse()
             def close(self):
                 pass
-        with mock.patch("angel.poppy.socket.getaddrinfo", return_value=[
+        with mock.patch("nyra.poppy.socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("8.8.8.8", 443))
-        ]), mock.patch("angel.poppy._PinnedHTTPSConnection", FakeConn):
+        ]), mock.patch("nyra.poppy._PinnedHTTPSConnection", FakeConn):
             with self.assertRaisesRegex(poppy.PoppyError, "HTTPS"):
                 poppy._fetch_public_https(
                     "https://store.example.com/.well-known/poppy.json"
@@ -242,9 +242,9 @@ class DiscoveryTests(unittest.TestCase):
                 return BadResponse()
             def close(self):
                 pass
-        with mock.patch("angel.poppy.socket.getaddrinfo", return_value=[
+        with mock.patch("nyra.poppy.socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("8.8.8.8", 443))
-        ]), mock.patch("angel.poppy._PinnedHTTPSConnection", FakeConn):
+        ]), mock.patch("nyra.poppy._PinnedHTTPSConnection", FakeConn):
             with self.assertRaisesRegex(poppy.PoppyError, "Content-Length"):
                 poppy._fetch_public_https(
                     "https://store.example.com/.well-known/poppy.json"
@@ -270,14 +270,14 @@ class OptInToolTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_disabled_by_default_even_when_tool_name_forced(self):
-        with mock.patch("angel.tools.discover_poppy") as discovery:
+        with mock.patch("nyra.tools.discover_poppy") as discovery:
             result = execute_tool("poppy_discover", {"site": "store.example.com"}, self.ctx)
         self.assertIn("未启用", result)
         discovery.assert_not_called()
 
     def test_explicitly_enabled_tool_works_in_readonly_without_signin(self):
         self.ctx.poppy_enabled = True
-        with mock.patch("angel.tools.discover_poppy", return_value={
+        with mock.patch("nyra.tools.discover_poppy", return_value={
             "version": "1.0", "status": "metadata_only",
         }) as discovery:
             result = execute_tool("poppy_discover", {"site": "store.example.com"}, self.ctx)
@@ -285,8 +285,8 @@ class OptInToolTests(unittest.TestCase):
         discovery.assert_called_once_with("store.example.com")
 
     def test_agent_only_advertises_tool_when_enabled_and_delegates_inherit(self):
-        from angel.agent import Agent
-        with mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"):
+        from nyra.agent import Agent
+        with mock.patch.object(agent_module, "NYRA_HOME", self.root / "home"):
             a = Agent(object(), workdir=self.root, mode="readonly", interactive=False,
                       skills_dirs=[], poppy_enabled=False)
             b = Agent(object(), workdir=self.root, mode="readonly", interactive=False,
@@ -304,7 +304,7 @@ class OptInToolTests(unittest.TestCase):
         self.assertEqual(output[0]["type"], "run_failed")
 
     def test_standalone_cli_does_not_require_provider_or_mcp(self):
-        with mock.patch("angel.poppy.discover_poppy", return_value={
+        with mock.patch("nyra.poppy.discover_poppy", return_value={
             "version": "1.0", "status": "metadata_only"
         }), mock.patch.object(cli, "Provider") as provider, \
              mock.patch.object(cli, "build_mcp_manager") as mcp, \

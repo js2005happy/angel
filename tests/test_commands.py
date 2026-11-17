@@ -7,7 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.commands import (
+import nyra.commands as commands_module
+from nyra.commands import (
     AGENTS_TEMPLATE,
     command_dirs,
     find_command,
@@ -15,7 +16,7 @@ from angel.commands import (
     parse_command_file,
     render_command,
 )
-from angel.tools import ToolContext, execute_tool
+from nyra.tools import ToolContext, execute_tool
 
 
 def _write(path: Path, content: str) -> Path:
@@ -90,7 +91,7 @@ class LoadCommandsTest(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self.tmp = Path(self._tmpdir.name)
         self.addCleanup(self._tmpdir.cleanup)
-        self.project_dir = self.tmp / "work" / ".angel" / "commands"
+        self.project_dir = self.tmp / "work" / ".nyra" / "commands"
         self.user_dir = self.tmp / "home" / "commands"
 
     def test_project_wins_over_user_on_name_conflict(self):
@@ -211,8 +212,8 @@ class CommandDirsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             workdir = Path(name)
             dirs = command_dirs(workdir)
-            self.assertEqual(dirs[0], workdir / ".angel" / "commands")
-            self.assertTrue(str(dirs[1]).endswith(".angel/commands"))
+            self.assertEqual(dirs[0], workdir / ".nyra" / "commands")
+            self.assertEqual(dirs[1], commands_module.USER_COMMANDS_DIR)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import unittest
 import urllib.request
 
-from angel import net
+from nyra import net
 
 
 class SchemeTests(unittest.TestCase):

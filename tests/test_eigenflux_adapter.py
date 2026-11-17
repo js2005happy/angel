@@ -9,15 +9,15 @@ import tempfile
 import unittest
 from unittest import mock
 
-import angel.cli as cli
-import angel.eigenflux_adapter as eigenflux
-from angel.groups import GroupStore
+import nyra.cli as cli
+import nyra.eigenflux_adapter as eigenflux
+from nyra.groups import GroupStore
 
 
 class _EigenFluxFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "angel"
+        self.root = Path(self.temp.name) / "nyra"
         self.root.mkdir()
         # Windows Temp may use 8.3 alias in one API and canonical long path
         # in Path.resolve(). Compare paths in the same canonical spelling.
@@ -112,8 +112,8 @@ class EigenFluxHomeTests(_EigenFluxFixture, unittest.TestCase):
 
 class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
     def test_default_dry_run_never_executes_cli_or_creates_identity(self):
-        with mock.patch("angel.eigenflux_adapter.shutil.which") as which, \
-             mock.patch("angel.eigenflux_adapter.subprocess.run") as execute:
+        with mock.patch("nyra.eigenflux_adapter.shutil.which") as which, \
+             mock.patch("nyra.eigenflux_adapter.subprocess.run") as execute:
             report = eigenflux.doctor(root=self.root)
         self.assertEqual(report["status"], "not_checked")
         self.assertFalse(report["checked"])
@@ -127,8 +127,8 @@ class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
         self.assertFalse((self.root / "eigenflux").exists())
 
     def test_opt_in_check_when_binary_missing_stops_without_actions(self):
-        with mock.patch("angel.eigenflux_adapter.shutil.which", return_value=None), \
-             mock.patch("angel.eigenflux_adapter.subprocess.run") as execute:
+        with mock.patch("nyra.eigenflux_adapter.shutil.which", return_value=None), \
+             mock.patch("nyra.eigenflux_adapter.subprocess.run") as execute:
             report = eigenflux.doctor(root=self.root, check=True)
         self.assertEqual(report["status"], "cli_not_installed")
         self.assertFalse(report["network_actions_allowed"])
@@ -144,10 +144,10 @@ class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
                 argv, 0, stdout="EigenFlux v1.0.2\nextra\n", stderr="",
             )
         with mock.patch(
-            "angel.eigenflux_adapter.shutil.which",
+            "nyra.eigenflux_adapter.shutil.which",
             return_value="/usr/bin/eigenflux",
         ), mock.patch(
-            "angel.eigenflux_adapter.subprocess.run",
+            "nyra.eigenflux_adapter.subprocess.run",
             side_effect=fake_run,
         ), mock.patch.dict(
             os.environ,
@@ -184,10 +184,10 @@ class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
                 stdout=result, stderr="broken config",
             )
         with mock.patch(
-            "angel.eigenflux_adapter.shutil.which",
+            "nyra.eigenflux_adapter.shutil.which",
             return_value="/usr/bin/eigenflux",
         ), mock.patch(
-            "angel.eigenflux_adapter.subprocess.run",
+            "nyra.eigenflux_adapter.subprocess.run",
             side_effect=fake_run,
         ):
             report = eigenflux.doctor(root=self.root, check=True)
@@ -198,10 +198,10 @@ class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
 
     def test_timeout_does_not_claim_success(self):
         with mock.patch(
-            "angel.eigenflux_adapter.shutil.which",
+            "nyra.eigenflux_adapter.shutil.which",
             return_value="/usr/bin/eigenflux",
         ), mock.patch(
-            "angel.eigenflux_adapter.subprocess.run",
+            "nyra.eigenflux_adapter.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["eigenflux"], 8),
         ):
             report = eigenflux.doctor(root=self.root, check=True)
@@ -210,11 +210,11 @@ class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
                          "TimeoutExpired")
 
     def test_cli_runs_without_provider_mcp_scheduler_or_installer(self):
-        with mock.patch.object(eigenflux, "ANGEL_HOME", self.root), \
+        with mock.patch.object(eigenflux, "NYRA_HOME", self.root), \
              mock.patch.object(cli, "Provider") as provider, \
              mock.patch.object(cli, "build_mcp_manager") as mcp, \
-             mock.patch("angel.eigenflux_adapter.shutil.which") as which, \
-             mock.patch("angel.eigenflux_adapter.subprocess.run") as runner, \
+             mock.patch("nyra.eigenflux_adapter.shutil.which") as which, \
+             mock.patch("nyra.eigenflux_adapter.subprocess.run") as runner, \
              mock.patch("sys.stdout", new_callable=io.StringIO) as output:
             code = cli.main(["eigenflux", "doctor", "--room", "alpha",
                              "--bot", "lead"])
@@ -228,9 +228,9 @@ class EigenFluxDoctorTests(_EigenFluxFixture, unittest.TestCase):
         runner.assert_not_called()
 
     def test_missing_binary_returns_nonzero_and_json_status(self):
-        with mock.patch.object(eigenflux, "ANGEL_HOME", self.root), \
+        with mock.patch.object(eigenflux, "NYRA_HOME", self.root), \
              mock.patch(
-                 "angel.eigenflux_adapter.shutil.which", return_value=None,
+                 "nyra.eigenflux_adapter.shutil.which", return_value=None,
              ), mock.patch("sys.stdout", new_callable=io.StringIO) as out:
             code = cli.main(["eigenflux", "doctor", "--check"])
         self.assertEqual(code, 1)

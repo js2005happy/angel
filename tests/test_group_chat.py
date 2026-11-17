@@ -5,9 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from angel import agent as agent_module
-from angel import memory as memory_module
-from angel.groups import Bot, GroupError, GroupStore, MAX_BOTS, MAX_ROUNDS
+from nyra import agent as agent_module
+from nyra import memory as memory_module
+from nyra.groups import Bot, GroupError, GroupStore, MAX_BOTS, MAX_ROUNDS
 
 
 class SpyProvider:
@@ -56,7 +56,7 @@ class GroupChatTest(unittest.TestCase):
         self.sessions_patch = patch.object(
             memory_module, "SESSIONS_DIR", self.root / "sessions"
         )
-        self.home_patch = patch.object(agent_module, "ANGEL_HOME", self.root / "home")
+        self.home_patch = patch.object(agent_module, "NYRA_HOME", self.root / "home")
         self.sessions_patch.start()
         self.home_patch.start()
         self.providers = {}
@@ -118,8 +118,8 @@ class GroupChatTest(unittest.TestCase):
     def test_default_bot_provider_uses_fallback_chain(self):
         from types import SimpleNamespace
 
-        import angel.groups as groups_module
-        from angel.providers import FallbackProvider, ProviderError
+        import nyra.groups as groups_module
+        from nyra.providers import FallbackProvider, ProviderError
 
         primary = ScriptedProvider(
             "deepseek", "deepseek-flash",
@@ -152,7 +152,7 @@ class GroupChatTest(unittest.TestCase):
             self.assertEqual(backup.calls, 1)
 
     def test_bot_entry_carries_model_switches(self):
-        from angel.providers import FallbackProvider, ProviderError
+        from nyra.providers import FallbackProvider, ProviderError
 
         def reply(content):
             return {"choices": [{"message": {
@@ -223,8 +223,8 @@ class GroupChatTest(unittest.TestCase):
                 self.store.send("dev", "Hello", rounds=invalid)
 
     def test_memory_stays_private(self):
-        from angel.agent import Agent
-        from angel.tools import execute_tool
+        from nyra.agent import Agent
+        from nyra.tools import execute_tool
 
         self.store.create("dev", "开发群")
         a = self.root / "groups" / "dev" / "bots" / "lead" / "MEMORY.md"

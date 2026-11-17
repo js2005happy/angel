@@ -1,10 +1,10 @@
-# Angel 验证报告（2026-11-16，v3 0.3.0）
+# Nyra 验证报告（2026-11-16，v3 0.3.0）
 
 ## 已验证：EigenFlux 逐机器人网络行为上限（PR #22）
 
 - `tests/test_eigenflux_policy.py`：默认拒绝所有行为、必须用户 `--confirm`、群聊/机器人和能力隔离、撤销及审计、SHA-256 过期修改拒绝、私有权限文件、未知能力/账户拒绝、损坏文件和符号链接拒绝。
 - 验证删除同 ID 群并重建时，旧 Home 和旧本地网络意向不被继承。`tests/test_eigenflux_adapter.py` 同步验证新建群带随机实例标记，历史房间目录路径兼容。
-- `angel eigenflux policy` CLI 的 allow/deny/show/audit 不调用 Provider、MCP、外部 EigenFlux CLI 或宿主 scheduler；无实际模型、网络或密钥操作，所有策略结果都不能声称完成 onboarding。
+- `nyra eigenflux policy` CLI 的 allow/deny/show/audit 不调用 Provider、MCP、外部 EigenFlux CLI 或宿主 scheduler；无实际模型、网络或密钥操作，所有策略结果都不能声称完成 onboarding。
 - GitHub Actions [PR #22 运行 43832998445](https://github.com/js2005happy/angel/actions/runs/43832998445)：Ubuntu Python 3.10/3.12 与 Windows Python 3.12 全通过；Windows 共执行 356 项 unittest。模拟网络工具与子进程，无真实 EigenFlux 安装、登录、网络调用或付费模型费用。
 
 ## 已验证：EigenFlux bare-CLI 本地适配准备（PR #21）
@@ -84,7 +84,7 @@
 ## 未发布：memory_append / save_skill 测试补齐（2026-11-16）
 
 - 本轮先把本地 checkout 与 GitHub main 同步：本地停在 5cfad1f，远程已走到 b9248f28（网页界面、项目官网、群聊、Token 用量 5 个提交）；56 个文件经连接器拉取同步，同步后全套测试 164 个通过。
-- 新增 `tests/test_memory_skill_tools.py`（11 个）：`memory_append` 与 `save_skill` 的直接单元测试，v1 已知限制第 3 条就此关闭；测试只写临时目录（验证：跑完后 `~/.angel/` 下仍无 MEMORY.md）。
+- 新增 `tests/test_memory_skill_tools.py`（11 个）：`memory_append` 与 `save_skill` 的直接单元测试，v1 已知限制第 3 条就此关闭；测试只写临时目录（验证：跑完后 `~/.nyra/` 下仍无 MEMORY.md）。
 - README 测试数 127 修正为 175（164 + 11），版本号标题修正为 0.3.0。本次未做真实 API 调用（纯 mock 测试加固，无需调用）。
 
 ## 待验证：Token 用量与剩余上下文（PR）
@@ -128,25 +128,25 @@
 
 ## v3 结论
 
-Angel 0.3.0 已完成并全部通过测试：62 个 mock 测试通过（v2 的 53 个全部保留并通过，新增 9 个）；E2B 沙盒执行后端已接进 Angel 本身，真实 DeepSeek + 真实 E2B 沙盒端到端跑通。
+Nyra 0.3.0 已完成并全部通过测试：62 个 mock 测试通过（v2 的 53 个全部保留并通过，新增 9 个）；E2B 沙盒执行后端已接进 Nyra 本身，真实 DeepSeek + 真实 E2B 沙盒端到端跑通。
 
 ## v3 新增内容
 
 | 模块/文件 | 说明 |
 |---|---|
-| `angel/e2b_backend.py`（新增） | E2B 沙盒执行后端：懒加载官方 `e2b` SDK（可选依赖），凭证优先 `E2B_API_KEY`、否则走已保存的 Muse 连接器凭证替身；`connect()` 新建或连接已有沙盒；`run_command` / `read_file` / `write_file` / `list_dir`；`close()` 不杀沙盒（到期自动销毁） |
-| `angel/tools.py`（改） | `ToolContext` 增加 `backend` 字段；`read_file` / `write_file` / `edit_file` / `list_dir` / `shell` / `plan` / `grep_search` / `git_status` 有后端时走后端，其余工具仍在本地；审批与 shell 黑名单在两种后端下都生效 |
-| `angel/config.py`（改） | `sandbox` / `e2b_template` / `e2b_timeout` / `e2b_sandbox_id` 配置 + `resolve_sandbox()`（CLI 参数 > `ANGEL_SANDBOX` / `ANGEL_E2B_*` 环境变量 > 配置文件 > 默认值） |
-| `angel/agent.py`（改） | `Agent` 接受 `backend` 参数并传给 `ToolContext`；`delegate()` 把同一后端传给子 agent；系统提示词在沙盒模式下告知模型文件与命令都在沙盒里执行 |
-| `angel/cli.py`（改） | `--sandbox {local,e2b}`、`--sandbox-id`、`--sandbox-template`、`--sandbox-timeout`；沙盒模式下工作目录默认 `/home/user`（沙盒路径，不在本地校验）；连接成功打印沙盒 id 与超时 |
-| `scripts/remote_run.py`、`scripts/upload_angel.py`（新增） | 第 1 步原型验证脚本（大脑在外、手在沙盒）与把 Angel 代码传进沙盒跑测试的脚本 |
+| `nyra/e2b_backend.py`（新增） | E2B 沙盒执行后端：懒加载官方 `e2b` SDK（可选依赖），凭证优先 `E2B_API_KEY`、否则走已保存的 Muse 连接器凭证替身；`connect()` 新建或连接已有沙盒；`run_command` / `read_file` / `write_file` / `list_dir`；`close()` 不杀沙盒（到期自动销毁） |
+| `nyra/tools.py`（改） | `ToolContext` 增加 `backend` 字段；`read_file` / `write_file` / `edit_file` / `list_dir` / `shell` / `plan` / `grep_search` / `git_status` 有后端时走后端，其余工具仍在本地；审批与 shell 黑名单在两种后端下都生效 |
+| `nyra/config.py`（改） | `sandbox` / `e2b_template` / `e2b_timeout` / `e2b_sandbox_id` 配置 + `resolve_sandbox()`（CLI 参数 > `NYRA_SANDBOX` / `NYRA_E2B_*` 环境变量 > 配置文件 > 默认值） |
+| `nyra/agent.py`（改） | `Agent` 接受 `backend` 参数并传给 `ToolContext`；`delegate()` 把同一后端传给子 agent；系统提示词在沙盒模式下告知模型文件与命令都在沙盒里执行 |
+| `nyra/cli.py`（改） | `--sandbox {local,e2b}`、`--sandbox-id`、`--sandbox-template`、`--sandbox-timeout`；沙盒模式下工作目录默认 `/home/user`（沙盒路径，不在本地校验）；连接成功打印沙盒 id 与超时 |
+| `scripts/remote_run.py`、`scripts/upload_nyra.py`（新增） | 第 1 步原型验证脚本（大脑在外、手在沙盒）与把 Nyra 代码传进沙盒跑测试的脚本 |
 
 ## v3 测试结果
 
 ### 1. Mock 测试（62 个，全部通过）
 
 ```bash
-cd ~/workspace/angel
+cd nyra
 python3 -m unittest discover tests   # Ran 62 tests — OK
 ```
 
@@ -155,50 +155,50 @@ python3 -m unittest discover tests   # Ran 62 tests — OK
 ### 2. 真实 DeepSeek + 真实 E2B 沙盒端到端
 
 ```bash
-cd ~/workspace/angel
-~/workspace/angel/.venv/bin/python -m angel --provider deepseek --mode full \
+cd nyra
+~/workspace/nyra/.venv/bin/python -m nyra --provider deepseek --mode full \
   --sandbox e2b --sandbox-id ipfjq62okgtm53z1fl8io --max-turns 8 \
-  "在工作目录创建 sandbox-demo.txt，内容是'Angel 在沙盒里'，然后读出它确认，再列出工作目录"
+  "在工作目录创建 sandbox-demo.txt，内容是'Nyra 在沙盒里'，然后读出它确认，再列出工作目录"
 ```
 
-结果：成功。Angel 连接沙盒 `ipfjq62okgtm53z1fl8io`，模型在沙盒里写 `/home/user/sandbox-demo.txt`（内容 `Angel 在沙盒里`）、读回确认、列出目录（`.bashrc`、`.profile` 等沙盒自带文件 + 本次新建的文件）。随后用 E2B SDK 独立回读确认：沙盒里确有该文件且内容一致；本地 `/home/user` 根本不存在，零写入。
+结果：成功。Nyra 连接沙盒 `ipfjq62okgtm53z1fl8io`，模型在沙盒里写 `/home/user/sandbox-demo.txt`（内容 `Nyra 在沙盒里`）、读回确认、列出目录（`.bashrc`、`.profile` 等沙盒自带文件 + 本次新建的文件）。随后用 E2B SDK 独立回读确认：沙盒里确有该文件且内容一致；本地 `/home/user` 根本不存在，零写入。
 
 ### 3. 第 1 步原型（remote_run.py）
 
-模型走 DeepSeek 连接器、工具走 E2B 沙盒，4 轮完成：写 `prime_sum.py`、沙盒里运行、结果 1060、读回确认。Angel 代码 28 个文件已上传进同一台沙盒，`--help` 正常，53 个测试在沙盒里全过。
+模型走 DeepSeek 连接器、工具走 E2B 沙盒，4 轮完成：写 `prime_sum.py`、沙盒里运行、结果 1060、读回确认。Nyra 代码 28 个文件已上传进同一台沙盒，`--help` 正常，53 个测试在沙盒里全过。
 
 ## v3 已知限制（诚实记录）
 
 1. **E2B 免费档沙盒超时上限 1 小时**：`--sandbox-timeout` 超过 3600 会被 E2B 拒绝（HTTP 400）；沙盒不主动删除，到期自动销毁。
-2. **定时任务仍走本地执行**：`angel schedule` 创建的任务不读沙盒设置；沙盒模式只对本次命令行/交互会话生效。
+2. **定时任务仍走本地执行**：`nyra schedule` 创建的任务不读沙盒设置；沙盒模式只对本次命令行/交互会话生效。
 3. 其余 v2 限制（web_search 未在真实网络验证、MCP 未接真实服务器、调度器 naive 本地时间、无真浏览器）仍适用。
 
 ---
 
-# Angel 验证报告（2026-11-16，v2 0.2.0）
+# Nyra 验证报告（2026-11-16，v2 0.2.0）
 
 ## v2 结论
 
-Angel 0.2.0 已完成并全部通过测试：53 个 mock 测试通过（v1 的 21 个全部保留并通过，新增 32 个）；真实 DeepSeek API 端到端跑通（新工具 `grep_search` 实测）；MCP、调度器、会话压缩、证据链、provider 档案、web_search 双后端均已验证。
+Nyra 0.2.0 已完成并全部通过测试：53 个 mock 测试通过（v1 的 21 个全部保留并通过，新增 32 个）；真实 DeepSeek API 端到端跑通（新工具 `grep_search` 实测）；MCP、调度器、会话压缩、证据链、provider 档案、web_search 双后端均已验证。
 
 ## v2 新增内容
 
 | 模块/文件 | 说明 |
 |---|---|
-| `angel/mcp.py` | MCP 客户端（stdio JSON-RPC）：启动、initialize、list_tools、call_tool、超时控制；`MCPToolManager` 按最长前缀路由，工具名 `mcp_<服务器>_<工具>`；默认关闭（`mcp_enabled`） |
-| `angel/scheduler.py` | 内置调度器：`~/.angel/schedule.json` 文件式任务，间隔或每天固定时间，daemon 循环；到期判断、运行记录、错误隔离 |
-| `angel/compact.py` | 会话压缩：模型摘要 + 保留最近消息；模型失败时本地回退（保留首尾消息）；支持压缩整个会话文件 |
-| `angel/evidence.py` | 证据链：联网抓取的页面原文按会话存档（`~/.angel/evidence/<会话 id>/`），带来源、时间、搜索词 |
-| `angel/tools.py`（新增） | `grep_search`（文件内容搜索，支持正则/大小写）、`git_status`（只读）、`http_post`（走审批）；`web_search` 改为必应优先、百度兜底 |
-| `angel/config.py`（新增） | `profiles` 档案 + `resolve_profile`（CLI 参数 > `ANGEL_PROFILE` 环境变量 > 配置默认值）；`mcp_enabled` 开关 |
+| `nyra/mcp.py` | MCP 客户端（stdio JSON-RPC）：启动、initialize、list_tools、call_tool、超时控制；`MCPToolManager` 按最长前缀路由，工具名 `mcp_<服务器>_<工具>`；默认关闭（`mcp_enabled`） |
+| `nyra/scheduler.py` | 内置调度器：`~/.nyra/schedule.json` 文件式任务，间隔或每天固定时间，daemon 循环；到期判断、运行记录、错误隔离 |
+| `nyra/compact.py` | 会话压缩：模型摘要 + 保留最近消息；模型失败时本地回退（保留首尾消息）；支持压缩整个会话文件 |
+| `nyra/evidence.py` | 证据链：联网抓取的页面原文按会话存档（`~/.nyra/evidence/<会话 id>/`），带来源、时间、搜索词 |
+| `nyra/tools.py`（新增） | `grep_search`（文件内容搜索，支持正则/大小写）、`git_status`（只读）、`http_post`（走审批）；`web_search` 改为必应优先、百度兜底 |
+| `nyra/config.py`（新增） | `profiles` 档案 + `resolve_profile`（CLI 参数 > `NYRA_PROFILE` 环境变量 > 配置默认值）；`mcp_enabled` 开关 |
 | `skills/verify-research.md` | 核查式调研技能：搜索→打开官网→逐项核对→存证→附链接交付 |
-| `angel/agent.py`（改） | MCP 工具路由、证据 store、`/compact` 与 `compact()`、系统提示词加入查证流程 |
-| `angel/cli.py`（改） | `schedule` 子命令（list/add/remove/run/daemon）、`--profile`、`--compact`、`--list-mcp`、`--list-profiles`、REPL `/compact` |
+| `nyra/agent.py`（改） | MCP 工具路由、证据 store、`/compact` 与 `compact()`、系统提示词加入查证流程 |
+| `nyra/cli.py`（改） | `schedule` 子命令（list/add/remove/run/daemon）、`--profile`、`--compact`、`--list-mcp`、`--list-profiles`、REPL `/compact` |
 
 ## v2 分工（Codex 生成 vs Muse 写/改）
 
 - **Codex 生成（按 Muse 的规格逐模块生成，Muse 落盘并逐一测试）**：`mcp.py`、`scheduler.py`、`compact.py`。三个模块一次通过编译与导入，无需返工；`scheduler.py` 的 `is_due` 有一处逻辑由 Muse 在测试后修正（见下）。
-- **Muse 写/改**：全部 v2 规格、集成改动（`config.py` 档案与开关、`tools.py` 新工具与 web_search 双后端、`agent.py` 路由与证据接线、`cli.py` 子命令与档案接线）、`evidence.py`、`verify-research` 技能、全部 32 个新增测试、文档更新（README/DESIGN/VERIFICATION/CHANGELOG）、全部测试与真实 API 验证。
+- **Muse 写/改**：全部 v2 规格、集成改动（`config.py` 档案与开关、`tools.py` 新工具与 web_search 双后端、`agent.py` 路由与证据接线、`cli.py` 子命令与档案接线）、`evidence.py`、`verify-research` 技能、全部 32 个新增测试、文档更新（README/DESIGN/VERIFICATION/CHNYRAOG）、全部测试与真实 API 验证。
 - **Muse 修正**：`scheduler.py` 的 `is_due`：原实现对“每天固定时间”任务只要从未运行就判到期，导致上午 9 点就触发 10:30 的任务。已改为：未到今天的执行时间就不到期（即使从未运行过），测试 `test_is_due_daily_at` 覆盖。
 
 ## v2 测试结果
@@ -206,7 +206,7 @@ Angel 0.2.0 已完成并全部通过测试：53 个 mock 测试通过（v1 的 2
 ### 1. Mock 测试（53 个，全部通过）
 
 ```bash
-cd ~/workspace/angel
+cd nyra
 python3 -m unittest discover tests   # Ran 53 tests — OK
 ```
 
@@ -215,40 +215,40 @@ python3 -m unittest discover tests   # Ran 53 tests — OK
 ### 2. 真实 API 调用（DeepSeek flash，凭证走已保存连接器）
 
 ```bash
-python3 -m angel --provider deepseek --model deepseek-flash --mode full \
-  --workdir /tmp/angel-v2-e2e \
+python3 -m nyra --provider deepseek --model deepseek-flash --mode full \
+  --workdir /tmp/nyra-v2-e2e \
   "用 grep_search 找到工作目录里包含“香蕉”的文件和行号，把结果写进 result.txt，然后告诉我找到了什么"
 ```
 
-结果：成功。模型调 `grep_search` 找到 `fruits.txt:2` 与 `more.txt:2`，写入 `result.txt` 并读回复核，还主动提醒 `result.txt` 自身含“香蕉”会导致下次搜索多一条命中。会话存于 `~/.angel/sessions/20261115-235218-1493.jsonl`。
+结果：成功。模型调 `grep_search` 找到 `fruits.txt:2` 与 `more.txt:2`，写入 `result.txt` 并读回复核，还主动提醒 `result.txt` 自身含“香蕉”会导致下次搜索多一条命中。会话存于 `~/.nyra/sessions/20261115-235218-1493.jsonl`。
 
 ### 3. CLI 新功能实测
 
-- `python3 -m angel schedule list`：无任务时正常提示，exit 0。
-- `python3 -m angel --list-mcp`：MCP 未启用时提示在配置里设 `"mcp_enabled": true`，exit 0。
-- `python3 -m angel --list-skills`：列出 web-research、verify-research、file-organizer。
-- `python3 -m angel --version`：Angel 0.2.0。
+- `python3 -m nyra schedule list`：无任务时正常提示，exit 0。
+- `python3 -m nyra --list-mcp`：MCP 未启用时提示在配置里设 `"mcp_enabled": true`，exit 0。
+- `python3 -m nyra --list-skills`：列出 web-research、verify-research、file-organizer。
+- `python3 -m nyra --version`：Nyra 0.2.0。
 
 ## v2 运行命令（给用户）
 
 ```bash
-cd ~/workspace/angel
+cd nyra
 
 # 调度器：每天 08:30 跑一个任务
-python3 -m angel schedule add --name 每日整理 --prompt "整理下载目录" --at 08:30 --mode full
-python3 -m angel schedule daemon          # 守护进程跑起来
-python3 -m angel schedule list             # 查看任务
-python3 -m angel schedule run              # 立刻跑一次到期的任务
+python3 -m nyra schedule add --name 每日整理 --prompt "整理下载目录" --at 08:30 --mode full
+python3 -m nyra schedule daemon          # 守护进程跑起来
+python3 -m nyra schedule list             # 查看任务
+python3 -m nyra schedule run              # 立刻跑一次到期的任务
 
 # 会话压缩
-python3 -m angel --compact <会话 id>
+python3 -m nyra --compact <会话 id>
 
-# provider 档案（在 ~/.angel/config.json 的 profiles 里加档案后）
-python3 -m angel --profile strong "做点什么"
-python3 -m angel --list-profiles
+# provider 档案（在 ~/.nyra/config.json 的 profiles 里加档案后）
+python3 -m nyra --profile strong "做点什么"
+python3 -m nyra --list-profiles
 
-# MCP（在 ~/.angel/config.json 里设 "mcp_enabled": true 并配 mcp_servers 后）
-python3 -m angel --list-mcp
+# MCP（在 ~/.nyra/config.json 里设 "mcp_enabled": true 并配 mcp_servers 后）
+python3 -m nyra --list-mcp
 ```
 
 ## v2 已知限制（诚实记录）
@@ -263,22 +263,22 @@ python3 -m angel --list-mcp
 
 ## v1（2026-11-15）结论
 
-Angel 0.1.0 已完成并全部通过测试：Python 标准库 only，无 pip 依赖；21 个 mock 测试通过；真实 DeepSeek API 端到端跑通；REPL、会话恢复、auto 审批确认均已实测。
+Nyra 0.1.0 已完成并全部通过测试：Python 标准库 only，无 pip 依赖；21 个 mock 测试通过；真实 DeepSeek API 端到端跑通；REPL、会话恢复、auto 审批确认均已实测。
 
 ## 交付物
 
-`~/workspace/angel/`，共约 2100 行代码+文档：
+`~/workspace/nyra/`，共约 2100 行代码+文档：
 
 | 文件 | 说明 |
 |---|---|
-| `angel/config.py` | 配置 + provider 注册表（deepseek/xai/openrouter/ollama/openai/custom） |
-| `angel/providers.py` | OpenAI 兼容客户端（urllib），支持 env Key 与已保存连接器凭证 |
-| `angel/tools.py` | 11 个工具 + 审批 + shell 危险命令黑名单 |
-| `angel/agent.py` | agent 主循环、系统提示词组装、delegate 子 agent |
-| `angel/skills.py` | 技能解析 / 关键词匹配 / 保存 |
-| `angel/memory.py` | 长期记忆 + AGENTS.md + 会话 jsonl 存储 |
-| `angel/cli.py` | 参数解析 + REPL（/help /mode /skills /sessions /clear /new /exit） |
-| `angel/__init__.py`、`angel/__main__.py` | 版本号与入口 |
+| `nyra/config.py` | 配置 + provider 注册表（deepseek/xai/openrouter/ollama/openai/custom） |
+| `nyra/providers.py` | OpenAI 兼容客户端（urllib），支持 env Key 与已保存连接器凭证 |
+| `nyra/tools.py` | 11 个工具 + 审批 + shell 危险命令黑名单 |
+| `nyra/agent.py` | agent 主循环、系统提示词组装、delegate 子 agent |
+| `nyra/skills.py` | 技能解析 / 关键词匹配 / 保存 |
+| `nyra/memory.py` | 长期记忆 + AGENTS.md + 会话 jsonl 存储 |
+| `nyra/cli.py` | 参数解析 + REPL（/help /mode /skills /sessions /clear /new /exit） |
+| `nyra/__init__.py`、`nyra/__main__.py` | 版本号与入口 |
 | `skills/web-research.md`、`skills/file-organizer.md` | 自带示例技能 |
 | `tests/test_smoke.py` | 21 个测试（stdlib unittest） |
 | `README.md`、`DESIGN.md`、`LICENSE`（MIT） | 文档与许可证 |
@@ -293,7 +293,7 @@ Angel 0.1.0 已完成并全部通过测试：Python 标准库 only，无 pip 依
 ### 1. Mock 测试（21 个，全部通过）
 
 ```bash
-cd ~/workspace/angel
+cd nyra
 python3 -m unittest discover tests   # Ran 21 tests — OK
 python3 tests/test_smoke.py          # 同样通过
 ```
@@ -303,22 +303,22 @@ python3 tests/test_smoke.py          # 同样通过
 ### 2. 真实 API 调用（DeepSeek flash，凭证走已保存连接器）
 
 ```bash
-python3 -m angel --provider deepseek --model deepseek-flash --mode full \
-  --workdir /tmp/angel-e2e \
-  "创建一个文件 hello-angel.txt，里面写一句英文问候，然后读回文件内容并向我汇报"
+python3 -m nyra --provider deepseek --model deepseek-flash --mode full \
+  --workdir /tmp/nyra-e2e \
+  "创建一个文件 hello-nyra.txt，里面写一句英文问候，然后读回文件内容并向我汇报"
 ```
 
-结果：成功。模型调用 `write_file` 写入 73 字符问候，再用 `read_file` 读回并中文汇报。文件内容：`Hello! It's a pleasure to meet you, and I hope you have a wonderful day.` 会话存于 `~/.angel/sessions/20261115-154741-0afd.jsonl`（即本次端到端 transcript）。
+结果：成功。模型调用 `write_file` 写入 73 字符问候，再用 `read_file` 读回并中文汇报。文件内容：`Hello! It's a pleasure to meet you, and I hope you have a wonderful day.` 会话存于 `~/.nyra/sessions/20261115-154741-0afd.jsonl`（即本次端到端 transcript）。
 
 随后用 `--resume 20261115-154741-0afd` 追问文件内容，模型直接从会话历史回答，未再读写文件——会话恢复已验证。
 
 ### 3. REPL
 
-`printf '/help\n/skills\n/exit\n' | python3 -m angel`：横幅、`/help`、`/skills`（列出 web-research、file-organizer）、退出均正常，exit 0。
+`printf '/help\n/skills\n/exit\n' | python3 -m nyra`：横幅、`/help`、`/skills`（列出 web-research、file-organizer）、退出均正常，exit 0。
 
 ### 4. auto 审批（PTY 实测）
 
-用 PTY 驱动 `python3 -m angel --mode auto`，模型请求写文件时出现 `允许执行吗？[y/N]`，输入 `y` 后文件 `approved.txt` 创建成功（内容 `approved`），exit 0。证明交互确认链路真实工作。
+用 PTY 驱动 `python3 -m nyra --mode auto`，模型请求写文件时出现 `允许执行吗？[y/N]`，输入 `y` 后文件 `approved.txt` 创建成功（内容 `approved`），exit 0。证明交互确认链路真实工作。
 
 ### 5. web_fetch / web_search
 
@@ -328,27 +328,27 @@ python3 -m angel --provider deepseek --model deepseek-flash --mode full \
 ## 运行命令（给用户）
 
 ```bash
-cd ~/workspace/angel
+cd nyra
 
 # DeepSeek（已保存的连接器凭证，不用再填 Key）
-python3 -m angel "帮我看看这个目录里有什么"
-python3 -m angel --mode full "创建一个文件 hello.txt，写一句问候"
+python3 -m nyra "帮我看看这个目录里有什么"
+python3 -m nyra --mode full "创建一个文件 hello.txt，写一句问候"
 
 # 交互模式
-python3 -m angel
+python3 -m nyra
 
 # Grok
-python3 -m angel --provider xai "做点什么"
+python3 -m nyra --provider xai "做点什么"
 
 # 查看技能 / 会话
-python3 -m angel --list-skills
-python3 -m angel --list-sessions
+python3 -m nyra --list-skills
+python3 -m nyra --list-sessions
 ```
 
 ## 已知限制（诚实记录）
 
 1. **web_search 被 DuckDuckGo 拦截**：本机出口 IP 触发 DuckDuckGo 人机验证，搜索返回明确错误而非结果。换网络或接正式搜索 API 可解决；Muse 已补一处判断，让报错原因可读。这不是解析 bug。
-2. **无真沙箱**：shell 以运行 Angel 的用户身份执行，MVP 只靠审批 + 黑名单挡危险命令；真沙箱在路线图第一项。full 模式请只在信任目录使用。
-3. **memory_append / save_skill 未进单元测试**：这两个工具会写 `~/.angel/` 下的真实文件，单元测试里未覆盖；其代码路径已随主循环跑通过（工具分发表无问题），但未单独断言。
+2. **无真沙箱**：shell 以运行 Nyra 的用户身份执行，MVP 只靠审批 + 黑名单挡危险命令；真沙箱在路线图第一项。full 模式请只在信任目录使用。
+3. **memory_append / save_skill 未进单元测试**：这两个工具会写 `~/.nyra/` 下的真实文件，单元测试里未覆盖；其代码路径已随主循环跑通过（工具分发表无问题），但未单独断言。
 4. **模型调用要花钱**：软件免费，推理按 token 计费。本次验证总计只用了几百 token 的 deepseek-flash，成本可忽略；日常使用建议默认 flash 模型。
 5. **auto + 非交互**：cron/管道运行时 auto 模式遇到写操作会明确报错退出，不会悄悄写入；后台任务请用 `--mode full`。

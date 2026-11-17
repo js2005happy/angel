@@ -7,13 +7,13 @@ import unittest
 from unittest import mock
 from urllib.parse import quote
 
-import angel.agent as agent_module
-import angel.memory as memory_module
-from angel.agent import Agent
-from angel.memory_browser import (
+import nyra.agent as agent_module
+import nyra.memory as memory_module
+from nyra.agent import Agent
+from nyra.memory_browser import (
     MemoryBrowserError, MemoryConflict, inspect_memory, replace_memory,
 )
-from angel.webui_page import PAGE_HTML
+from nyra.webui_page import PAGE_HTML
 from tests.test_webui import WebUITestCase
 
 
@@ -126,7 +126,7 @@ class MemoryStorageTests(unittest.TestCase):
              "content": ("historical line %s " % i) * 100}
             for i in range(6)
         ]
-        with mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"), \
+        with mock.patch.object(agent_module, "NYRA_HOME", self.root / "home"), \
              mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"):
             agent = Agent(provider, workdir=self.root, mode="readonly",
                           memory_path=self.path, messages=previous,
@@ -143,7 +143,7 @@ class MemoryStorageTests(unittest.TestCase):
                           agent.build_system_prompt("another task"))
 
     def test_manual_compact_does_not_touch_global_memory(self):
-        from angel.memory import load_memory_summary
+        from nyra.memory import load_memory_summary
         class Provider:
             def chat(self, messages, tools=None, timeout=120):
                 return {"choices": [{"message": {
@@ -152,7 +152,7 @@ class MemoryStorageTests(unittest.TestCase):
         self.path.write_text("- [2026-11-16] important permanent memory\n",
                              encoding="utf-8")
         original = self.path.read_bytes()
-        with mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"), \
+        with mock.patch.object(agent_module, "NYRA_HOME", self.root / "home"), \
              mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"):
             agent = Agent(
                 Provider(), workdir=self.root, mode="readonly",

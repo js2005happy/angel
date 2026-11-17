@@ -1,29 +1,32 @@
-# Angel 变更记录
+# Nyra 变更记录
 
-## 未发布（官网新设计 + Nyra 开场动画）
+## 未发布（统一更名 Nyra + 官网新设计）
 
-- 官网 `docs/` 换成 Nyra 新设计：黑白极简、深色自适应、移动端适配，右上角语言切换器（10 种语言，默认简体中文，记住选择，支持 `?lang=`），新增 `docs/i18n.js`；数字同步为 14 个模型预设、518 项测试。
-- 新标志：实心圆里刻出一个光标（`docs/assets/nyra-mark.svg`，替换旧的 `angel-mark.svg`），深色模式自动反色。
-- 开场动画：圆点展开、光标飞入刻进圆里、轻点波纹、Nyra 字标浮入，约 3 秒；纯内联 SVG + JS，无外部资源。接入 Web UI（`python3 -m angel ui`）与官网首屏；每个浏览器会话只播一次，点击/按键/触摸可跳过，系统开启“减少动态效果”时直接显示定格画面。新增 `tests/test_splash.py`（2 项）。
+- 全面使用 Nyra 名称：包目录 `nyra/`，命令 `python3 -m nyra`（子命令 `nyra schedule` / `nyra ui` / `nyra permissions` / `nyra eigenflux`），交互提示符 `nyra[auto] ›`，网页界面与文档同步。
+- 数据目录改为 `~/.nyra`；已有旧数据目录时继续沿用，不丢数据。项目级命令目录改为 `<工作目录>/.nyra/commands/`（旧目录仍可读取）。
+- 环境变量改为 `NYRA_*`（`NYRA_API_KEY`、`NYRA_BASE_URL`、`NYRA_MODEL`、`NYRA_FALLBACK`、`NYRA_SANDBOX` 等），旧前缀仍作为兜底读取。
+- README 重写为简明首页，完整说明移到 `GUIDE.md`。
+- 官网 `docs/` 换成新设计：黑白极简、深色自适应、移动端适配，右上角 10 种语言切换；新标志为实心圆里刻出的光标（`docs/assets/nyra-mark.svg`）。开场动画只用于手机端，网页与官网不播放。
+- 测试 518 项全部通过。
 
 ## 未发布（Codex CLI provider，不用 API Key）
 
 - 新增 `codex` provider 预设（`config.py`）：`base_url` 为 `cli://codex` 标记（无 HTTP 端点）、`auth` 为 `"cli"`、`env_key` 为空、默认模型 `codex-default`。`resolve_provider` 在模型解析后加 CLI 分支：auth 为 CLI 时跳过 base_url 的 http/https 校验与明文检查，直接返回 `ProviderConfig(auth="cli", api_key=None)`；`resolve_fallback_chain` 加两条 CLI 排除（主 provider 是 CLI 时只返回 `[primary]`；链里出现 CLI 名字时跳过并记日志）。
-- 新增 `CliProvider`（`providers.py`，`Provider` 子类）：用子进程跑本机 `codex` CLI（`codex exec` 非交互方式），复用它自己的登录态与 ChatGPT 订阅，不调模型 API。固定 argv：`codex exec --json -o <临时文件> -s read-only -C <空临时工作目录> --ephemeral --skip-git-repo-check -c features.browser_use=false -c features.computer_use=false -c features.plugins=false`（默认模型时不加 `-m`）；prompt 走 stdin（不在 argv 里，`ps` 看不到）；成功时优先读 `-o` 文件，文件为空时回退解析 `--json` 的 JSONL 事件流；用量能解析到就附进返回的 `"usage"`；超时由 Angel 的 subprocess 侧强制并杀掉整个进程组（`codex exec` 没有 `--timeout` 参数）。
+- 新增 `CliProvider`（`providers.py`，`Provider` 子类）：用子进程跑本机 `codex` CLI（`codex exec` 非交互方式），复用它自己的登录态与 ChatGPT 订阅，不调模型 API。固定 argv：`codex exec --json -o <临时文件> -s read-only -C <空临时工作目录> --ephemeral --skip-git-repo-check -c features.browser_use=false -c features.computer_use=false -c features.plugins=false`（默认模型时不加 `-m`）；prompt 走 stdin（不在 argv 里，`ps` 看不到）；成功时优先读 `-o` 文件，文件为空时回退解析 `--json` 的 JSONL 事件流；用量能解析到就附进返回的 `"usage"`；超时由 Nyra 的 subprocess 侧强制并杀掉整个进程组（`codex exec` 没有 `--timeout` 参数）。
 - 固定提示前缀（缓存命中）：`CODEX_PROMPT_PREFIX` 是字节级固定的英文前缀，拼在每次请求的最开头，再接按 `[role]` 标记序列化的消息；前缀内容是身份与边界声明（只作文字模型，不调工具、不跑命令、不浏览网页、不改文件，只回文字）。因为它在每个请求里一字不变、又始终在最前面，提供商侧的提示缓存能直接命中这段公共前缀。工具 schema 绝不传入。
 - 默认模型 `codex-default` 的含义是不传 `-m`，让 CLI 用自己的默认模型。实测：ChatGPT 订阅登录时 `-m gpt-5` 与 `-m gpt-5-codex` 都会被服务端以 `model_not_found` 拒绝，唯有不传 `-m` 能跑通；显式 `--model` 会原样传 `-m`，被服务端拒绝时按配置错误分类（`_classify_codex_error` 新增 `model_not_found` / “model is not supported” → `"config"`），不兜底、不重试。
 - 四个安全条件（代码强制 + 测试覆盖 + README 写明）：① CLI 只用固定路径调用（固定已知位置优先，`shutil.which` 只是最后兜底，绝不从配置、环境变量或用户输入取路径）；② 不读取、不复制、不记录登录凭证（登录检查只跑 `codex login status`，只读退出码与 “Logged in” 标记——实测该标记走 stderr；子进程环境删掉全部 `*_API_KEY` 变量）；③ 不用跳过审批的参数（`--dangerously-bypass-approvals-and-sandbox`、`--approve-for-me`、`--dangerously-bypass-hook-trust`、`-y`、`--full-auto` 均禁用，argv 建好后自检；始终 `-s read-only` + 空临时工作目录，用后删除）；④ 不进兜底链（只能被显式选中；`Provider` 的直接构造在 auth 为 CLI 时直接拒绝，全仓库唯一的直接构造点正是定时任务的 `_make_task_agent`，所以定时任务与队列里绝不用）。
 - `build_provider_chain` 新增 `cli_provider_cls` 关键字参数（默认 `CliProvider`）：主 provider 是 CLI 时直接返回该类的实例，不进任何链；链内条目 auth 为 CLI 时跳过并记日志。`cli.py`、`groups.py`、`json_mode.py`、`webui.py` 的调用点均未改（默认值即够用），`--provider codex` 与 `POST /api/provider` 选中 codex 时走正常校验。
 - 本机核查：`codex` 在 `/opt/hatch-image/bin/codex`（`codex-cli 0.164.0-alpha.9`），`codex login status` 为 `Logged in using ChatGPT`；版本低于 0.164.0、未登录或无法解析版本时直接拒绝。`claude` 本机未装，本轮不做，须先在用户电脑（Windows）上核查 `claude --version` 与登录情况再接。
-- 新增 35 个测试（`tests/test_cli_providers.py`）：固定路径解析、版本与登录检查（含登录标记走 stderr）、固定前缀、chat 成功与 OpenAI 形状、argv 固定只读且无禁用参数、prompt 走 stdin、空临时工作目录、tools 被忽略、子进程环境不含 `*_API_KEY`、不打开凭据文件、JSONL 回退与用量、空输出与非零退出分类（含 `model_not_found` → config）、超时杀进程组、兜底排除（codex 作主时链只有自身、不当兜底目标、直接构造被拒、定时任务 `_make_task_agent` 用 codex 被拒）、预设解析。另更新 `tests/test_generic_providers.py`（CLI 预设豁免 http base_url 断言）与 `tests/test_webui.py`（`/api/info` 的 provider 数 13 → 14，自定义 provider 场景 14 → 15）；`angel/group-ui.js` 的兜底 provider 列表补 codex；README、DESIGN.md、`docs/index.html`、`webui_page.py` 的 provider 预设数 13 → 14。测试总数 483 → 518，全部通过；本地冒烟检查通过（`--list-providers` 见 codex、真实短调用一次回 `smoke-ok` 且 usage 有记录、Web UI 页面 200 且 `/api/info` 的 provider_count 为 14）。
+- 新增 35 个测试（`tests/test_cli_providers.py`）：固定路径解析、版本与登录检查（含登录标记走 stderr）、固定前缀、chat 成功与 OpenAI 形状、argv 固定只读且无禁用参数、prompt 走 stdin、空临时工作目录、tools 被忽略、子进程环境不含 `*_API_KEY`、不打开凭据文件、JSONL 回退与用量、空输出与非零退出分类（含 `model_not_found` → config）、超时杀进程组、兜底排除（codex 作主时链只有自身、不当兜底目标、直接构造被拒、定时任务 `_make_task_agent` 用 codex 被拒）、预设解析。另更新 `tests/test_generic_providers.py`（CLI 预设豁免 http base_url 断言）与 `tests/test_webui.py`（`/api/info` 的 provider 数 13 → 14，自定义 provider 场景 14 → 15）；`nyra/group-ui.js` 的兜底 provider 列表补 codex；README、DESIGN.md、`docs/index.html`、`webui_page.py` 的 provider 预设数 13 → 14。测试总数 483 → 518，全部通过；本地冒烟检查通过（`--list-providers` 见 codex、真实短调用一次回 `smoke-ok` 且 usage 有记录、Web UI 页面 200 且 `/api/info` 的 provider_count 为 14）。
 
 ## 未发布（兜底默认关闭 + 网页切换可见 + 网页端新建定时任务暂缓）
 
-- **模型自动兜底改默认关闭**（用户 2026-11-17 安全事项第 1 条）：`config.py` 的 `DEFAULT_CONFIG["fallback_enabled"]` 与 `resolve_fallback_chain` 的默认值由 True 改 False；开启只由用户自己做——`~/.angel/config.json` 里设 `"fallback_enabled": true`、环境变量 `ANGEL_FALLBACK=1`，或 CLI 新增 `--fallback`（`--no-fallback` 保留作显式关闭；两者同时给时以关闭为准，`cli.py` 新增 `_fallback_enabled()` 统一优先级，`json_mode.py` 同样处理）。网页端设置里没有兜底开关控件（只有一行状态说明），不存在默认开启或静默开启的路径。
+- **模型自动兜底改默认关闭**（用户 2026-11-17 安全事项第 1 条）：`config.py` 的 `DEFAULT_CONFIG["fallback_enabled"]` 与 `resolve_fallback_chain` 的默认值由 True 改 False；开启只由用户自己做——`~/.nyra/config.json` 里设 `"fallback_enabled": true`、环境变量 `NYRA_FALLBACK=1`，或 CLI 新增 `--fallback`（`--no-fallback` 保留作显式关闭；两者同时给时以关闭为准，`cli.py` 新增 `_fallback_enabled()` 统一优先级，`json_mode.py` 同样处理）。网页端设置里没有兜底开关控件（只有一行状态说明），不存在默认开启或静默开启的路径。
 - **兜底链只认允许列表**：允许列表就是用户配置的 `fallback_providers`；`resolve_fallback_chain` 只在 key 缺失时才用内置默认链，显式写空列表表示不允许任何备用（不再静默补默认链）；未知名字跳过并写 stderr 日志；`build_provider_chain` 跳过未配置 Key 的备用（同样记日志），不静默补别的。`POST /api/provider` 的 `resolve_provider` 校验不变。
 - **网页端切换可见**：`webui.py` 的 `UIState` 新增 `_on_switch` 回调——切换时除写服务端日志外，还向当前运行中的会话追加一条 `model_switch` 事件（from/to/error/kind/status，复用 `--json` 的事件结构）；前端 `applyEvent` 渲染一行“模型已切换：deepseek → xai（402 …）”并刷新模型卡。群聊同样：`groups.py` 的 `_bot_response` 记录本次调用的 `switches`，`send()` 附加到机器人回复条目上（`model_switches` 字段），`group-ui.js` 在回复下方渲染切换提示；无切换时不附加字段。
 - **队列与定时任务不切换**（只读核查，未改 `scheduler.py`）：`cli.py` 的 `_make_task_agent` 仍直接构造单个 `Provider`，定时任务执行时用任务指定的 provider/model 原样跑、不包兜底链；`/api/schedule` 存下来的 provider/model 执行时同样不兜底。`runs.py` 在 main 上不存在，未新建。
-- **网页端新建定时任务暂缓开放**（用户安全事项第 2 条，E 合并前）：定时任务视图的添加表单已彻底撤下（不是置灰），换成一行说明“网页端新建定时任务暂缓开放，等任务队列合并（E）后恢复；请用 `angel schedule add` 命令添加”；后端 `POST /api/schedule` 的 action=add 返回 409 并写明原因（现在 main 上的任务默认用 full 模式，E 合并后会拒绝这种情况）。列表、开关、删除保持可用。
+- **网页端新建定时任务暂缓开放**（用户安全事项第 2 条，E 合并前）：定时任务视图的添加表单已彻底撤下（不是置灰），换成一行说明“网页端新建定时任务暂缓开放，等任务队列合并（E）后恢复；请用 `nyra schedule add` 命令添加”；后端 `POST /api/schedule` 的 action=add 返回 409 并写明原因（现在 main 上的任务默认用 full 模式，E 合并后会拒绝这种情况）。列表、开关、删除保持可用。
 - 新增 11 个测试：`tests/test_fallback.py`（默认关闭、配置显式开启、空允许列表只留主模型、环境变量开启、链里无 Key 的备用被跳过、CLI `--fallback`/`--no-fallback` 优先级、定时任务 agent 用单个 provider）、`tests/test_json_mode.py`（`--fallback` 开启切换、默认关闭不切换）、`tests/test_webui.py`（默认关闭不切换、会话轮询里出现 `model_switch` 事件、add 返回 409 且其余操作可用、表单已撤下）、`tests/test_group_chat.py`（机器人回复条目带 `model_switches`）。测试总数 472 → 483，全部通过；本地 Web UI 冒烟检查通过（见下）。
 
 ## 未发布（调度器健壮性）
@@ -44,8 +47,8 @@
 
 ## 未发布（网页界面 UI v2）
 
-- 网页界面按原型「Angel UI v2」重做：新配色（浅色底 `#F3F5F4`、鼠尾草绿主色 `#5F7D5C`、雾蓝强调 `#6B8CAE`、蜜桃珊瑚 `#E07856` 只小面积点缀，另补一套深炭底 `#1F2420` 暗色变体——原型没有暗色模式），旧墨 `#111A42` / 金 `#EAC45F` / 暖纸白 `#FAF8F4` 已退役；三栏布局（268px 左侧栏 / 自适应主聊天区 / 324px 右侧检查器，52px 顶栏），六视图（对话、技能与工具、定时任务、群聊、品牌与外观、设置）。
-- 形象改为毛绒动物：默认奶油白毛绒小兔（`assets/angel-plush-bunny.png`），备选蜜糖色毛绒小熊，品牌视图可切换（localStorage 记忆）；形象图缩小到 512px 后以 base64 内嵌进 `webui_page.py` 与 `group_ui.html`，保持“无外部资源”、新克隆也能显示，`assets/` 不进 git。旧二次元少女形象 `angel-character.png` 不删、不覆盖，已在品牌视图标为弃用。顺带修了一个注入 bug：形象 data URI 原先未加引号注入 JS 的 `IMG` 表，导致整段内联脚本语法错误，页面 JS 全灭；现已加引号并用 `node --check` 验过。
+- 网页界面按原型「Nyra UI v2」重做：新配色（浅色底 `#F3F5F4`、鼠尾草绿主色 `#5F7D5C`、雾蓝强调 `#6B8CAE`、蜜桃珊瑚 `#E07856` 只小面积点缀，另补一套深炭底 `#1F2420` 暗色变体——原型没有暗色模式），旧墨 `#111A42` / 金 `#EAC45F` / 暖纸白 `#FAF8F4` 已退役；三栏布局（268px 左侧栏 / 自适应主聊天区 / 324px 右侧检查器，52px 顶栏），六视图（对话、技能与工具、定时任务、群聊、品牌与外观、设置）。
+- 形象改为毛绒动物：默认奶油白毛绒小兔（`assets/nyra-plush-bunny.png`），备选蜜糖色毛绒小熊，品牌视图可切换（localStorage 记忆）；形象图缩小到 512px 后以 base64 内嵌进 `webui_page.py` 与 `group_ui.html`，保持“无外部资源”、新克隆也能显示，`assets/` 不进 git。旧二次元少女形象 `nyra-character.png` 不删、不覆盖，已在品牌视图标为弃用。顺带修了一个注入 bug：形象 data URI 原先未加引号注入 JS 的 `IMG` 表，导致整段内联脚本语法错误，页面 JS 全灭；现已加引号并用 `node --check` 验过。
 - 新增三个视图（单页内切换）：技能与工具（3 个技能 + 15 个工具一览，标明是否需要审批）、定时任务（列表 + 开关 + 添加表单）、品牌与外观（11 色板、形象切换、字体示例、使用规则）；设置由只读对话框升级为完整视图（provider 预设列表、模式三段切换调真实 `/api/mode`）；群聊视图列出群聊并链接到独立的 `/groups` 页。
 - `webui.py`：`/api/info` 扩展返回 13 个 provider 预设列表、15 个工具（每个含 `needs_approval`）、技能列表、`tool_count` 15 / `provider_count` 13；新增 `/api/schedule`（GET 列表；POST `add`/`toggle`/`remove`，只调 `scheduler.py` 的公开函数，不改 `scheduler.py`）；`FORBIDDEN_PAGE` 换新色板。`group-ui.js` 的 provider 下拉改为从 `/api/info` 取，失败时回退到完整的 13 个硬编码列表。
 - `docs/index.html` 首页数字修正：14 个内置工具 → 15 个，6 个 provider 预设 → 13 个。
@@ -54,7 +57,7 @@
 ## 未发布（自定义 provider 明文 http 防护）
 
 - 自定义 provider 的 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`，比如本机 Ollama）；`http://` 配外网地址时直接拒绝，报错写清“API Key 会随请求明文传输，请改用 https://”。外网地址必须用 `https://`。
-- 校验做两道：① `angel/config.py` 的 `plaintext_http_error`，自定义 provider 解析（`custom_providers`）与环境变量方式（`ANGEL_BASE_URL`）都在解析时校验，`resolve_provider` 同样校验（覆盖全部 13 个内置预设）；② `angel/providers.py` 的 `Provider.chat()` / `list_models()` 发请求前再校验一次，防止绕过配置解析直接构造 provider 时仍把 Key 发往明文外网。两处报错文本一致；发请求前的拒绝是 `ProviderError(kind="config")`，不触发兜底切换、不静默降级。
+- 校验做两道：① `nyra/config.py` 的 `plaintext_http_error`，自定义 provider 解析（`custom_providers`）与环境变量方式（`NYRA_BASE_URL`）都在解析时校验，`resolve_provider` 同样校验（覆盖全部 13 个内置预设）；② `nyra/providers.py` 的 `Provider.chat()` / `list_models()` 发请求前再校验一次，防止绕过配置解析直接构造 provider 时仍把 Key 发往明文外网。两处报错文本一致；发请求前的拒绝是 `ProviderError(kind="config")`，不触发兜底切换、不静默降级。
 - 内置 13 个预设自查全部合规：Ollama 的 `http://localhost:11434` 是本机、放行；其余 12 个均为 `https://`，无需改动。
 - 不影响已有行为：https 自定义与本机 http 正常使用；`--no-fallback` 与兜底链逻辑不动。
 - 新增 `tests/test_plaintext_http.py`（14 个）：http 外网在解析与发请求前均被拒（且发请求前拒绝时确认没有发出任何请求）、http localhost / 127.0.0.1 / ::1 / 大小写 / 末尾点号放行、https 外网放行、userinfo 障眼法（`http://127.0.0.1@evil.com`）不绕过、两处报错文本一致、配置错误不触发兜底切换、内置预设全部合规。测试总数 442 → 456，全部通过。
@@ -71,7 +74,7 @@
 ## 未发布（通用模型接入）
 
 - 新增 7 个内置 provider 预设（只写公开官方 endpoint 与默认模型，不写 Key）：Qwen（DashScope 兼容模式，`qwen-plus`）、Kimi（月之暗面中国区，`kimi-k3`）、GLM（智谱 BigModel，`glm-5.3`）、Gemini（Google OpenAI 兼容端点，`gemini-2.5-flash`）、Mistral（`mistral-small-latest`）、Groq（`llama-3.3-70b-versatile`）、Together（`meta-llama/Llama-3.3-70B-Instruct-Turbo`）；预设的 endpoint 与默认模型均经网页核实。内置预设共 13 个。
-- 新增配置项 `custom_providers`：`~/.angel/config.json` 里可自定义任意 OpenAI 兼容接口（`base_url` + `default_model` 必填，`env_key`/`models`/`allowed_hosts` 可选，未知字段忽略；同名覆盖内置预设；缺 `base_url`/`default_model` 或协议不是 http/https 时解析直接报错并点名）。自定义名字可进 fallback 链；`resolve_provider` 会校验 base_url 协议。
+- 新增配置项 `custom_providers`：`~/.nyra/config.json` 里可自定义任意 OpenAI 兼容接口（`base_url` + `default_model` 必填，`env_key`/`models`/`allowed_hosts` 可选，未知字段忽略；同名覆盖内置预设；缺 `base_url`/`default_model` 或协议不是 http/https 时解析直接报错并点名）。自定义名字可进 fallback 链；`resolve_provider` 会校验 base_url 协议。
 - `Provider` 需要 Key 但环境变量没设时不再静默走无认证请求：`resolve_provider` 保持 `auth="env"` 且 Key 为空，`has_credentials()` 为 False（CLI 会显示配置提示），`chat()`/`list_models()` 直接报“未设置 API Key”的配置错误。无 Key 需求的 provider（如本地 Ollama）不受影响。
 - 新增 `Provider.list_models()`（`GET {base_url}/models`，OpenAI 形状，`FallbackProvider` 同样支持）：401/403 不兜底，402/429/5xx/超时/网络错误沿用上一轮的错误分类；无 `data` 列表或条目无字符串 `id` 时为解析错误。CLI 新增 `--list-providers`（列出全部 provider 与默认模型）与 `--list-models`（列出当前 provider 的实时模型 id）。
 - `providers.py` 内部整理：认证头逻辑抽为 `_apply_auth`，HTTP 状态到错误种类的映射抽为 `_kind_for_status` / `_http_error`，`chat()` 的报错文本与行为不变。
@@ -79,16 +82,16 @@
 
 ## 未发布（模型自动兜底）
 
-- 新增 `angel/providers.py` 的 `FallbackProvider`：与 `Provider` 同样的 `chat()` 接口，按链逐个试模型；主模型遇可恢复失败（402 余额不足、429 限流、5xx、超时、网络错误）时自动切换到下一个并重试一次，每次切换记录到 `switches` 并经 `on_switch` 回调通知；认证失败（401/403）与配置问题（没设 Key、响应无法解析等）直接抛出，不兜底；全部模型都失败时报错列出每个模型的失败原因。每次调用都从主模型开始试。
+- 新增 `nyra/providers.py` 的 `FallbackProvider`：与 `Provider` 同样的 `chat()` 接口，按链逐个试模型；主模型遇可恢复失败（402 余额不足、429 限流、5xx、超时、网络错误）时自动切换到下一个并重试一次，每次切换记录到 `switches` 并经 `on_switch` 回调通知；认证失败（401/403）与配置问题（没设 Key、响应无法解析等）直接抛出，不兜底；全部模型都失败时报错列出每个模型的失败原因。每次调用都从主模型开始试。
 - `ProviderError` 增加结构化分类：`status`（HTTP 状态码）与 `kind`（auth/quota/rate_limit/server/client/timeout/network/config/parse/redirect/unknown），`recoverable` 属性只对 quota/rate_limit/server/timeout/network 为真；原有只传一句话的调用方式不变，消息文本不变。
-- 新增 `angel/config.py` 的 `resolve_fallback_chain` 与配置项 `fallback_enabled`（默认 true）、`fallback_providers`（默认 `["deepseek", "xai", "ollama"]`）；开关优先级：`--no-fallback` > `ANGEL_FALLBACK` 环境变量 > 配置 > 默认开启；链顺序：`ANGEL_FALLBACK_PROVIDERS` 环境变量 > 配置 > 默认链，主模型始终排第一，未知名字跳过。
+- 新增 `nyra/config.py` 的 `resolve_fallback_chain` 与配置项 `fallback_enabled`（默认 true）、`fallback_providers`（默认 `["deepseek", "xai", "ollama"]`）；开关优先级：`--no-fallback` > `NYRA_FALLBACK` 环境变量 > 配置 > 默认开启；链顺序：`NYRA_FALLBACK_PROVIDERS` 环境变量 > 配置 > 默认链，主模型始终排第一，未知名字跳过。
 - CLI 接入命令行入口（交互 REPL、一次性任务、`--plan`）：`--no-fallback` 关闭单次兜底；切换提示打印到 stderr，一次性任务的 stdout 仍只有答案。`--json` 单次模式、网页界面、群聊和定时任务仍用单个 provider，后续再接。
 - 新增 `tests/test_fallback.py`（31 个）：错误分类、402 切备用成功、401/403 不切换、429/超时/5xx/网络错误切换、全部失败报错明确、每次调用从主模型重新开始、链顺序与配置/环境变量读取、真实 `Provider.chat` 的 HTTP/超时/网络错误映射（mock opener）、Agent 循环经 FallbackProvider 拿到备用模型答复。测试总数 376 → 407，全部通过。
 - 真实端到端验证（一次 DeepSeek flash 短调用）：`--provider ollama`（本地未跑 Ollama）→ 网络错误 → 切换提示打印到 stderr → DeepSeek 返回答案；`--no-fallback` 下同样场景直接报错退出，无切换。
 
 ## 未发布（/init 与自定义命令）
 
-- 新增 `angel/commands.py`：自定义斜杠命令以 Markdown 文件存放在项目级 `<工作目录>/.angel/commands/` 或用户级 `~/.angel/commands/`，文件名即命令名，同名时项目级优先；支持 `description` / `argument-hint` frontmatter，`$ARGUMENTS` 与 `$1`..`$9` 占位符，无占位符时参数追加到正文末尾。
+- 新增 `nyra/commands.py`：自定义斜杠命令以 Markdown 文件存放在项目级 `<工作目录>/.nyra/commands/` 或用户级 `~/.nyra/commands/`，文件名即命令名，同名时项目级优先；支持 `description` / `argument-hint` frontmatter，`$ARGUMENTS` 与 `$1`..`$9` 占位符，无占位符时参数追加到正文末尾。
 - REPL 新增 `/commands`（列出可用自定义命令及来源）与 `/init`（生成 `AGENTS.md` 起始模板，已存在不覆盖；写入走 `write_file`，过审批、边界与检查点，readonly 下拒绝）；内置命令优先于同名自定义命令，符号链接命令文件会被跳过。
 - 新增 `tests/test_commands.py`（19 个）：解析、加载优先级、占位符渲染、模板内容、`/init` 的读写路径与 readonly 拒绝。测试总数 356 → 376（含同步远程新增的 1 个 net scheme 测试），全部通过。
 - 附带修正 README/DESIGN：工具数 14 → 15（补上漏记的 `apply_patch`），测试数 247 → 376。
@@ -99,28 +102,28 @@
 
 ## 未发布（EigenFlux 逐机器人网络权限上限）
 
-- 新增 `angel eigenflux policy show|allow|deny|audit`，为每个主/群聊 Agent 显式记录固定网络行为的本地意向；默认拒绝，allow 需要 `--confirm`，deny 即时本地撤销，带 SHA-256 并发检查与有界审计。
+- 新增 `nyra eigenflux policy show|allow|deny|audit`，为每个主/群聊 Agent 显式记录固定网络行为的本地意向；默认拒绝，allow 需要 `--confirm`，deny 即时本地撤销，带 SHA-256 并发检查与有界审计。
 - 新建群聊获得随机稳定 `instance_id`，删除同名群后重新创建不会继承旧群的 EigenFlux Home/网络行为许可；老群保持旧路径兼容。
 - 策略不会安装、登录、广播或启用调度，所有 `effective_network_permission` 保持 false；后续网络执行层仍需遵守 EigenFlux 官方 onboarding 和用户授权。
 - 新增身份隔离、撤销、并发冲突、损坏文件/符号链接、CLI 不创建模型/CLI 进程与群聊重建安全的回归测试。
 
 ## 未发布（EigenFlux bare-CLI 本地接入准备）
 
-- 新增 `angel eigenflux doctor [--room ID --bot ID] [--check]`。默认不执行命令、不安装，也不发起网络行动；只计算独立、稳定的 EigenFlux Home 和准备状态。
+- 新增 `nyra eigenflux doctor [--room ID --bot ID] [--check]`。默认不执行命令、不安装，也不发起网络行动；只计算独立、稳定的 EigenFlux Home 和准备状态。
 - 可选 `--check` 对 PATH 中已安装的 CLI 运行 `version` 与 `skills path --host terminal` 两条诊断，最小环境变量、固定参数与超时；绝不在检测期间执行 onboarding、广播、注册或创建定时任务。
-- 主 Agent 与各群聊机器人共享 Angel 项目代码，但拥有互相隔离的 EigenFlux 身份根目录。非法群 ID、非成员 bot、已有符号链接目录会拒绝。
+- 主 Agent 与各群聊机器人共享 Nyra 项目代码，但拥有互相隔离的 EigenFlux 身份根目录。非法群 ID、非成员 bot、已有符号链接目录会拒绝。
 - 新增纯模拟 CLI、凭据环境白名单、路径隔离与零副作用测试。该阶段不能宣称已加入 EigenFlux 网络。
 
 ## 未发布（Poppy OAuth issuer 双向元数据核验）
 
-- 新增 `python -m angel --inspect-poppy-identity SITE`：不需模型凭证，只读核验公司域名的 OAuth protected resource metadata 与发行方 OAuth server metadata 双向绑定，拒绝缺少精确 resource、错配发行方和不合规 metadata。
+- 新增 `python -m nyra --inspect-poppy-identity SITE`：不需模型凭证，只读核验公司域名的 OAuth protected resource metadata 与发行方 OAuth server metadata 双向绑定，拒绝缺少精确 resource、错配发行方和不合规 metadata。
 - `--poppy` 下新增只读 `poppy_identity_check`；发行方验证通过依旧报告 `remote_calls_allowed=false`、`session_ready=false` 和 `oauth_ready=false`，不启动登录、不发送凭证、不调用远端工具。
 - 区分合法 404/无 issuer 与服务器错误和网络超时；元数据禁止重定向，继续保持固定公网 IP/TLS 校验及响应大小限制。
 - 新增 RFC 8414 issuer path、多 issuer 选择、资源回指、缺少端点、非 HTTPS、授权未完成以及 CLI 机器输出回归测试。
 
 ## 未发布（Poppy 站点/身份/scope 授权意向账本）
 
-- 新增默认拒绝的本地 Poppy 授权意向账本，按精确 HTTPS 主机、访客/本地账户别名与单个 scope 隔离，禁止通配授权。`angel permissions list|check|grant|revoke|audit` 无需模型凭证或网络；用户明确 `grant --confirm` 才会持久化。撤销和有界审计历史随账本原子更新。
+- 新增默认拒绝的本地 Poppy 授权意向账本，按精确 HTTPS 主机、访客/本地账户别名与单个 scope 隔离，禁止通配授权。`nyra permissions list|check|grant|revoke|audit` 无需模型凭证或网络；用户明确 `grant --confirm` 才会持久化。撤销和有界审计历史随账本原子更新。
 - `--poppy` 额外开放仅可读的 `poppy_permission_check`，模型不能变更权限账本。任何本地记录都不等于 OAuth token、Poppy Session 或执行许可；公司声明与实际用户同意严格分离。
 - 对 `scope_hints` 的未知变更类型按 `irreversible` 风险处理，缺失个人信息提示保持未知，禁止无依据地显示成低风险。
 - 新增 ACL 边界、账户隔离、版本冲突、符号链接、显式确认、模型工具不可提权以及 CLI 的回归测试。
@@ -178,7 +181,7 @@
 
 ## 未发布（memory_append / save_skill 测试补齐）
 
-- 新增测试 `tests/test_memory_skill_tools.py`（11 个）：`memory_append` 与 `save_skill` 首次有了直接的单元测试（此前只有群聊测试顺带调过一次 `memory_append`，`save_skill` 完全没有覆盖）。覆盖写入/多行折叠/空文本不写、readonly 与 auto 非交互拦截、技能文件可解析回读、非法技能名拒绝、覆盖重写；测试全程只写临时目录，不碰真实 `~/.angel/MEMORY.md`。
+- 新增测试 `tests/test_memory_skill_tools.py`（11 个）：`memory_append` 与 `save_skill` 首次有了直接的单元测试（此前只有群聊测试顺带调过一次 `memory_append`，`save_skill` 完全没有覆盖）。覆盖写入/多行折叠/空文本不写、readonly 与 auto 非交互拦截、技能文件可解析回读、非法技能名拒绝、覆盖重写；测试全程只写临时目录，不碰真实 `~/.nyra/MEMORY.md`。
 - 附带修正 README：版本号标题仍写 0.2.0、测试数仍写 127，已同步为 0.3.0 / 175。测试总数 164 → 175，全部通过。
 
 ## 未发布（Token 用量与上下文状态）
@@ -191,8 +194,8 @@
 
 ## 未发布（独立机器人群聊与委派配额）
 
-- 新增 `angel/groups.py` 多机器人群聊核心：每位机器人拥有自己的身份指令、模型选择、独立会话、记忆与工作目录；群消息可 @ 定向分配任务，多成员讨论有轮次上限和持久化记录。
-- 网页界面使用独立的 `angel/group-ui.html` 与 `angel/group-ui.js`（HTML/CSS/JavaScript）实现群聊交互；在现有 Web UI 添加群聊入口与令牌保护的群聊 API。
+- 新增 `nyra/groups.py` 多机器人群聊核心：每位机器人拥有自己的身份指令、模型选择、独立会话、记忆与工作目录；群消息可 @ 定向分配任务，多成员讨论有轮次上限和持久化记录。
+- 网页界面使用独立的 `nyra/group-ui.html` 与 `nyra/group-ui.js`（HTML/CSS/JavaScript）实现群聊交互；在现有 Web UI 添加群聊入口与令牌保护的群聊 API。
 - Agent `delegate` 增加共享子 Agent 数量预算、最大递归深度与子任务轮数检查，避免模型无限嵌套调用；子 Agent 继承所属机器人的独立角色与记忆。
 - 对群聊创建、@mention、模型/会话隔离、长期记忆、访问鉴权、嵌套委派边界添加 mock 回归测试，无需真实模型密钥。
 - 当前默认 readonly、串行讨论；尚未实现并行自主执行/群成员动态管理/完整操作系统沙箱。
@@ -207,10 +210,10 @@
 
 ## 未发布（网页界面、终端打磨、项目官网）
 
-- 新增本地网页界面 `python3 -m angel ui`（`angel/webui.py` + 内嵌单页 `angel/webui_page.py`）：纯标准库 `http.server`，无 CDN。左栏会话列表（读现有会话存储，可新建/恢复），中栏对话 + 可折叠工具调用卡片（auto 模式下卡片内批准/拒绝），右栏 provider/模型、证据来源链接、plan 步骤；设置面板只显示 Key 是否已配置，从不回显值。
-- 网页界面安全：默认只监听 `127.0.0.1`，绑定非本机地址时打印警告；每次启动随机生成访问 token（页面经 `?token=` 带入，API 必须用 `X-Angel-Token` 请求头），本机监听时校验 `Host` 头，不回应跨域预检，页面带 CSP。
+- 新增本地网页界面 `python3 -m nyra ui`（`nyra/webui.py` + 内嵌单页 `nyra/webui_page.py`）：纯标准库 `http.server`，无 CDN。左栏会话列表（读现有会话存储，可新建/恢复），中栏对话 + 可折叠工具调用卡片（auto 模式下卡片内批准/拒绝），右栏 provider/模型、证据来源链接、plan 步骤；设置面板只显示 Key 是否已配置，从不回显值。
+- 网页界面安全：默认只监听 `127.0.0.1`，绑定非本机地址时打印警告；每次启动随机生成访问 token（页面经 `?token=` 带入，API 必须用 `X-Nyra-Token` 请求头），本机监听时校验 `Host` 头，不回应跨域预检，页面带 CSP。
 - `Agent` 新增可选 `on_event` 观察回调（工具开始/结果、助手消息），`ToolContext` 新增可选 `approve_fn`，让网页界面复用同一个审批门；不传时行为与之前完全一致，子 agent 继承同一审批回调。
-- 终端 REPL 打磨：启动横幅、`angel[模式] ›` 提示符、工具调用分组显示（`┌ 工具 参数` / `└ ✓/✗ 结果`）、`/help` 对齐排版；颜色尊重 `NO_COLOR`、`TERM=dumb` 与非 TTY；一次性任务输出不变。
+- 终端 REPL 打磨：启动横幅、`nyra[模式] ›` 提示符、工具调用分组显示（`┌ 工具 参数` / `└ ✓/✗ 结果`）、`/help` 对齐排版；颜色尊重 `NO_COLOR`、`TERM=dumb` 与非 TTY；一次性任务输出不变。
 - 新增项目官网 `docs/`（GitHub Pages，纯静态、中英双语、暗色模式、无外部资源），地址 https://js2005happy.github.io/angel/ 。
 - 新增测试 `tests/test_webui.py`（23 个，mock provider + 随机端口）、`tests/test_repl_ui.py`（12 个）、`tests/test_docs_site.py`（5 个）；`unittest discover` 共 127 个通过。
 
@@ -223,7 +226,7 @@
 ## 未发布（本机请求绕过代理）
 
 - 修复：设置了 `HTTP_PROXY` / `HTTPS_PROXY` 但没设 `NO_PROXY` 时，发往本机（`localhost`、`127.0.0.0/8`、`::1`）的请求也被转发到代理，导致本地 Ollama provider、`web_fetch` / `http_post` 访问本机服务失败（代理返回 404/502），两个 mock 测试也因此在代理环境里失败。
-- 新增 `angel/net.py`：本机地址的请求一律直连，其余地址照常遵守环境代理设置；provider 客户端、`web_fetch`、`web_search`、`http_post` 统一走它。
+- 新增 `nyra/net.py`：本机地址的请求一律直连，其余地址照常遵守环境代理设置；provider 客户端、`web_fetch`、`web_search`、`http_post` 统一走它。
 - 新增回归测试 `tests/test_net_proxy.py`（本机地址识别、代理指向不可用端口时本机服务仍可访问、远程地址仍使用代理）。
 
 ## 未发布（MCP 权限安全）
@@ -246,17 +249,17 @@
 
 ## 0.3.0（2026-11-16）
 
-- 新增 E2B 沙盒执行后端（`angel/e2b_backend.py`）：`--sandbox e2b` 让文件读写与 shell 命令在 E2B 沙盒里执行，不在本机上；`--sandbox-id` 可连回已有沙盒，不给则新建（默认 base 模板、1 小时超时）。沙盒模式下工作目录默认 `/home/user`。
+- 新增 E2B 沙盒执行后端（`nyra/e2b_backend.py`）：`--sandbox e2b` 让文件读写与 shell 命令在 E2B 沙盒里执行，不在本机上；`--sandbox-id` 可连回已有沙盒，不给则新建（默认 base 模板、1 小时超时）。沙盒模式下工作目录默认 `/home/user`。
 - 执行后端是 tools.py 里的一道缝：`read_file` / `write_file` / `edit_file` / `list_dir` / `shell` / `plan` / `grep_search` / `git_status` 走后端，其余工具（联网、记忆、技能、delegate、http_post）仍在本地；审批三档与 shell 黑名单在两种后端下都生效；子 agent 继承同一后端。
 - 核心仍是标准库 only：E2B 后端是可选依赖（`pip install e2b`），缺 SDK 时报明确安装提示；凭证优先用 `E2B_API_KEY`，否则走已保存的 Muse 连接器凭证替身，真实 key 不落盘、不进沙盒。
 - 测试从 53 个增至 62 个，全部通过；真实 DeepSeek + 真实 E2B 沙盒端到端跑通（沙盒里写文件、读回、列目录，本地无任何写入）。
 
 ## 0.2.0（2026-11-16）
 
-- 新增 MCP 客户端（`angel/mcp.py`）：stdio JSON-RPC，加载配置里的服务器，工具以 `mcp_<服务器>_<工具>` 形式调用；默认关闭，需 `mcp_enabled: true` 显式启用。
-- 新增内置调度器（`angel/scheduler.py`）：`angel schedule` 子命令（list/add/remove/run/daemon），任务存 `~/.angel/schedule.json`，支持间隔或每天固定时间。
-- 新增会话压缩（`angel/compact.py`）：`--compact <会话 id>` 与 REPL `/compact`，模型摘要 + 保留最近消息，模型失败时本地回退。
-- 新增证据链（`angel/evidence.py`）：`web_fetch` / `web_search` 抓到的页面原文按会话存档，结论附来源链接。
+- 新增 MCP 客户端（`nyra/mcp.py`）：stdio JSON-RPC，加载配置里的服务器，工具以 `mcp_<服务器>_<工具>` 形式调用；默认关闭，需 `mcp_enabled: true` 显式启用。
+- 新增内置调度器（`nyra/scheduler.py`）：`nyra schedule` 子命令（list/add/remove/run/daemon），任务存 `~/.nyra/schedule.json`，支持间隔或每天固定时间。
+- 新增会话压缩（`nyra/compact.py`）：`--compact <会话 id>` 与 REPL `/compact`，模型摘要 + 保留最近消息，模型失败时本地回退。
+- 新增证据链（`nyra/evidence.py`）：`web_fetch` / `web_search` 抓到的页面原文按会话存档，结论附来源链接。
 - 新增工具：`grep_search`、`git_status`（只读）、`http_post`（走审批）。
 - `web_search` 改为必应优先、百度兜底的双后端（按 IllusionAgent 的做法），全部失败才报明确错误。
 - 新增 provider 档案（`profiles` + `--profile`），显式参数优先于档案。

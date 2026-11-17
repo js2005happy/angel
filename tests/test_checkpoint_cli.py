@@ -8,9 +8,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import angel.agent as agent_module
-import angel.cli as cli
-import angel.memory as memory_module
+import nyra.agent as agent_module
+import nyra.cli as cli
+import nyra.memory as memory_module
 
 
 def call(path, value, cid):
@@ -44,8 +44,8 @@ class CheckpointCLITests(unittest.TestCase):
         self.project = self.root / "project"
         self.project.mkdir()
         self.patchers = [
-            mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"),
-            mock.patch.object(cli, "ANGEL_HOME", self.root / "home"),
+            mock.patch.object(agent_module, "NYRA_HOME", self.root / "home"),
+            mock.patch.object(cli, "NYRA_HOME", self.root / "home"),
             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"),
         ]
         for p in self.patchers:

@@ -11,11 +11,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import angel.agent as agent_module
-import angel.cli as cli
-import angel.json_mode as json_mode
-import angel.memory as memory_module
-from angel.providers import ProviderError
+import nyra.agent as agent_module
+import nyra.cli as cli
+import nyra.json_mode as json_mode
+import nyra.memory as memory_module
+from nyra.providers import ProviderError
 
 
 def assistant(content="", calls=None, usage=None):
@@ -63,7 +63,7 @@ class JsonModeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.patchers = [
-            mock.patch.object(agent_module, "ANGEL_HOME", self.root / "angelhome"),
+            mock.patch.object(agent_module, "NYRA_HOME", self.root / "nyrahome"),
             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"),
             mock.patch.object(memory_module, "MEMORY_PATH", self.root / "private-memory"),
         ]
@@ -330,9 +330,9 @@ class JsonModeTests(unittest.TestCase):
         self.assertIn("RuntimeError", stderr)
 
     def test_real_module_entrypoint_emits_jsonl_on_invalid_invocation(self):
-        # This exercises python -m angel, not only the in-process main function.
+        # This exercises python -m nyra, not only the in-process main function.
         completed = subprocess.run(
-            [sys.executable, "-m", "angel", "--json"],
+            [sys.executable, "-m", "nyra", "--json"],
             cwd=str(Path(__file__).resolve().parent.parent),
             capture_output=True, text=True, timeout=15,
             check=False,

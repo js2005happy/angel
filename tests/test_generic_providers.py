@@ -18,8 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.cli import main  # noqa: E402
-from angel.config import (  # noqa: E402
+from nyra.cli import main  # noqa: E402
+from nyra.config import (  # noqa: E402
     DEFAULT_CONFIG,
     ProviderConfig,
     get_provider_presets,
@@ -27,7 +27,7 @@ from angel.config import (  # noqa: E402
     resolve_fallback_chain,
     resolve_provider,
 )
-from angel.providers import (  # noqa: E402
+from nyra.providers import (  # noqa: E402
     FallbackProvider,
     Provider,
     ProviderError,
@@ -133,7 +133,7 @@ class TestBuiltinPresets(unittest.TestCase):
 class TestCustomProviders(unittest.TestCase):
     def test_custom_provider_resolves_with_env_key(self):
         cfg = _custom_config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ, {"MYLLM_API_KEY": "sk-test"}, clear=False
             ):
@@ -146,7 +146,7 @@ class TestCustomProviders(unittest.TestCase):
 
     def test_custom_provider_unknown_fields_ignored(self):
         cfg = _custom_config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ, {"MYLLM_API_KEY": "sk-test"}, clear=False
             ):
@@ -206,7 +206,7 @@ class TestCustomProviders(unittest.TestCase):
                 }
             },
         )
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ, {"DEEPSEEK_API_KEY": "sk-test"}, clear=False
             ):
@@ -214,7 +214,7 @@ class TestCustomProviders(unittest.TestCase):
         self.assertEqual(resolved.base_url, "https://proxy.example.com/v1")
         self.assertEqual(resolved.model, "my-deepseek")
 
-    def test_custom_provider_without_env_key_uses_angel_api_key(self):
+    def test_custom_provider_without_env_key_uses_legacy_api_key_fallback(self):
         cfg = _config(
             custom_providers={
                 "keyless": {
@@ -223,9 +223,9 @@ class TestCustomProviders(unittest.TestCase):
                 }
             }
         )
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
-                os.environ, {"ANGEL_API_KEY": "sk-fallback"}, clear=False
+                os.environ, {"NYRA_API_KEY": "sk-fallback"}, clear=False
             ):
                 resolved = resolve_provider("keyless")
         self.assertEqual(resolved.api_key, "sk-fallback")
@@ -233,7 +233,7 @@ class TestCustomProviders(unittest.TestCase):
 
     def test_custom_provider_missing_key_is_config_error_on_chat(self):
         cfg = _custom_config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(os.environ, {}, clear=True):
                 resolved = resolve_provider("myllm")
         provider = Provider(resolved)
@@ -322,7 +322,7 @@ class TestListModels(unittest.TestCase):
     def _run_list_models(self, action):
         provider = self._provider()
         with mock.patch(
-            "angel.providers.build_opener_for",
+            "nyra.providers.build_opener_for",
             return_value=self._fake_opener(action),
         ):
             return provider.list_models()
@@ -389,7 +389,7 @@ class TestListModels(unittest.TestCase):
     def test_bad_json_is_parse_error(self):
         models = self._provider()
         with mock.patch(
-            "angel.providers.build_opener_for",
+            "nyra.providers.build_opener_for",
             return_value=self._fake_opener(
                 lambda request: _FakeResponse(b"not json")
             ),
@@ -440,7 +440,7 @@ class _FakeCliProvider:
 class TestCliFlags(unittest.TestCase):
     def test_list_providers_prints_presets(self):
         cfg = _custom_config()
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             out = io.StringIO()
             with redirect_stdout(out):
                 code = main(["--list-providers"])
@@ -453,7 +453,7 @@ class TestCliFlags(unittest.TestCase):
 
     def test_list_providers_bad_custom_config_errors(self):
         cfg = _config(custom_providers={"broken": {"default_model": "m1"}})
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             out = io.StringIO()
             with redirect_stdout(out):
                 code = main(["--list-providers"])
@@ -471,12 +471,12 @@ class TestCliFlags(unittest.TestCase):
             connector_name=None,
             allowed_hosts=[],
         )
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             with mock.patch(
-                "angel.cli.resolve_provider", return_value=fake_cfg
+                "nyra.cli.resolve_provider", return_value=fake_cfg
             ):
                 with mock.patch(
-                    "angel.cli.build_provider_chain",
+                    "nyra.cli.build_provider_chain",
                     return_value=_FakeCliProvider(["m1", "m2"]),
                 ):
                     out = io.StringIO()
@@ -502,12 +502,12 @@ class TestCliFlags(unittest.TestCase):
             def list_models(self, timeout=30.0):
                 raise ProviderError("认证失败", kind="auth")
 
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             with mock.patch(
-                "angel.cli.resolve_provider", return_value=fake_cfg
+                "nyra.cli.resolve_provider", return_value=fake_cfg
             ):
                 with mock.patch(
-                    "angel.cli.build_provider_chain",
+                    "nyra.cli.build_provider_chain",
                     return_value=FailingProvider([]),
                 ):
                     out = io.StringIO()

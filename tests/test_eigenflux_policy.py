@@ -8,19 +8,19 @@ import tempfile
 import unittest
 from unittest import mock
 
-import angel.cli as cli
-import angel.eigenflux_adapter as adapter
-import angel.eigenflux_policy as policy_mod
-from angel.eigenflux_policy import (
+import nyra.cli as cli
+import nyra.eigenflux_adapter as adapter
+import nyra.eigenflux_policy as policy_mod
+from nyra.eigenflux_policy import (
     CAPABILITIES, NetworkPolicy, NetworkPolicyConflict, NetworkPolicyError,
 )
-from angel.groups import GroupStore
+from nyra.groups import GroupStore
 
 
 class PolicyFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = (Path(self.temp.name) / "angel").resolve()
+        self.root = (Path(self.temp.name) / "nyra").resolve()
         self.root.mkdir()
         self.groups = GroupStore(self.root / "groups")
         self.groups.create("alpha", "Alpha")
@@ -33,8 +33,8 @@ class PolicyFixture:
 
 class NetworkPolicyTests(PolicyFixture, unittest.TestCase):
     def test_new_policy_is_deny_by_default_and_has_no_side_effects(self):
-        with mock.patch("angel.eigenflux_adapter.subprocess.run") as process, \
-             mock.patch("angel.eigenflux_adapter.shutil.which") as which:
+        with mock.patch("nyra.eigenflux_adapter.subprocess.run") as process, \
+             mock.patch("nyra.eigenflux_adapter.shutil.which") as which:
             state = self.policy.show()
             alpha = self.policy.show(room="alpha", bot="lead")
         for state_item in (state, alpha):
@@ -243,7 +243,7 @@ class NetworkPolicyTests(PolicyFixture, unittest.TestCase):
         with self.assertRaises(NetworkPolicyError):
             self.policy.change("deny", "feed_read")
 
-    def test_policy_cannot_be_written_outside_angel_home(self):
+    def test_policy_cannot_be_written_outside_nyra_home(self):
         other = self.root.parent / "external-policy.json"
         policy = NetworkPolicy(root=self.root, path=other)
         with self.assertRaises(NetworkPolicyError):
@@ -261,12 +261,12 @@ class NetworkPolicyTests(PolicyFixture, unittest.TestCase):
 class NetworkPolicyCLITests(PolicyFixture, unittest.TestCase):
     def invoke(self, *args):
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(policy_mod, "ANGEL_HOME", self.root), \
-             mock.patch.object(adapter, "ANGEL_HOME", self.root), \
+        with mock.patch.object(policy_mod, "NYRA_HOME", self.root), \
+             mock.patch.object(adapter, "NYRA_HOME", self.root), \
              mock.patch.object(cli, "Provider") as provider, \
              mock.patch.object(cli, "build_mcp_manager") as mcp, \
-             mock.patch("angel.eigenflux_adapter.subprocess.run") as exec_, \
-             mock.patch("angel.eigenflux_adapter.shutil.which") as which, \
+             mock.patch("nyra.eigenflux_adapter.subprocess.run") as exec_, \
+             mock.patch("nyra.eigenflux_adapter.shutil.which") as which, \
              mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
             code = cli.main(["eigenflux", "policy", *args])
         provider.assert_not_called()

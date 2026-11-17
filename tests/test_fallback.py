@@ -18,12 +18,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.agent import Agent  # noqa: E402
-from angel.config import (  # noqa: E402
+from nyra.agent import Agent  # noqa: E402
+from nyra.config import (  # noqa: E402
     ProviderConfig,
     resolve_fallback_chain,
 )
-from angel.providers import (  # noqa: E402
+from nyra.providers import (  # noqa: E402
     FallbackProvider,
     Provider,
     ProviderError,
@@ -222,7 +222,7 @@ class FallbackProviderTest(unittest.TestCase):
         self.assertEqual(fb.name, "deepseek")
         self.assertEqual(fb.model, "deepseek-flash")
         self.assertTrue(fb.has_credentials())
-        from angel.providers import describe_provider
+        from nyra.providers import describe_provider
 
         self.assertIn("deepseek", describe_provider(fb))
 
@@ -415,18 +415,18 @@ class ResolveFallbackChainTest(unittest.TestCase):
         self.assertEqual(chain, ["deepseek", "xai"])
 
     def test_env_disables_fallback(self):
-        with mock.patch.dict(os.environ, {"ANGEL_FALLBACK": "0"}):
+        with mock.patch.dict(os.environ, {"NYRA_FALLBACK": "0"}):
             chain = resolve_fallback_chain("deepseek", config={})
         self.assertEqual(chain, ["deepseek"])
 
     def test_env_enables_fallback(self):
-        with mock.patch.dict(os.environ, {"ANGEL_FALLBACK": "1"}):
+        with mock.patch.dict(os.environ, {"NYRA_FALLBACK": "1"}):
             chain = resolve_fallback_chain("deepseek", config={})
         self.assertEqual(chain, ["deepseek", "xai", "ollama"])
 
     def test_env_overrides_chain(self):
         with mock.patch.dict(
-            os.environ, {"ANGEL_FALLBACK_PROVIDERS": "ollama, xai"}
+            os.environ, {"NYRA_FALLBACK_PROVIDERS": "ollama, xai"}
         ):
             chain = resolve_fallback_chain(
                 "deepseek", config={"fallback_enabled": True}
@@ -434,7 +434,7 @@ class ResolveFallbackChainTest(unittest.TestCase):
         self.assertEqual(chain, ["deepseek", "ollama", "xai"])
 
     def test_explicit_enabled_argument_wins_over_env(self):
-        with mock.patch.dict(os.environ, {"ANGEL_FALLBACK": "0"}):
+        with mock.patch.dict(os.environ, {"NYRA_FALLBACK": "0"}):
             chain = resolve_fallback_chain("deepseek", config={}, enabled=True)
         self.assertEqual(chain, ["deepseek", "xai", "ollama"])
         chain = resolve_fallback_chain("deepseek", config={}, enabled=False)
@@ -475,7 +475,7 @@ class RealProviderErrorMappingTest(unittest.TestCase):
     def _run_chat_with(self, action):
         provider = self._provider()
         with mock.patch(
-            "angel.providers.build_opener_for",
+            "nyra.providers.build_opener_for",
             return_value=self._fake_opener(action),
         ):
             with self.assertRaises(ProviderError) as ctx:
@@ -542,7 +542,8 @@ class AgentFallbackIntegrationTest(unittest.TestCase):
         try:
             result = agent.run("你好")
         finally:
-            session_file = Path.home() / ".angel" / "sessions" / f"{agent.session_id}.jsonl"
+            from nyra.config import NYRA_HOME
+            session_file = NYRA_HOME / "sessions" / f"{agent.session_id}.jsonl"
             if session_file.exists():
                 session_file.unlink()
         self.assertEqual(result, "备用模型答复")
@@ -553,7 +554,7 @@ class AgentFallbackIntegrationTest(unittest.TestCase):
 
 class CliFallbackFlagTest(unittest.TestCase):
     def test_fallback_flag_precedence(self):
-        import angel.cli as cli_module
+        import nyra.cli as cli_module
 
         parser = cli_module.build_parser()
         self.assertTrue(
@@ -579,7 +580,7 @@ class ScheduledTaskNoFallbackTest(unittest.TestCase):
         # task runs on the single provider it names: no chain, no switch.
         from types import SimpleNamespace
 
-        import angel.cli as cli_module
+        import nyra.cli as cli_module
 
         tmp = Path(tempfile.mkdtemp())
         config = {

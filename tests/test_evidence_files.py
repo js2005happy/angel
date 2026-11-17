@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from angel.evidence import EvidenceStore
+from nyra.evidence import EvidenceStore
 
 
 class EvidenceFileTests(unittest.TestCase):

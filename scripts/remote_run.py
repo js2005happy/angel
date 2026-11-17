@@ -8,9 +8,9 @@ so the E2B key never appears here either.
 Usage:
   python3 remote_run.py --sandbox-id <id> --task "task text" [--max-turns 6]
 
-This is the step 1 prototype of the Angel service architecture: the agent
+This is the step 1 prototype of the Nyra service architecture: the agent
 loop plus model live outside the sandbox, the sandbox only runs commands
-and holds files. The durable version of this backend belongs in Angel
+and holds files. The durable version of this backend belongs in Nyra
 itself (tools.py), not in this script.
 """
 import argparse
@@ -76,7 +76,7 @@ TOOLS = [
 DENIED = ["rm -rf /", "rm -rf ~", "mkfs", "dd if=", ":(){:|:&};:", "shutdown", "reboot"]
 
 SYSTEM_PROMPT = (
-    "You are Angel, an AI agent. Your tools run inside an isolated Linux "
+    "You are Nyra, an AI agent. Your tools run inside an isolated Linux "
     "sandbox. Work in /home/user. Use the tools to complete the task. "
     "Do not install packages. When the task is done, reply with a short "
     "summary of what you did and the result."

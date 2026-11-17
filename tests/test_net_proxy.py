@@ -7,7 +7,7 @@ import unittest
 import urllib.request
 from unittest import mock
 
-from angel.net import build_opener_for, is_loopback_host, is_loopback_url, open_url
+from nyra.net import build_opener_for, is_loopback_host, is_loopback_url, open_url
 
 
 class _OkHandler(http.server.BaseHTTPRequestHandler):

@@ -5,10 +5,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import angel.agent as agent_module
-import angel.memory as memory_module
-from angel.agent import Agent
-from angel.compact import (
+import nyra.agent as agent_module
+import nyra.memory as memory_module
+from nyra.agent import Agent
+from nyra.compact import (
     compact_messages, should_auto_compact, validate_auto_compact_threshold
 )
 
@@ -81,7 +81,7 @@ class AgentAutoCompactTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.workdir = Path(self.tmp.name)
-        self.p1 = mock.patch.object(agent_module, "ANGEL_HOME", self.workdir / "home")
+        self.p1 = mock.patch.object(agent_module, "NYRA_HOME", self.workdir / "home")
         self.p2 = mock.patch.object(memory_module, "SESSIONS_DIR", self.workdir / "sessions")
         self.p1.start()
         self.p2.start()
@@ -213,8 +213,8 @@ class AgentAutoCompactTest(unittest.TestCase):
         self.assertEqual(len(provider.calls), 3)
 
     def test_ui_can_show_count(self):
-        from angel.webui import UIState
-        from angel.webui_page import PAGE_HTML
+        from nyra.webui import UIState
+        from nyra.webui_page import PAGE_HTML
         state = UIState(
             self.workdir, auto_compact_enabled=True,
             auto_compact_threshold=0.75, context_window_tokens=1000,

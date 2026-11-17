@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from angel import agent as agent_module
-from angel.agent import Agent, MAX_DELEGATE_CALLS, MAX_DELEGATE_DEPTH, MAX_DELEGATE_TURNS
+from nyra import agent as agent_module
+from nyra.agent import Agent, MAX_DELEGATE_CALLS, MAX_DELEGATE_DEPTH, MAX_DELEGATE_TURNS
 
 
 class Provider:
@@ -21,7 +21,7 @@ class Provider:
 class DelegationLimitTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.home_patch = patch.object(agent_module, "ANGEL_HOME",
+        self.home_patch = patch.object(agent_module, "NYRA_HOME",
                                        Path(self.temp.name) / "home")
         self.home_patch.start()
         self.provider = Provider()
@@ -66,7 +66,7 @@ class DelegationLimitTest(unittest.TestCase):
         self.assertEqual(root.delegate("new child", 1), "完成")
 
     def test_delegate_inherits_parent_persona_and_memory_path(self):
-        from angel.memory import load_memory_summary
+        from nyra.memory import load_memory_summary
         memory = Path(self.temp.name) / "private" / "MEMORY.md"
         memory.parent.mkdir(parents=True)
         memory.write_text("my own memory\n", encoding="utf-8")

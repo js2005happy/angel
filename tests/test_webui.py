@@ -1,4 +1,4 @@
-"""Tests for the local web UI (`python3 -m angel ui`).
+"""Tests for the local web UI (`python3 -m nyra ui`).
 
 Everything runs against a mock provider on a random local port; no model,
 key or network access is needed.
@@ -20,11 +20,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import angel.agent as agent_module  # noqa: E402
-import angel.config as config_module  # noqa: E402
-import angel.memory as memory_module  # noqa: E402
-from angel import webui  # noqa: E402
-from angel.memory import save_session  # noqa: E402
+import nyra.agent as agent_module  # noqa: E402
+import nyra.config as config_module  # noqa: E402
+import nyra.memory as memory_module  # noqa: E402
+from nyra import webui  # noqa: E402
+from nyra.memory import save_session  # noqa: E402
 
 
 def reply(content="", calls=None):
@@ -91,8 +91,8 @@ class WebUITestCase(unittest.TestCase):
         self.workdir = Path(self.tmp.name) / "work"
         self.workdir.mkdir()
         self.patches = [
-            mock.patch.object(config_module, "ANGEL_HOME", home),
-            mock.patch.object(agent_module, "ANGEL_HOME", home),
+            mock.patch.object(config_module, "NYRA_HOME", home),
+            mock.patch.object(agent_module, "NYRA_HOME", home),
             mock.patch.object(memory_module, "SESSIONS_DIR", home / "sessions"),
             mock.patch.object(memory_module, "MEMORY_PATH", home / "MEMORY.md"),
             mock.patch.object(memory_module, "GLOBAL_AGENTS_PATH", home / "AGENTS.md"),
@@ -126,9 +126,9 @@ class WebUITestCase(unittest.TestCase):
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = urllib.request.Request(self.base + path, data=data, method=method)
         if token is True:
-            req.add_header("X-Angel-Token", self.state.token)
+            req.add_header("X-Nyra-Token", self.state.token)
         elif token:
-            req.add_header("X-Angel-Token", token)
+            req.add_header("X-Nyra-Token", token)
         if data is not None:
             req.add_header("Content-Type", "application/json")
         for key, value in (headers or {}).items():
@@ -165,7 +165,7 @@ class TokenAndHostTests(WebUITestCase):
         self.assertNotIn(self.state.token, raw.decode("utf-8"))
         status, raw, headers = self.request(f"/?token={self.state.token}", token=False)
         self.assertEqual(status, 200)
-        self.assertIn("Angel", raw.decode("utf-8"))
+        self.assertIn("Nyra", raw.decode("utf-8"))
         self.assertIn("default-src 'none'", headers.get("Content-Security-Policy", ""))
         self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
 
@@ -190,7 +190,7 @@ class TokenAndHostTests(WebUITestCase):
     def test_default_provider_uses_fallback_chain(self):
         from types import SimpleNamespace
 
-        from angel.providers import FallbackProvider, ProviderError
+        from nyra.providers import FallbackProvider, ProviderError
 
         primary = ScriptedProvider(
             "deepseek", "deepseek-flash",
@@ -242,7 +242,7 @@ class TokenAndHostTests(WebUITestCase):
     def test_default_provider_does_not_switch(self):
         from types import SimpleNamespace
 
-        from angel.providers import FallbackProvider, ProviderError
+        from nyra.providers import FallbackProvider, ProviderError
 
         primary = ScriptedProvider(
             "deepseek", "deepseek-flash",
@@ -277,7 +277,7 @@ class TokenAndHostTests(WebUITestCase):
     def test_model_switch_event_appears_in_session_poll(self):
         from types import SimpleNamespace
 
-        from angel.providers import ProviderError
+        from nyra.providers import ProviderError
 
         primary = ScriptedProvider(
             "deepseek", "deepseek-flash",
@@ -393,7 +393,7 @@ class SessionApiTests(WebUITestCase):
         self.assertEqual(status, 400)
 
     def test_send_message_with_mock_provider(self):
-        self.start([reply("你好，我是 Angel。")])
+        self.start([reply("你好，我是 Nyra。")])
         status, created = self.get_json("/api/sessions", method="POST", body={})
         self.assertEqual(status, 201)
         sid = created["id"]
@@ -404,7 +404,7 @@ class SessionApiTests(WebUITestCase):
         view = self.wait_for(sid, lambda v: v["status"] == "done")
         roles = [m["role"] for m in view["messages"]]
         self.assertEqual(roles, ["user", "assistant"])
-        self.assertEqual(view["messages"][1]["content"], "你好，我是 Angel。")
+        self.assertEqual(view["messages"][1]["content"], "你好，我是 Nyra。")
         self.assertTrue((memory_module.SESSIONS_DIR / f"{sid}.jsonl").exists())
         _, listed = self.get_json("/api/sessions")
         self.assertIn(sid, [s["id"] for s in listed["sessions"]])
@@ -595,7 +595,7 @@ class UIv2Tests(WebUITestCase):
             self.assertIn(view, html_text, view)
 
     def test_schedule_endpoints(self):
-        import angel.scheduler as scheduler_module
+        import nyra.scheduler as scheduler_module
 
         with mock.patch.object(
             scheduler_module, "SCHEDULE_PATH", self.home / "schedule.json"
@@ -614,7 +614,7 @@ class UIv2Tests(WebUITestCase):
             status, data = self.get_json("/api/schedule")
             self.assertEqual(data["tasks"], [])
             # Toggle/remove/list still work for tasks added another way
-            # (e.g. `angel schedule add`).
+            # (e.g. `nyra schedule add`).
             data = scheduler_module.load_schedule()
             scheduler_module.add_task(
                 data, {"name": "t1", "prompt": "做点事", "at": "09:00"}
@@ -726,7 +726,7 @@ class UIv2Tests(WebUITestCase):
         self.assertIn("activeId = roomParam", js)
 
     def test_schedule_add_with_provider_and_model(self):
-        import angel.scheduler as scheduler_module
+        import nyra.scheduler as scheduler_module
 
         with mock.patch.object(
             scheduler_module, "SCHEDULE_PATH", self.home / "schedule.json"
@@ -744,7 +744,7 @@ class UIv2Tests(WebUITestCase):
             status, data = self.get_json("/api/schedule")
             self.assertEqual(data["tasks"], [])
             # Provider/model still round-trip when the task is added
-            # another way (e.g. `angel schedule add`).
+            # another way (e.g. `nyra schedule add`).
             stored = scheduler_module.load_schedule()
             scheduler_module.add_task(
                 stored, {"name": "t2", "prompt": "做点事", "at": "09:00",

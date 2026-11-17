@@ -11,10 +11,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel import cli  # noqa: E402
-from angel.agent import Agent  # noqa: E402
-from angel.console import ToolPrinter, one_line, style, use_color  # noqa: E402
-from angel.tools import ToolContext, ToolError, _check_approval  # noqa: E402
+from nyra import cli  # noqa: E402
+from nyra.agent import Agent  # noqa: E402
+from nyra.console import ToolPrinter, one_line, style, use_color  # noqa: E402
+from nyra.tools import ToolContext, ToolError, _check_approval  # noqa: E402
 
 ANSI = "\033["
 
@@ -68,11 +68,11 @@ class ReplTextTests(unittest.TestCase):
 
     def test_banner_and_prompt(self):
         banner = cli.format_banner("mock / m1 @ http://x", "auto", "sid-1")
-        self.assertIn("Angel", banner)
+        self.assertIn("Nyra", banner)
         self.assertIn("mock / m1", banner)
         self.assertIn("sid-1", banner)
         self.assertNotIn(ANSI, banner)
-        self.assertEqual(cli.repl_prompt("auto"), "angel[auto] › ")
+        self.assertEqual(cli.repl_prompt("auto"), "nyra[auto] › ")
         self.assertIn(ANSI, cli.repl_prompt("full", color=True))
 
 
@@ -121,8 +121,8 @@ class AgentEventTests(unittest.TestCase):
             try:
                 self.assertEqual(agent.run("列目录"), "好了")
             finally:
-                from angel.config import ANGEL_HOME
-                (ANGEL_HOME / "sessions" / f"{agent.session_id}.jsonl").unlink(missing_ok=True)
+                from nyra.config import NYRA_HOME
+                (NYRA_HOME / "sessions" / f"{agent.session_id}.jsonl").unlink(missing_ok=True)
         self.assertEqual(seen, ["tool_start", "tool_result", "final"])
 
     def test_approve_fn_replaces_terminal_prompt(self):

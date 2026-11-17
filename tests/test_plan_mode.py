@@ -10,8 +10,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import angel.cli as cli
-from angel.plan_mode import (
+import nyra.cli as cli
+from nyra.plan_mode import (
     PlanError, approved_execution_task, build_plan, read_approved_plan,
     render_plan, save_plan,
 )
@@ -97,7 +97,7 @@ class PlanCoreTests(unittest.TestCase):
                 planner = FakePlanner([
                     response(calls=[call(name, {"path": "sample.py"})]),
                 ])
-                with mock.patch("angel.plan_mode.execute_tool") as execute:
+                with mock.patch("nyra.plan_mode.execute_tool") as execute:
                     with self.assertRaisesRegex(PlanError, "拒绝"):
                         build_plan(planner, "检查项目", self.root)
                     execute.assert_not_called()

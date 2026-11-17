@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from angel import scheduler
+from nyra import scheduler
 
 
 class SchedulerRobustTests(unittest.TestCase):

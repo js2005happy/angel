@@ -18,9 +18,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.cli import _make_task_agent  # noqa: E402
-from angel.config import ProviderConfig, resolve_fallback_chain, resolve_provider  # noqa: E402
-from angel.providers import (  # noqa: E402
+from nyra.cli import _make_task_agent  # noqa: E402
+from nyra.config import ProviderConfig, resolve_fallback_chain, resolve_provider  # noqa: E402
+from nyra.providers import (  # noqa: E402
     CODEX_MIN_VERSION,
     CODEX_PROMPT_PREFIX,
     CliProvider,
@@ -81,10 +81,10 @@ class CodexBinaryResolutionTests(unittest.TestCase):
 
     def test_fixed_path_preferred_over_path_lookup(self):
         with (
-            mock.patch("angel.providers.os.path.isfile", return_value=True),
-            mock.patch("angel.providers.os.access", return_value=True),
+            mock.patch("nyra.providers.os.path.isfile", return_value=True),
+            mock.patch("nyra.providers.os.access", return_value=True),
             mock.patch(
-                "angel.providers.shutil.which",
+                "nyra.providers.shutil.which",
                 side_effect=AssertionError("PATH lookup must not run"),
             ),
         ):
@@ -94,27 +94,27 @@ class CodexBinaryResolutionTests(unittest.TestCase):
 
     def test_path_lookup_is_last_resort(self):
         with (
-            mock.patch("angel.providers.os.path.isfile", return_value=False),
-            mock.patch("angel.providers.shutil.which", return_value="/usr/bin/codex"),
+            mock.patch("nyra.providers.os.path.isfile", return_value=False),
+            mock.patch("nyra.providers.shutil.which", return_value="/usr/bin/codex"),
         ):
             self.assertEqual(_find_codex_binary(), "/usr/bin/codex")
 
     def test_missing_binary_is_config_error(self):
         with (
-            mock.patch("angel.providers.os.path.isfile", return_value=False),
-            mock.patch("angel.providers.shutil.which", return_value=None),
+            mock.patch("nyra.providers.os.path.isfile", return_value=False),
+            mock.patch("nyra.providers.shutil.which", return_value=None),
         ):
             with self.assertRaises(ProviderError) as ctx:
                 _find_codex_binary()
             self.assertEqual(ctx.exception.kind, "config")
 
     def test_env_and_config_paths_are_ignored(self):
-        # No ANGEL_CODEX_PATH / codex_path knob exists: the binary is
+        # No NYRA_CODEX_PATH / codex_path knob exists: the binary is
         # never taken from environment or configuration.
         with (
-            mock.patch.dict(os.environ, {"ANGEL_CODEX_PATH": "/tmp/evil/codex"}),
-            mock.patch("angel.providers.os.path.isfile", return_value=True),
-            mock.patch("angel.providers.os.access", return_value=True),
+            mock.patch.dict(os.environ, {"NYRA_CODEX_PATH": "/tmp/evil/codex"}),
+            mock.patch("nyra.providers.os.path.isfile", return_value=True),
+            mock.patch("nyra.providers.os.access", return_value=True),
         ):
             self.assertEqual(
                 _find_codex_binary(), "/opt/hatch-image/bin/codex"
@@ -134,10 +134,10 @@ class CodexAvailabilityTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers.subprocess.run", side_effect=fake_run),
+            mock.patch("nyra.providers.subprocess.run", side_effect=fake_run),
         ):
             return _codex_available()
 
@@ -209,11 +209,11 @@ class CodexChatTests(unittest.TestCase):
     def _run_chat(self, **kwargs):
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
-            mock.patch("angel.providers.subprocess.Popen", FakePopen) as popen,
+            mock.patch("nyra.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers.subprocess.Popen", FakePopen) as popen,
         ):
             result = self.provider.chat(
                 [{"role": "user", "content": "hi"}], **kwargs
@@ -230,10 +230,10 @@ class CodexChatTests(unittest.TestCase):
     def test_argv_is_fixed_read_only_and_has_no_forbidden_flags(self):
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
         ):
             seen = {}
 
@@ -244,7 +244,7 @@ class CodexChatTests(unittest.TestCase):
                     seen["kwargs"] = kwargs
 
             with mock.patch(
-                "angel.providers.subprocess.Popen", RecordingPopen
+                "nyra.providers.subprocess.Popen", RecordingPopen
             ):
                 self.provider.chat([{"role": "user", "content": "hi"}])
         argv = seen["argv"]
@@ -270,7 +270,7 @@ class CodexChatTests(unittest.TestCase):
             self.assertNotIn(forbidden, argv)
 
     def test_explicit_model_is_passed_with_m(self):
-        from angel.config import ProviderConfig
+        from nyra.config import ProviderConfig
 
         provider = CliProvider(
             ProviderConfig(
@@ -285,10 +285,10 @@ class CodexChatTests(unittest.TestCase):
         )
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
         ):
             seen = {}
 
@@ -298,7 +298,7 @@ class CodexChatTests(unittest.TestCase):
                     seen["argv"] = list(argv)
 
             with mock.patch(
-                "angel.providers.subprocess.Popen", RecordingPopen
+                "nyra.providers.subprocess.Popen", RecordingPopen
             ):
                 provider.chat([{"role": "user", "content": "hi"}])
         argv = seen["argv"]
@@ -308,10 +308,10 @@ class CodexChatTests(unittest.TestCase):
     def test_prompt_goes_via_stdin_with_fixed_prefix(self):
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
         ):
             seen = {}
 
@@ -325,7 +325,7 @@ class CodexChatTests(unittest.TestCase):
                     return super().communicate(input=input, timeout=timeout)
 
             with mock.patch(
-                "angel.providers.subprocess.Popen", RecordingPopen
+                "nyra.providers.subprocess.Popen", RecordingPopen
             ):
                 self.provider.chat([{"role": "user", "content": "hi"}])
         self.assertTrue(seen["input"].startswith(CODEX_PROMPT_PREFIX))
@@ -336,10 +336,10 @@ class CodexChatTests(unittest.TestCase):
     def test_workdir_is_an_empty_temp_dir(self):
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
         ):
             seen = {}
 
@@ -350,22 +350,22 @@ class CodexChatTests(unittest.TestCase):
                     seen["argv"] = list(argv)
 
             with mock.patch(
-                "angel.providers.subprocess.Popen", RecordingPopen
+                "nyra.providers.subprocess.Popen", RecordingPopen
             ):
                 self.provider.chat([{"role": "user", "content": "hi"}])
         workdir = seen["kwargs"]["cwd"]
         self.assertTrue(workdir.startswith(tempfile.gettempdir()))
-        self.assertIn("angel-codex-", workdir)
+        self.assertIn("nyra-codex-", workdir)
         self.assertEqual(seen["argv"][seen["argv"].index("-C") + 1], workdir)
         self.assertFalse(os.path.exists(workdir))
 
     def test_tools_are_ignored(self):
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
         ):
             seen = {}
 
@@ -375,7 +375,7 @@ class CodexChatTests(unittest.TestCase):
                     return super().communicate(input=input, timeout=timeout)
 
             with mock.patch(
-                "angel.providers.subprocess.Popen", RecordingPopen
+                "nyra.providers.subprocess.Popen", RecordingPopen
             ):
                 self.provider.chat(
                     [{"role": "user", "content": "hi"}],
@@ -389,10 +389,10 @@ class CodexChatTests(unittest.TestCase):
                 os.environ, {"DEEPSEEK_API_KEY": "sk-test", "PATH": "/usr/bin"}
             ),
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
         ):
             seen = {}
 
@@ -402,7 +402,7 @@ class CodexChatTests(unittest.TestCase):
                     seen["env"] = kwargs.get("env", {})
 
             with mock.patch(
-                "angel.providers.subprocess.Popen", RecordingPopen
+                "nyra.providers.subprocess.Popen", RecordingPopen
             ):
                 self.provider.chat([{"role": "user", "content": "hi"}])
         self.assertNotIn("DEEPSEEK_API_KEY", seen["env"])
@@ -418,12 +418,12 @@ class CodexChatTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers._codex_available", return_value=True),
             mock.patch("builtins.open", side_effect=recording_open),
-            mock.patch("angel.providers.subprocess.Popen", FakePopen),
+            mock.patch("nyra.providers.subprocess.Popen", FakePopen),
         ):
             self.provider.chat([{"role": "user", "content": "hi"}])
         for path in opened:
@@ -478,11 +478,11 @@ class CodexChatTests(unittest.TestCase):
         FakePopen.raise_timeout = True
         with (
             mock.patch(
-                "angel.providers._find_codex_binary",
+                "nyra.providers._find_codex_binary",
                 return_value="/fake/codex",
             ),
-            mock.patch("angel.providers._codex_available", return_value=True),
-            mock.patch("angel.providers.subprocess.Popen", FakePopen),
+            mock.patch("nyra.providers._codex_available", return_value=True),
+            mock.patch("nyra.providers.subprocess.Popen", FakePopen),
             mock.patch.object(os, "killpg") as killpg,
         ):
             with self.assertRaises(ProviderError) as ctx:

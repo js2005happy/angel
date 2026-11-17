@@ -8,14 +8,14 @@ import tempfile
 import unittest
 from unittest import mock
 
-import angel.cli as cli
-import angel.poppy_permissions as permissions
-from angel.agent import Agent
-from angel.poppy_permissions import (
+import nyra.cli as cli
+import nyra.poppy_permissions as permissions
+from nyra.agent import Agent
+from nyra.poppy_permissions import (
     PermissionConflict, PermissionError, PermissionLedger,
     classify_scope, identity_key, scope_name, site_host,
 )
-from angel.tools import ToolContext, execute_tool
+from nyra.tools import ToolContext, execute_tool
 
 
 class PermissionLedgerTests(unittest.TestCase):
@@ -279,7 +279,7 @@ class PermissionCLITests(unittest.TestCase):
             self.assertNotIn("poppy_permission_grant", names(b))
 
     def test_site_hints_unknown_are_not_marked_safe_in_discovery(self):
-        from angel.poppy import discover_poppy
+        from nyra.poppy import discover_poppy
         site = "https://store.example.com/.well-known/poppy.json"
         doc = {
             "protocol_version": "1.0",
