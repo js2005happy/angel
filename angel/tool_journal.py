@@ -269,7 +269,12 @@ class ToolJournal:
                     if stat.S_IMODE(directory_stat.st_mode) & 0o077:
                         raise JournalError("日志写入目录句柄权限过宽")
                     fd = os.open(filename, flags, 0o600, dir_fd=directory_fd)
-                    with os.fdopen(fd, "wb") as stream:
+                    try:
+                        stream_context = os.fdopen(fd, "wb")
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                    with stream_context as stream:
                         stream.write(payload)
                         stream.flush()
                         os.fsync(stream.fileno())
@@ -278,7 +283,12 @@ class ToolJournal:
                     os.close(directory_fd)
             else:
                 fd = os.open(self.path / filename, flags, 0o600)
-                with os.fdopen(fd, "wb") as stream:
+                try:
+                    stream_context = os.fdopen(fd, "wb")
+                except BaseException:
+                    os.close(fd)
+                    raise
+                with stream_context as stream:
                     stream.write(payload)
                     stream.flush()
                     os.fsync(stream.fileno())
