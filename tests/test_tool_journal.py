@@ -38,6 +38,17 @@ class JournalTests(unittest.TestCase):
         # Fail closed without silently changing a pre-existing directory.
         self.assertEqual(__import__("stat").S_IMODE(path.stat().st_mode), 0o755)
 
+    def test_security_validation_reason_is_not_masked_as_corruption(self):
+        # JournalError subclasses ValueError; the reader must not swallow it.
+        journal = ToolJournal("preserve-reason", root=self.root)
+        call = journal.begin("shell")
+        event = journal.path / ("intent-" + call + ".json")
+        record = json.loads(event.read_text(encoding="utf-8"))
+        record["version"] = True
+        event.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaisesRegex(JournalError, "事件值无效"):
+            journal.inspect()
+
     def test_existing_permissive_event_file_is_rejected_on_posix(self):
         if os.name != "posix":
             self.skipTest("POSIX permissions only")
