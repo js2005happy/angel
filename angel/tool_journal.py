@@ -59,6 +59,16 @@ def _verify_directory(path: Path, expected: tuple[int, int] | None) -> None:
         raise JournalError("日志目录在操作期间被替换；拒绝信任结果")
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    """Reject ambiguous JSON object keys at every nesting level."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise JournalError("事件 JSON 存在重复字段")
+        result[key] = value
+    return result
+
+
 class ToolJournal:
     """Metadata-only event writer; independent from the actual tool runner."""
 
@@ -126,14 +136,16 @@ class ToolJournal:
                         raw = handle.read(MAX_EVENT_BYTES + 1)
                     if len(raw) > MAX_EVENT_BYTES:
                         raise JournalError("事件文件过大")
-                    item = json.loads(raw.decode("utf-8"))
+                    item = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
                 except (OSError, UnicodeError, ValueError) as exc:
                     raise JournalError("事件文件损坏或不可读取") from exc
                 if not isinstance(item, dict) or set(item) != {
                     "version", "event", "call_id", "tool", "at"
                 }:
                     raise JournalError("事件字段无效")
-                if (item["version"] != 1 or item["event"] not in EVENT_TYPES
+                if (type(item["version"]) is not int or item["version"] != 1
+                        or not isinstance(item["event"], str)
+                        or item["event"] not in EVENT_TYPES
                         or not isinstance(item["call_id"], str)
                         or not _EVENT.fullmatch(item["call_id"])
                         or not isinstance(item["tool"], str)
