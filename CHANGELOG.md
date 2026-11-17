@@ -1,5 +1,14 @@
 # Angel 变更记录
 
+## 未发布（模型自动兜底）
+
+- 新增 `angel/providers.py` 的 `FallbackProvider`：与 `Provider` 同样的 `chat()` 接口，按链逐个试模型；主模型遇可恢复失败（402 余额不足、429 限流、5xx、超时、网络错误）时自动切换到下一个并重试一次，每次切换记录到 `switches` 并经 `on_switch` 回调通知；认证失败（401/403）与配置问题（没设 Key、响应无法解析等）直接抛出，不兜底；全部模型都失败时报错列出每个模型的失败原因。每次调用都从主模型开始试。
+- `ProviderError` 增加结构化分类：`status`（HTTP 状态码）与 `kind`（auth/quota/rate_limit/server/client/timeout/network/config/parse/redirect/unknown），`recoverable` 属性只对 quota/rate_limit/server/timeout/network 为真；原有只传一句话的调用方式不变，消息文本不变。
+- 新增 `angel/config.py` 的 `resolve_fallback_chain` 与配置项 `fallback_enabled`（默认 true）、`fallback_providers`（默认 `["deepseek", "xai", "ollama"]`）；开关优先级：`--no-fallback` > `ANGEL_FALLBACK` 环境变量 > 配置 > 默认开启；链顺序：`ANGEL_FALLBACK_PROVIDERS` 环境变量 > 配置 > 默认链，主模型始终排第一，未知名字跳过。
+- CLI 接入命令行入口（交互 REPL、一次性任务、`--plan`）：`--no-fallback` 关闭单次兜底；切换提示打印到 stderr，一次性任务的 stdout 仍只有答案。`--json` 单次模式、网页界面、群聊和定时任务仍用单个 provider，后续再接。
+- 新增 `tests/test_fallback.py`（31 个）：错误分类、402 切备用成功、401/403 不切换、429/超时/5xx/网络错误切换、全部失败报错明确、每次调用从主模型重新开始、链顺序与配置/环境变量读取、真实 `Provider.chat` 的 HTTP/超时/网络错误映射（mock opener）、Agent 循环经 FallbackProvider 拿到备用模型答复。测试总数 376 → 407，全部通过。
+- 真实端到端验证（一次 DeepSeek flash 短调用）：`--provider ollama`（本地未跑 Ollama）→ 网络错误 → 切换提示打印到 stderr → DeepSeek 返回答案；`--no-fallback` 下同样场景直接报错退出，无切换。
+
 ## 未发布（/init 与自定义命令）
 
 - 新增 `angel/commands.py`：自定义斜杠命令以 Markdown 文件存放在项目级 `<工作目录>/.angel/commands/` 或用户级 `~/.angel/commands/`，文件名即命令名，同名时项目级优先；支持 `description` / `argument-hint` frontmatter，`$ARGUMENTS` 与 `$1`..`$9` 占位符，无占位符时参数追加到正文末尾。

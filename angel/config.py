@@ -19,6 +19,8 @@ DEFAULT_CONFIG = {
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
+    "fallback_enabled": True,  # 主模型可恢复失败时自动切换备用模型。
+    "fallback_providers": ["deepseek", "xai", "ollama"],
     "sandbox": "local",
     "e2b_template": "base",
     "e2b_timeout": 3600,
@@ -185,6 +187,50 @@ def resolve_provider(
         connector_name=connector_name,
         allowed_hosts=list(preset["allowed_hosts"]),
     )
+
+
+def resolve_fallback_chain(
+    primary_name: str,
+    config: dict | None = None,
+    enabled: bool | None = None,
+) -> list[str]:
+    """Return the ordered provider names to try: primary first, then fallbacks.
+
+    Returns [primary_name] when fallback is disabled. Precedence for the
+    on/off switch: explicit `enabled` argument, ANGEL_FALLBACK env
+    (0/false/no/off disables), config `fallback_enabled`, default True.
+    Chain order: ANGEL_FALLBACK_PROVIDERS env (comma-separated),
+    config `fallback_providers`, default ["deepseek", "xai", "ollama"].
+    Unknown names are skipped; the primary is always first.
+    """
+    cfg = config if config is not None else load_config()
+
+    if enabled is None:
+        env_flag = os.environ.get("ANGEL_FALLBACK")
+        if env_flag is not None:
+            enabled = env_flag.strip().lower() not in ("0", "false", "no", "off")
+        else:
+            enabled = cfg.get("fallback_enabled", True)
+            if isinstance(enabled, str):
+                enabled = enabled.strip().lower() not in (
+                    "0",
+                    "false",
+                    "no",
+                    "off",
+                )
+    if not enabled:
+        return [primary_name]
+
+    chain_names = cfg.get("fallback_providers") or ["deepseek", "xai", "ollama"]
+    env_chain = os.environ.get("ANGEL_FALLBACK_PROVIDERS")
+    if env_chain is not None:
+        chain_names = [p.strip() for p in env_chain.split(",") if p.strip()]
+
+    names = [primary_name]
+    for name in chain_names:
+        if name in PROVIDERS and name not in names:
+            names.append(name)
+    return names
 
 
 def list_profiles(config: dict | None = None) -> list[str]:

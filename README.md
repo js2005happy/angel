@@ -226,6 +226,18 @@ python3 -m angel --provider xai --model grok-4.5 "做点什么"
 
 Key 只从环境变量或已保存的连接器读取，**绝不会**打印、记录或写进项目文件。配置存在 `~/.angel/config.json`（不含任何 Key）。
 
+### 模型自动兜底
+
+主模型调用失败时，Angel 会自动按链切换到下一个模型重试一次，不用手动换模型。默认链是 DeepSeek flash → Grok → 本地 Ollama（主模型始终排第一，每次调用都从主模型开始试）。
+
+- 会兜底的失败：余额不足（402）、限流（429）、服务端错误（5xx）、超时、网络错误。
+- 不会兜底的失败：认证失败（401/403，换模型也解决不了）、配置问题（没设 Key、响应无法解析等）。
+- 每次切换都会在终端打印一条明确提示（走 stderr，一次性任务的 stdout 仍只有答案），例如：`模型切换：ollama 失败（网络错误……），已切换到 deepseek 继续`。
+- 默认开启。关闭方式（三选一）：`~/.angel/config.json` 里设 `"fallback_enabled": false`；环境变量 `ANGEL_FALLBACK=0`；单次加 `--no-fallback`。
+- 改链：`~/.angel/config.json` 里设 `"fallback_providers": ["deepseek", "xai", "ollama"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="deepseek,xai,ollama"`（逗号分隔，主模型自动排第一，未知名字会被跳过）。备用模型用各自的默认模型。
+- 全部备用模型都失败时，报错会列出每个模型失败的原因，不会静默失败。
+- 目前只接在命令行入口（交互 REPL、一次性任务、`--plan`）；`--json` 单次模式、网页界面、群聊和定时任务仍用单个 provider，后续再接。
+
 ## apply_patch 补丁编辑与 /diff
 
 Angel 增加了 `apply_patch` 工具：严格使用单文件 unified diff 编辑已存在的**本地文本文件**。补丁必须包含 `--- a/相对路径`、`+++ b/相对路径` 和 `@@ -旧行号 +新行号 @@`，每行原文上下文必须准确匹配，不允许猜测匹配、越界写入或一次修改多个文件。
@@ -412,7 +424,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 376 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 407 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -426,7 +438,7 @@ angel/
 │   ├── __main__.py    入口：python3 -m angel
 │   ├── cli.py         参数解析 + 交互 REPL + schedule 子命令
 │   ├── agent.py       agent 主循环（plan → 工具调用 → 汇报）
-│   ├── providers.py   OpenAI 兼容客户端（urllib）
+│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）
 │   ├── commands.py    自定义斜杠命令 + /init 的 AGENTS.md 模板
 │   ├── tools.py       15 个工具 + 审批 + shell 黑名单
 │   ├── skills.py      技能加载 / 匹配 / 保存

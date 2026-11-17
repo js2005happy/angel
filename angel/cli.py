@@ -11,13 +11,19 @@ from .config import (
     VALID_MODES,
     list_profiles,
     load_config,
+    resolve_fallback_chain,
     resolve_profile,
     resolve_provider,
     resolve_sandbox,
     validate_mode,
 )
 from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
-from .providers import Provider, ProviderError, describe_provider
+from .providers import (
+    Provider,
+    ProviderError,
+    build_provider_chain,
+    describe_provider,
+)
 from .agent import Agent, AgentError, build_mcp_manager
 from .commands import (
     AGENTS_TEMPLATE,
@@ -326,6 +332,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="显式启用只读 Poppy 1.0 公共协议发现工具（默认关闭）",
     )
     parser.add_argument(
+        "--no-fallback", action="store_true",
+        help="关闭模型自动兜底：主模型失败（402/429/5xx/超时/网络错误）时不再切换备用模型",
+    )
+    parser.add_argument(
         "--discover-poppy", metavar="HTTPS_SITE", default=None,
         help="仅检查站点 Poppy 元数据后退出，无需模型 API Key",
     )
@@ -390,6 +400,19 @@ def print_setup_help(provider_name: str) -> None:
         "直接用 --provider deepseek 或 --provider xai 即可，无需再填 Key。"
     )
     print(f"当前 provider：{provider_name}")
+
+
+def _fallback_notice(record) -> None:
+    """Print a provider-switch notice. Goes to stderr so one-shot stdout
+    stays answer-only; in the REPL both streams land in the terminal, so
+    the user sees the switch."""
+    reason = record["error"]
+    if len(reason) > 120:
+        reason = reason[:117] + "…"
+    print(
+        f"模型切换：{record['from']} 失败（{reason}），已切换到 {record['to']} 继续",
+        file=sys.stderr,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -512,7 +535,17 @@ def main(argv: list[str] | None = None) -> int:
                     args.provider or profile["provider"],
                     args.model or profile["model"],
                 )
-                provider = Provider(provider_cfg)
+                provider = build_provider_chain(
+                    provider_cfg,
+                    resolve_fallback_chain(
+                        provider_cfg.name,
+                        config,
+                        enabled=False if args.no_fallback else None,
+                    ),
+                    on_switch=_fallback_notice,
+                    provider_cls=Provider,
+                    resolver=resolve_provider,
+                )
                 if not provider.has_credentials():
                     print_setup_help(provider.name)
                     return 2
@@ -639,7 +672,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误：{exc}")
         return 1
 
-    provider = Provider(provider_cfg)
+    provider = build_provider_chain(
+        provider_cfg,
+        resolve_fallback_chain(
+            provider_cfg.name,
+            config,
+            enabled=False if args.no_fallback else None,
+        ),
+        on_switch=_fallback_notice,
+        provider_cls=Provider,
+        resolver=resolve_provider,
+    )
     if not provider.has_credentials():
         print_setup_help(provider.name)
         return 1
