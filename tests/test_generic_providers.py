@@ -109,6 +109,13 @@ class TestBuiltinPresets(unittest.TestCase):
                 if name == "custom":
                     self.assertIsNone(preset["base_url"])
                     continue
+                if preset.get("auth") == "cli":
+                    # CLI providers have no HTTP endpoint (cli:// marker).
+                    self.assertTrue(
+                        preset["base_url"].startswith("cli://"), name
+                    )
+                    self.assertTrue(preset["default_model"], name)
+                    continue
                 self.assertTrue(
                     preset["base_url"].startswith(("http://", "https://")),
                     name,

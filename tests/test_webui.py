@@ -546,18 +546,19 @@ class InfoAndPageTests(WebUITestCase):
 
 
 class UIv2Tests(WebUITestCase):
-    """UI v2: new sage-green palette, plush mascot, 13 providers / 15 tools."""
+    """UI v2: new sage-green palette, plush mascot, 14 providers / 15 tools."""
 
     def test_info_includes_providers_tools_skills(self):
         self.start()
         status, info = self.get_json("/api/info")
         self.assertEqual(status, 200)
-        self.assertEqual(info["provider_count"], 13)
-        self.assertEqual(len(info["providers"]), 13)
+        self.assertEqual(info["provider_count"], 14)
+        self.assertEqual(len(info["providers"]), 14)
         self.assertEqual(
             {p["name"] for p in info["providers"]},
             {"deepseek", "xai", "openrouter", "ollama", "openai", "qwen",
-             "kimi", "glm", "gemini", "mistral", "groq", "together", "custom"},
+             "kimi", "glm", "gemini", "mistral", "groq", "together", "custom",
+             "codex"},
         )
         self.assertEqual(info["tool_count"], 15)
         self.assertEqual(len(info["tools"]), 15)
@@ -687,7 +688,7 @@ class UIv2Tests(WebUITestCase):
         self.start()
         status, info = self.get_json("/api/info")
         self.assertEqual(status, 200)
-        self.assertEqual(info["provider_count"], 14)
+        self.assertEqual(info["provider_count"], 15)
         by_name = {p["name"]: p for p in info["providers"]}
         self.assertEqual(by_name["myllm"]["models"], ["myllm-1"])
         keys = {k["provider"]: k for k in info["keys"]}

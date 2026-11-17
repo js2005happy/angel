@@ -150,6 +150,21 @@ PROVIDERS = {
             "Qwen/Qwen2.5-72B-Instruct-Turbo",
         ],
     },
+    "codex": {
+        # Codex CLI provider：跑本机 `codex` CLI，复用它自己的登录态
+        #（ChatGPT 订阅），不用 API Key。base_url 只是标记，不是 HTTP
+        # endpoint；auth 为 "cli" 时 resolve_provider 会走 CLI 分支。
+        # default_model 是 "codex-default"：不传 -m，用 CLI 自己的默认
+        # 模型。实测：ChatGPT 订阅登录时 -m gpt-5 / -m gpt-5-codex
+        # 都会被服务端以 model_not_found 拒绝，唯有不传 -m 能跑通。
+        "base_url": "cli://codex",
+        "default_model": "codex-default",
+        "env_key": None,
+        "connector": None,
+        "allowed_hosts": [],
+        "models": ["codex-default"],
+        "auth": "cli",
+    },
     "custom": {
         "base_url": None,
         "default_model": None,
@@ -303,6 +318,31 @@ def resolve_provider(
 
     preset = presets[name]
 
+    resolved_model = model
+    if resolved_model is None:
+        resolved_model = os.environ.get("ANGEL_MODEL")
+    if resolved_model is None:
+        settings = get_config()
+        if settings.get("provider") == name:
+            resolved_model = settings.get("model")
+        else:
+            resolved_model = preset["default_model"]
+
+    if preset.get("auth") == "cli":
+        # CLI provider（Codex）：复用 CLI 自己的登录态，没有 HTTP
+        # endpoint、没有 API Key。base_url 只是标记，不发任何请求。
+        if not resolved_model:
+            raise ValueError(f"Provider {name} needs a model")
+        return ProviderConfig(
+            name=name,
+            base_url=preset.get("base_url") or f"cli://{name}",
+            model=resolved_model,
+            api_key=None,
+            auth="cli",
+            connector_name=None,
+            allowed_hosts=list(preset.get("allowed_hosts") or []),
+        )
+
     if name == "custom":
         base_url = os.environ.get("ANGEL_BASE_URL")
         if not base_url:
@@ -318,16 +358,6 @@ def resolve_provider(
     err = plaintext_http_error(name, base_url)
     if err is not None:
         raise ValueError(err)
-
-    resolved_model = model
-    if resolved_model is None:
-        resolved_model = os.environ.get("ANGEL_MODEL")
-    if resolved_model is None:
-        settings = get_config()
-        if settings.get("provider") == name:
-            resolved_model = settings.get("model")
-        else:
-            resolved_model = preset["default_model"]
 
     if not resolved_model:
         raise ValueError("Custom provider needs ANGEL_MODEL")
@@ -400,6 +430,12 @@ def resolve_fallback_chain(
     if not enabled:
         return [primary_name]
 
+    presets = get_provider_presets(cfg)
+    if presets.get(primary_name, {}).get("auth") == "cli":
+        # CLI provider（Codex）绝不参与兜底：只在被显式选中时用，
+        # 既不当兜底目标、也不从它身上再往别的 provider 切。
+        return [primary_name]
+
     configured_chain = cfg.get("fallback_providers")
     if configured_chain is None:
         chain_names = ["deepseek", "xai", "ollama"]
@@ -412,14 +448,24 @@ def resolve_fallback_chain(
     known = known_provider_names(cfg)
     names = [primary_name]
     skipped = []
+    skipped_cli = []
     for name in chain_names:
         if name in known and name not in names:
+            if presets.get(name, {}).get("auth") == "cli":
+                # CLI provider 绝不当兜底目标，即使写进了允许列表。
+                skipped_cli.append(name)
+                continue
             names.append(name)
         elif name not in known:
             skipped.append(name)
     if skipped:
         print(
             f"兜底允许列表里跳过了未知 provider：{', '.join(skipped)}",
+            file=sys.stderr,
+        )
+    if skipped_cli:
+        print(
+            f"兜底允许列表里跳过了 CLI provider（不进兜底链）：{', '.join(skipped_cli)}",
             file=sys.stderr,
         )
     return names

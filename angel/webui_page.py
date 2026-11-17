@@ -264,7 +264,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
         <h3>配色</h3>
         <div class="swatches" id="swatches"></div>
         <h3>字体</h3>
-        <p style="font-size:13px;color:var(--muted)">系统无衬线优先，数字与代码用等宽；中文按系统字体回落。示例：<b>Angel 今天想让你做什么？</b> <code>deepseek-flash · 13 个 provider 预设 · 15 个工具</code></p>
+        <p style="font-size:13px;color:var(--muted)">系统无衬线优先，数字与代码用等宽；中文按系统字体回落。示例：<b>Angel 今天想让你做什么？</b> <code>deepseek-flash · 14 个 provider 预设 · 15 个工具</code></p>
         <h3>使用规则</h3>
         <ul style="font-size:13px;color:var(--muted);line-height:1.8">
           <li>审批是一等公民：危险操作以卡片形式出现在对话流里（允许一次 / 拒绝），不用弹窗挡路；完整模式才会自动批准，且必须明确切换。</li>

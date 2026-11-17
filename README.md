@@ -270,6 +270,7 @@ Angel 支持任何 OpenAI 兼容接口。配置方式按优先级：命令行参
 | groq | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | 极快推理，免费额度 |
 | together | `TOGETHER_API_KEY` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` | 一个 Key 用上百个开源模型 |
 | custom | `ANGEL_API_KEY` + `ANGEL_BASE_URL` + `ANGEL_MODEL` | — | 任意兼容接口（环境变量方式） |
+| codex | 无需 Key（本机 Codex 登录态） | `codex-default` | 调用本机 `codex` CLI，复用 ChatGPT 订阅；不调模型 API |
 
 ### 自定义 provider 与列出模型
 
@@ -305,6 +306,24 @@ python3 -m angel --provider xai --model grok-4.5 "做点什么"
 发往本机地址（如本地 Ollama 的 `localhost:11434`）的请求总是直连，不受 `HTTP_PROXY` / `HTTPS_PROXY` 影响；其他地址照常遵守代理设置。
 
 Key 只从环境变量或已保存的连接器读取，**绝不会**打印、记录或写进项目文件。配置存在 `~/.angel/config.json`（不含任何 Key）。
+
+### Codex CLI provider（不用 API Key）
+
+`--provider codex` 不调任何模型 API，而是用子进程跑本机装好的 `codex` CLI（`codex exec` 非交互方式），复用它自己的登录态与 ChatGPT 订阅：
+
+```bash
+python3 -m angel --provider codex "做点什么"
+```
+
+- **模型**：默认模型名是 `codex-default`，意思是“不传 `-m`，让 CLI 用自己的默认模型”。实测：ChatGPT 订阅登录时 `-m gpt-5` 与 `-m gpt-5-codex` 都会被服务端以 `model_not_found` 拒绝（“The 'gpt-5' model is not supported when using Codex with a ChatGPT account.”），唯有不传 `-m` 能跑通。`--model` 显式指定别的模型时会原样传 `-m`，被服务端拒绝时报配置错误（不兜底、不重试去烧别的 Key）。
+- **固定提示前缀（缓存命中）**：每次请求的最开头都会先拼一段字节级固定的英文前缀（`providers.py` 的 `CODEX_PROMPT_PREFIX`），再接按 `[role]` 标记序列化后的消息。前缀内容是身份与边界声明——“You are Angel, a text-only assistant. Reply in the user's language, concisely and directly. Do not call tools, run commands, browse the web, or modify files. Answer with text only.”——因为它在每个请求里一字不变、又始终在最前面，提供商侧的提示缓存能直接命中这段公共前缀，重复调用时只算增量 token。注意：前缀只做文字模型的身份与行为约束，不传任何工具 schema；`codex exec` 本身没有“纯聊天模式”开关，仍跑自己的 agent 循环，真正的硬约束靠只读沙箱与临时工作目录（见下）。
+- **调用方式**：固定 argv——`codex exec --json -o <临时文件> -s read-only -C <空临时工作目录> --ephemeral --skip-git-repo-check -c features.browser_use=false -c features.computer_use=false -c features.plugins=false`（默认模型时不加 `-m`）。prompt 走 stdin 传（不在 argv 里，`ps` 看不到）；成功时优先读 `-o` 文件里的最终消息，文件为空时回退解析 `--json` 的 JSONL 事件流；用量能解析到就记进 usage。超时由 Angel 的 subprocess 侧强制（`codex exec` 没有 `--timeout` 参数），超时后杀掉整个进程组。
+- **四个安全条件（代码里强制 + 测试覆盖）**：
+  1. **只用固定路径**：`codex` 二进制只从固定已知位置解析（`/opt/hatch-image/bin/codex`、`~/.local/bin/codex`、`/usr/local/bin/codex`、`/usr/bin/codex`，Windows 再加两条固定候选），`shutil.which("codex")` 只是最后的兜底；绝不从配置、环境变量或用户输入里取路径（`ANGEL_CODEX_PATH` 之类的变量会被忽略）。
+  2. **不碰登录凭证**：绝不读取、复制或记录 `~/.codex/auth.json` 之类的 CLI 凭据文件；登录检查只跑 `codex login status`，只读退出码与 “Logged in” 标记（实测该标记走 stderr）。子进程环境会删掉全部 `*_API_KEY` 变量，CLI 只靠自己 HOME 下的登录态。
+  3. **不用跳过审批的参数**：绝不传 `--dangerously-bypass-approvals-and-sandbox`、`--approve-for-me`、`--dangerously-bypass-hook-trust`、`-y`、`--full-auto`；argv 建好后会自检，含禁用参数直接拒绝。调用始终是 `-s read-only`，工作目录是每次新建的空临时目录，用后删除。
+  4. **不进兜底链**：只能被显式选中（`--provider codex`、配置、`POST /api/provider`），绝不作为兜底目标；`resolve_fallback_chain("codex")` 只返回 `["codex"]`，链里出现 codex 会被跳过并记日志；定时任务与队列里绝不用——`Provider` 的直接构造在 auth 为 CLI 时会被拒绝，全仓库唯一的直接构造点正是定时任务的 `_make_task_agent`，所以定时任务选 codex 时会在启动前就报错。
+- **Claude 待办**：本轮只做了 Codex。Claude CLI（`claude`）尚未装到本机，且须先在用户电脑（Windows）上核查 `claude --version` 与登录情况，核查完再按同一套约束接进来。
 
 ### 模型自动兜底
 
@@ -455,12 +474,12 @@ python3 -m angel ui --port 9000 --workdir ~/project --mode auto
 
 - **左栏**——品牌卡（毛绒小兔头像）与六视图导航（对话 / 技能与工具 / 定时任务 / 群聊 / 品牌与外观 / 设置），会话列表在对话视图内，可新建会话，也可点开历史会话继续。
 - **中栏：对话**——用户/助手消息（基本 Markdown 渲染），执行中轮询显示进度；每次工具调用是一张可折叠卡片（工具名、参数、结果摘要）。auto 模式下需要审批时卡片里出现“批准 / 拒绝”按钮，走的是和终端相同的审批门（`tools.py` 的 `_check_approval`），readonly / full 行为不变；10 分钟无人处理按拒绝处理。
-- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 13 个 provider 预设 / 15 个内置工具更新。
+- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 14 个 provider 预设 / 15 个内置工具更新。
 - **技能与工具视图**——3 个内置技能与 15 个内置工具一览（每个工具标明是否需要审批）。
 - **定时任务视图**——读 `~/.angel/schedule.json`，可查看、启用/停用、删除定时任务（走 `/api/schedule`，只调 `scheduler.py` 的公开函数）；网页端新建定时任务暂缓开放（等任务队列合并 E 后恢复，`POST /api/schedule` 的 add 返回 409），请用 `angel schedule add` 命令添加；行里显示任务的 provider / 模型与上次运行时间、状态、摘要。
-- **群聊视图**——群列表与“打开群聊页面”入口（带 `?room=<id>`，群聊页打开即选中该群，不存在时回退第一个）；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 13 个预设。
+- **群聊视图**——群列表与“打开群聊页面”入口（带 `?room=<id>`，群聊页打开即选中该群，不存在时回退第一个）；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 14 个预设。
 - **品牌与外观视图**——11 色板、形象切换（默认奶油白毛绒小兔，备选蜜糖色毛绒小熊，localStorage 记忆选择）、字体示例与使用规则。
-- **设置视图**——provider 下拉可用（13 个预设，`/api/info` 返回，含各 provider 的模型列表做输入提示）：选 provider + 填模型后点“应用”调真实的 `POST /api/provider`，新会话立即生效，已有会话保持原 provider，重启后恢复配置文件中的设置；未知 provider / 明文 http 外网地址会直接报 400。模式三段切换（调真实 `/api/mode`，失败时界面自动回滚到实际值）；Keys 表含自定义 provider（来自 `get_provider_presets`）；MCP 与证据链状态只读；API Key 只显示是否已配置，**绝不回显值**。
+- **设置视图**——provider 下拉可用（14 个预设，`/api/info` 返回，含各 provider 的模型列表做输入提示）：选 provider + 填模型后点“应用”调真实的 `POST /api/provider`，新会话立即生效，已有会话保持原 provider，重启后恢复配置文件中的设置；未知 provider / 明文 http 外网地址会直接报 400。模式三段切换（调真实 `/api/mode`，失败时界面自动回滚到实际值）；Keys 表含自定义 provider（来自 `get_provider_presets`）；MCP 与证据链状态只读；API Key 只显示是否已配置，**绝不回显值**。
 - **顶栏**——小兔圆形头像、provider 芯片与模式芯片；配色为鼠尾草绿主色 + 雾蓝强调 + 蜜桃珊瑚小面积点缀（浅色底 `#F3F5F4`，另有深炭底暗色变体）；形象图以 base64 内嵌在页面里，不引用外部图片。
 
 安全：默认只监听 `127.0.0.1`（`--host` 改成非本机地址时会打印警告）；每次启动随机生成一个访问 token，页面链接通过 `?token=` 带入，所有 API 请求都必须在请求头里带上它（防 CSRF），监听本机地址时还会校验 `Host` 头。网页界面目前在本地执行工具（不接 E2B 沙盒），会按配置启动 MCP 服务器（默认关闭）。

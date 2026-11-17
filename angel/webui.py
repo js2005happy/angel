@@ -271,7 +271,7 @@ class UIState:
         out["mcp_tools"] = (
             len(self.mcp_manager.tool_schemas) if self.mcp_manager is not None else 0
         )
-        # For the skills / settings views: full provider presets (13),
+        # For the skills / settings views: full provider presets (14),
         # the 15 built-in tools with their approval flag, and skills.
         out["providers"] = list_providers()
         out["provider_count"] = len(out["providers"])
