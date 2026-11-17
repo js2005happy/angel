@@ -1,3 +1,8 @@
+## 2026-11-18 Windows 目录联接检查（仅静态审阅）
+
+- 静态检查：`_safe_directory` 在支持 `Path.is_junction` 的 Python 版本上拒绝日志路径及祖先的 junction；测试源码模拟 `is_junction` 返回真。未执行测试、编译、CI 或 Windows 实机验证。
+- 限制：Python 3.11 等缺少 API 的运行时不受此保护；Windows ACL、其他 reparse point、路径检查竞态和稳定句柄仍未解决。
+
 ## 2026-11-18 ToolJournal 跨工具结果歧义（仅静态检查）
 
 - 静态审阅 `inspect()` 的同 ID 工具名一致性检查：不匹配的 result 现在归类 unknown，避免与 `journal_ambiguous` 同时报告成功。新增篡改 result 工具名的测试源码。
