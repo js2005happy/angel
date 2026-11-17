@@ -89,6 +89,15 @@ class ToolJournal:
                     or not isinstance(item["at"], str)
                     or len(item["at"]) > 40):
                 raise JournalError("事件值无效")
+            # File names are part of the commit protocol, not cosmetic.
+            # Otherwise a renamed result can evade the O_EXCL result slot.
+            expected = (
+                "intent-" + item["call_id"] + ".json"
+                if item["event"] == "intent"
+                else "result-" + item["call_id"] + ".json"
+            )
+            if path.name != expected:
+                raise JournalError("事件文件名与事件类型或调用 ID 不一致")
             records.append(item)
         return records
 
@@ -106,11 +115,11 @@ class ToolJournal:
         }
         payload = (json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n").encode()
         # No append-in-place: a process crash never produces a partial JSON event.
-        # A deterministic result filename is the cross-process commit gate:
-        # only one writer can create a result for the same call_id. Intent
-        # files remain random. O_EXCL rejects a racing second finisher.
+        # Both event types have identity-bound filenames. O_EXCL prevents
+        # duplicate results; validation prevents renaming a result to evade
+        # that exclusive commit slot during a subsequent inspection.
         filename = (
-            secrets.token_hex(16) + ".json" if event == "intent"
+            "intent-" + call_id + ".json" if event == "intent"
             else "result-" + call_id + ".json"
         )
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
