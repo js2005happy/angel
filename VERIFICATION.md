@@ -1,3 +1,8 @@
+## 2026-11-17 事件读取后元数据复核（静态检查，未执行）
+
+- 已静态核对：事件读取前后对同一 fd 的 fstat 检查身份、文件类型、大小、硬链接数量及 POSIX 私有权限；模拟 read 后 chmod 的回归测试已编写。
+- **未执行测试、编译、CI 或平台验证**。仍存在同用户等长篡改、Windows ACL、目录祖先竞态及外部副作用真实性问题。
+
 ## 2026-11-17 ToolJournal 时间戳格式（仅静态审阅）
 
 - 静态核对写入格式 `datetime.now(timezone.utc).isoformat(timespec="seconds")`，读侧新增 `datetime.fromisoformat` 与 UTC/秒精度/规范化格式检查。
