@@ -1,3 +1,8 @@
+## 2026-11-18 ToolJournal 写入侧 fdopen 异常清理（仅静态审阅）
+
+- 静态核对 POSIX dir_fd 与 Windows 路径回退的文件描述符所有权；两条分支均补充 fdopen 异常时 os.close(fd)。
+- 新增模拟 fdopen 失败的测试源码；本轮没有执行测试、安装、CI、合并或发布。未验证 Windows ACL、稳定句柄及外部副作用。
+
 ## 2026-11-18 ToolJournal fdopen 异常清理（仅静态审阅）
 
 - 静态核对：`os.fdopen` 失败后通过 `os.close(fd)` 释放此前打开的事件文件句柄；新增模拟失败并检查 fd 已关闭的测试源码。
