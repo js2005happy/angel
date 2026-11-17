@@ -15,6 +15,23 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "O_NONBLOCK"), "POSIX nonblocking open only")
+    def test_event_open_uses_nonblocking_flag_before_type_check(self):
+        journal = ToolJournal("nonblocking-event", root=self.root)
+        journal.begin("shell")
+        original_open = os.open
+        event_flags = []
+
+        def tracked_open(path, flags, *args, **kwargs):
+            if str(path).endswith(".json"):
+                event_flags.append(flags)
+            return original_open(path, flags, *args, **kwargs)
+
+        with mock.patch("angel.tool_journal.os.open", side_effect=tracked_open):
+            journal.inspect()
+        self.assertTrue(event_flags)
+        self.assertTrue(all(flags & os.O_NONBLOCK for flags in event_flags))
+
     def test_writer_fdopen_failure_closes_event_descriptor(self):
         # Both POSIX dir_fd and Windows path fallback share this ownership rule.
         journal = ToolJournal("write-fdopen-failure", root=self.root)
