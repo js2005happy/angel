@@ -216,7 +216,7 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。
 3. **GEPA 式自动学习**：任务成功后自动提炼技能（现在是模型主动调 `save_skill`，未来是成功后自动总结+评估）。
 4. **桌面 UI**（部分完成）：本地网页界面 `python3 -m angel ui` 已可用（2026-11-16：会话列表、对话与工具卡片、网页内审批、证据与计划检查器，纯标准库、默认只听 127.0.0.1 + 启动 token）；技能浏览、独立桌面应用、按品牌形象的完整三栏 App 尚未开始。
-5. **多模型路由**：按任务难度自动选便宜/强的模型（待做）。基础版已做完：主模型遇 402/429/5xx/超时/网络错误时自动按链切换（默认 DeepSeek flash → Grok → 本地 Ollama），401/403 不切换，每次切换打印明确提示；见 `providers.py` 的 `FallbackProvider` 与 README「模型自动兜底」一节。通用接入已做完：13 个内置预设（DeepSeek、Grok、OpenRouter、Ollama、OpenAI、Qwen、Kimi、GLM、Gemini、Mistral、Groq、Together、custom）+ 配置里 `custom_providers` 可自定义任意 OpenAI 兼容接口并进 fallback 链；见 README「自定义 provider 与列出模型」一节。
+5. **多模型路由**：按任务难度自动选便宜/强的模型（待做）。基础版已做完：主模型遇 402/429/5xx/超时/网络错误时自动按链切换（默认 DeepSeek flash → Grok → 本地 Ollama），401/403 不切换，每次切换打印明确提示；见 `providers.py` 的 `FallbackProvider` 与 README「模型自动兜底」一节。通用接入已做完：13 个内置预设（DeepSeek、Grok、OpenRouter、Ollama、OpenAI、Qwen、Kimi、GLM、Gemini、Mistral、Groq、Together、custom）+ 配置里 `custom_providers` 可自定义任意 OpenAI 兼容接口并进 fallback 链；见 README「自定义 provider 与列出模型」一节。兜底链已接到的入口：命令行（REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面、群聊；定时任务仍用单个 provider（调度器正在另一路开发中）。
 6. **多会话并发**：每会话独立引擎（IllusionAgent 的做法），目前 Angel 一次只跑一个会话。
 7. **hooks / 插件**：任务前后钩子与第三方插件加载。
 

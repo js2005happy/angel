@@ -28,6 +28,27 @@ class SpyProvider:
         }}]}
 
 
+class ScriptedProvider:
+    """A fake provider whose scripted outcomes may raise ProviderError."""
+
+    def __init__(self, name, model, outcomes):
+        self.name = name
+        self.model = model
+        self.base_url = f"https://{name}.example.com/v1"
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def has_credentials(self):
+        return True
+
+    def chat(self, messages, tools=None, timeout=120):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class GroupChatTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -93,6 +114,38 @@ class GroupChatTest(unittest.TestCase):
             self.store.send("dev", "@unknown 请回答")
         self.assertEqual(self.store.get("dev")["messages"], [])
         self.assertEqual(self.providers, {})
+
+    def test_default_bot_provider_uses_fallback_chain(self):
+        from types import SimpleNamespace
+
+        import angel.groups as groups_module
+        from angel.providers import FallbackProvider, ProviderError
+
+        primary = ScriptedProvider(
+            "deepseek", "deepseek-flash",
+            [ProviderError("余额不足", status=402, kind="quota")],
+        )
+        backup = ScriptedProvider("xai", "grok-4.3", ["备用模型答复"])
+        fakes = {"deepseek": primary, "xai": backup}
+        config = {"fallback_providers": ["xai"], "profiles": {}}
+        bot = Bot(
+            "lead", "组长", "拆分任务", "先确认目标。",
+            provider="deepseek", model="deepseek-flash",
+        )
+        with patch.object(groups_module, "load_config", return_value=config), \
+            patch.object(groups_module, "resolve_provider", side_effect=(
+                lambda name, model=None: SimpleNamespace(
+                    name=name, model=model or f"{name}-model")
+            )), \
+            patch.object(groups_module, "Provider", side_effect=lambda cfg: fakes[cfg.name]):
+            store = GroupStore(self.root / "groups")
+            provider = store._provider(bot)
+            self.assertIsInstance(provider, FallbackProvider)
+            result = provider.chat([{"role": "user", "content": "hi"}])
+            self.assertEqual(result, "备用模型答复")
+            self.assertEqual(provider.name, "xai")
+            self.assertEqual(primary.calls, 1)
+            self.assertEqual(backup.calls, 1)
 
     def test_history_and_sessions_survive_store_recreation(self):
         self.store.create("dev", "开发群")

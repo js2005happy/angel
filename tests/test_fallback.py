@@ -226,6 +226,25 @@ class FallbackProviderTest(unittest.TestCase):
 
         self.assertIn("deepseek", describe_provider(fb))
 
+    def test_has_credentials_always_reflects_primary(self):
+        # A cached chain must report the same credentials state before
+        # and after a switch; the primary decides, not the provider
+        # that happened to answer last.
+        primary = ScriptedProvider("deepseek", "deepseek-flash", [_quota_error()])
+        backup = ScriptedProvider("xai", "grok-4.3", [assistant_message("ok")])
+        backup._has_credentials = False
+        fb = FallbackProvider([primary, backup])
+        self.assertTrue(fb.has_credentials())
+        fb.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(fb.name, "xai")
+        self.assertTrue(fb.has_credentials())
+
+        primary = ScriptedProvider("deepseek", "deepseek-flash", [assistant_message("ok")])
+        primary._has_credentials = False
+        backup = ScriptedProvider("xai", "grok-4.3", [assistant_message("ok")])
+        fb = FallbackProvider([primary, backup])
+        self.assertFalse(fb.has_credentials())
+
 
 class BuildProviderChainTest(unittest.TestCase):
     def _primary_cfg(self):

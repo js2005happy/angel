@@ -328,7 +328,11 @@ class FallbackProvider:
         return self.providers[self.active_index]._redact(text, request)
 
     def has_credentials(self):
-        return self.providers[self.active_index].has_credentials()
+        # The primary decides: a cached chain must report the same
+        # credentials state before and after a switch, so callers that
+        # gate on credentials (CLI, web UI) always see the configured
+        # primary provider instead of whichever provider answered last.
+        return self.providers[0].has_credentials()
 
     def list_models(self, timeout=30.0):
         return self.providers[self.active_index].list_models(timeout=timeout)

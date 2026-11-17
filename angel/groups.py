@@ -14,14 +14,15 @@ import os
 from pathlib import Path
 import re
 import secrets
+import sys
 import tempfile
 import threading
 from typing import Callable
 
 from .agent import Agent, AgentError
-from .config import resolve_provider, validate_mode
+from .config import load_config, resolve_fallback_chain, resolve_provider, validate_mode
 from .memory import load_session
-from .providers import Provider
+from .providers import Provider, build_provider_chain
 
 _ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _MENTION = re.compile(r"(?<![A-Za-z0-9_])@([a-z][a-z0-9_-]{0,31})")
@@ -47,6 +48,21 @@ def _text(value: str, label: str, maximum: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
         raise GroupError(f"{label} 不能为空，最长 {maximum} 字符")
     return value.strip()
+
+
+def _fallback_notice(record) -> None:
+    """Print a provider-switch notice to stderr (server log).
+
+    Group replies carry no provider metadata, so a switch that happened
+    inside a bot's turn would otherwise be invisible.
+    """
+    reason = record["error"]
+    if len(reason) > 120:
+        reason = reason[:117] + "…"
+    print(
+        f"模型切换：{record['from']} 失败（{reason}），已切换到 {record['to']} 继续",
+        file=sys.stderr,
+    )
 
 
 def _stamp() -> str:
@@ -214,10 +230,19 @@ class GroupStore:
         return result
 
     def _provider(self, bot: Bot):
+        # Same fallback chain as the CLI entries: on a recoverable
+        # failure the bot's call moves to the next provider. An injected
+        # provider_factory (tests, web UI) is used as-is.
         provider = (
             self.provider_factory(bot)
             if self.provider_factory is not None
-            else Provider(resolve_provider(bot.provider, bot.model))
+            else build_provider_chain(
+                resolve_provider(bot.provider, bot.model),
+                resolve_fallback_chain(bot.provider, load_config()),
+                on_switch=_fallback_notice,
+                provider_cls=Provider,
+                resolver=resolve_provider,
+            )
         )
         check = getattr(provider, "has_credentials", None)
         if callable(check) and not check():

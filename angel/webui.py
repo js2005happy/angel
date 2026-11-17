@@ -41,11 +41,12 @@ from .config import (
     PROVIDERS,
     VALID_MODES,
     load_config,
+    resolve_fallback_chain,
     resolve_profile,
     resolve_provider,
     validate_mode,
 )
-from .providers import Provider, describe_provider
+from .providers import Provider, build_provider_chain, describe_provider
 from .usage import context_limit
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 from .webui_page import PAGE_HTML
@@ -89,6 +90,21 @@ class Run:
         self.base_messages: list[dict] = []
         self.lock = threading.Lock()
         self.thread: threading.Thread | None = None
+
+
+def _fallback_notice(record) -> None:
+    """Print a provider-switch notice to the server console (stderr).
+
+    The web UI has no per-run stdout channel, so switches are reported
+    where the operator runs the server, mirroring the CLI behaviour.
+    """
+    reason = record["error"]
+    if len(reason) > 120:
+        reason = reason[:117] + "…"
+    print(
+        f"模型切换：{record['from']} 失败（{reason}），已切换到 {record['to']} 继续",
+        file=sys.stderr,
+    )
 
 
 class UIState:
@@ -136,11 +152,20 @@ class UIState:
             else:
                 cfg = load_config()
                 prof = resolve_profile(self.profile, cfg)
-                self._provider = Provider(
-                    resolve_provider(
-                        self.provider_name or prof["provider"],
-                        self.model or prof["model"],
-                    )
+                primary_cfg = resolve_provider(
+                    self.provider_name or prof["provider"],
+                    self.model or prof["model"],
+                )
+                # Same fallback chain as the CLI entries: on a recoverable
+                # failure the call moves to the next provider. The chain
+                # object is cached, but every chat() starts from the
+                # primary again; switches are printed to the server log.
+                self._provider = build_provider_chain(
+                    primary_cfg,
+                    resolve_fallback_chain(primary_cfg.name, cfg),
+                    on_switch=_fallback_notice,
+                    provider_cls=Provider,
+                    resolver=resolve_provider,
                 )
                 if self.max_turns is None:
                     self.max_turns = cfg.get("max_turns") or 20
@@ -167,6 +192,12 @@ class UIState:
                 out["provider_desc"] = f"{out['provider']} / {out['model']}"
                 has = getattr(prov, "has_credentials", None)
                 out["credentials"] = bool(has()) if callable(has) else True
+            # provider/model above already name the provider that answered
+            # last; surface the switches too so the panel never implies
+            # the configured primary answered when a fallback did.
+            switches = getattr(prov, "switches", None)
+            if switches:
+                out["model_switches"] = list(switches)
         except Exception as exc:  # unknown provider, bad profile …
             out["provider"] = None
             out["model"] = None

@@ -266,7 +266,7 @@ Key 只从环境变量或已保存的连接器读取，**绝不会**打印、记
 - 默认开启。关闭方式（三选一）：`~/.angel/config.json` 里设 `"fallback_enabled": false`；环境变量 `ANGEL_FALLBACK=0`；单次加 `--no-fallback`。
 - 改链：`~/.angel/config.json` 里设 `"fallback_providers": ["deepseek", "xai", "ollama"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="deepseek,xai,ollama"`（逗号分隔，主模型自动排第一，未知名字会被跳过）。备用模型用各自的默认模型；自定义 provider 的名字也可以写进链里。
 - 全部备用模型都失败时，报错会列出每个模型失败的原因，不会静默失败。
-- 目前只接在命令行入口（交互 REPL、一次性任务、`--plan`）；`--json` 单次模式、网页界面、群聊和定时任务仍用单个 provider，后续再接。
+- 已接在命令行入口（交互 REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面和群聊：主模型遇可恢复失败时都按同一条链切换。`--json` 会在输出里如实写清最终用了哪个 provider（`run_started` 是起跑的主模型，`run_completed` / `run_incomplete` 是实际答复的模型，另有 `model_switch` 事件和 `model_switches` 列表）；网页界面的信息面板同样显示实际答复的模型与切换记录；群聊里切换提示写到服务端日志。定时任务仍用单个 provider（调度器正在另一路开发中，本轮未碰）。
 
 ## apply_patch 补丁编辑与 /diff
 
@@ -454,7 +454,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 436 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 442 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 

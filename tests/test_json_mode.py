@@ -75,7 +75,8 @@ class JsonModeTests(unittest.TestCase):
             patcher.stop()
         self.temp.cleanup()
 
-    def run_json(self, argv=None, replies=None, credentials=True, noisy=False, config=None):
+    def run_json(self, argv=None, replies=None, credentials=True, noisy=False, config=None,
+                 provider_factory=None, resolver=None):
         argv = list(argv or [])
         provider = FakeProvider(
             replies if replies is not None else [assistant("已完成")],
@@ -92,16 +93,99 @@ class JsonModeTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(json_mode, "load_config", return_value=options))
-            stack.enter_context(mock.patch.object(json_mode, "resolve_provider", return_value=SimpleNamespace(
-                name="mock", model="fake-model",
-            )))
-            stack.enter_context(mock.patch.object(json_mode, "Provider", return_value=provider))
+            if resolver is not None:
+                stack.enter_context(mock.patch.object(
+                    json_mode, "resolve_provider", side_effect=resolver))
+            else:
+                stack.enter_context(mock.patch.object(json_mode, "resolve_provider", return_value=SimpleNamespace(
+                    name="mock", model="fake-model",
+                )))
+            if provider_factory is not None:
+                stack.enter_context(mock.patch.object(
+                    json_mode, "Provider", side_effect=provider_factory))
+            else:
+                stack.enter_context(mock.patch.object(json_mode, "Provider", return_value=provider))
             stack.enter_context(mock.patch.object(json_mode, "build_mcp_manager", return_value=None))
             stack.enter_context(mock.patch("sys.stdout", out))
             stack.enter_context(mock.patch("sys.stderr", err))
             code = cli.main(["--json", "--workdir", str(self.root), *argv])
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
         return code, lines, err.getvalue(), provider
+
+    def _chain_fakes(self, primary_outcomes, backup_outcomes):
+        """Fake providers keyed by provider name for fallback tests."""
+        primary = FakeProvider(primary_outcomes)
+        primary.name, primary.model = "deepseek", "deepseek-flash"
+        backup = FakeProvider(backup_outcomes)
+        backup.name, backup.model = "xai", "grok-4.3"
+        fakes = {"deepseek": primary, "xai": backup}
+        return fakes, primary, backup
+
+    def _chain_resolver(self, name, model=None):
+        return SimpleNamespace(name=name, model=model or f"{name}-model")
+
+    def test_json_fallback_switches_and_reports_actual_provider(self):
+        fakes, primary, backup = self._chain_fakes(
+            [ProviderError("余额不足", status=402, kind="quota")],
+            [assistant("备用模型答复")],
+        )
+        code, events, _, _ = self.run_json(
+            ["task"],
+            config={"fallback_providers": ["xai"]},
+            provider_factory=lambda cfg: fakes[cfg.name],
+            resolver=self._chain_resolver,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(primary.calls, 1)
+        self.assertEqual(backup.calls, 1)
+        types = [event["type"] for event in events]
+        self.assertIn("model_switch", types)
+        switch = next(event for event in events if event["type"] == "model_switch")
+        self.assertEqual(switch["from"], "deepseek")
+        self.assertEqual(switch["to"], "xai")
+        self.assertEqual(switch["kind"], "quota")
+        started = next(event for event in events if event["type"] == "run_started")
+        self.assertEqual(started["provider"], "deepseek")
+        completed = next(event for event in events if event["type"] == "run_completed")
+        self.assertEqual(completed["output"], "备用模型答复")
+        # The completion names the provider that actually answered.
+        self.assertEqual(completed["provider"], "xai")
+        self.assertEqual(completed["model"], "grok-4.3")
+        self.assertEqual(len(completed["model_switches"]), 1)
+
+    def test_json_auth_failure_does_not_switch(self):
+        fakes, primary, backup = self._chain_fakes(
+            [ProviderError("认证失败", status=401, kind="auth")],
+            [assistant("不该被调用")],
+        )
+        code, events, _, _ = self.run_json(
+            ["task"],
+            config={"fallback_providers": ["xai"]},
+            provider_factory=lambda cfg: fakes[cfg.name],
+            resolver=self._chain_resolver,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(primary.calls, 1)
+        self.assertEqual(backup.calls, 0)
+        self.assertNotIn("model_switch", [event["type"] for event in events])
+        self.assertEqual(events[-1]["type"], "run_failed")
+        self.assertEqual(events[-1]["error"]["code"], "runtime_error")
+
+    def test_json_no_fallback_disables_switching(self):
+        fakes, primary, backup = self._chain_fakes(
+            [ProviderError("余额不足", status=402, kind="quota")],
+            [assistant("不该被调用")],
+        )
+        code, events, _, _ = self.run_json(
+            ["--no-fallback", "task"],
+            config={"fallback_providers": ["xai"]},
+            provider_factory=lambda cfg: fakes[cfg.name],
+            resolver=self._chain_resolver,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(primary.calls, 1)
+        self.assertEqual(backup.calls, 0)
+        self.assertNotIn("model_switch", [event["type"] for event in events])
 
     def test_success_emits_valid_ordered_lines_and_usage(self):
         response = assistant("计划完成", usage={

@@ -59,6 +59,27 @@ class MockProvider:
         return self.responses.pop(0)
 
 
+class ScriptedProvider:
+    """A fake provider whose scripted outcomes may raise ProviderError."""
+
+    def __init__(self, name, model, outcomes):
+        self.name = name
+        self.model = model
+        self.base_url = f"https://{name}.example.com/v1"
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def has_credentials(self):
+        return True
+
+    def chat(self, messages, tools=None, timeout=120):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 # Never send requests through an environment proxy in these tests.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -165,6 +186,54 @@ class TokenAndHostTests(WebUITestCase):
         b = webui.UIState(self.workdir)
         self.assertNotEqual(a.token, b.token)
         self.assertGreaterEqual(len(a.token), 24)
+
+    def test_default_provider_uses_fallback_chain(self):
+        from types import SimpleNamespace
+
+        from angel.providers import FallbackProvider, ProviderError
+
+        primary = ScriptedProvider(
+            "deepseek", "deepseek-flash",
+            [ProviderError("余额不足", status=402, kind="quota")],
+        )
+        backup = ScriptedProvider("xai", "grok-4.3", [reply("备用模型答复")])
+        fakes = {"deepseek": primary, "xai": backup}
+        config = {"fallback_providers": ["xai"], "profiles": {}}
+
+        class _ProviderFactory:
+            """Stand-in for webui.Provider: returns scripted fakes by name.
+
+            A real class (not a Mock) so info()'s isinstance check keeps
+            working while the wiring under test stays real.
+            """
+
+            def __new__(cls, cfg):
+                return fakes[cfg.name]
+
+        with mock.patch.object(webui, "load_config", return_value=config), \
+            mock.patch.object(webui, "resolve_profile", return_value={
+                "provider": "deepseek", "model": "deepseek-flash", "mode": "auto",
+            }), \
+            mock.patch.object(webui, "resolve_provider", side_effect=(
+                lambda name, model=None: SimpleNamespace(
+                    name=name, model=model or f"{name}-model")
+            )), \
+            mock.patch.object(webui, "Provider", new=_ProviderFactory):
+            state = webui.UIState(self.workdir, mode="auto", max_turns=6)
+            provider = state.provider()
+            self.assertIsInstance(provider, FallbackProvider)
+            result = provider.chat([{"role": "user", "content": "hi"}])
+            self.assertEqual(result["choices"][0]["message"]["content"], "备用模型答复")
+            self.assertEqual(primary.calls, 1)
+            self.assertEqual(backup.calls, 1)
+            # info() names the provider that actually answered, and
+            # surfaces the switch instead of implying the primary did.
+            info = state.info()
+            self.assertEqual(info["provider"], "xai")
+            self.assertEqual(info["model"], "grok-4.3")
+            self.assertEqual(len(info.get("model_switches", [])), 1)
+            self.assertEqual(info["model_switches"][0]["from"], "deepseek")
+            self.assertEqual(info["model_switches"][0]["to"], "xai")
 
     def test_foreign_host_header_rejected(self):
         self.start()

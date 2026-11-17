@@ -1,5 +1,14 @@
 # Angel 变更记录
 
+## 未发布（模型兜底接剩余入口）
+
+- `--json` 单次模式接上模型兜底链：与命令行入口同一条链、同一套错误分类（402/429/5xx/超时/网络错误切换，401/403 与配置错误不切换），`--no-fallback` 可关。每次切换在 JSONL 流里发一个 `model_switch` 事件（from/to/error/kind/status）；`run_completed` / `run_incomplete` 增加 `provider` / `model` / `model_switches` 三个字段，如实写清实际答复的模型（`run_started` 仍是起跑的主模型）。失败时的 `run_failed` 错误结构不变。
+- 网页界面（`webui.py` 的 `UIState.provider()`）与群聊（`groups.py` 的 `GroupStore._provider()`）接上同一条兜底链：只经过 providers.py / agent 核心，不碰调度器。切换提示写到服务端日志（stderr）；网页界面的信息面板显示实际答复的模型与 `model_switches` 记录。注入的 `provider_factory`（测试用）保持原样、不包链。
+- 定时任务**未接兜底**：`cli.py` 的 `_make_task_agent` 仍用单个 provider——调度器（`scheduler.py`）正在 GrokBot 那边开发，按分工本轮不碰。
+- 附带修正：`FallbackProvider.has_credentials()` 改为始终看主模型（providers[0]），缓存的链对象在切换前后汇报一致，不再随最后一次答复的模型变化。
+- 新增 6 个测试：`tests/test_json_mode.py`（3 个：--json 下 402 切换并上报实际模型、401 不切换、`--no-fallback` 不切换）、`tests/test_webui.py`（默认 provider 走链且 info() 如实上报）、`tests/test_group_chat.py`（机器人默认 provider 走链）、`tests/test_fallback.py`（has_credentials 始终看主模型）。测试总数 436 → 442，全部通过。
+- 真实端到端验证（一次 DeepSeek flash 短调用）：`--json --provider ollama`（本地未跑 Ollama）→ 连接拒绝 → `model_switch` 事件 → DeepSeek 返回“好”，`run_completed` 的 provider 为 deepseek。
+
 ## 未发布（通用模型接入）
 
 - 新增 7 个内置 provider 预设（只写公开官方 endpoint 与默认模型，不写 Key）：Qwen（DashScope 兼容模式，`qwen-plus`）、Kimi（月之暗面中国区，`kimi-k3`）、GLM（智谱 BigModel，`glm-5.3`）、Gemini（Google OpenAI 兼容端点，`gemini-2.5-flash`）、Mistral（`mistral-small-latest`）、Groq（`llama-3.3-70b-versatile`）、Together（`meta-llama/Llama-3.3-70B-Instruct-Turbo`）；预设的 endpoint 与默认模型均经网页核实。内置预设共 13 个。

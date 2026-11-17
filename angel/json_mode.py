@@ -20,11 +20,12 @@ import sys
 from .agent import Agent, AgentError, build_mcp_manager
 from .compact import DEFAULT_AUTO_COMPACT_THRESHOLD, validate_auto_compact_threshold
 from .config import (
-    load_config, resolve_profile, resolve_provider, resolve_sandbox, validate_mode,
+    load_config, resolve_fallback_chain, resolve_profile, resolve_provider,
+    resolve_sandbox, validate_mode,
 )
 from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .memory import load_session
-from .providers import Provider
+from .providers import Provider, build_provider_chain
 from .usage import context_limit
 
 SCHEMA_VERSION = 1
@@ -160,7 +161,22 @@ def run_json(args) -> int:
             except ValueError as exc:
                 return out.failed("invalid_configuration", str(exc), EXIT_ARGUMENT)
 
-            provider = Provider(provider_config)
+            # --json uses the same fallback chain as the CLI entries:
+            # on a recoverable failure (402/429/5xx/timeout/network) the
+            # call moves to the next provider; 401/403 and config errors
+            # raise immediately. Switches are reported as model_switch
+            # events so the JSON stream never misreports the provider.
+            provider = build_provider_chain(
+                provider_config,
+                resolve_fallback_chain(
+                    provider_config.name,
+                    config,
+                    enabled=False if getattr(args, "no_fallback", False) else None,
+                ),
+                on_switch=lambda record: out.emit("model_switch", **record),
+                provider_cls=Provider,
+                resolver=resolve_provider,
+            )
             if not provider.has_credentials():
                 return out.failed(
                     "missing_credentials",
@@ -188,15 +204,25 @@ def run_json(args) -> int:
             )
             answer = agent.run(args.prompt)
             usage = agent.usage.snapshot()
+            # provider/model always name the provider that actually
+            # answered, not the one configured first; model_switches
+            # lists every switch that happened during this run.
+            final_provider = provider.name
+            final_model = provider.model
+            switches = list(getattr(provider, "switches", []))
             if out.incomplete:
                 out.emit(
                     "run_incomplete", exit_code=EXIT_INCOMPLETE,
                     output=answer, usage=usage,
+                    provider=final_provider, model=final_model,
+                    model_switches=switches,
                 )
                 return EXIT_INCOMPLETE
             out.emit(
                 "run_completed", exit_code=EXIT_SUCCESS,
                 output=answer, usage=usage,
+                provider=final_provider, model=final_model,
+                model_switches=switches,
             )
             return EXIT_SUCCESS
         except KeyboardInterrupt:
