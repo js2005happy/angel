@@ -15,6 +15,22 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_directory_junction_is_rejected_when_supported(self):
+        # Simulate a Windows NTFS junction without requiring Windows or
+        # creating an actual reparse point on the test host.
+        from angel import tool_journal as module
+        original = getattr(Path, "is_junction", None)
+
+        def junction(path):
+            if path == self.root:
+                return True
+            return original(path) if original is not None else False
+
+        with mock.patch.object(Path, "is_junction", junction, create=True):
+            with self.assertRaisesRegex(JournalError, "目录联接"):
+                ToolJournal("junction-session", root=self.root)
+        self.assertFalse((self.root / "junction-session").exists())
+
     @unittest.skipUnless(os.name == "posix" and hasattr(os, "O_NONBLOCK"), "POSIX nonblocking open only")
     def test_event_open_uses_nonblocking_flag_before_type_check(self):
         journal = ToolJournal("nonblocking-event", root=self.root)
