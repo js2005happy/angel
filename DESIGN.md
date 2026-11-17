@@ -1,5 +1,10 @@
 # Angel 设计文档
 
+## ToolJournal 目录替换风险的渐进式加固（2026-11-17）
+
+`_directory_identity` 在事件读取开始、逐文件读取后及写入前后比较目录的 `st_dev/st_ino`，检测到变化则抛 `JournalError`，保持失败关闭。采用 Python 标准库以兼容 Windows/Linux，但它只是 best-effort 检测：目录可能在两次 stat 间被替换，目录与文件没有统一持久化事务；不能宣称消除了 TOCTOU。下一阶段需研究 POSIX dirfd 与 Windows 稳定目录句柄的可移植实现，不应以静态审阅冒充测试通过。
+
+
 ## ToolJournal 文件名完整性约束（2026-11-17）
 intent/result 均使用与 call_id 绑定的排他创建文件名；_records() 校验文件名、类型和 JSON 调用 ID 一致。此项仅提供读取时失败关闭，不防磁盘写入者删除日志、祖先目录替换或跨进程完整事务。新测试未执行。
 
