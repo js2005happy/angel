@@ -24,7 +24,7 @@
 ## 新功能（0.2.0 / 0.3.0）
 
 - **E2B 沙盒**（0.3.0）：`--sandbox e2b` 让文件读写与 shell 在 E2B 沙盒里执行，不碰本机；详见下文「E2B 沙盒」一节。
-- **MCP 客户端**：接标准 MCP 服务器（stdio JSON-RPC），配置里 `mcp_enabled: true` 并配好 `mcp_servers` 后，服务器的工具会以 `mcp_<服务器>_<工具>` 出现在工具列表里。默认关闭，需显式启用。
+- **MCP 客户端**：接标准 MCP 服务器（stdio JSON-RPC，协议 2026-07-28，旧版服务器自动回退 `initialize` 握手），配置里 `mcp_enabled: true` 并配好 `mcp_servers` 后，服务器的工具会以 `mcp_<服务器>_<工具>` 出现在工具列表里。默认关闭，需显式启用。
 - **内置调度器**：`nyra schedule add --name 每日整理 --prompt "整理下载目录" --every 86400`，再 `nyra schedule daemon` 跑守护进程；任务存在 `~/.nyra/schedule.json`，支持间隔或每天固定时间（`--at 08:30`）。
 - **会话压缩**：`python3 -m nyra --compact <会话 id>` 或 REPL 里 `/compact`，模型把长会话摘要成要点再继续；模型失败时本地回退保留首尾消息。
 - **证据链**：`web_fetch` / `web_search` 抓到的页面原文自动存为会话内证据（`~/.nyra/evidence/<会话 id>/`），结论必须附来源链接，可按证据复核。

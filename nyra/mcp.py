@@ -4,6 +4,13 @@
 把 MCP 服务器提供的工具变成 Nyra 可调用的工具。
 配置来自 ~/.nyra/config.json 的 "mcp_servers" 一节，格式与 Claude Code 的
 mcpServers 一致：{"name": {"command": "...", "args": [...], "env": {...}}}。
+
+协议版本（MCP 规范 https://modelcontextprotocol.io/specification/）：
+双时代客户端——优先现代版 ``2026-07-28``（无状态无握手，每次请求在
+``_meta`` 里自带协议版本与客户端能力，先用 ``server/discover`` 探测），
+探测失败（非现代错误或超时）时回退旧版握手（``initialize``，最新握手版
+``2025-11-25``）。不支持多轮往返（MRTR）：服务器要求补充输入时直接
+报错，不做交互式追问。HTTP 传输不在本客户端范围，只做 stdio。
 """
 
 from __future__ import annotations
@@ -21,6 +28,46 @@ from dataclasses import dataclass, field
 
 class MCPError(Exception):
     pass
+
+
+class MCPRequestError(MCPError):
+    """服务器返回的 JSON-RPC 错误，保留错误码与 data 供协商逻辑判断。"""
+
+    def __init__(self, message: str, code: int | None = None, data=None):
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
+
+try:
+    from nyra import __version__ as CLIENT_VERSION
+except ImportError:  # 直接以脚本方式运行时退回包内版本号
+    CLIENT_VERSION = "0.3.0"
+
+
+# MCP 协议版本（规范 https://modelcontextprotocol.io/specification/）。
+# 现代版（2026-07-28 及以后）：无状态，每次请求在 _meta 里自带版本与能力。
+# 旧版（2025-11-25 及以前）：initialize 握手建会话。
+LATEST_PROTOCOL_VERSION = "2026-07-28"
+MODERN_PROTOCOL_VERSIONS = ("2026-07-28",)
+LEGACY_HANDSHAKE_VERSION = "2025-11-25"
+LEGACY_PROTOCOL_VERSIONS = (
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26",
+    "2024-11-05",
+)
+UNSUPPORTED_PROTOCOL_VERSION_CODE = -32022
+
+# _meta 保留键（规范基本/生命周期一节）。
+META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_CLIENT_CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
+META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+
+# 发现探测最多等这么久：沉默的旧版服务器不会回 server/discover，
+# 超时即按旧版处理，不必等满整个请求超时。
+PROBE_TIMEOUT = 5.0
 
 
 # MCP servers run outside the agent's tool approval boundary while starting.
@@ -91,6 +138,12 @@ class MCPClient:
         self.tools: list[dict] = []
         self._lines: queue.Queue[tuple[str, str]] = queue.Queue()
         self._reader: threading.Thread | None = None
+        # 协商结果：era 为 "modern" 或 "legacy"，negotiated_version 为
+        # 实际用的协议版本；_stale_ids 记已放弃请求的 id，迟到响应按此丢弃。
+        self.negotiated_version: str | None = None
+        self.era: str | None = None
+        self.server_info: dict | None = None
+        self._stale_ids: set = set()
 
     def _subprocess_env(self) -> dict[str, str]:
         """Pass only bootstrap values and explicitly requested variables.
@@ -133,8 +186,8 @@ class MCPClient:
                 daemon=True,
             )
             self._reader.start()
-            step = "初始化"
-            self.initialize()
+            step = "协商协议版本"
+            self._negotiate()
             step = "获取工具列表"
             self.list_tools()
         except Exception as exc:
@@ -198,66 +251,110 @@ class MCPClient:
             raise MCPError("MCP 服务器返回空行")
         return value
 
-    def _send_request(self, method: str, params: dict | None = None) -> dict:
+    def _modern_meta(self, version: str) -> dict:
+        """现代版每次请求自带的 _meta（协议版本 + 客户端能力 + 身份）。"""
+        return {
+            META_PROTOCOL_VERSION: version,
+            META_CLIENT_CAPABILITIES: {},
+            META_CLIENT_INFO: {"name": "Nyra", "version": CLIENT_VERSION},
+        }
+
+    def _send_request(
+        self,
+        method: str,
+        params: dict | None = None,
+        meta: dict | None = None,
+        timeout: float | None = None,
+    ) -> dict:
+        """发一个 JSON-RPC 请求并等它的响应。
+
+        meta 不为 None 时原样放进 params["_meta"]（发现探测用）；
+        meta 为 None 且已协商为现代版时，自动附上当前协商版本的 _meta；
+        旧版不附 _meta。timeout 为 None 时用 self.timeout。
+        """
         request_id = self.next_id
         self.next_id += 1
+        body: dict = dict(params or {})
+        if meta is not None:
+            body["_meta"] = meta
+        elif self.era == "modern":
+            body["_meta"] = self._modern_meta(
+                self.negotiated_version or LATEST_PROTOCOL_VERSION
+            )
         self._write_message(
             {
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": method,
-                "params": params or {},
+                "params": body,
             }
         )
 
-        deadline = time.monotonic() + self.timeout
-        while True:
-            line = self._read_line(deadline)
-            try:
-                response = json.loads(line)
-            except (ValueError, RecursionError) as exc:
-                raise MCPError(f"MCP 响应 JSON 解析失败：{exc}") from exc
+        deadline = time.monotonic() + (
+            self.timeout if timeout is None else timeout
+        )
+        try:
+            while True:
+                line = self._read_line(deadline)
+                try:
+                    response = json.loads(line)
+                except (ValueError, RecursionError) as exc:
+                    raise MCPError(f"MCP 响应 JSON 解析失败：{exc}") from exc
 
-            if not isinstance(response, dict):
-                raise MCPError("MCP 响应格式无效：必须是 JSON 对象")
-            if response.get("jsonrpc") != "2.0":
-                raise MCPError("MCP 响应格式无效：jsonrpc 必须是 2.0")
+                if not isinstance(response, dict):
+                    raise MCPError("MCP 响应格式无效：必须是 JSON 对象")
+                if response.get("jsonrpc") != "2.0":
+                    raise MCPError("MCP 响应格式无效：jsonrpc 必须是 2.0")
 
-            if "method" in response:
-                if "id" not in response:
-                    # 服务器通知不属于当前请求的响应。
+                if "method" in response:
+                    if "id" not in response:
+                        # 服务器通知不属于当前请求的响应。
+                        continue
+                    # 最小客户端不支持服务器主动发起的请求。
+                    # 现代版里服务器本不该发请求，旧版里的 sampling /
+                    # elicitation / roots 一样不在支持范围，统一回方法未找到。
+                    self._write_message(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": response["id"],
+                            "error": {
+                                "code": -32601,
+                                "message": "Nyra 不支持服务器主动请求的方法",
+                            },
+                        }
+                    )
                     continue
-                # 最小客户端不支持服务器主动发起的请求。
-                self._write_message(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": response["id"],
-                        "error": {
-                            "code": -32601,
-                            "message": "Nyra 不支持服务器主动请求的方法",
-                        },
-                    }
-                )
-                continue
 
-            if response.get("id") != request_id:
-                raise MCPError("MCP 响应格式无效：请求 id 不匹配")
+                if response.get("id") != request_id:
+                    if response.get("id") in self._stale_ids:
+                        # 已超时放弃的旧请求的迟到响应，直接丢弃。
+                        self._stale_ids.discard(response["id"])
+                        continue
+                    raise MCPError("MCP 响应格式无效：请求 id 不匹配")
 
-            if "error" in response:
-                error = response["error"]
-                message = (
-                    error.get("message", "服务器未提供错误说明")
-                    if isinstance(error, dict)
-                    else "服务器返回了无效的错误对象"
-                )
-                raise MCPError(f"MCP 错误：{message}")
+                if "error" in response:
+                    error = response["error"]
+                    if isinstance(error, dict):
+                        message = error.get("message", "服务器未提供错误说明")
+                        code = error.get("code")
+                        data = error.get("data")
+                    else:
+                        message = "服务器返回了无效的错误对象"
+                        code = None
+                        data = None
+                    raise MCPRequestError(f"MCP 错误：{message}", code, data)
 
-            if "result" not in response:
-                raise MCPError("MCP 响应格式无效：缺少 result")
-            result = response["result"]
-            if not isinstance(result, dict):
-                raise MCPError("MCP 响应格式无效：result 必须是字典")
-            return result
+                if "result" not in response:
+                    raise MCPError("MCP 响应格式无效：缺少 result")
+                result = response["result"]
+                if not isinstance(result, dict):
+                    raise MCPError("MCP 响应格式无效：result 必须是字典")
+                return result
+        except MCPError:
+            # 本次请求已放弃：之后若它的响应迟到，按旧响应丢弃，
+            # 不让它冲掉下一个请求的 id 匹配。
+            self._stale_ids.add(request_id)
+            raise
 
     def _send_notification(
         self, method: str, params: dict | None = None
@@ -270,40 +367,143 @@ class MCPClient:
             }
         )
 
-    def initialize(self) -> None:
-        self._send_request(
+    def _discover(self, version: str) -> dict:
+        """现代版发现：问服务器支持哪些协议版本、能力与身份。"""
+        return self._send_request(
+            "server/discover",
+            {},
+            meta=self._modern_meta(version),
+            timeout=min(self.timeout, PROBE_TIMEOUT),
+        )
+
+    @staticmethod
+    def _pick_modern_version(data) -> str | None:
+        """从 -32022 错误的 supported 列表里挑一个我们支持的现代版。"""
+        if not isinstance(data, dict):
+            return None
+        supported = data.get("supported")
+        if not isinstance(supported, list):
+            return None
+        for version in MODERN_PROTOCOL_VERSIONS:
+            if version in supported:
+                return version
+        return None
+
+    def _use_modern(self, result: dict, requested: str) -> None:
+        """采用 server/discover 的结果进入现代版。"""
+        supported = result.get("supportedVersions")
+        if not isinstance(supported, list) or not supported:
+            raise MCPError("MCP 发现结果格式无效：supportedVersions 必须是列表")
+        if requested in supported:
+            version = requested
+        else:
+            version = next(
+                (v for v in MODERN_PROTOCOL_VERSIONS if v in supported),
+                None,
+            )
+            if version is None:
+                raise MCPError(
+                    "MCP 服务器不支持任何 Nyra 能用的现代协议版本："
+                    + ", ".join(str(v) for v in supported)
+                )
+        self.negotiated_version = version
+        self.era = "modern"
+        meta = result.get("_meta")
+        if isinstance(meta, dict):
+            info = meta.get(META_SERVER_INFO)
+            if isinstance(info, dict):
+                self.server_info = info
+
+    def _initialize_legacy(self) -> None:
+        """旧版握手：initialize + notifications/initialized。"""
+        result = self._send_request(
             "initialize",
             {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": LEGACY_HANDSHAKE_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "Nyra", "version": "0.2.0"},
+                "clientInfo": {"name": "Nyra", "version": CLIENT_VERSION},
             },
         )
+        server_version = result.get("protocolVersion")
+        if (
+            not isinstance(server_version, str)
+            or server_version not in LEGACY_PROTOCOL_VERSIONS
+        ):
+            raise MCPError(
+                f"MCP 服务器返回了不支持的协议版本：{server_version!r}"
+            )
+        self.negotiated_version = server_version
+        self.era = "legacy"
+        info = result.get("serverInfo")
+        if isinstance(info, dict):
+            self.server_info = info
         self._send_notification("notifications/initialized")
 
-    def list_tools(self) -> list[dict]:
-        result = self._send_request("tools/list")
-        raw_tools = result.get("tools")
-        if not isinstance(raw_tools, list):
-            raise MCPError("MCP 工具列表格式无效：tools 必须是列表")
+    def _negotiate(self) -> None:
+        """双时代协商（规范 stdio 向后兼容一节）。
 
-        tools = []
-        for tool in raw_tools:
-            if not isinstance(tool, dict):
-                raise MCPError("MCP 工具格式无效：工具必须是字典")
-            name = tool.get("name")
-            if not isinstance(name, str) or not name:
-                raise MCPError("MCP 工具格式无效：name 必须是非空字符串")
-            tools.append(
-                {
-                    "name": name,
-                    "description": tool.get("description", ""),
-                    "inputSchema": tool.get(
-                        "inputSchema",
-                        {"type": "object", "properties": {}},
-                    ),
-                }
-            )
+        1. 先用 server/discover 探测，带首选现代版 2026-07-28。
+        2. 拿到 DiscoverResult：现代版，按 supportedVersions 选版。
+        3. 拿到 -32022（版本不支持）：现代服务器，按它列出的版本重试
+           现代版；没有共同版本时回退旧版握手。
+        4. 其他错误或超时：旧版服务器，回退 initialize 握手。
+        """
+        try:
+            result = self._discover(LATEST_PROTOCOL_VERSION)
+        except MCPRequestError as exc:
+            if exc.code == UNSUPPORTED_PROTOCOL_VERSION_CODE:
+                version = self._pick_modern_version(exc.data)
+                if version is not None:
+                    try:
+                        result = self._discover(version)
+                        self._use_modern(result, version)
+                    except MCPError:
+                        self._initialize_legacy()
+                    return
+            self._initialize_legacy()
+            return
+        except MCPError:
+            self._initialize_legacy()
+            return
+        try:
+            self._use_modern(result, LATEST_PROTOCOL_VERSION)
+        except MCPError:
+            # 发现结果不合规（例如旧版服务器对未知方法回了空结果），
+            # 按旧版服务器处理。
+            self._initialize_legacy()
+
+    def list_tools(self) -> list[dict]:
+        tools: list[dict] = []
+        cursor: str | None = None
+        while True:
+            params: dict = {}
+            if cursor is not None:
+                params["cursor"] = cursor
+            result = self._send_request("tools/list", params)
+            raw_tools = result.get("tools")
+            if not isinstance(raw_tools, list):
+                raise MCPError("MCP 工具列表格式无效：tools 必须是列表")
+
+            for tool in raw_tools:
+                if not isinstance(tool, dict):
+                    raise MCPError("MCP 工具格式无效：工具必须是字典")
+                name = tool.get("name")
+                if not isinstance(name, str) or not name:
+                    raise MCPError("MCP 工具格式无效：name 必须是非空字符串")
+                tools.append(
+                    {
+                        "name": name,
+                        "description": tool.get("description", ""),
+                        "inputSchema": tool.get(
+                            "inputSchema",
+                            {"type": "object", "properties": {}},
+                        ),
+                    }
+                )
+
+            cursor = result.get("nextCursor")
+            if not isinstance(cursor, str) or not cursor:
+                break
 
         self.tools = tools
         return self.tools
@@ -312,6 +512,19 @@ class MCPClient:
         result = self._send_request(
             "tools/call", {"name": name, "arguments": arguments}
         )
+        if result.get("resultType") == "input_required":
+            # 多轮往返（MRTR）：服务器要补充输入才继续，Nyra 暂不支持
+            # 交互式追问，直接报清原因，不假装完成。
+            requests = result.get("inputRequests")
+            detail = ""
+            if isinstance(requests, dict) and requests:
+                detail = "（需要：" + "、".join(sorted(requests)) + "）"
+            elif isinstance(requests, list) and requests:
+                detail = f"（需要 {len(requests)} 项输入）"
+            raise MCPError(
+                "MCP 服务器要求补充输入后重试（多轮往返），"
+                f"Nyra 暂不支持{detail}"
+            )
         content = result.get("content", [])
         if not isinstance(content, list):
             raise MCPError("MCP 工具响应格式无效：content 必须是列表")

@@ -1,5 +1,13 @@
 # Nyra 变更记录
 
+## 未发布（MCP 协议升级到 2026-07-28）
+
+- MCP 客户端从 2024-11-05 升级到 2026-07-28：双时代协商——先用 `server/discover` 探测现代版（每次请求在 `_meta` 里自带 `io.modelcontextprotocol/protocolVersion`、`clientCapabilities`、`clientInfo`），探测失败（非现代错误或超时，最多等 5 秒）时回退旧版握手 `initialize`（最新握手版 2025-11-25）；旧版服务器返回的协议版本须在已知列表里（2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05），未知版本直接报错。只做 stdio，HTTP 传输不在本客户端范围。
+- `-32022 UnsupportedProtocolVersionError`：按服务器列出的 `supported` 重试现代版，没有共同版本时回退握手；迟到响应按已放弃的请求 id 丢弃，不冲掉握手的 id 匹配。
+- `tools/list` 跟随 `nextCursor` 分页；`tools/call` 返回 `resultType: input_required`（多轮往返）时直接报错，Nyra 暂不支持交互式追问；`clientInfo` 版本改成跟包版本（0.3.0），不再写死 0.2.0。
+- 新增 `tests/test_mcp_protocol_2026.py`（12 项）：现代/旧版/旧版低版本/空发现结果/`-32022` 回退/未知旧版拒绝/沉默探测超时回退/分页/多轮往返报错/`-32022` 重试；原有三个假服务器对未知方法改回 `-32601`（更贴近真实旧版服务器）。
+- 测试 573 → 585 项，全部通过；未做的：HTTP（Streamable HTTP）传输、MRTR 交互式追问。
+
 ## 未发布（Linux 打包）
 
 - 新增 `scripts/build_package.sh`：从当前检出产出 `dist/nyra-<版本>.tar.gz`（解压即用，顶层目录 `nyra-<版本>/`）与 `dist/nyra_<版本>_all.deb`（装到 `/usr/share/nyra`，启动器 `/usr/bin/nyra`，只声明 `Depends: python3 (>= 3.10)`）；版本号只从 `nyra/__init__.py` 读；只打包白名单文件（`nyra/*.py`、`scripts/install.sh`、systemd unit、README/GUIDE/CHANGELOG/LICENSE、`docs/linux-*.md`），`.git`/`.venv`/`__pycache__`/`dist/` 不进包；没有 `dpkg-deb` 时只产出 tarball 并警告；无 maintainer 脚本，不碰用户 systemd 与 `~/.nyra`。

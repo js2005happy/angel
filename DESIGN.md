@@ -216,6 +216,7 @@ Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent �
 - **写操作要审批**：默认 auto 模式每次写文件/执行命令都要确认；readonly 模式完全禁写。
 - **MCP 子进程环境最小化**：启动时不直接复制整个 `os.environ`，只传系统启动所需变量与每个服务器明确声明的 `inherit_env`、`env`。后者优先级更高。这降低 Agent 自身模型 Key 意外被 MCP 子进程继承的风险；子进程仍以同一系统用户运行，**没有文件系统与网络隔离**，不能替代沙箱。
 - **MCP 启动和调用均经过授权**：MCP 进程启动本身就可能有副作用。readonly 不启动、非交互 auto 不启动、终端交互 auto 逐项确认启动并对工具逐次确认、full 自动启动。终端 `/mode` 切换会关闭旧 MCP 进程并按模式重新加载；Web UI 在 auto/readonly 不自动启动 MCP，切换 full 才可启动，活跃任务期间拒绝切换以避免竞态。提示仅展示服务器/工具名，**该策略不是进程沙箱**。
+- **MCP 协议双时代**：客户端优先 2026-07-28（`server/discover` 探测 + 每次请求 `_meta` 自带版本与能力），探测失败回退 `initialize` 握手（2025-11-25）；`-32022` 按服务器列出的版本重试；`tools/call` 遇 `input_required` 直接报错，不做 MRTR 追问；只做 stdio，未实现 HTTP 传输。
 - **shell 黑名单**：`rm -rf /`、`rm -rf ~`、`mkfs`、`dd` 写设备、关机/重启、fork 炸弹等一律拒绝（见 `tools.py` 的 `_check_shell_denied`）。
 - **无真沙箱（诚实说明）**：MVP 没有实现容器/命名空间级沙箱，命令以运行 Nyra 的用户身份执行。这是路线图第一项；在此之前，请只在信任的目录用 full 模式。
 

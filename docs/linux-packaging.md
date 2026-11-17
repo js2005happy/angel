@@ -45,6 +45,11 @@ nyra --version            # 应输出 Nyra 0.3.0
 
 卸载：`sudo dpkg -r nyra`（`~/.nyra` 里的数据不受影响）。
 
+已验证（2026-11-18，Debian dpkg 1.22.6）：真实 `sudo dpkg -i` 安装后
+`nyra --version` 输出 `Nyra 0.3.0`、`nyra --help` 正常退出；运行后
+`/usr/share/nyra` 下无 `__pycache__`；`sudo dpkg -r nyra` 后
+`/usr/bin/nyra` 与 `/usr/share/nyra` 均已清除、无残留。
+
 ### tarball（任意 Linux 发行版，不需要 root）
 
 ```bash

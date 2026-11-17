@@ -32,7 +32,10 @@ for line in sys.stdin:
             "encoding": os.environ.get("PYTHONIOENCODING"),
         })}]}
     else:
-        result = {}
+        # 旧版服务器对握手前收到的未知方法回方法未找到，客户端据此回退。
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Method not found"}}) + "\n")
+        sys.stdout.flush()
+        continue
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}) + "\n")
     sys.stdout.flush()
 '''

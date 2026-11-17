@@ -170,6 +170,10 @@ class PackagingBuildTests(unittest.TestCase):
                             "launcher in .deb is not executable")
             self.assertIn("PYTHONPATH=/usr/share/nyra",
                           launcher.read_text(encoding="utf-8"))
+            # 启动器须禁写字节码：/usr/share/nyra 由 dpkg 管理，运行时
+            # 写入的 __pycache__ 会让 dpkg -r 后残留目录。
+            self.assertIn("PYTHONDONTWRITEBYTECODE=1",
+                          launcher.read_text(encoding="utf-8"))
             env = dict(os.environ)
             env["PYTHONPATH"] = str(extract / "usr" / "share" / "nyra")
             result = subprocess.run(

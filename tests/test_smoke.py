@@ -368,6 +368,9 @@ for line in sys.stdin:
     elif method == "tools/call":
         args = (req.get("params") or {}).get("arguments") or {}
         send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "回显：" + str(args.get("text", ""))}], "isError": False}})
+    elif rid is not None:
+        # 旧版服务器对握手前收到的未知方法回方法未找到，客户端据此回退。
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
     # 通知（无 id）直接忽略
 '''
 
