@@ -70,6 +70,11 @@
 - 本机核查：`codex` 在 `/opt/hatch-image/bin/codex`（`codex-cli 0.164.0-alpha.9`），`codex login status` 为 `Logged in using ChatGPT`；版本低于 0.164.0、未登录或无法解析版本时直接拒绝。`claude` 本机未装，本轮不做，须先在用户电脑（Windows）上核查 `claude --version` 与登录情况再接。
 - 新增 35 个测试（`tests/test_cli_providers.py`）：固定路径解析、版本与登录检查（含登录标记走 stderr）、固定前缀、chat 成功与 OpenAI 形状、argv 固定只读且无禁用参数、prompt 走 stdin、空临时工作目录、tools 被忽略、子进程环境不含 `*_API_KEY`、不打开凭据文件、JSONL 回退与用量、空输出与非零退出分类（含 `model_not_found` → config）、超时杀进程组、兜底排除（codex 作主时链只有自身、不当兜底目标、直接构造被拒、定时任务 `_make_task_agent` 用 codex 被拒）、预设解析。另更新 `tests/test_generic_providers.py`（CLI 预设豁免 http base_url 断言）与 `tests/test_webui.py`（`/api/info` 的 provider 数 13 → 14，自定义 provider 场景 14 → 15）；`nyra/group-ui.js` 的兜底 provider 列表补 codex；README、DESIGN.md、`docs/index.html`、`webui_page.py` 的 provider 预设数 13 → 14。测试总数 483 → 518，全部通过；本地冒烟检查通过（`--list-providers` 见 codex、真实短调用一次回 `smoke-ok` 且 usage 有记录、Web UI 页面 200 且 `/api/info` 的 provider_count 为 14）。
 
+## 未发布（会话原子写）
+
+- 会话通过同目录临时文件、flush/fsync 与原子替换保存，失败保留旧会话并清理临时文件；新增会话目录和文件使用私有权限，并校验会话 ID 防止路径越界。
+- 工具调用执行前及每个工具结果追加后立即保存会话，工具中断时保留完整调用与已有结果；新增原子写、中断、权限和非法 ID 回归测试。
+
 ## 未发布（兜底默认关闭 + 网页切换可见 + 网页端新建定时任务暂缓）
 
 - **模型自动兜底改默认关闭**（用户 2026-11-17 安全事项第 1 条）：`config.py` 的 `DEFAULT_CONFIG["fallback_enabled"]` 与 `resolve_fallback_chain` 的默认值由 True 改 False；开启只由用户自己做——`~/.nyra/config.json` 里设 `"fallback_enabled": true`、环境变量 `NYRA_FALLBACK=1`，或 CLI 新增 `--fallback`（`--no-fallback` 保留作显式关闭；两者同时给时以关闭为准，`cli.py` 新增 `_fallback_enabled()` 统一优先级，`json_mode.py` 同样处理）。网页端设置里没有兜底开关控件（只有一行状态说明），不存在默认开启或静默开启的路径。

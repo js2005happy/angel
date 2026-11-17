@@ -2,9 +2,11 @@
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import secrets
 import threading
+import tempfile
 
 from .config import NYRA_HOME
 
@@ -72,21 +74,51 @@ def new_session_id() -> str:
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
+def _session_path(session_id: str) -> Path:
+    """校验会话标识，避免跨目录访问及 Windows 特殊路径。"""
+    if (
+        not isinstance(session_id, str) or not session_id
+        or ".." in session_id
+        or any(c in session_id for c in '/\\:\x00')
+    ):
+        raise ValueError("会话 ID 无效")
+    return SESSIONS_DIR / f"{session_id}.jsonl"
+
+
 def save_session(session_id: str, messages: list[dict]) -> Path:
-    """Write messages as UTF-8 JSON Lines and return the session path."""
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    path = SESSIONS_DIR / f"{session_id}.jsonl"
-
-    with path.open("w", encoding="utf-8") as handle:
-        for message in messages:
-            handle.write(json.dumps(message, ensure_ascii=False) + "\n")
-
+    """在同目录原子替换会话；替换前失败不损坏旧会话。"""
+    path = _session_path(session_id)
+    SESSIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=".nyra-session-", dir=SESSIONS_DIR)
+    try:
+        # mkstemp 在 POSIX 创建 0600 文件，不继承旧会话的宽松权限。
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            for message in messages:
+                handle.write(json.dumps(message, ensure_ascii=False) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name == "nt":
+            try:
+                os.chmod(temp, 0o600)
+            except OSError:
+                pass  # Windows 权限仅尽力设置。
+        # 关闭临时文件后再替换，兼容 Windows。
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
     return path
 
 
 def load_session(session_id: str) -> list[dict] | None:
-    """Load session message dictionaries, skipping malformed JSON lines."""
-    path = SESSIONS_DIR / f"{session_id}.jsonl"
+    """Load session message dictionaries, skipping malformed JSON lines.
+
+    非法会话 ID 与不存在的会话一样返回 None，调用方（Web UI、群聊）无需额外捕获。
+    """
+    try:
+        path = _session_path(session_id)
+    except ValueError:
+        return None
     try:
         handle = path.open("r", encoding="utf-8", errors="replace")
     except FileNotFoundError:
