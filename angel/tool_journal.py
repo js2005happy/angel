@@ -350,11 +350,18 @@ class ToolJournal:
             if not intents:
                 continue
             tool = intents[0]["tool"]
-            if any(e["tool"] != tool for e in events):
+            tool_mismatch = any(e["tool"] != tool for e in events)
+            if tool_mismatch:
                 invalid = True
+            # A result for a different tool cannot certify this intent's
+            # outcome, even when its event type reports success.
             calls[cid] = {
                 "tool": tool,
-                "outcome": results[0]["event"] if len(results) == 1 else "unknown",
+                "outcome": (
+                    results[0]["event"]
+                    if len(results) == 1 and not tool_mismatch
+                    else "unknown"
+                ),
             }
         # Orphan results are unresolved side effects too: do not report zero
         # unknown outcomes merely because an intent event is missing.
