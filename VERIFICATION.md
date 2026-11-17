@@ -1,3 +1,8 @@
+## 2026-11-18 ToolJournal 跨工具结果歧义（仅静态检查）
+
+- 静态审阅 `inspect()` 的同 ID 工具名一致性检查：不匹配的 result 现在归类 unknown，避免与 `journal_ambiguous` 同时报告成功。新增篡改 result 工具名的测试源码。
+- 未运行测试、编译、CI 或跨平台验证；仍无法证明日志防篡改、外部副作用真实性或安全自动续跑。
+
 ## 2026-11-18 ToolJournal 孤立结果计数（仅静态审阅）
 
 - 静态检查：`inspect()` 在按调用 ID 分组后统计缺少 intent 的结果组，加入 `unknown_outcomes`；回归测试模拟删除 intent 后仍有 result 的情况。
