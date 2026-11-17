@@ -126,6 +126,25 @@ class JournalTests(unittest.TestCase):
         # A failed report does not justify replaying the tool.
         self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
+    def test_duplicate_json_keys_are_rejected(self):
+        journal = ToolJournal("session1", root=self.root)
+        call = journal.begin("shell")
+        file = journal.path / ("intent-" + call + ".json")
+        raw = file.read_text(encoding="utf-8").strip()
+        file.write_text(raw[:-1] + ',"tool":"shell"}', encoding="utf-8")
+        with self.assertRaises(JournalError):
+            journal.inspect()
+
+    def test_boolean_version_is_rejected(self):
+        journal = ToolJournal("session1", root=self.root)
+        call = journal.begin("shell")
+        file = journal.path / ("intent-" + call + ".json")
+        record = json.loads(file.read_text(encoding="utf-8"))
+        record["version"] = True
+        file.write_text(json.dumps(record), encoding="utf-8")
+        with self.assertRaises(JournalError):
+            journal.inspect()
+
     def test_no_files_without_explicit_begin(self):
         journal = ToolJournal("session1", root=self.root)
         self.assertFalse(journal.path.exists())
