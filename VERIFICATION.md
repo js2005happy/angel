@@ -1,5 +1,11 @@
 # Angel 验证报告（2026-11-16，v3 0.3.0）
 
+## 2026-11-17 日志文件名绑定（静态审阅）
+- 核对 tool_journal.py 的 intent/result 固定文件名及 _records 文件名/JSON 一致性检查。
+- 编写结果重命名、JSON call_id 错配、复制 intent 的测试；更新过时的随机文件名测试。
+- 未运行测试、CI、安装、合并或发布。Windows/Linux、目录替换与跨进程端到端安全仍未验证。
+
+
 ## 2026-11-17 工具日志单结果槽（仅静态检查）
 
 - 已审阅 `ToolJournal.finish()` 先读取调用意图、再 `_write()` 的竞争窗口：旧随机结果文件名可能允许两个并发 finish 都写入结果。新结果文件名固定为 `result-<call_id>.json`，`O_CREAT|O_EXCL` 在同一文件系统目录上使重复结果创建冲突而非静默覆盖。
