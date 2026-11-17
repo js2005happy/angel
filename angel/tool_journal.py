@@ -39,6 +39,26 @@ def _safe_directory(path: Path) -> None:
         raise JournalError("日志目录不是文件夹")
 
 
+def _directory_identity(path: Path) -> tuple[int, int] | None:
+    """Snapshot the directory identity; detect replacement during an operation.
+
+    This is a conservative check, not a portable atomic directory capability.
+    Windows and POSIX both expose st_dev/st_ino through os.stat.
+    """
+    _safe_directory(path)
+    if not path.exists():
+        return None
+    info = path.stat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise JournalError("日志目录不是文件夹")
+    return info.st_dev, info.st_ino
+
+
+def _verify_directory(path: Path, expected: tuple[int, int] | None) -> None:
+    if _directory_identity(path) != expected:
+        raise JournalError("日志目录在操作期间被替换；拒绝信任结果")
+
+
 class ToolJournal:
     """Metadata-only event writer; independent from the actual tool runner."""
 
@@ -54,6 +74,7 @@ class ToolJournal:
         _safe_directory(self.path)
         if not self.path.exists():
             return []
+        identity = _directory_identity(self.path)
         paths = list(self.path.iterdir())
         if len(paths) > MAX_EVENTS:
             raise JournalError("事件数量超限")
@@ -99,6 +120,8 @@ class ToolJournal:
             if path.name != expected:
                 raise JournalError("事件文件名与事件类型或调用 ID 不一致")
             records.append(item)
+            _verify_directory(self.path, identity)
+        _verify_directory(self.path, identity)
         return records
 
     def _write(self, event: str, call_id: str, tool: str) -> None:
@@ -109,6 +132,7 @@ class ToolJournal:
         _safe_directory(self.path)
         self.path.mkdir(parents=True, exist_ok=True)
         _safe_directory(self.path)
+        identity = _directory_identity(self.path)
         item = {
             "version": 1, "event": event, "call_id": call_id,
             "tool": tool, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -130,6 +154,7 @@ class ToolJournal:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
+            _verify_directory(self.path, identity)
         except OSError as exc:
             raise JournalError("写入事件失败；工具结果必须人工核查") from exc
 
