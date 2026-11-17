@@ -1,5 +1,6 @@
 """Authored regression tests for opt-in journal; not executed in this change."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
