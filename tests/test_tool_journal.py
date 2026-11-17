@@ -24,6 +24,20 @@ class JournalTests(unittest.TestCase):
         mode = __import__("stat").S_IMODE(journal.path.stat().st_mode)
         self.assertEqual(mode & 0o077, 0)
 
+    def test_existing_permissive_session_directory_is_rejected_on_posix(self):
+        if os.name != "posix":
+            self.skipTest("POSIX permissions only")
+        path = self.root / "existing-session"
+        path.mkdir(mode=0o700)
+        path.chmod(0o755)
+        journal = ToolJournal("existing-session", root=self.root)
+        with self.assertRaisesRegex(JournalError, "权限过宽"):
+            journal.inspect()
+        with self.assertRaisesRegex(JournalError, "权限过宽"):
+            journal.begin("shell")
+        # Fail closed without silently changing a pre-existing directory.
+        self.assertEqual(__import__("stat").S_IMODE(path.stat().st_mode), 0o755)
+
     def test_posix_reader_uses_directory_relative_file_open(self):
         import os
         from angel import tool_journal as module
