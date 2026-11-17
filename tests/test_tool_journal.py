@@ -458,6 +458,18 @@ class JournalTests(unittest.TestCase):
         self.assertFalse(report["safe_to_auto_resume"])
         self.assertNotIn(call, str(report))
 
+    def test_orphan_result_counts_as_unknown_outcome(self):
+        # Missing intent is ambiguous, not proof of a completed operation.
+        journal = ToolJournal("orphan", root=self.root)
+        call = journal.begin("shell")
+        journal.finish(call, "shell", success=True)
+        (journal.path / ("intent-" + call + ".json")).unlink()
+        report = journal.inspect()
+        self.assertTrue(report["journal_ambiguous"])
+        self.assertEqual(report["unknown_outcomes"], 1)
+        self.assertEqual(report["tool_intents"], 0)
+        self.assertFalse(report["safe_to_auto_resume"])
+
     def test_result_is_only_reported_not_execution_verified(self):
         journal = ToolJournal("session1", root=self.root)
         call = journal.begin("write_file")
