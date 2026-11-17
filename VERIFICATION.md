@@ -1,3 +1,8 @@
+## 2026-11-17 ToolJournal 回归测试静态阻塞修复
+
+- 静态发现 `tests/test_tool_journal.py::test_hardlinked_event_is_rejected` 使用 `os.link` 而模块未导入 `os`；本轮补充导入。
+- 未运行单元测试、静态分析命令或 CI；该修复仅解除可见的 NameError 风险，不证明硬链接保护通过。
+
 ## 2026-11-17 ToolJournal 文件身份核对（仅静态审阅）
 
 - 打开事件文件后比较 fstat 与目录条目的 stat/lstat 身份，拒绝硬链接。
