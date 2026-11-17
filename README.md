@@ -17,6 +17,22 @@
 
 **Nyra** is a local AI agent for coding and research. It reads your project, edits files, runs commands and searches the web with cited sources, and it asks before every write or shell command. Pure Python standard library, zero dependencies.
 
+<p align="center">
+  <img src="docs/assets/screenshots/mac.png" alt="Nyra 桌面端：会话、审批与 diff 审核" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/assets/screenshots/windows.png" alt="Nyra for Windows"></td>
+    <td width="50%"><img src="docs/assets/screenshots/ios.png" alt="Nyra for iOS"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/assets/screenshots/android.png" alt="Nyra for Android"></td>
+  </tr>
+</table>
+
+<p align="center"><sub>Nyra 桌面端与移动端界面设计稿（macOS · Windows · iOS · Android）。客户端正在开发中，图中数据为示例；目前可用的是命令行和本地网页界面。</sub></p>
+
 ```bash
 git clone https://github.com/js2005happy/angel.git && cd angel
 python3 -m angel "解释一下这个项目的结构"
