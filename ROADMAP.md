@@ -1,3 +1,9 @@
+## 2026-11-18 跨工具结果歧义及公开反馈
+
+- **源码事实**：同一 call_id 的 intent/result 工具名不一致时，旧版 `inspect()` 标记 `journal_ambiguous`，但仍将单个 `result_ok` 计为成功。本轮改为 unknown（价值中高/难度低/安全风险低/依赖现有 ToolJournal；已提交、测试未运行）。
+- **外部用户反馈**：[Codex #61130](https://github.com/openai/codex/issues/61130)，用户报告 2026-11-12 Windows 浏览器 URL 校验失败导致任务中断；[Codex #56260](https://github.com/openai/codex/issues/56260)，用户报告 2026-10-21 Windows 浏览器 URL 读取失败。2026-11-18 查阅。日期来自报告中的观察时间，不等同于 issue 创建日期；均为独立反馈，不能证明 Nyra 具有相同故障。
+- **工程推断排序（价值/难度/安全风险/依赖）**：① Windows ACL 与稳定目录句柄（高/高/中高/Windows API）；② 工具副作用独立证据（高/高/高/PR #24、#26）；③ 人工审批安全续跑（高/高/高/PR #25）；④ 浏览器故障的可诊断、不中断无关任务的恢复（中高/中高/高/浏览器权限与可验证 URL）；⑤ 后台通知（中高/中/中/PR #27）。主线 `nyra/` 与本分支 `angel/` 的集成仍未处理。
+
 ## 2026-11-18 孤立结果失败关闭与候选排序
 
 - **源码事实**：`inspect()` 对只有 result、没有 intent 的分组设置 `journal_ambiguous`，但 `unknown_outcomes` 原先仅统计有 intent 的调用，可能错误显示 0。本轮将孤立结果组计入未知（价值中高/难度低/安全风险低/依赖 ToolJournal；已提交，测试未运行）。
