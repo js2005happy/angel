@@ -160,6 +160,8 @@ class ToolJournal:
                                 or not stat.S_ISREG(after.st_mode)
                                 or after.st_nlink != 1
                                 or after.st_size != info.st_size
+                                or after.st_mtime_ns != info.st_mtime_ns
+                                or after.st_ctime_ns != info.st_ctime_ns
                                 or (os.name == "posix" and
                                     stat.S_IMODE(after.st_mode) & 0o077)):
                             raise JournalError("事件文件在读取期间发生变化")
