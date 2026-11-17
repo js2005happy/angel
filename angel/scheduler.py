@@ -6,6 +6,9 @@
 """
 
 import json
+import os
+import shutil
+import tempfile
 import re
 import sys
 import time
@@ -86,15 +89,18 @@ def load_schedule(path: Path | None = None) -> dict:
     except FileNotFoundError:
         return {"tasks": []}
     except UnicodeError as exc:
+        _backup_corrupt(path)
         raise ScheduleError("schedule.json 格式错误") from exc
 
     try:
         data = json.loads(contents)
     except (ValueError, RecursionError) as exc:
-        raise ScheduleError("schedule.json 格式错误") from exc
+        _backup_corrupt(path)
+        raise ScheduleError("schedule.json 格式错误（已备份为 .corrupt-*）") from exc
 
     if not isinstance(data, dict):
-        raise ScheduleError("schedule.json 格式错误")
+        _backup_corrupt(path)
+        raise ScheduleError("schedule.json 格式错误（已备份为 .corrupt-*）")
 
     raw_tasks = data.get("tasks", [])
     if not isinstance(raw_tasks, list):
@@ -121,11 +127,32 @@ def load_schedule(path: Path | None = None) -> dict:
 def save_schedule(data: dict, path: Path | None = None) -> Path:
     path = SCHEDULE_PATH if path is None else Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # 原子写：先写同目录临时文件再 os.replace，崩溃/并发时不会留下半截 JSON。
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
     )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, indent=2, ensure_ascii=False))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
     return path
+
+
+def _backup_corrupt(path: Path) -> None:
+    """损坏的 schedule.json 先备份成 .corrupt-<时间戳>，避免下次保存时被覆盖丢失。"""
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(path, path.with_name(f"{path.name}.corrupt-{stamp}"))
+    except OSError:
+        pass
 
 
 def add_task(data: dict, task: dict) -> dict:

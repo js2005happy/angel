@@ -1,5 +1,11 @@
 # Angel 变更记录
 
+## 未发布（调度器健壮性）
+
+- `save_schedule` 改为原子写（同目录临时文件 + fsync + `os.replace`），崩溃或并发写入不再留下半截 JSON；失败时清理临时文件、旧文件保持不变。
+- `load_schedule` 遇到损坏（非 JSON / 编码错误 / 顶层不是对象）时，先把原文件备份为 `schedule.json.corrupt-<时间戳>` 再报错，避免下次保存覆盖丢失。
+- 新增 4 个测试（`tests/test_scheduler_robust.py`）。测试总数 468 → 472，unittest 与 smoke 均通过。
+
 ## 未发布（网页界面 UI v2 面板补完）
 
 - 设置视图的 provider 下拉真正可用（此前是 `disabled` 占位）：新增 `POST /api/provider {provider, model?}`（`webui.py` 的 `UIState.set_provider`，用 `resolve_provider` 校验，未知 provider / 明文 http 外网地址直接报 400，不触发兜底），前端启用下拉 + 模型输入（datalist 用该 provider 的 `models`，允许自定义填）+“应用”按钮 + 状态提示。切换只改运行状态：重置缓存的 provider 链，新会话用新 provider，已有会话保持原 provider，不写配置文件，重启后恢复配置。设置副标题“只读视图”改为准确描述。
