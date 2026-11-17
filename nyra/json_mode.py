@@ -30,7 +30,7 @@ from .providers import Provider, build_provider_chain
 from .usage import context_limit
 from .runs import (
     RunRecorder, RunStore, prepare_resume, RunNotResumable,
-    resolve_verify_command, resolve_verify_settings, tests_modified,
+    accept_verify_command, resolve_verify_origin, resolve_verify_settings, tests_modified,
 )
 
 SCHEMA_VERSION = 1
@@ -246,12 +246,23 @@ def run_json(args) -> int:
                 getattr(args, 'verify_retries', None),
                 config,
             )
-            verify_cmd = None if resume_state else resolve_verify_command(
-                getattr(args, 'verify', None), config, workdir)
+            skip_reason = None
+            if resume_state:
+                verify_cmd = None
+            else:
+                verify_cmd, source = resolve_verify_origin(
+                    getattr(args, 'verify', None), config, workdir)
+                # --json 非交互：AGENTS.md 来源必须显式 --trust-agents-verify。
+                verify_cmd, skip_reason = accept_verify_command(
+                    verify_cmd, source,
+                    trust_agents=getattr(args, 'trust_agents_verify', False),
+                    interactive=False,
+                )
             recorder = RunRecorder(
                 RunStore(), agent, task, state=resume_state,
                 interrupted_tool_calls=interrupted_tool_calls,
-                verify_cmd=verify_cmd, verify_timeout=timeout, verify_retries=retries,
+                verify_cmd=verify_cmd, verify_skip_reason=skip_reason,
+                verify_timeout=timeout, verify_retries=retries,
             )
             if resume_state:
                 out.emit('run_resumed', run_id=recorder.run_id, session_id=agent.session_id,
