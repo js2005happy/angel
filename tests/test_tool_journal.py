@@ -15,6 +15,15 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_new_session_directory_is_private_on_posix(self):
+        # POSIX mkdir mode is reduced by umask, never widened by it.
+        if os.name != "posix":
+            self.skipTest("POSIX permissions only")
+        journal = ToolJournal("private-session", root=self.root)
+        journal.begin("shell")
+        mode = __import__("stat").S_IMODE(journal.path.stat().st_mode)
+        self.assertEqual(mode & 0o077, 0)
+
     def test_posix_reader_uses_directory_relative_file_open(self):
         import os
         from angel import tool_journal as module
