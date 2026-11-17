@@ -14,6 +14,51 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_posix_reader_uses_directory_relative_file_open(self):
+        import os
+        from angel import tool_journal as module
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        journal = ToolJournal("session1", root=self.root)
+        call = journal.begin("shell")
+        journal.finish(call, "shell", success=True)
+        original = module.os.open
+        relative = []
+
+        def observed(path, *args, **kwargs):
+            if str(path).endswith(".json"):
+                relative.append(("dir_fd" in kwargs, str(path)))
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(module.os, "open", side_effect=observed):
+            result = journal.inspect()
+        self.assertEqual(result["reported_ok"], 1)
+        self.assertEqual(len(relative), 2)
+        self.assertTrue(all(used for used, _ in relative))
+
+    def test_posix_reader_detects_mismatched_directory_handle(self):
+        import os
+        from angel import tool_journal as module
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        journal = ToolJournal("session1", root=self.root)
+        journal.begin("shell")
+        original = module.os.fstat
+
+        def altered(fd):
+            value = original(fd)
+            if os.path.isdir(journal.path) and fd != -1 and __import__("stat").S_ISDIR(value.st_mode):
+                class FakeStat:
+                    st_mode = value.st_mode
+                    st_dev = value.st_dev
+                    st_ino = value.st_ino + 1
+                return FakeStat()
+            return value
+
+        with mock.patch.object(module.os, "fstat", side_effect=altered):
+            with self.assertRaisesRegex(JournalError, "句柄"):
+                journal.inspect()
+
     def test_posix_writer_creates_event_with_directory_descriptor(self):
         import os
         if os.name != "posix" or os.open not in os.supports_dir_fd:
