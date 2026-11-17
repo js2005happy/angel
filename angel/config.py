@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 ANGEL_HOME = Path.home() / ".angel"
@@ -159,6 +160,36 @@ PROVIDERS = {
 }
 
 
+# 明文 http:// 只允许这三个本机主机名；外网地址必须用 https://，
+# 否则 API Key 会随请求明文传输。这条允许范围是用户定的，
+# 比 net.py 代理绕过的 loopback 定义（127.0.0.0/8、*.localhost）更窄。
+PLAINTEXT_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def plaintext_http_error(name: str, base_url: str) -> str | None:
+    """Return a rejection message for a plaintext http:// base_url whose
+    host is not a loopback host, else None.
+
+    http:// is only allowed for loopback hosts (localhost, 127.0.0.1,
+    ::1), e.g. a local Ollama. Any other http:// URL would send the
+    API key in cleartext, so it is rejected with a hint to use https://.
+    """
+    url = (base_url or "").strip()
+    if url.lower().split("://", 1)[0] != "http":
+        return None
+    try:
+        host = (urlparse(url).hostname or "").rstrip(".").lower()
+    except ValueError:
+        host = ""
+    if host in PLAINTEXT_HTTP_HOSTS:
+        return None
+    return (
+        f"provider {name} 的 base_url 使用了明文 http:// 且不是本机地址（{url}），"
+        "API Key 会随请求明文传输；请改用 https://，"
+        "http:// 只允许本机地址（localhost、127.0.0.1、::1）。"
+    )
+
+
 def get_provider_presets(config: dict | None = None) -> dict:
     """Return built-in presets merged with config["custom_providers"].
 
@@ -189,6 +220,9 @@ def get_provider_presets(config: dict | None = None) -> dict:
             raise ValueError(
                 f"Custom provider {name} base_url must start with http:// or https://"
             )
+        err = plaintext_http_error(name, base_url)
+        if err is not None:
+            raise ValueError(err)
         merged = {
             "base_url": base_url,
             "default_model": default_model,
@@ -280,6 +314,9 @@ def resolve_provider(
         raise ValueError(
             f"Provider {name} base_url must start with http:// or https://"
         )
+    err = plaintext_http_error(name, base_url)
+    if err is not None:
+        raise ValueError(err)
 
     resolved_model = model
     if resolved_model is None:

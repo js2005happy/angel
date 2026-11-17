@@ -1,5 +1,13 @@
 # Angel 变更记录
 
+## 未发布（自定义 provider 明文 http 防护）
+
+- 自定义 provider 的 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`，比如本机 Ollama）；`http://` 配外网地址时直接拒绝，报错写清“API Key 会随请求明文传输，请改用 https://”。外网地址必须用 `https://`。
+- 校验做两道：① `angel/config.py` 的 `plaintext_http_error`，自定义 provider 解析（`custom_providers`）与环境变量方式（`ANGEL_BASE_URL`）都在解析时校验，`resolve_provider` 同样校验（覆盖全部 13 个内置预设）；② `angel/providers.py` 的 `Provider.chat()` / `list_models()` 发请求前再校验一次，防止绕过配置解析直接构造 provider 时仍把 Key 发往明文外网。两处报错文本一致；发请求前的拒绝是 `ProviderError(kind="config")`，不触发兜底切换、不静默降级。
+- 内置 13 个预设自查全部合规：Ollama 的 `http://localhost:11434` 是本机、放行；其余 12 个均为 `https://`，无需改动。
+- 不影响已有行为：https 自定义与本机 http 正常使用；`--no-fallback` 与兜底链逻辑不动。
+- 新增 `tests/test_plaintext_http.py`（14 个）：http 外网在解析与发请求前均被拒（且发请求前拒绝时确认没有发出任何请求）、http localhost / 127.0.0.1 / ::1 / 大小写 / 末尾点号放行、https 外网放行、userinfo 障眼法（`http://127.0.0.1@evil.com`）不绕过、两处报错文本一致、配置错误不触发兜底切换、内置预设全部合规。测试总数 442 → 456，全部通过。
+
 ## 未发布（模型兜底接剩余入口）
 
 - `--json` 单次模式接上模型兜底链：与命令行入口同一条链、同一套错误分类（402/429/5xx/超时/网络错误切换，401/403 与配置错误不切换），`--no-fallback` 可关。每次切换在 JSONL 流里发一个 `model_switch` 事件（from/to/error/kind/status）；`run_completed` / `run_incomplete` 增加 `provider` / `model` / `model_switches` 三个字段，如实写清实际答复的模型（`run_started` 仍是起跑的主模型）。失败时的 `run_failed` 错误结构不变。

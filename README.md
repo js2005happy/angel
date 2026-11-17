@@ -240,6 +240,7 @@ Angel 支持任何 OpenAI 兼容接口。配置方式按优先级：命令行参
 ```
 
 - `base_url` 和 `default_model` 必填，且 `base_url` 必须是 http/https；`env_key` 是存 Key 的环境变量名（不填则无需 Key，或用 `ANGEL_API_KEY`）；`models`、`allowed_hosts` 可选；未知字段会被忽略。
+- 明文 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`，比如本机 Ollama），外网地址必须用 `https://`——否则 API Key 会随请求明文发出去。写了外网 `http://` 会在解析配置时直接报错并提示改用 `https://`；即使绕过配置解析直接构造 provider，`chat()` / `list_models()` 发请求前也会再拦一次。环境变量方式的自定义（`ANGEL_BASE_URL`）同样受这条规则约束。
 - 同名自定义会覆盖内置预设（比如自己搭的 DeepSeek 兼容代理可以覆盖 `deepseek`）；写错的自定义（缺 `base_url`/`default_model`、协议不是 http/https）会在解析时直接报错并点名，不会静默失效。
 - 自定义 provider 可以进 fallback 链：`"fallback_providers": ["myllm", "deepseek"]`，或环境变量 `ANGEL_FALLBACK_PROVIDERS="myllm,deepseek"`。
 - 某个 provider 需要 Key 但环境变量没设时，Angel 会直接报“未设置 API Key”并提示配置，不会先发一个无认证的请求再等服务端 401。
@@ -454,7 +455,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 442 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 456 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 

@@ -5,7 +5,7 @@ import sys
 import urllib.error
 import urllib.request
 
-from .config import ProviderConfig, resolve_provider
+from .config import ProviderConfig, plaintext_http_error, resolve_provider
 from .net import build_opener_for
 
 
@@ -179,6 +179,12 @@ class Provider:
         tools: list[dict] | None = None,
         timeout: float = 120.0,
     ) -> dict:
+        # 第二道防线：哪怕绕过配置解析直接构造了 Provider，也绝不能把
+        # Key 用明文 http 发往外网。配置错误不兜底，直接抛出。
+        err = plaintext_http_error(self.name, self.base_url)
+        if err is not None:
+            raise ProviderError(err, kind="config")
+
         payload = {"model": self.model, "messages": messages}
         if tools is not None:
             payload["tools"] = tools
@@ -237,6 +243,11 @@ class Provider:
         server / timeout / network errors are. A response without a
         `data` list, or entries without a string `id`, is a parse error.
         """
+        # 与 chat() 同一道防线：发请求前先拒绝明文 http 外网地址。
+        err = plaintext_http_error(self.name, self.base_url)
+        if err is not None:
+            raise ProviderError(err, kind="config")
+
         request = urllib.request.Request(
             self.base_url + "/models",
             method="GET",
