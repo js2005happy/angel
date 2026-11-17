@@ -78,6 +78,26 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(JournalError):
             journal.finish("a" * 32, "shell", success=True)
 
+    def test_result_filename_is_single_commit_slot(self):
+        journal = ToolJournal("a", root=self.root)
+        call = journal.begin("shell")
+        journal.finish(call, "shell", success=True)
+        self.assertTrue((journal.path / ("result-" + call + ".json")).is_file())
+        with self.assertRaises(JournalError):
+            journal.finish(call, "shell", success=False)
+        self.assertEqual(journal.inspect()["reported_ok"], 1)
+        self.assertEqual(journal.inspect()["reported_errors"], 0)
+
+    def test_stale_finish_cannot_overwrite_existing_result(self):
+        journal = ToolJournal("a", root=self.root)
+        call = journal.begin("shell")
+        # Simulate two workers that have already read the same intent.
+        journal.finish(call, "shell", success=True)
+        with self.assertRaises(JournalError):
+            journal._write("result_error", call, "shell")
+        self.assertEqual(journal.inspect()["event_count"], 2)
+        self.assertFalse(journal.inspect()["journal_ambiguous"])
+
     def test_event_order_not_based_on_random_filenames(self):
         journal = ToolJournal("a", root=self.root)
         call = journal.begin("shell")
