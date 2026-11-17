@@ -389,7 +389,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 247 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 248 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 

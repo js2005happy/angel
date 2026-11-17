@@ -1,5 +1,9 @@
 # Angel 变更记录
 
+## 未发布（网络请求协议限制）
+
+- `net.open_url` 只允许 http/https，`web_fetch` 等不再能通过 `file://`、`ftp://` 读取本地文件；新增 tests/test_net_scheme.py。
+
 ## 未发布（EigenFlux 逐机器人网络权限上限）
 
 - 新增 `angel eigenflux policy show|allow|deny|audit`，为每个主/群聊 Agent 显式记录固定网络行为的本地意向；默认拒绝，allow 需要 `--confirm`，deny 即时本地撤销，带 SHA-256 并发检查与有界审计。

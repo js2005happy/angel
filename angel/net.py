@@ -40,4 +40,7 @@ def build_opener_for(url: str, *handlers: urllib.request.BaseHandler):
 
 def open_url(request: urllib.request.Request, timeout: float, *handlers):
     """Like urllib.request.urlopen, but loopback requests never use a proxy."""
+    scheme = urllib.parse.urlparse(request.full_url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"只允许 http/https 链接，拒绝协议：{scheme or '空'}")
     return build_opener_for(request.full_url, *handlers).open(request, timeout=timeout)
