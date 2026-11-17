@@ -154,6 +154,15 @@ class ToolJournal:
                                 or (entry.st_dev, entry.st_ino) != (info.st_dev, info.st_ino)):
                             raise JournalError("事件文件在打开期间被替换")
                         raw = handle.read(MAX_EVENT_BYTES + 1)
+                        # Detect concurrent chmod or truncation while reading.
+                        after = os.fstat(handle.fileno())
+                        if ((after.st_dev, after.st_ino) != (info.st_dev, info.st_ino)
+                                or not stat.S_ISREG(after.st_mode)
+                                or after.st_nlink != 1
+                                or after.st_size != info.st_size
+                                or (os.name == "posix" and
+                                    stat.S_IMODE(after.st_mode) & 0o077)):
+                            raise JournalError("事件文件在读取期间发生变化")
                     if len(raw) > MAX_EVENT_BYTES:
                         raise JournalError("事件文件过大")
                     item = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
