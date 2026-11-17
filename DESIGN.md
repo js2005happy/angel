@@ -1,5 +1,10 @@
 # Angel 设计文档
 
+## ToolJournal POSIX 读取侧句柄绑定（2026-11-17）
+
+读侧在 POSIX 支持 `os.open` 的 `dir_fd` 时打开日志目录，核对 `fstat` 与先前目录身份，再以 `os.listdir(fd)` 列举、`os.open(filename, dir_fd=fd)` 读取事件，避免逐个事件路径重新解析到另一目录。保持现有 JSON/文件名、普通文件和最大长度检查，读取过程中继续比对路径身份，结束关闭目录句柄。Windows 继续原路径回退。仅静态审阅；目录祖先替换、恶意写入者、跨文件事务与恢复审批仍未解决。
+
+
 ## ToolJournal POSIX 写入句柄加固（2026-11-17）
 
 优先级依据：2026-09-07 Codex #43605 请求额度恢复后安全续跑，2026-10-21 Codex #48392 讨论一次性恢复授权与外部副作用对账（用户反馈，非 Angel 缺陷证明）。当前先完成较低风险的 POSIX 目录句柄写入保护：`os.open(directory, O_DIRECTORY|O_NOFOLLOW)`，`fstat` 与前置目录身份比较，`os.open(filename, O_EXCL, dir_fd=fd)`，`fsync` 事件文件及目录。Windows 保留原路径检查。尚不处理读侧 dirfd、目录祖先竞态、完整事务、网络工具 exactly-once；测试未运行。
