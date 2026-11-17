@@ -256,6 +256,44 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "事件时间戳无效"):
                     journal.inspect()
 
+    def test_event_chmod_during_read_is_rejected(self):
+        if os.name != "posix":
+            self.skipTest("POSIX permission bits required")
+        journal = ToolJournal("chmod_during_read", root=self.root)
+        call = journal.begin("shell")
+        event = journal.path / ("intent-" + call + ".json")
+        original = event.stat().st_mode
+        real_read = os.fdopen
+
+        class ReadWrapper:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                self.stream.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self.stream.__exit__(*args)
+
+            def fileno(self):
+                return self.stream.fileno()
+
+            def read(self, size):
+                content = self.stream.read(size)
+                event.chmod(0o644)
+                return content
+
+        def changed_read(fd, mode):
+            return ReadWrapper(real_read(fd, mode))
+
+        try:
+            with mock.patch("angel.tool_journal.os.fdopen", side_effect=changed_read):
+                with self.assertRaisesRegex(JournalError, "事件文件在读取期间发生变化"):
+                    journal.inspect()
+        finally:
+            event.chmod(original & 0o777)
+
     def test_boolean_version_is_rejected(self):
         journal = ToolJournal("session1", root=self.root)
         call = journal.begin("shell")
