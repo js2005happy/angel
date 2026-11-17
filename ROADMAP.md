@@ -1,3 +1,9 @@
+## 2026-11-18 Windows junction 路径防护与需求调研
+
+- **源码事实**：`_safe_directory` 只检查 `Path.is_symlink()`，Windows NTFS junction 可能不被识别。本轮新增支持时调用 `Path.is_junction()` 的失败关闭检查与模拟测试源码（价值高/难度低/安全风险低/依赖 Python 3.12+ 标准库；已提交待验证）。不添加强制依赖；旧版 Python 保持现状。
+- **外部用户反馈**：[Codex #58213](https://github.com/openai/codex/issues/58213)（2026-10-30 创建）报告 Windows 路径重解析点与授权工作区根不一致；[Codex #60973](https://github.com/openai/codex/issues/60973)（2026-11-13 左右，具体创建日未独立核实）报告 junction 工作目录触发错误配置路径拒绝。2026-11-18 查阅。均为外部个案，不证明 Nyra 存在相同故障。
+- **工程推断排序（价值/难度/安全风险/依赖）**：① Windows 原生 ACL 与稳定目录句柄（高/高/高/Win32 API，未完成）；② 工具副作用独立证据（高/高/高/PR #24、#26）；③ 人工审批续跑（高/高/高/PR #25）；④ 浏览器故障可诊断恢复（中高/中高/高/权限和验证）；⑤ 后台通知（中高/中/中/PR #27）。main 已迁移 `nyra/`，本分支仍为 `angel/`，禁止未经审查直接合并。
+
 ## 2026-11-18 跨工具结果歧义及公开反馈
 
 - **源码事实**：同一 call_id 的 intent/result 工具名不一致时，旧版 `inspect()` 标记 `journal_ambiguous`，但仍将单个 `result_ok` 计为成功。本轮改为 unknown（价值中高/难度低/安全风险低/依赖现有 ToolJournal；已提交、测试未运行）。
