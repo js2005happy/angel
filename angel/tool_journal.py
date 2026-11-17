@@ -149,11 +149,33 @@ class ToolJournal:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            fd = os.open(self.path / filename, flags, 0o600)
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(payload)
-                stream.flush()
-                os.fsync(stream.fileno())
+            # POSIX: bind the file creation to an already-open directory.
+            # A rename of the pathname cannot silently redirect this write.
+            # Windows lacks portable dir_fd support: retain checked path mode.
+            use_dirfd = os.name == "posix" and os.open in os.supports_dir_fd
+            if use_dirfd:
+                dir_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                dir_flags |= getattr(os, "O_NOFOLLOW", 0)
+                directory_fd = os.open(self.path, dir_flags)
+                try:
+                    directory_stat = os.fstat(directory_fd)
+                    if (not stat.S_ISDIR(directory_stat.st_mode)
+                            or (directory_stat.st_dev, directory_stat.st_ino) != identity):
+                        raise JournalError("日志目录句柄与已核验目录不一致")
+                    fd = os.open(filename, flags, 0o600, dir_fd=directory_fd)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(payload)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            else:
+                fd = os.open(self.path / filename, flags, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
             _verify_directory(self.path, identity)
         except OSError as exc:
             raise JournalError("写入事件失败；工具结果必须人工核查") from exc
