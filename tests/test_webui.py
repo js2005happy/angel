@@ -449,5 +449,116 @@ class InfoAndPageTests(WebUITestCase):
         self.assertFalse((self.home / "evidence" / "20260101-000000-0000").exists())
 
 
+class UIv2Tests(WebUITestCase):
+    """UI v2: new sage-green palette, plush mascot, 13 providers / 15 tools."""
+
+    def test_info_includes_providers_tools_skills(self):
+        self.start()
+        status, info = self.get_json("/api/info")
+        self.assertEqual(status, 200)
+        self.assertEqual(info["provider_count"], 13)
+        self.assertEqual(len(info["providers"]), 13)
+        self.assertEqual(
+            {p["name"] for p in info["providers"]},
+            {"deepseek", "xai", "openrouter", "ollama", "openai", "qwen",
+             "kimi", "glm", "gemini", "mistral", "groq", "together", "custom"},
+        )
+        self.assertEqual(info["tool_count"], 15)
+        self.assertEqual(len(info["tools"]), 15)
+        by_name = {t["name"]: t for t in info["tools"]}
+        for name in ("write_file", "edit_file", "apply_patch", "shell",
+                     "http_post", "memory_append", "save_skill", "plan"):
+            self.assertTrue(by_name[name]["needs_approval"], name)
+        for name in ("read_file", "list_dir", "web_fetch", "web_search",
+                     "grep_search", "git_status", "delegate"):
+            self.assertFalse(by_name[name]["needs_approval"], name)
+        self.assertEqual(
+            {s["name"] for s in info["skills"]},
+            {"file-organizer", "verify-research", "web-research"},
+        )
+
+    def test_page_uses_new_palette_and_mascot(self):
+        html_text = webui.PAGE_HTML
+        # New palette tokens (light + dark).
+        for token in ("#F3F5F4", "#5F7D5C", "#6B8CAE", "#E07856", "#1F2420"):
+            self.assertIn(token, html_text, token)
+        # Old ink/gold brand colours are retired: they must not appear as
+        # actual CSS values. They may still be named in the brand view's
+        # "retired" usage rule, which explicitly says not to use them.
+        style = re.search(r"<style>(.*?)</style>", html_text, re.S).group(1)
+        self.assertNotIn("#111A42", style)
+        self.assertNotIn("#EAC45F", style)
+        self.assertIn("已退役", html_text)
+        # Mascot is embedded as a data URI (self-contained, no external image).
+        self.assertIn("data:image/jpeg;base64,", html_text)
+        self.assertNotIn("MASCOT_BUNNY", html_text)
+        # Six views exist in the page.
+        for view in ("view-chat", "view-skills", "view-schedule",
+                     "view-group", "view-brand", "view-settings"):
+            self.assertIn(view, html_text, view)
+
+    def test_schedule_endpoints(self):
+        import angel.scheduler as scheduler_module
+
+        with mock.patch.object(
+            scheduler_module, "SCHEDULE_PATH", self.home / "schedule.json"
+        ):
+            self.start()
+            status, data = self.get_json("/api/schedule")
+            self.assertEqual((status, data["tasks"]), (200, []))
+            status, added = self.get_json("/api/schedule", method="POST", body={
+                "action": "add",
+                "task": {"name": "t1", "prompt": "做点事", "at": "09:00"},
+            })
+            self.assertEqual(status, 201)
+            self.assertEqual(added["task"]["name"], "t1")
+            self.assertTrue(added["task"]["enabled"])
+            status, toggled = self.get_json("/api/schedule", method="POST", body={
+                "action": "toggle", "name": "t1",
+            })
+            self.assertEqual(status, 200)
+            self.assertFalse(toggled["task"]["enabled"])
+            status, removed = self.get_json("/api/schedule", method="POST", body={
+                "action": "remove", "name": "t1",
+            })
+            self.assertEqual((status, removed["ok"]), (200, True))
+            status, data = self.get_json("/api/schedule")
+            self.assertEqual(data["tasks"], [])
+            status, _ = self.get_json("/api/schedule", method="POST", body={
+                "action": "add",
+                "task": {"name": "bad", "prompt": "x"},
+            })
+            self.assertEqual(status, 400)
+            status, _ = self.get_json("/api/schedule", method="POST", body={
+                "action": "remove", "name": "nope",
+            })
+            self.assertEqual(status, 404)
+
+    def test_group_page_reskinned(self):
+        self.start()
+        status, raw, _ = self.request("/groups")
+        self.assertEqual(status, 200)
+        html_text = raw.decode("utf-8")
+        for token in ("#F3F5F4", "#5F7D5C", "#E07856"):
+            self.assertIn(token, html_text, token)
+        self.assertNotIn("#EAC45F", html_text)
+        self.assertNotIn("#0b1128", html_text)
+        self.assertIn("data:image/jpeg;base64,", html_text)
+        self.assertIsNone(re.search(
+            r"""(src|href)\s*=\s*["']?\s*(https?:)?//""", html_text, re.I
+        ))
+
+    def test_group_js_lists_all_providers(self):
+        self.start()
+        status, raw, _ = self.request("/group-ui.js")
+        self.assertEqual(status, 200)
+        js = raw.decode("utf-8")
+        for name in ("deepseek", "xai", "openrouter", "ollama", "openai",
+                     "qwen", "kimi", "glm", "gemini", "mistral", "groq",
+                     "together", "custom"):
+            self.assertIn(f'"{name}"', js, name)
+        self.assertIn("/api/info", js)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -93,6 +93,27 @@
     parent.append(wrapper);
     return field;
   }
+  const providerSelects = [];
+  function fillProviders(names) {
+    for (const select of providerSelects) {
+      const current = select.value;
+      select.replaceChildren();
+      for (const choice of names) {
+        const opt = node("option", choice ? choice : "使用默认模型");
+        opt.value = choice;
+        select.append(opt);
+      }
+      select.value = names.includes(current) ? current : "";
+    }
+  }
+  const FALLBACK_PROVIDERS = ["", "deepseek", "xai", "openrouter", "ollama", "openai", "qwen", "kimi", "glm", "gemini", "mistral", "groq", "together", "custom"];
+  async function refreshProviders() {
+    try {
+      const info = await api("/api/info");
+      const names = ["", ...(info.providers || []).map(p => p.name)];
+      if (names.length > 1) fillProviders(names);
+    } catch (error) { /* keep the fallback list */ }
+  }
   const botFields = el("botFields");
   for (const bot of defaults) {
     const panel = node("div", undefined, "botfield");
@@ -100,16 +121,13 @@
     const role = addField(panel, "input", "职责", bot.role, 200);
     const instructions = addField(panel, "textarea", "独立个性与指令", bot.instructions, 2000);
     const provider = addField(panel, "select", "提供商", "");
-    for (const choice of ["", "deepseek", "xai", "openrouter", "ollama", "openai", "custom"]) {
-      const opt = node("option", choice || "使用默认模型");
-      opt.value = choice;
-      provider.append(opt);
-    }
+    providerSelects.push(provider);
     const model = addField(panel, "input", "模型 ID（可选）", "", 180);
     panel.dataset.id = bot.id;
     panel.botInputs = {role, instructions, provider, model, bot};
     botFields.append(panel);
   }
+  fillProviders(FALLBACK_PROVIDERS);
   el("newRoom").onclick = () => el("newDialog").showModal();
   el("cancelCreate").onclick = () => el("newDialog").close();
   el("createForm").addEventListener("submit", async event => {
@@ -155,5 +173,6 @@
       if (activeId) await openRoom(activeId).catch(() => {});
     } finally { busy = false; el("sendBtn").disabled = false; }
   });
+  refreshProviders();
   loadRooms().catch(error => say(error.message));
 })();

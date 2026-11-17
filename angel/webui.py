@@ -40,6 +40,7 @@ from .groups import GroupStore, GroupError
 from .config import (
     PROVIDERS,
     VALID_MODES,
+    get_provider_presets,
     load_config,
     resolve_fallback_chain,
     resolve_profile,
@@ -47,6 +48,8 @@ from .config import (
     validate_mode,
 )
 from .providers import Provider, build_provider_chain, describe_provider
+from .skills import load_skills
+from .tools import TOOL_SCHEMAS
 from .usage import context_limit
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 from .webui_page import PAGE_HTML
@@ -234,6 +237,13 @@ class UIState:
         out["mcp_tools"] = (
             len(self.mcp_manager.tool_schemas) if self.mcp_manager is not None else 0
         )
+        # For the skills / settings views: full provider presets (13),
+        # the 15 built-in tools with their approval flag, and skills.
+        out["providers"] = list_providers()
+        out["provider_count"] = len(out["providers"])
+        out["tools"] = list_tools()
+        out["tool_count"] = len(out["tools"])
+        out["skills"] = list_skills()
         return out
 
     def set_mode(self, new_mode: str) -> str:
@@ -486,6 +496,64 @@ class UIState:
         return True
 
 
+# Tools that need human approval before they run (they write, execute or
+# send something). The rest are read-only. This mirrors the _check_approval
+# call sites in tools.py; plan writes a plan file, so it needs approval.
+NEEDS_APPROVAL_TOOLS = frozenset({
+    "write_file", "edit_file", "apply_patch", "shell",
+    "http_post", "memory_append", "save_skill", "plan",
+})
+
+
+def list_tools() -> list[dict]:
+    """The 15 built-in tools with their approval flag (no poppy tools)."""
+    out = []
+    for schema in TOOL_SCHEMAS:
+        fn = schema.get("function") or {}
+        name = fn.get("name") or schema.get("name")
+        if not name or name.startswith("poppy_"):
+            continue
+        out.append({
+            "name": name,
+            "description": fn.get("description") or "",
+            "needs_approval": name in NEEDS_APPROVAL_TOOLS,
+        })
+    return out
+
+
+def list_skills() -> list[dict]:
+    """Built-in + user skills (name + description only)."""
+    dirs = [
+        Path(__file__).parent.parent / "skills",
+        config_module.ANGEL_HOME / "skills",
+    ]
+    try:
+        return [
+            {"name": s.name, "description": s.description}
+            for s in load_skills(dirs)
+        ]
+    except Exception:
+        return []
+
+
+def list_providers() -> list[dict]:
+    """All provider presets (13, custom included) with their defaults."""
+    try:
+        presets = get_provider_presets(load_config())
+    except Exception:
+        presets = PROVIDERS
+    out = []
+    for name, preset in presets.items():
+        env_key = preset.get("env_key")
+        out.append({
+            "name": name,
+            "default_model": preset.get("default_model"),
+            "env_key": env_key,
+            "configured": bool(env_key and os.environ.get(env_key)),
+        })
+    return out
+
+
 def list_evidence(session_id: str) -> list[dict]:
     """Read evidence headers without creating anything on disk."""
     base = config_module.ANGEL_HOME / "evidence" / session_id
@@ -658,6 +726,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.NOT_FOUND, str(exc))
         if path == "/api/info":
             return self._json(HTTPStatus.OK, self.state.info())
+        if path == "/api/schedule":
+            try:
+                from . import scheduler as scheduler_module
+                data = scheduler_module.load_schedule()
+                tasks = scheduler_module.list_tasks(data)
+            except Exception as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, f"定时任务读取失败：{exc}")
+            return self._json(HTTPStatus.OK, {"tasks": tasks})
         if path == "/api/memory/scopes":
             return self._json(
                 HTTPStatus.OK, {"scopes": self.state.memory_scopes()}
@@ -733,6 +809,35 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 return self._error(HTTPStatus.CONFLICT, str(exc))
             return self._json(HTTPStatus.OK, {"mode": mode})
+        if path == "/api/schedule":
+            try:
+                from . import scheduler as scheduler_module
+                data = scheduler_module.load_schedule()
+                action = str(body.get("action") or "")
+                if action == "add":
+                    task = body.get("task")
+                    if not isinstance(task, dict):
+                        return self._error(HTTPStatus.BAD_REQUEST, "任务内容无效")
+                    scheduler_module.add_task(data, task)
+                    scheduler_module.save_schedule(data)
+                    return self._json(HTTPStatus.CREATED, {"task": data["tasks"][-1]})
+                if action == "toggle":
+                    name = str(body.get("name") or "")
+                    for task in data.get("tasks", []):
+                        if task.get("name") == name:
+                            task["enabled"] = not task.get("enabled", True)
+                            scheduler_module.save_schedule(data)
+                            return self._json(HTTPStatus.OK, {"task": task})
+                    return self._error(HTTPStatus.NOT_FOUND, "任务不存在")
+                if action == "remove":
+                    name = str(body.get("name") or "")
+                    if scheduler_module.remove_task(data, name):
+                        scheduler_module.save_schedule(data)
+                        return self._json(HTTPStatus.OK, {"ok": True})
+                    return self._error(HTTPStatus.NOT_FOUND, "任务不存在")
+                return self._error(HTTPStatus.BAD_REQUEST, "未知的操作")
+            except Exception as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, f"定时任务操作失败：{exc}")
         match = re.fullmatch(r"/api/sessions/([^/]+)/messages", path)
         if match:
             sid = urllib.parse.unquote(match.group(1))
@@ -873,7 +978,7 @@ CSP = (
 GROUP_CSP = CSP.replace("script-src 'unsafe-inline'", "script-src 'self'")
 
 FORBIDDEN_PAGE = """<!doctype html><meta charset="utf-8"><title>Angel</title>
-<body style="font:16px system-ui;padding:40px;color:#111A42;background:#FAF8F4">
+<body style="font:16px system-ui;padding:40px;color:#2A2D34;background:#F3F5F4">
 <h1>需要访问 token</h1><p>请使用启动 <code>python3 -m angel ui</code> 时终端里打印的完整链接（含 <code>?token=</code>）。</p>
 <p>Open the full link printed in the terminal (it contains <code>?token=</code>).</p></body>"""
 
