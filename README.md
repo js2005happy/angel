@@ -328,6 +328,29 @@ python3 -m angel --mode full "整理下载目录"
 
 交互模式启动时会显示横幅（版本、模型、审批模式、会话 id），提示符是 `angel[auto] ›`（方括号里是当前审批模式）；每次工具调用按 `┌ 工具名 参数` / `└ ✓/✗ 结果摘要` 分组显示。颜色只在终端（TTY）里启用，设置 `NO_COLOR=1`、`TERM=dumb` 或输出被重定向时自动退回纯文本；一次性任务（`python3 -m angel "任务"`）的输出保持不变。
 
+## 自定义命令与 /init
+
+把常用提示词存成命令文件，随时用斜杠调用，不用每次重打：
+
+```bash
+# 用户级：~/.angel/commands/review.md
+# 项目级：<工作目录>/.angel/commands/review.md（同名时项目级优先）
+```
+
+文件是 Markdown，可带 frontmatter（`description:`、`argument-hint:`），正文就是发给模型的提示词模板；`$ARGUMENTS` 替换成命令后输入的全部文字，`$1`、`$2`……替换成第 1、2……个词；正文里没有占位符时，参数自动追加到正文末尾。示例 `review.md`：
+
+```markdown
+---
+description: 审查代码并列出问题
+argument-hint: <文件>
+---
+审查以下代码并列出问题：$ARGUMENTS
+```
+
+REPL 里直接用：`/review src/main.py`。`/commands` 列出当前可用的自定义命令（含来源：项目级/用户级）。内置命令优先于同名自定义命令；命令文件只是提示词，不能自己跑代码、读文件或改设置；符号链接的命令文件会被跳过。
+
+`/init` 在当前工作目录生成一份 `AGENTS.md` 起始模板（项目简介、常用命令、约定、注意事项四节，带填写提示）。`AGENTS.md` 已存在时不覆盖。写入走正常的 `write_file` 工具：要过审批、工作目录边界和检查点，readonly 模式下拒绝。
+
 ## 网页界面
 
 ```bash
@@ -363,7 +386,7 @@ Angel 会按任务关键词自动加载最相关的技能。你自己的技能�
 
 ## 工具
 
-Angel 有 14 个工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`shell`（带危险命令黑名单）、`web_fetch`、`web_search`、`memory_append`、`save_skill`、`delegate`（子 agent）、`plan`（先写计划再执行）、`grep_search`、`git_status`、`http_post`。
+Angel 有 15 个工具：`read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`shell`（带危险命令黑名单）、`web_fetch`、`web_search`、`memory_append`、`save_skill`、`delegate`（子 agent）、`plan`（先写计划再执行）、`grep_search`、`git_status`、`http_post`。
 
 - **plan**：多步骤任务先写计划文件（默认 `plan.md`）再执行。
 - **delegate**：把子任务交给一个子 agent（轮数受限），拿回摘要再继续。
@@ -389,7 +412,7 @@ python3 -m angel --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的�
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 248 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 376 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -404,7 +427,8 @@ angel/
 │   ├── cli.py         参数解析 + 交互 REPL + schedule 子命令
 │   ├── agent.py       agent 主循环（plan → 工具调用 → 汇报）
 │   ├── providers.py   OpenAI 兼容客户端（urllib）
-│   ├── tools.py       14 个工具 + 审批 + shell 黑名单
+│   ├── commands.py    自定义斜杠命令 + /init 的 AGENTS.md 模板
+│   ├── tools.py       15 个工具 + 审批 + shell 黑名单
 │   ├── skills.py      技能加载 / 匹配 / 保存
 │   ├── memory.py      长期记忆 + AGENTS.md + 会话存储
 │   ├── config.py      配置 + provider 注册表 + provider 档案 + 沙盒设置

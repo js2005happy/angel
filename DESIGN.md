@@ -15,7 +15,8 @@ cli.py ── 参数解析、审批模式、会话恢复、REPL 命令、schedul
  ▼
 agent.py ── 主循环：组装系统提示词 → 调模型 → 执行工具调用 → 直到回答
  │   ├── providers.py ── OpenAI 兼容客户端（urllib，无依赖）
- │   ├── tools.py ────── 14 个工具 + 审批 + shell 危险命令黑名单
+ │   ├── tools.py ────── 15 个工具 + 审批 + shell 危险命令黑名单
+ │   ├── commands.py ─── 自定义斜杠命令 + /init 的 AGENTS.md 模板
  │   ├── skills.py ──── 技能加载 / 关键词匹配 / 保存
  │   ├── memory.py ──── 长期记忆 + AGENTS.md + 会话 jsonl 存储
  │   ├── config.py ──── 配置 + provider 注册表 + provider 档案
@@ -73,6 +74,13 @@ Angel 的代码全部是原创实现，没有复制任何项目的源码。下�
 - 闭源部分：Codex 的模型与云服务、Grok Bot 官方客户端都是闭源的，Angel 不依赖它们。
 - 厂商锁定：不绑定任何一家模型；Claude Code 的专有配置方式也不采纳。
 - **浏览器工具（BrowserNavigate / BrowserClick / BrowserScreenshot 等）**：IllusionAgent 0.5.0 的核心是内置真浏览器，Angel 在 v2 里**不做假的**：没有真实浏览器驱动就无法实现导航、点击、截图，`web_fetch` 的纯文本抓取不能冒充浏览器。已记入路线图，待有浏览器驱动（如 Playwright/Chromium）再做。
+
+## 自定义命令与 /init
+
+- `angel/commands.py` 与技能文件同一思路：命令是 `*.md` 文件，文件名即命令名（只允许字母、数字、`-`、`_`），正文是发给模型的提示词模板，可带 `description:` / `argument-hint:` frontmatter。加载顺序是项目级 `<workdir>/.angel/commands/` 优先于用户级 `~/.angel/commands/`，同名只保留第一个；格式错误、空正文、非法文件名、符号链接文件会被跳过并在 stderr 留言，不中断启动。
+- REPL 里 `/<名字> <参数>` 展开成提示词再进同一 `Agent.run`：`$ARGUMENTS` 换成全部参数，`$1`..`$9` 换成逐词参数，缺失的位置参数变空串；正文没有任何占位符时参数追加到正文末尾。`/commands` 列出当前可用命令及来源；内置命令（`/help`、`/mode`、`/init` 等）优先于同名自定义命令；不认识的 `/xxx` 仍按原来当作普通提问发给模型。
+- 命令文件只是提示词：它本身不能执行代码、读写文件或改配置，能做什么取决于模型随后调什么工具、过什么审批。`/init` 则是确定性动作：检查 `AGENTS.md` 是否存在（走 `read_file`，本地与 E2B 后端都适用），不存在才经 `write_file` 写入起始模板，因此要过审批、工作目录边界与检查点，readonly 下拒绝，已存在时绝不覆盖。
+- 已知限制：命令每次调用都重新读目录（文件改动即时生效，但每次调用有少量目录 IO）；`/init` 模板是通用骨架，不含项目自动探测，内容仍需人工按实改写。
 
 ## 两阶段只读计划模式
 

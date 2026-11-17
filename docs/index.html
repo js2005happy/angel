@@ -98,7 +98,7 @@
     <div class="grid cards">
       <article class="card">
         <div class="icon" aria-hidden="true">⌘</div>
-        <h3><span data-l="zh">14 个工具</span><span data-l="en">14 tools</span></h3>
+        <h3><span data-l="zh">15 个工具</span><span data-l="en">15 tools</span></h3>
         <p><span data-l="zh">读写改列文件、带危险命令黑名单的 shell、web_fetch / web_search、记忆、技能保存、delegate 子 agent、plan、grep_search、git_status、http_post。</span><span data-l="en">Read, write, edit and list files; shell with a dangerous-command denylist; web_fetch / web_search; memory; save_skill; delegate to a sub-agent; plan; grep_search; git_status; http_post.</span></p>
       </article>
       <article class="card">
@@ -135,6 +135,11 @@
         <div class="icon" aria-hidden="true">✦</div>
         <h3><span data-l="zh">技能（Skills）</span><span data-l="en">Skills</span></h3>
         <p><span data-l="zh">技能是带 frontmatter 的 Markdown 文件，按任务关键词自动加载；做法值得复用时，Angel 会用 <code>save_skill</code> 存成新技能。</span><span data-l="en">Skills are Markdown files with frontmatter, loaded by task keywords. When an approach is worth reusing, Angel saves it with <code>save_skill</code>.</span></p>
+      </article>
+      <article class="card">
+        <div class="icon" aria-hidden="true">⌘</div>
+        <h3><span data-l="zh">自定义命令与 /init</span><span data-l="en">Custom commands &amp; /init</span></h3>
+        <p><span data-l="zh">常用提示词存成 <code>commands/*.md</code>，<code>/review 文件</code> 一键调用，支持 <code>$ARGUMENTS</code> 与 <code>$1</code> 占位符；<code>/init</code> 生成 <code>AGENTS.md</code> 起始模板，已存在时不覆盖。</span><span data-l="en">Save frequent prompts as <code>commands/*.md</code> and call them like <code>/review file</code>, with <code>$ARGUMENTS</code> and <code>$1</code> placeholders; <code>/init</code> scaffolds an <code>AGENTS.md</code> starter and never overwrites an existing one.</span></p>
       </article>
       <article class="card">
         <div class="icon" aria-hidden="true">▣</div>
@@ -207,7 +212,7 @@
 ├── cli.py         <span class="d">参数 · REPL · schedule</span>
 ├── agent.py       <span class="d">主循环：plan → 工具 → 汇报</span>
 ├── providers.py   <span class="d">OpenAI 兼容客户端（urllib）</span>
-├── tools.py       <span class="d">14 个工具 + 审批 + 黑名单</span>
+├── tools.py       <span class="d">15 个工具 + 审批 + 黑名单</span>
 ├── skills.py      <span class="d">技能加载 / 匹配 / 保存</span>
 ├── memory.py      <span class="d">记忆 · AGENTS.md · 会话</span>
 ├── config.py      <span class="d">配置 · provider · 档案</span>

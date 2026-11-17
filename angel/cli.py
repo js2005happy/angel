@@ -19,6 +19,14 @@ from .config import (
 from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .providers import Provider, ProviderError, describe_provider
 from .agent import Agent, AgentError, build_mcp_manager
+from .commands import (
+    AGENTS_TEMPLATE,
+    command_dirs,
+    find_command,
+    load_commands,
+    render_command,
+)
+from .tools import execute_tool
 from .compact import compact_session_file
 from .scheduler import (
     SCHEDULE_PATH,
@@ -48,6 +56,8 @@ REPL_COMMANDS = (
     ("/diff", "查看最近一轮本地文件检查点的实际修改差异"),
     ("/undo", "撤销当前会话最近一轮内置本地文件修改"),
     ("/rewind N", "撤销最近 N 轮文件检查点（最多 10），若有外部改动则拒绝"),
+    ("/init", "在当前工作目录生成 AGENTS.md 起始模板（已存在则不覆盖）"),
+    ("/commands", "列出自定义命令（项目 .angel/commands 与 ~/.angel/commands）"),
     ("/clear", "清空当前对话历史"),
     ("/new", "开始一个新会话"),
     ("/exit 或 /quit", "退出"),
@@ -847,6 +857,44 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"已撤销 {result['turns']} 轮，恢复 {result['files']} 个本地文件。")
                 print("注意：Shell、MCP、E2B、记忆/技能等副作用不在撤销范围内。")
                 continue
+            elif line == "/init":
+                existing = execute_tool(
+                    "read_file", {"path": "AGENTS.md"}, agent.ctx
+                )
+                if not existing.startswith("错误："):
+                    print("AGENTS.md 已存在，不覆盖；请直接编辑它。")
+                else:
+                    print(
+                        execute_tool(
+                            "write_file",
+                            {"path": "AGENTS.md", "content": AGENTS_TEMPLATE},
+                            agent.ctx,
+                        )
+                    )
+                continue
+            elif line == "/commands":
+                project_dir = workdir / ".angel" / "commands"
+                commands = load_commands(
+                    command_dirs(workdir), project_dir=project_dir
+                )
+                if not commands:
+                    print(
+                        "暂无自定义命令：把 Markdown 文件放进 "
+                        "~/.angel/commands/ 或 <工作目录>/.angel/commands/，"
+                        "文件名即命令名（如 review.md → /review）。"
+                    )
+                else:
+                    for command in commands:
+                        hint = (
+                            f" {command.argument_hint}"
+                            if command.argument_hint
+                            else ""
+                        )
+                        print(
+                            f"- /{command.name}{hint}：{command.description or '（无说明）'}"
+                            f"（{command.source}）"
+                        )
+                continue
             elif line == "/clear":
                 agent.messages = []
                 agent.ctx.approved_file_tools.clear()
@@ -868,8 +916,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"已开始新会话：{agent.session_id}")
                 continue
             else:
+                prompt = line
+                if line.startswith("/"):
+                    name, _, args = line[1:].partition(" ")
+                    project_dir = workdir / ".angel" / "commands"
+                    command = find_command(
+                        load_commands(
+                            command_dirs(workdir), project_dir=project_dir
+                        ),
+                        name,
+                    )
+                    if command is not None:
+                        # A known custom command expands to its prompt
+                        # template; unknown /words still reach the agent
+                        # unchanged, exactly as before.
+                        prompt = render_command(command, args.strip())
                 try:
-                    result = agent.run(line)
+                    result = agent.run(prompt)
                     print(result)
                 except AgentError as exc:
                     print(style(f"错误：{exc}", "red", enabled=color))
