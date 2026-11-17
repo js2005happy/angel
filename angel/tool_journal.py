@@ -51,6 +51,10 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     info = path.stat()
     if not stat.S_ISDIR(info.st_mode):
         raise JournalError("日志目录不是文件夹")
+    # Existing sessions are not chmod-ed implicitly. Reject permissive
+    # directories instead of silently exposing tool metadata on POSIX.
+    if os.name == "posix" and stat.S_IMODE(info.st_mode) & 0o077:
+        raise JournalError("日志目录权限过宽；需要所有者手动检查并收紧权限")
     return info.st_dev, info.st_ino
 
 
