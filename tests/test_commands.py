@@ -212,7 +212,7 @@ class CommandDirsTest(unittest.TestCase):
             workdir = Path(name)
             dirs = command_dirs(workdir)
             self.assertEqual(dirs[0], workdir / ".angel" / "commands")
-            self.assertTrue(str(dirs[1]).endswith(".angel/commands"))
+            self.assertEqual(dirs[1].parts[-2:], (".angel", "commands"))
 
 
 if __name__ == "__main__":
