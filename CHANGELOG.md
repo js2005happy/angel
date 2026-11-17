@@ -1,5 +1,12 @@
 # Nyra 变更记录
 
+## 未发布（官网重做 + 安装面板）
+
+- 官网 `docs/` 重做：新增常见问题、服务条款、隐私政策、可接受使用政策四个页面；首页加入可翻转的功能卡片、滚动显现、交互式审批示意和终端示意，遵守系统的减少动态效果设置，关闭 JavaScript 时内容仍完整可见。
+- 新增安装面板：点击“安装”从右侧滑出，按 macOS / Linux / Windows（PowerShell）给出五步命令，每条命令可一键复制，带进度指示；无 JavaScript 时跳到首页的安装区块。
+- 首页、FAQ 与安装面板支持 10 种语言；法律页提供中文与英文。
+- 修复 Windows CI：进程组超时测试只在支持 `os.killpg` 的系统上运行。
+
 ## 未发布（worker 协议 + Python worker 入口，混合 Go 迁移第 1 批）
 
 - 新增 `nyra/worker_protocol.py`：协议 v1（`PROTOCOL_VERSION = 1`），子进程 + stdio JSONL；请求 `run` / `approval_decision` / `stop` / `ping`，事件 `run_started` / `run_completed` / `run_incomplete` / `run_failed` / `tool_start` / `tool_result` / `assistant` / `final` / `usage` / `approval_request` / `approval_result` / `model_switch` / `turn_limit` / `pong` / `error`；`APPROVAL_TIMEOUT = 600.0`（与 webui 一致）；`new_id`、`encode_line`、`decode_line`、`ensure_request_id`、`validate_run_request`、`validate_approval_decision`。
