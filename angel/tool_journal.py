@@ -135,7 +135,14 @@ class ToolJournal:
                         fd = os.open(name, flags, dir_fd=directory_fd)
                     else:
                         fd = os.open(path, flags)
-                    with os.fdopen(fd, "rb") as handle:
+                    try:
+                        handle_context = os.fdopen(fd, "rb")
+                    except BaseException:
+                        # fdopen can fail after os.open succeeds; do not leak
+                        # a descriptor for a sensitive event file.
+                        os.close(fd)
+                        raise
+                    with handle_context as handle:
                         info = os.fstat(handle.fileno())
                         if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES
                                 or info.st_nlink != 1):
