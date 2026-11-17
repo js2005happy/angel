@@ -32,8 +32,12 @@ class JournalError(ValueError):
 def _safe_directory(path: Path) -> None:
     current = path
     while current != current.parent:
-        if current.is_symlink():
-            raise JournalError("日志目录不能是符号链接")
+        # Windows NTFS junctions are reparse points but not necessarily
+        # reported by is_symlink(). Reject them on runtimes exposing the
+        # standard-library Path.is_junction() API (Python 3.12+).
+        is_junction = getattr(current, "is_junction", None)
+        if current.is_symlink() or (is_junction is not None and is_junction()):
+            raise JournalError("日志目录不能是符号链接或目录联接")
         current = current.parent
     if path.exists() and not path.is_dir():
         raise JournalError("日志目录不是文件夹")
