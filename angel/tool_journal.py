@@ -184,6 +184,8 @@ class ToolJournal:
                             or (final_entry.st_dev, final_entry.st_ino)
                             != (info.st_dev, info.st_ino)):
                         raise JournalError("事件文件在读取期间被替换")
+                    if len(raw) != info.st_size:
+                        raise JournalError("事件文件读取字节数与文件大小不一致")
                     if len(raw) > MAX_EVENT_BYTES:
                         raise JournalError("事件文件过大")
                     item = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys)
