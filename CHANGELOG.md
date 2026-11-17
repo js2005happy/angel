@@ -73,6 +73,8 @@
 ## 未发布（后台任务队列）
 
 - 新增 `nyra task add|list|show|cancel|worker|approve`：任务入队后由 worker 顺序执行，文件锁保证同时只有一个 worker。遇到需要审批的操作立即停下并标为 `awaiting_approval`，绝不自动放行；前台 `task approve` 走续跑逻辑并重新审批。完成通知写入 `~/.nyra/inbox.jsonl`，REPL 启动和 `/status` 显示未读。定时任务到期改为入队，不再当场执行。
+- 定时任务（`schedule add|run|daemon` 与调度路径）与队列一样拒绝 `full` 模式，只允许 `readonly` 或 `auto`；`schedule add` 默认改为 `auto`。已有 `full` 任务在加载或到期入队时会被拒绝，不会在无人值守时自动放行。
+- worker 不会自动信任工作目录 `AGENTS.md` 里的 `verify:`。未加 `--trust-agents-verify` 或显式 `--verify` 时不冻结该命令，任务结束后为 `completed_unverified` 并写明原因。
 
 ## 未发布（结果自证）
 

@@ -12,7 +12,7 @@ from nyra import memory
 from nyra.runs import RunStore, ApprovalRequired
 from nyra.tasks import (
     add_task, approve_task, cancel_task, list_tasks, show_task,
-    worker_once, WorkerLock, append_inbox, load_inbox, format_unread_inbox,
+    worker_once, run_one, WorkerLock, append_inbox, load_inbox, format_unread_inbox,
     mark_inbox_read, handle_task, TaskError,
 )
 
@@ -158,12 +158,48 @@ class TaskQueueTests(unittest.TestCase):
 
     def test_schedule_enqueues(self):
         from nyra.cli import _run_scheduled_task
-        text = _run_scheduled_task({"prompt": "定时清理", "mode": "full"}, self.workdir)
+        from nyra.agent import AgentError
+        text = _run_scheduled_task({"prompt": "定时清理", "mode": "auto"}, self.workdir)
         self.assertTrue(text.startswith("已入队 "))
         state = list_tasks(self.store)[0]
         self.assertEqual(state["status"], "queued")
         self.assertEqual(state["mode"], "auto")
         self.assertEqual(state["task"], "定时清理")
+        with self.assertRaises(AgentError) as raised:
+            _run_scheduled_task({"prompt": "不该入队", "mode": "full"}, self.workdir)
+        self.assertIn("full", str(raised.exception))
+        self.assertEqual(len(list_tasks(self.store)), 1)
+
+    def test_worker_does_not_auto_trust_agents_verify(self):
+        (self.workdir / "AGENTS.md").write_text(
+            "verify: python3 -c 'import sys; sys.exit(0)'\n", encoding="utf-8",
+        )
+
+        class Provider:
+            def chat(self, messages, tools):
+                return {"choices": [{"message": {"content": "你好"}}]}
+
+        skipped = add_task("只打招呼", workdir=self.workdir, store=self.store)
+        self.assertIsNone(skipped["verify_cmd"])
+        self.assertIn("AGENTS.md", (skipped.get("verify_result") or {}).get("skip_reason", ""))
+        processed = worker_once(store=self.store, provider=Provider(), config={})
+        self.assertEqual(processed[0][0]["status"], "completed_unverified")
+        self.assertIsNone(processed[0][0]["verify_cmd"])
+        self.assertIn("AGENTS.md", processed[0][1])
+
+        trusted = add_task(
+            "再打一次招呼", workdir=self.workdir, store=self.store, trust_agents_verify=True,
+        )
+        self.assertEqual(trusted["verify_cmd"], "python3 -c 'import sys; sys.exit(0)'")
+        # worker 默认遇 shell 审批会停下；这里显式放行，确认已冻结的命令会被执行。
+        claimed = self.store.claim(trusted["run_id"])
+        final, output = run_one(
+            claimed, store=self.store, provider=Provider(), config={},
+            approve_fn=lambda *args, **kwargs: True,
+        )
+        self.assertEqual(final["status"], "verified")
+        self.assertEqual(final["verify_cmd"], "python3 -c 'import sys; sys.exit(0)'")
+        self.assertIn("已验证", output)
 
     def test_approve_uses_resume_and_asks_again(self):
         add_task("请写文件", workdir=self.workdir, store=self.store)

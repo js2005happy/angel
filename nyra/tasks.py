@@ -20,7 +20,8 @@ from .runs import (
     _redact,
     format_run_report,
     prepare_resume,
-    resolve_verify_command,
+    accept_verify_command,
+    resolve_verify_origin,
     resolve_verify_settings,
 )
 
@@ -104,7 +105,8 @@ def _store(base_dir=None) -> RunStore:
     return RunStore(base_dir if base_dir is not None else NYRA_HOME / "runs")
 
 
-def add_task(task, *, workdir=".", mode="auto", verify_cmd=None, max_turns=20, store=None, config=None):
+def add_task(task, *, workdir=".", mode="auto", verify_cmd=None, max_turns=20,
+            store=None, config=None, trust_agents_verify=False):
     """由 CLI / 调度器入队。模型工具不得调用本函数。"""
     if not isinstance(task, str) or not task.strip():
         raise TaskError("任务内容不能为空")
@@ -116,10 +118,17 @@ def add_task(task, *, workdir=".", mode="auto", verify_cmd=None, max_turns=20, s
     store = store or _store()
     session_id = memory.new_session_id()
     memory.save_session(session_id, [{"role": "user", "content": task}])
-    frozen = resolve_verify_command(verify_cmd, config, root)
-    return store.create(
+    command, source = resolve_verify_origin(verify_cmd, config, root)
+    # worker 非交互，不得自动信任 AGENTS.md 里的验证命令。
+    frozen, skip_reason = accept_verify_command(
+        command, source, trust_agents=trust_agents_verify, interactive=False,
+    )
+    state = store.create(
         task, session_id, root, mode, max_turns, status="queued", verify_cmd=frozen,
     )
+    if skip_reason:
+        state = store.update(state["run_id"], verify_result={"skip_reason": skip_reason})
+    return state
 
 
 def cancel_task(run_id, store=None):
@@ -342,6 +351,11 @@ def handle_task(argv, workdir: Path) -> int:
         parser.add_argument("--verify", default=None)
         parser.add_argument("--mode", choices=("readonly", "auto"), default="auto")
         parser.add_argument("--max-turns", type=int, default=None)
+        parser.add_argument(
+            "--trust-agents-verify",
+            action="store_true",
+            help="信任并冻结工作目录 AGENTS.md 中的 verify: 命令；不加则跳过该验证",
+        )
         args = parser.parse_args(argv[1:])
         config = load_config()
         max_turns = args.max_turns if args.max_turns is not None else config.get("max_turns") or 20
@@ -349,10 +363,13 @@ def handle_task(argv, workdir: Path) -> int:
             state = add_task(
                 args.task, workdir=args.workdir, mode=args.mode,
                 verify_cmd=args.verify, max_turns=max_turns, store=store, config=config,
+                trust_agents_verify=args.trust_agents_verify,
             )
         except TaskError as exc:
             print(f"错误：{exc}", file=sys.stderr)
             return 2
+        if (state.get("verify_result") or {}).get("skip_reason"):
+            print(f"注意：{state['verify_result']['skip_reason']}", file=sys.stderr)
         print(state["run_id"])
         return 0
 

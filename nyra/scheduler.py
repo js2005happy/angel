@@ -58,9 +58,9 @@ def _validate_task(raw: dict) -> dict:
         ) is None:
             raise ScheduleError(f"任务 {name} 的 at 必须是 HH:MM 格式")
 
-    mode = raw.get("mode", "full")
-    if mode not in ("readonly", "auto", "full"):
-        raise ScheduleError(f"任务 {name} 的 mode 无效")
+    mode = raw.get("mode", "auto")
+    if mode not in ("readonly", "auto"):
+        raise ScheduleError(f"任务 {name} 的 mode 无效（定时任务与队列一样不允许 full）")
 
     enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):

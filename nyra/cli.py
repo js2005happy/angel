@@ -118,12 +118,14 @@ def repl_prompt(mode: str, color: bool = False) -> str:
 
 
 def _make_task_agent(task: dict, workdir: Path) -> Agent:
-    """为一条定时任务创建一个 Agent（定时任务默认 full 模式）。"""
+    """为一条定时任务创建一个 Agent。与任务队列一样拒绝 full 模式。"""
     config = load_config()
     profile = resolve_profile(task.get("profile"), config)
     provider_name = task.get("provider") or profile["provider"]
     model = task.get("model") or profile["model"]
-    mode = task.get("mode") or profile["mode"] or "full"
+    mode = task.get("mode") or profile["mode"] or "auto"
+    if mode not in ("readonly", "auto"):
+        raise AgentError("定时任务只允许 --mode readonly 或 auto，不能使用 full")
     provider = Provider(resolve_provider(provider_name, model))
     if not provider.has_credentials():
         raise AgentError(f"定时任务 {task['name']} 没有可用的模型凭证")
@@ -141,7 +143,7 @@ def _run_scheduled_task(task: dict, workdir: Path) -> str:
     from .tasks import add_task, TaskError
     mode = task.get("mode") or "auto"
     if mode not in ("readonly", "auto"):
-        mode = "auto"
+        raise AgentError("定时任务只允许 --mode readonly 或 auto，不能使用 full")
     root = Path(task.get("workdir") or workdir)
     try:
         state = add_task(
@@ -159,7 +161,7 @@ def handle_schedule(argv: list[str], workdir: Path) -> int:
         print("用法：nyra schedule <list|add|remove|run|daemon> [选项]")
         print("  list                                  列出定时任务")
         print("  add --name 名称 --prompt 任务 [--every 秒 | --at HH:MM]")
-        print("      [--provider 名称] [--profile 名称] [--model 模型] [--mode 模式]")
+        print("      [--provider 名称] [--profile 名称] [--model 模型] [--mode readonly|auto]")
         print("  remove --name 名称                     删除定时任务")
         print("  run                                   立即执行所有到期任务")
         print("  daemon [--interval 秒]                 守护进程：每隔 interval 秒检查一次")
@@ -201,7 +203,8 @@ def handle_schedule(argv: list[str], workdir: Path) -> int:
         parser.add_argument("--provider", default=None)
         parser.add_argument("--profile", default=None)
         parser.add_argument("--model", default=None)
-        parser.add_argument("--mode", default="full")
+        parser.add_argument("--mode", choices=("readonly", "auto"), default="auto",
+                            help="审批模式：只允许 readonly 或 auto，与任务队列相同，拒绝 full")
         parser.add_argument("--disable", action="store_true")
         args = parser.parse_args(argv[1:])
         task = {
