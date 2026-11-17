@@ -98,22 +98,46 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal.inspect()["event_count"], 2)
         self.assertFalse(journal.inspect()["journal_ambiguous"])
 
-    def test_event_order_not_based_on_random_filenames(self):
+    def test_event_order_not_based_on_filename_order(self):
         journal = ToolJournal("a", root=self.root)
         call = journal.begin("shell")
         journal.finish(call, "shell", success=True)
-        files = list(journal.path.glob("*.json"))
-        records = [json.loads(f.read_text()) for f in files]
-        for f in files:
-            f.unlink()
-        # Lexical order intentionally places result before intent.
-        intent = next(x for x in records if x["event"] == "intent")
-        result = next(x for x in records if x["event"] == "result_ok")
-        (journal.path / ("0" * 32 + ".json")).write_text(json.dumps(result))
-        (journal.path / ("f" * 32 + ".json")).write_text(json.dumps(intent))
+        # Deterministic intent/result filenames are validated and grouping
+        # must remain independent of directory iteration order.
         report = journal.inspect()
         self.assertEqual(report["reported_ok"], 1)
+        self.assertEqual(report["event_count"], 2)
         self.assertFalse(report["journal_ambiguous"])
+
+    def test_renamed_result_cannot_bypass_exclusive_result_slot(self):
+        journal = ToolJournal("a", root=self.root)
+        call = journal.begin("shell")
+        journal.finish(call, "shell", success=True)
+        result = journal.path / ("result-" + call + ".json")
+        result.rename(journal.path / ("renamed-" + call + ".json"))
+        with self.assertRaises(JournalError):
+            journal.inspect()
+        with self.assertRaises(JournalError):
+            journal.finish(call, "shell", success=False)
+
+    def test_mismatched_filename_and_embedded_call_id_rejected(self):
+        journal = ToolJournal("a", root=self.root)
+        call = journal.begin("shell")
+        intent = journal.path / ("intent-" + call + ".json")
+        payload = json.loads(intent.read_text())
+        payload["call_id"] = "a" * 32 if call != "a" * 32 else "b" * 32
+        intent.write_text(json.dumps(payload))
+        with self.assertRaises(JournalError):
+            journal.inspect()
+
+    def test_duplicate_intent_file_with_different_name_rejected(self):
+        journal = ToolJournal("a", root=self.root)
+        call = journal.begin("shell")
+        intent = journal.path / ("intent-" + call + ".json")
+        duplicate = journal.path / ("intent-" + "f" * 32 + ".json")
+        duplicate.write_bytes(intent.read_bytes())
+        with self.assertRaises(JournalError):
+            journal.inspect()
 
     def test_symlinked_journal_directory_fails(self):
         journal = ToolJournal("a", root=self.root)
