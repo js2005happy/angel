@@ -43,8 +43,8 @@ _UNTRUSTED_TAG = re.compile(r'</?untrusted_data', re.IGNORECASE)
 _DEFAULT_VERIFY_TIMEOUT = 300
 _DEFAULT_VERIFY_RETRIES = 2
 AGENTS_VERIFY_SOURCE = 'agents'
-SKIP_AGENTS_UNCONFIRMED = '未确认工作目录 AGENTS.md 中的验证命令，已跳过验证。'
-SKIP_AGENTS_NONINTERACTIVE = '未确认工作目录 AGENTS.md 中的验证命令（非交互运行需 --trust-agents-verify），已跳过验证。'
+SKIP_AGENTS_UNCONFIRMED = '验证命令待确认：工作目录 AGENTS.md 中的验证命令未经确认，已跳过验证。确认方法：检查该命令后用 --verify "<命令>" 重新运行，或加 --trust-agents-verify。'
+SKIP_AGENTS_NONINTERACTIVE = '验证命令待确认：非交互运行不会自动信任工作目录 AGENTS.md 中的验证命令，已跳过验证。确认方法：检查该命令后用 --verify "<命令>" 重新运行，或加 --trust-agents-verify。'
 
 
 def escape_untrusted_tags(text):
