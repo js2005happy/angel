@@ -102,6 +102,8 @@ class ToolJournal:
                 if (not stat.S_ISDIR(info.st_mode)
                         or (info.st_dev, info.st_ino) != identity):
                     raise JournalError("日志读取目录句柄与路径不一致")
+                if stat.S_IMODE(info.st_mode) & 0o077:
+                    raise JournalError("日志读取目录句柄权限过宽")
                 names = os.listdir(directory_fd)
             except OSError as exc:
                 if directory_fd is not None:
@@ -180,6 +182,8 @@ class ToolJournal:
                     info = os.fstat(directory_fd)
                     if (info.st_dev, info.st_ino) != identity:
                         raise JournalError("日志读取目录句柄发生变化")
+                    if stat.S_IMODE(info.st_mode) & 0o077:
+                        raise JournalError("日志读取目录句柄权限过宽")
             _verify_directory(self.path, identity)
             return records
         finally:
@@ -224,6 +228,8 @@ class ToolJournal:
                     if (not stat.S_ISDIR(directory_stat.st_mode)
                             or (directory_stat.st_dev, directory_stat.st_ino) != identity):
                         raise JournalError("日志目录句柄与已核验目录不一致")
+                    if stat.S_IMODE(directory_stat.st_mode) & 0o077:
+                        raise JournalError("日志写入目录句柄权限过宽")
                     fd = os.open(filename, flags, 0o600, dir_fd=directory_fd)
                     with os.fdopen(fd, "wb") as stream:
                         stream.write(payload)
