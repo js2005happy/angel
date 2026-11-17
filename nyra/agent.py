@@ -104,6 +104,7 @@ class Agent:
         self.auto_compact_enabled = bool(auto_compact_enabled)
         self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
         self.auto_compact_count = 0
+        self.turn = 0
         self.system_instructions = system_instructions
         self.memory_path = Path(memory_path) if memory_path is not None else NYRA_HOME / "MEMORY.md"
         self.delegate_depth = delegate_depth
@@ -306,6 +307,8 @@ class Agent:
             except ProviderError as exc:
                 raise AgentError(str(exc)) from exc
 
+            # 运行记录读取的模型轮次计数；不新增对外事件，前端观察器不受影响。
+            self.turn = _ + 1
             self.usage.record(resp)
             if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
                 self._emit("usage", self.usage.snapshot())

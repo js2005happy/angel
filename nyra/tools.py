@@ -43,6 +43,8 @@ class ToolContext:
     # replaces the terminal [y/N] prompt for interactive auto mode, so other
     # front ends (such as the local web UI) reuse the same approval gate.
     approve_fn: Callable[[str, str], bool] | None = None
+    # 审批观察器只接收工具名和决定；None 表示即将询问。
+    approval_observer: Callable[[str, bool | None], None] | None = None
     # Explicit, session-local approvals for a small set of file tools and
     # identical shell command strings. Never persisted or reused by other runs.
     approved_file_tools: set[tuple[str, str, str, int]] = field(default_factory=set)
@@ -469,6 +471,15 @@ def _approval_root(ctx: ToolContext) -> str:
     return str(ctx.workdir.resolve())
 
 
+def _observe_approval(ctx: ToolContext, tool: str, approved: bool | None) -> None:
+    """观察器故障不能改变审批语义。"""
+    if ctx.approval_observer is not None:
+        try:
+            ctx.approval_observer(tool, approved)
+        except Exception:
+            pass
+
+
 def _check_approval(
     ctx: ToolContext, tool_name: str, summary: str, *,
     command: str | None = None, cwd: str | None = None,
@@ -488,7 +499,10 @@ def _check_approval(
         # A frontend approval callback always takes precedence: cached grants
         # from a previous terminal prompt must not bypass the Web UI gate.
         if ctx.approve_fn is not None:
-            if not ctx.approve_fn(tool_name, summary):
+            _observe_approval(ctx, tool_name, None)
+            approved = ctx.approve_fn(tool_name, summary)
+            _observe_approval(ctx, tool_name, bool(approved))
+            if not approved:
                 raise ToolError("用户拒绝执行")
             return
 
@@ -510,7 +524,12 @@ def _check_approval(
             prompt = "允许执行吗？[y/N/a] (a=本次会话相同命令、目录、后端和超时始终允许) "
         else:
             prompt = "允许执行吗？[y/N] "
+        _observe_approval(ctx, tool_name, None)
         answer = input(prompt).strip().lower()
+        approved = answer in ("y", "yes") or (
+            answer in ("a", "always") and (file_scope is not None or shell_scope is not None)
+        )
+        _observe_approval(ctx, tool_name, approved)
         if answer in ("y", "yes"):
             return
         if answer in ("a", "always"):

@@ -15,6 +15,7 @@ import nyra.agent as agent_module
 import nyra.cli as cli
 import nyra.json_mode as json_mode
 import nyra.memory as memory_module
+import nyra.runs as runs_module
 from nyra.providers import ProviderError
 
 
@@ -63,6 +64,7 @@ class JsonModeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.patchers = [
+            mock.patch.object(runs_module, "NYRA_HOME", self.root / "nyrahome"),
             mock.patch.object(agent_module, "NYRA_HOME", self.root / "nyrahome"),
             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"),
             mock.patch.object(memory_module, "MEMORY_PATH", self.root / "private-memory"),
@@ -110,6 +112,12 @@ class JsonModeTests(unittest.TestCase):
             stack.enter_context(mock.patch("sys.stderr", err))
             code = cli.main(["--json", "--workdir", str(self.root), *argv])
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        if lines[0]['type'] == 'run_started':
+            self.assertIn('run_id', lines[0])
+            self.assertEqual(lines[-1]['type'], 'run_state')
+            self.assertEqual(lines[-1]['run_id'], lines[0]['run_id'])
+            self.assertIn(lines[-1]['status'], ('completed_unverified', 'incomplete', 'failed', 'interrupted'))
+            lines = lines[:-1]
         return code, lines, err.getvalue(), provider
 
     def _chain_fakes(self, primary_outcomes, backup_outcomes):
