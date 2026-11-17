@@ -19,6 +19,7 @@ agent.py ── 主循环：组装系统提示词 → 调模型 → 执行工具
  │   ├── commands.py ─── 自定义斜杠命令 + /init 的 AGENTS.md 模板
  │   ├── skills.py ──── 技能加载 / 关键词匹配 / 保存
  │   ├── runs.py ────── 私有运行状态与事件日志、审批观察、检查点改动记录
+ │   ├── tasks.py ───── 后台任务队列、worker 文件锁、完成通知 inbox
  │   ├── memory.py ──── 长期记忆 + AGENTS.md + 会话 jsonl 存储
  │   ├── config.py ──── 配置 + provider 注册表 + provider 档案
  │   ├── mcp.py ─────── MCP 客户端（stdio JSON-RPC，默认关闭）

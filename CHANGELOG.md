@@ -70,6 +70,10 @@
 - 本机核查：`codex` 在 `/opt/hatch-image/bin/codex`（`codex-cli 0.164.0-alpha.9`），`codex login status` 为 `Logged in using ChatGPT`；版本低于 0.164.0、未登录或无法解析版本时直接拒绝。`claude` 本机未装，本轮不做，须先在用户电脑（Windows）上核查 `claude --version` 与登录情况再接。
 - 新增 35 个测试（`tests/test_cli_providers.py`）：固定路径解析、版本与登录检查（含登录标记走 stderr）、固定前缀、chat 成功与 OpenAI 形状、argv 固定只读且无禁用参数、prompt 走 stdin、空临时工作目录、tools 被忽略、子进程环境不含 `*_API_KEY`、不打开凭据文件、JSONL 回退与用量、空输出与非零退出分类（含 `model_not_found` → config）、超时杀进程组、兜底排除（codex 作主时链只有自身、不当兜底目标、直接构造被拒、定时任务 `_make_task_agent` 用 codex 被拒）、预设解析。另更新 `tests/test_generic_providers.py`（CLI 预设豁免 http base_url 断言）与 `tests/test_webui.py`（`/api/info` 的 provider 数 13 → 14，自定义 provider 场景 14 → 15）；`nyra/group-ui.js` 的兜底 provider 列表补 codex；README、DESIGN.md、`docs/index.html`、`webui_page.py` 的 provider 预设数 13 → 14。测试总数 483 → 518，全部通过；本地冒烟检查通过（`--list-providers` 见 codex、真实短调用一次回 `smoke-ok` 且 usage 有记录、Web UI 页面 200 且 `/api/info` 的 provider_count 为 14）。
 
+## 未发布（后台任务队列）
+
+- 新增 `nyra task add|list|show|cancel|worker|approve`：任务入队后由 worker 顺序执行，文件锁保证同时只有一个 worker。遇到需要审批的操作立即停下并标为 `awaiting_approval`，绝不自动放行；前台 `task approve` 走续跑逻辑并重新审批。完成通知写入 `~/.nyra/inbox.jsonl`，REPL 启动和 `/status` 显示未读。定时任务到期改为入队，不再当场执行。
+
 ## 未发布（结果自证）
 
 - 新增 `--verify`：建任务时把验证命令冻结进运行记录，之后改 AGENTS.md 或配置都不再生效。只有命令真实退出码 0 才是 `verified`；失败把输出以不可信的 tool 消息交回模型，最多重试 2 次，仍失败则为 `verify_failed`（`--json` 退出码 4）。未配置验证时状态为 `completed_unverified`，报告写明「未验证」。测试文件被改过会单独标出。

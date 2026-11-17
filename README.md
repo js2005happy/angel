@@ -70,6 +70,14 @@ python3 -m nyra ui --open                # 本地网页界面
 
 交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
 
+## 断点续跑与结果验证
+
+长任务会把运行状态记在 `~/.nyra/runs/<run_id>/`（目录权限 0700，文件 0600）。单次任务和 `--json` 会打印运行 ID。
+
+- 中途中断后用 `python3 -m nyra --resume-run <run_id>` 接着跑。尚未得到结果的工具调用**不会自动重跑**（可能已经产生副作用），会先告诉模型结果未知。续跑时先前会话里放行的审批全部作废，需要重新确认。已经 `verified` 或 `completed_unverified` 的运行不能再续。
+- 用 `--verify "python -m unittest"`（或配置 `verify_command`、项目 `AGENTS.md` 里的 `verify:` 行）做结果自证。验证命令在**创建任务时冻结**，之后再改 `AGENTS.md` 不算数。只有命令真实退出码 0 才是 `verified`；失败会把输出作为不可信的工具消息交回模型，最多再试 2 次，仍失败则为 `verify_failed`（`--json` 退出码 4）。没配置验证命令时状态是 `completed_unverified`，报告会写明「未验证」。模型自己说「已验证」不会改变状态。
+- 后台队列：`python3 -m nyra task add "任务" [--workdir D] [--verify CMD] [--mode readonly|auto]` 入队；`python3 -m nyra task worker [--once]` 顺序执行（同时只能有一个 worker）。遇到需要审批的操作会停下并标为 `awaiting_approval`，不会自动放行。前台用 `python3 -m nyra task approve <run_id>` 继续。`python3 -m nyra task list|show|cancel` 查看或取消（只能取消还在排队的任务）。定时任务到期后也会进入这个队列。完成通知写在 `~/.nyra/inbox.jsonl`，打开 REPL 或输入 `/status` 时会看到未读通知。
+
 ## 它能做什么
 
 - **编程**：读代码、`apply_patch` 精确改文件、跑测试，改动前在审批卡片里展示 diff。

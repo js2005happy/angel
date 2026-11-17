@@ -137,8 +137,20 @@ def _make_task_agent(task: dict, workdir: Path) -> Agent:
 
 
 def _run_scheduled_task(task: dict, workdir: Path) -> str:
-    agent = _make_task_agent(task, workdir)
-    return agent.run(task["prompt"])
+    """到期定时任务进入同一任务队列，不再当场执行。"""
+    from .tasks import add_task, TaskError
+    mode = task.get("mode") or "auto"
+    if mode not in ("readonly", "auto"):
+        mode = "auto"
+    root = Path(task.get("workdir") or workdir)
+    try:
+        state = add_task(
+            task["prompt"], workdir=root, mode=mode,
+            verify_cmd=task.get("verify") or task.get("verify_command"),
+        )
+    except TaskError as exc:
+        raise AgentError(str(exc)) from exc
+    return f"已入队 {state['run_id']}"
 
 
 def handle_schedule(argv: list[str], workdir: Path) -> int:
@@ -270,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="nyra",
         description="Nyra — 全能 AI 助手",
         epilog=(
-            "子命令：nyra schedule <list|add|remove|run|daemon> 管理定时任务；"
+            "子命令：nyra schedule <list|add|remove|run|daemon> 管理定时任务；nyra task <add|list|show|cancel|worker|approve> 管理后台任务队列；"
             "nyra ui [--host 127.0.0.1] [--port 8765] [--open] 启动本地网页界面；"
             "nyra permissions <list|check|grant|revoke|audit> 管理 Poppy 站点授权意向；"
             "nyra eigenflux doctor [--room ID --bot ID] [--check] 接入检测；"
@@ -460,6 +472,9 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "schedule":
         return handle_schedule(raw[1:], Path.cwd())
+    if raw and raw[0] == "task":
+        from .tasks import handle_task
+        return handle_task(raw[1:], Path.cwd())
     if raw and raw[0] == "ui":
         from .webui import main as ui_main
 
@@ -911,6 +926,11 @@ def main(argv: list[str] | None = None) -> int:
                 describe_provider(provider), mode, agent.session_id, color=color
             )
         )
+        from .tasks import format_unread_inbox, mark_inbox_read
+        notes = format_unread_inbox()
+        if notes:
+            print(notes)
+            mark_inbox_read()
         if interactive:
             # Group tool activity under each answer; only in the REPL, so
             # one-shot output stays exactly as before.
@@ -987,6 +1007,11 @@ def main(argv: list[str] | None = None) -> int:
                     + format_usage(agent.usage.snapshot())
                     + (f"\n自动压缩：已触发 {agent.auto_compact_count} 次" if enabled_auto_compact else "\n自动压缩：未启用")
                 )
+                from .tasks import format_unread_inbox, mark_inbox_read
+                notes = format_unread_inbox()
+                if notes:
+                    print(notes)
+                    mark_inbox_read()
                 continue
             elif line == "/diff":
                 if agent.checkpoints is None:

@@ -322,7 +322,9 @@ class RunStore:
         if state.get('status') not in RUN_STATUSES:
             raise ValueError('运行状态无效')
         required = {'session_id', 'task', 'workdir', 'mode', 'turn', 'max_turns', 'created_at', 'updated_at', 'verify_cmd', 'verify_result', 'changed_files', 'error', 'pid', 'host'}
-        if set(state) != required | {'schema_version', 'run_id', 'status'} or not isinstance(state['changed_files'], list):
+        optional = {'pending_approval'}
+        allowed = required | {'schema_version', 'run_id', 'status'} | optional
+        if set(state) - allowed or not required.issubset(set(state)) or not isinstance(state['changed_files'], list):
             raise ValueError('运行记录字段无效')
         if (not all(isinstance(state[key], str) for key in
                     ('session_id', 'task', 'workdir', 'mode', 'created_at', 'updated_at', 'host'))
@@ -332,7 +334,8 @@ class RunStore:
                 or not all(isinstance(path, str) for path in state['changed_files'])
                 or (state['error'] is not None and not isinstance(state['error'], str))
                 or (state['verify_cmd'] is not None and not isinstance(state['verify_cmd'], str))
-                or (state['verify_result'] is not None and not isinstance(state['verify_result'], dict))):
+                or (state['verify_result'] is not None and not isinstance(state['verify_result'], dict))
+                or (state.get('pending_approval') is not None and not isinstance(state.get('pending_approval'), dict))):
             raise ValueError('运行记录字段类型无效')
         return state
 
@@ -396,7 +399,8 @@ class RunStore:
 
     def update(self, run_id, **fields):
         state = self.load(run_id)
-        if set(fields) - (set(state) - {'schema_version', 'run_id', 'created_at', 'updated_at'}):
+        mutable = (set(state) | {'pending_approval'}) - {'schema_version', 'run_id', 'created_at', 'updated_at'}
+        if set(fields) - mutable:
             raise ValueError('未知或不可修改的运行字段')
         for key in ('task', 'error'):
             if key in fields:
@@ -432,6 +436,10 @@ class RunStore:
             os.fsync(handle.fileno())
 
     def effective_status(self, state):
+        # 队列任务停在审批时已落盘 pending_approval，等的是人而不是 worker 进程；
+        # worker 退出后仍保持 awaiting_approval，才能被 `nyra task approve` 批准。
+        if state['status'] == 'awaiting_approval' and isinstance(state.get('pending_approval'), dict):
+            return state['status']
         if state['status'] in ('running', 'awaiting_approval') and state['host'] == socket.gethostname() and not _pid_alive(state['pid']):
             return 'interrupted'
         return state['status']
@@ -576,6 +584,14 @@ class RunRecorder:
             self.store.append_event(self.run_id, 'interrupted')
             self.store.set_status(self.run_id, 'interrupted')
             raise
+        except ApprovalRequired as exc:
+            self.changed()
+            self.store.update(self.run_id, pending_approval={
+                'tool': _redact(exc.tool), 'summary': _redact(exc.summary),
+            })
+            if self.store.load(self.run_id)['status'] != 'awaiting_approval':
+                self.store.set_status(self.run_id, 'awaiting_approval')
+            raise
         except Exception as exc:
             self.changed()
             self.store.append_event(self.run_id, 'error', error_type=type(exc).__name__)
@@ -589,6 +605,14 @@ class RunRecorder:
 
 class RunNotResumable(ValueError):
     """运行已结束或仍有进程持有。"""
+
+
+class ApprovalRequired(Exception):
+    """worker 遇到需审批的操作时中止当前任务，不执行该操作。"""
+    def __init__(self, tool, summary):
+        self.tool = tool
+        self.summary = summary
+        super().__init__(f"等待审批：{tool}")
 
 
 def prepare_resume(store, run_id, *, workdir=None, mode=None, max_turns=None):
