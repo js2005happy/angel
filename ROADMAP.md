@@ -1,3 +1,10 @@
+## 2026-11-18 写入侧资源清理与 Windows 续跑反馈
+
+- **源码事实**：`_write()` 两条分支均在 `os.open` 后直接调用 `os.fdopen`；若后者抛异常，fd 不会被 with 管理。本轮增加异常关闭和回归测试源码（价值中/难度低/安全风险低/依赖 ToolJournal；已提交、未运行）。
+- **外部反馈事实（2026-11-18 检索 GitHub Issue 正文，创建日期未获取）**：[Codex #60231](https://github.com/openai/codex/issues/60231) Windows 用户报告已有会话继续时出现 Unknown error；[Codex #60787](https://github.com/openai/codex/issues/60787) Windows 用户报告非项目历史会话无法恢复，提示 AbsolutePathBuf 缺少 base path。均为用户个案，不代表 Angel/Nyra 复现或因果证据。
+- **工程推断排序（价值/难度/安全风险/依赖）**：① 写入 fdopen 异常清理（中/低/低/现有 ToolJournal，本轮已实现待验证）；② Windows ACL 与稳定目录句柄（高/高/中高/Windows 原生 API，未实现）；③ 工具副作用独立证据（高/高/高/PR #24、#26）；④ 人工审批安全续跑（高/高/高/PR #25）；⑤ 后台事件通知（中高/中/中/PR #27）。
+- **集成风险**：开发分支仍使用 `angel/`，main 已迁移 `nyra/` 并加入 worker 协议；开放 PR #23–#29 尚需逐项审查。禁止未经授权合并/变基，未知结果不得自动重放。
+
 ## 2026-11-18 ToolJournal 异常资源清理与需求排序
 
 - **源码事实**：`_records()` 先 `os.open` 再 `os.fdopen`；后者抛异常时原路径不会关闭 fd。本轮补充异常关闭与回归测试源码，未执行验证。价值中/难度低/安全风险低/依赖现有 ToolJournal。
