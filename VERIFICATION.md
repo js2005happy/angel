@@ -1,3 +1,8 @@
+## 2026-11-18 非阻塞事件打开（仅静态审阅）
+
+- 静态确认 `_records` 的事件文件 `os.open` 追加可选 `O_NONBLOCK`，在 POSIX 上先取得非阻塞句柄再用既有 `fstat` 拒绝 FIFO 等非普通文件；新增标志回归测试源码。
+- 未运行测试、编译或 CI；没有使用真实 FIFO 执行阻塞验证。Windows ACL、目录竞态和日志防篡改仍未解决。
+
 ## 2026-11-18 ToolJournal 写入侧 fdopen 异常清理（仅静态审阅）
 
 - 静态核对 POSIX dir_fd 与 Windows 路径回退的文件描述符所有权；两条分支均补充 fdopen 异常时 os.close(fd)。
