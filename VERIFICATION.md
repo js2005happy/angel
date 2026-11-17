@@ -1,3 +1,7 @@
+### 2026-11-17 ToolJournal 私有会话目录（未执行测试）
+
+静态审阅：`ToolJournal._write()` 创建会话目录时显式请求 `0o700`，新增 POSIX 权限回归测试。未运行测试/CI；未验证 Windows ACL，现有目录权限不自动修改。禁止将此视为日志防篡改或工具副作用验证。
+
 ## 2026-11-17 ToolJournal 回归测试静态阻塞修复
 
 - 静态发现 `tests/test_tool_journal.py::test_hardlinked_event_is_rejected` 使用 `os.link` 而模块未导入 `os`；本轮补充导入。
