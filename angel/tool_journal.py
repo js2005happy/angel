@@ -177,6 +177,18 @@ class ToolJournal:
                         or not isinstance(item["at"], str)
                         or len(item["at"]) > 40):
                     raise JournalError("事件值无效")
+                # Writer emits second-precision UTC timestamps. Reject malformed
+                # or offset-shifted timestamps rather than treating arbitrary
+                # strings as trustworthy event metadata.
+                try:
+                    timestamp = datetime.fromisoformat(item["at"])
+                except ValueError as exc:
+                    raise JournalError("事件时间戳无效") from exc
+                if (timestamp.tzinfo is None
+                        or timestamp.utcoffset() != timezone.utc.utcoffset(None)
+                        or timestamp.microsecond != 0
+                        or timestamp.isoformat(timespec="seconds") != item["at"]):
+                    raise JournalError("事件时间戳无效")
                 expected = (
                     "intent-" + item["call_id"] + ".json"
                     if item["event"] == "intent"
