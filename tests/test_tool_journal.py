@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from angel.tool_journal import JournalError, ToolJournal
 
@@ -12,6 +13,43 @@ class JournalTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+
+    def test_directory_replacement_during_read_fails_closed(self):
+        from angel import tool_journal as module
+        journal = ToolJournal("session1", root=self.root)
+        journal.begin("shell")
+        original = module._directory_identity
+        calls = [0]
+
+        def changed(path):
+            calls[0] += 1
+            actual = original(path)
+            if calls[0] >= 2 and actual is not None:
+                return (actual[0], actual[1] + 1)
+            return actual
+
+        with mock.patch.object(module, "_directory_identity", side_effect=changed):
+            with self.assertRaisesRegex(JournalError, "替换"):
+                journal.inspect()
+
+    def test_directory_replacement_after_write_reports_failure(self):
+        from angel import tool_journal as module
+        journal = ToolJournal("session1", root=self.root)
+        original = module._directory_identity
+        calls = [0]
+
+        def changed(path):
+            calls[0] += 1
+            actual = original(path)
+            if calls[0] >= 2 and actual is not None:
+                return (actual[0], actual[1] + 1)
+            return actual
+
+        with mock.patch.object(module, "_directory_identity", side_effect=changed):
+            with self.assertRaisesRegex(JournalError, "替换"):
+                journal.begin("shell")
+        # A failed report does not justify replaying the tool.
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
     def test_no_files_without_explicit_begin(self):
         journal = ToolJournal("session1", root=self.root)
