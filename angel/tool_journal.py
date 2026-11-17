@@ -188,7 +188,7 @@ class ToolJournal:
         if not isinstance(tool, str) or not _TOOL.fullmatch(tool):
             raise JournalError("工具名无效")
         _safe_directory(self.path)
-        self.path.mkdir(parents=True, exist_ok=True)
+        self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
         _safe_directory(self.path)
         identity = _directory_identity(self.path)
         item = {
