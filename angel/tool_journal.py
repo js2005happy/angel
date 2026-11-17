@@ -356,7 +356,13 @@ class ToolJournal:
                 "tool": tool,
                 "outcome": results[0]["event"] if len(results) == 1 else "unknown",
             }
-        pending = sum(x["outcome"] == "unknown" for x in calls.values())
+        # Orphan results are unresolved side effects too: do not report zero
+        # unknown outcomes merely because an intent event is missing.
+        orphan_results = sum(
+            1 for events in groups.values()
+            if not any(e["event"] == "intent" for e in events)
+        )
+        pending = sum(x["outcome"] == "unknown" for x in calls.values()) + orphan_results
         return {
             "session_id": self.session_id,
             "event_count": len(records),
