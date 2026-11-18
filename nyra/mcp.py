@@ -520,7 +520,9 @@ class MCPClient:
                     return
             self._initialize_legacy()
             return
-        except MCPError:
+        except MCPError as exc:
+            if str(exc) == "MCP 服务器已退出":
+                raise  # 进程已退出，旧版握手也写不进去（Windows 上会报 EINVAL）
             self._initialize_legacy()
             return
         try:

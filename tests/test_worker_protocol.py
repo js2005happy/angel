@@ -511,8 +511,8 @@ class WorkerSubprocessTests(unittest.TestCase):
         # 失败时死掉，result.stdout 变成 None，assertIn 报 TypeError。
         result = subprocess.run(
             [sys.executable, "-m", "nyra.worker", "--help"],
-            cwd=repo, capture_output=True, text=True, encoding="utf-8",
-            timeout=20,
+            cwd=repo, capture_output=True, text=True, encoding="utf-8", timeout=20,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("nyra.worker", result.stdout)
