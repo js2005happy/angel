@@ -229,26 +229,27 @@ fn hide_console(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console(_cmd: &mut Command) {}
 
+/// Read a pipe to EOF on a side thread and deliver the text over a channel.
+/// The receiver side uses a timeout: a grandchild that inherits the pipe
+/// (e.g. something the user's login shell backgrounds) must not hang the
+/// caller forever after the direct child is gone.
+fn drain_to_string(pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut pipe = pipe;
+        let mut s = Vec::new();
+        let _ = pipe.read_to_end(&mut s);
+        let _ = tx.send(String::from_utf8_lossy(&s).into_owned());
+    });
+    rx
+}
+
 /// Run to completion with a deadline. Returns (success, stdout, stderr).
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<(bool, String, String)> {
     hide_console(&mut cmd);
     let mut child = cmd.spawn().ok()?;
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let out_t = thread::spawn(move || {
-        let mut s = Vec::new();
-        if let Some(o) = stdout.as_mut() {
-            let _ = o.read_to_end(&mut s);
-        }
-        String::from_utf8_lossy(&s).into_owned()
-    });
-    let err_t = thread::spawn(move || {
-        let mut s = Vec::new();
-        if let Some(e) = stderr.as_mut() {
-            let _ = e.read_to_end(&mut s);
-        }
-        String::from_utf8_lossy(&s).into_owned()
-    });
+    let out_rx = child.stdout.take().map(drain_to_string);
+    let err_rx = child.stderr.take().map(drain_to_string);
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -261,8 +262,15 @@ fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<(bool, String
             }
         }
     };
-    let out = out_t.join().unwrap_or_default();
-    let err = err_t.join().unwrap_or_default();
+    // The child is gone (or killed); give the drain threads a moment for
+    // the pipes to close, then take whatever arrived instead of blocking.
+    let drain_timeout = Duration::from_secs(2);
+    let out = out_rx
+        .and_then(|rx| rx.recv_timeout(drain_timeout).ok())
+        .unwrap_or_default();
+    let err = err_rx
+        .and_then(|rx| rx.recv_timeout(drain_timeout).ok())
+        .unwrap_or_default();
     Some((status.map(|s| s.success()).unwrap_or(false), out, err))
 }
 
@@ -372,6 +380,14 @@ fn source_dirs(env: &HashMap<String, String>) -> Vec<PathBuf> {
     dirs.into_iter().filter(|d| d.join("nyra").join("webui.py").is_file()).collect()
 }
 
+/// The Node single-file build reports "(node runtime, ...)" from
+/// `--version`. It has no `ui` subcommand yet, so it cannot drive the
+/// desktop shell; skip it and keep looking for a Python Nyra instead of
+/// accepting it here and failing later with a misleading "too old" guide.
+fn is_node_runtime(version_output: &str) -> bool {
+    version_output.contains("node runtime")
+}
+
 fn discover(env: &HashMap<String, String>) -> Discovery {
     // 1. A `nyra` command on PATH (install scripts' launcher, nyra.exe).
     if env.get("NYRA_PYTHON").map(|s| s.is_empty()).unwrap_or(true) {
@@ -379,8 +395,10 @@ fn discover(env: &HashMap<String, String>) -> Discovery {
             let l = Launcher { program: nyra.clone(), prefix: vec![], pythonpath: None, label: nyra.display().to_string() };
             let mut cmd = launcher_command(&l, env);
             cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-            if let Some((true, _, _)) = run_with_timeout(cmd, PROBE_TIMEOUT) {
-                return Discovery::Found(l);
+            if let Some((true, out, _)) = run_with_timeout(cmd, PROBE_TIMEOUT) {
+                if !is_node_runtime(&out) {
+                    return Discovery::Found(l);
+                }
             }
         }
     }
@@ -388,7 +406,14 @@ fn discover(env: &HashMap<String, String>) -> Discovery {
     let mut old = Vec::new();
     let mut good_python: Option<String> = None;
     let sources = source_dirs(env);
+    // Overall budget: each probe is capped at 15 s, but with several
+    // interpreters and source dirs the total could otherwise stretch to
+    // minutes while the window sits on "starting".
+    let probe_deadline = Instant::now() + Duration::from_secs(90);
     for (program, prefix) in python_candidates(env) {
+        if Instant::now() >= probe_deadline {
+            break;
+        }
         let Some(ver) = python_version(&program, &prefix, env) else { continue };
         let shown = format!("{} {} (Python {}.{})", program.display(), prefix.join(" "), ver.0, ver.1)
             .replace("  ", " ");
@@ -471,7 +496,28 @@ fn local_page(state: &GuideInfo) -> Option<Url> {
     Some(url)
 }
 
-fn show_guide(app: &AppHandle, info: GuideInfo) {
+/// The child's stderr can echo its own start URL, token included: in
+/// `--print-url-json` mode webui still prints the human-readable start
+/// line (with the real token) to stderr. Never put a live token on the
+/// guide page, where the stderr tail is shown as the failure detail.
+fn scrub_token(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("token=") {
+        out.push_str(&rest[..i + "token=".len()]);
+        rest = &rest[i + "token=".len()..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '&' | '"' | '\'' | '<' | '>'))
+            .unwrap_or(rest.len());
+        out.push('…');
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn show_guide(app: &AppHandle, mut info: GuideInfo) {
+    info.detail = scrub_token(&info.detail);
     if let (Some(win), Some(url)) = (app.get_webview_window("main"), local_page(&info)) {
         let _ = win.navigate(url);
     }
@@ -571,6 +617,14 @@ fn start_backend(app: AppHandle) {
                     // Keep draining so the child never blocks on a full pipe.
                 }
             });
+        }
+        if backend.generation.load(Ordering::SeqCst) != gen {
+            // A retry/exit superseded this start while the child was
+            // spawning; do not overwrite the newer child in the backend.
+            drop(child.stdin.take());
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
         }
         *backend.child.lock().unwrap() = Some(child);
 
@@ -729,5 +783,19 @@ mod tests {
         let t = tail(&s, 7);
         assert!(t.starts_with('…'));
         assert!(t.len() <= 7 + '…'.len_utf8() + 3);
+    }
+
+    #[test]
+    fn scrub_hides_token() {
+        let s = scrub_token("Nyra 0.3.0 网页界面已启动：http://127.0.0.1:5123/?token=abc123");
+        assert!(!s.contains("abc123"));
+        assert!(s.contains("token=…"));
+        assert_eq!(scrub_token("no token here"), "no token here");
+    }
+
+    #[test]
+    fn node_runtime_is_skipped() {
+        assert!(is_node_runtime("nyra 0.3.0 (node runtime, phase 1 preview)"));
+        assert!(!is_node_runtime("Nyra 0.3.0"));
     }
 }
