@@ -64,6 +64,20 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "元数据不安全"):
                     journal.begin("shell")
 
+    def test_windows_event_reparse_point_rejected(self):
+        # A reparse point can appear to be a regular file; reject its
+        # Windows attribute independently of the POSIX mode bits.
+        from angel import tool_journal as module
+        from types import SimpleNamespace
+        fake = SimpleNamespace(st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        with mock.patch.object(module.os, "name", "nt"):
+            with self.assertRaisesRegex(JournalError, "事件文件不能是 Windows 重解析点"):
+                module._reject_windows_event_reparse(fake)
+            with self.assertRaisesRegex(JournalError, "无法核验"):
+                module._reject_windows_event_reparse(SimpleNamespace())
+        with mock.patch.object(module.os, "name", "posix"):
+            module._reject_windows_event_reparse(fake)
+
     def test_windows_dangling_reparse_point_is_not_skipped(self):
         # exists() can be false for dangling reparse entries. The Windows
         # security check must use lstat independently of exists().
