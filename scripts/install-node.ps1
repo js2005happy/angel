@@ -1,0 +1,85 @@
+# Nyra Windows 一键安装脚本（Node 二进制版，不需要管理员权限，不需要 Python）。
+# 用法：在 PowerShell 里运行：
+#   irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 | iex
+# 或下载后双击 / 右键“使用 PowerShell 运行”。
+# 作用：从 GitHub Releases 下载 nyra-windows-x64.exe 到 ~/nyra，
+# 把 ~/nyra 加进当前用户的 PATH，在桌面建两个快捷方式
+# （Nyra 终端 / Nyra 网页界面，带 Nyra 图标），不写注册表、不装服务。
+#
+# 注意（诚实写，不编造）：
+#   - exe 未签名：首次运行 SmartScreen 会弹警告，点“更多信息”→“仍要运行”；
+#     积累信誉或买代码签名证书后才会消失。
+#   - exe 本身未经真机运行验证：CI 会在 windows-latest 上跑 `nyra.exe --version`
+#     烟雾测试；真机首次运行体验待用户反馈后补充。
+#   - 旧的 Python 版安装脚本是 scripts/install.ps1（仍可用）。
+param(
+    [string]$Version = "latest",
+    [string]$InstallDir = "$env:USERPROFILE\nyra",
+    [string]$FromFile = ""
+)
+
+$ErrorActionPreference = "Stop"
+$Repo = "js2005happy/nyra"
+$Asset = "nyra-windows-x64.exe"
+
+function Write-Info($msg) { Write-Host "nyra-install: $msg" }
+function Write-ErrAndExit($msg) { Write-Host "nyra-install: 错误：$msg" -ForegroundColor Red; exit 1 }
+
+if ($Version -eq "latest") {
+    $Url = "https://github.com/$Repo/releases/latest/download/$Asset"
+} else {
+    $Url = "https://github.com/$Repo/releases/download/$Version/$Asset"
+}
+
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$Exe = Join-Path $InstallDir "nyra.exe"
+
+if ($FromFile -ne "") {
+    if (-not (Test-Path $FromFile)) { Write-ErrAndExit "找不到本地二进制：$FromFile（先在 CI 或 Linux 上编好）" }
+    Write-Info "从本地文件安装：$FromFile"
+    Copy-Item $FromFile $Exe -Force
+} else {
+    Write-Info "下载 $Url"
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Exe -UseBasicParsing
+    } catch {
+        Write-ErrAndExit "下载失败：$($_.Exception.Message)。检查网络，或到 https://github.com/$Repo/releases 手动下载 $Asset。"
+    }
+}
+
+# ~/.nyra（0700 语义：Windows 没有 POSIX 权限位，只保证目录存在）
+$NyraHome = Join-Path $env:USERPROFILE ".nyra"
+New-Item -ItemType Directory -Force -Path $NyraHome | Out-Null
+
+# PATH：只加当前用户级，不动系统级
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($UserPath -notlike "*$InstallDir*") {
+    [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
+    Write-Info "已把 $InstallDir 加进用户 PATH（新开终端生效）。"
+}
+
+# 桌面快捷方式（Nyra 终端 / Nyra 网页界面）
+try {
+    $Shell = New-Object -ComObject WScript.Shell
+    $Desktop = [Environment]::GetFolderPath("Desktop")
+    $Icon = Join-Path $InstallDir "nyra.ico"
+    $Term = $Shell.CreateShortcut((Join-Path $Desktop "Nyra 终端.lnk"))
+    $Term.TargetPath = $Exe
+    $Term.WorkingDirectory = $InstallDir
+    if (Test-Path $Icon) { $Term.IconLocation = $Icon }
+    $Term.Save()
+    $Web = $Shell.CreateShortcut((Join-Path $Desktop "Nyra 网页界面.lnk"))
+    $Web.TargetPath = $Exe
+    $Web.Arguments = "ui --open"
+    $Web.WorkingDirectory = $InstallDir
+    if (Test-Path $Icon) { $Web.IconLocation = $Icon }
+    $Web.Save()
+    Write-Info "桌面快捷方式已建好。"
+} catch {
+    Write-Info "警告：桌面快捷方式没建好（$($_.Exception.Message)），不影响使用。"
+}
+
+Write-Info "自检："
+& $Exe --version
+Write-Info "装好了。下一步：在新开的终端里跑 nyra setup（首次启动向导），或 nyra doctor 自检。"
+Write-Info "注意：SmartScreen 首次运行会弹警告，点“更多信息”→“仍要运行”。"
