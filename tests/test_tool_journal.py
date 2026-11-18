@@ -16,6 +16,15 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_begin_rejects_orphan_result_without_creating_intent(self):
+        journal = ToolJournal("orphan-before-begin", root=self.root)
+        journal._write("result_ok", "a" * 32, "shell")
+        before = sorted(journal.path.iterdir())
+        with self.assertRaisesRegex(JournalError, "日志存在歧义"):
+            journal.begin("shell")
+        self.assertEqual(sorted(journal.path.iterdir()), before)
+        self.assertTrue(journal.inspect()["journal_ambiguous"])
+
     def test_write_rejects_unexpected_post_write_file_size(self):
         # Simulate a concurrent truncate after fsync without running it.
         from angel import tool_journal as module
