@@ -100,9 +100,14 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     Windows and POSIX both expose st_dev/st_ino through os.stat.
     """
     _safe_directory(path)
-    if not path.exists():
+    # Path.exists() may hide permission failures on some Python/Windows
+    # versions. Only a genuinely absent directory is an empty journal.
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
         return None
-    info = path.stat()
+    except OSError as exc:
+        raise JournalError("无法核验日志目录身份") from exc
     if not stat.S_ISDIR(info.st_mode):
         raise JournalError("日志目录不是文件夹")
     # Existing sessions are not chmod-ed implicitly. Reject permissive
