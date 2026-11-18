@@ -311,6 +311,28 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(OSError):
             os.fstat(opened[0])
 
+    def test_read_rejects_final_entry_metadata_change(self):
+        journal = ToolJournal("final-entry-metadata", root=self.root)
+        journal.begin("shell")
+        original_lstat = os.lstat
+        calls = [0]
+
+        def changed_final_entry(path, *args, **kwargs):
+            info = original_lstat(path, *args, **kwargs)
+            if str(path).endswith(".json"):
+                calls[0] += 1
+                if calls[0] == 2:
+                    values = list(info)
+                    values[6] += 1  # st_size differs, inode remains identical
+                    return os.stat_result(values)
+            return info
+
+        # Force path fallback so the entry check is patchable on POSIX too.
+        with mock.patch("angel.tool_journal.os.supports_dir_fd", set()):
+            with mock.patch("angel.tool_journal.os.lstat", side_effect=changed_final_entry):
+                with self.assertRaises(JournalError):
+                    journal.inspect()
+
     def test_mismatched_result_tool_is_unknown_not_reported_success(self):
         journal = ToolJournal("mismatched-tool", root=self.root)
         call = journal.begin("shell")
