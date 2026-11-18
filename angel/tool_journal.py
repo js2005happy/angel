@@ -235,8 +235,14 @@ class ToolJournal:
                     _reject_windows_event_reparse(final_entry)
                     if (not stat.S_ISREG(final_entry.st_mode)
                             or (final_entry.st_dev, final_entry.st_ino)
-                            != (info.st_dev, info.st_ino)):
-                        raise JournalError("事件文件在读取期间被替换")
+                            != (info.st_dev, info.st_ino)
+                            or final_entry.st_nlink != 1
+                            or final_entry.st_size != info.st_size
+                            or final_entry.st_mtime_ns != info.st_mtime_ns
+                            or final_entry.st_ctime_ns != info.st_ctime_ns
+                            or (os.name == "posix" and
+                                stat.S_IMODE(final_entry.st_mode) & 0o077)):
+                        raise JournalError("事件文件在读取期间被替换或修改")
                     if len(raw) != info.st_size:
                         raise JournalError("事件文件读取字节数与文件大小不一致")
                     if len(raw) > MAX_EVENT_BYTES:
