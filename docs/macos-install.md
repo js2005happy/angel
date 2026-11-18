@@ -1,13 +1,43 @@
 # 在 macOS 上安装 Nyra（一键脚本）
 
-> 状态：本脚本与文档是在 Linux 上写好、只做了语法与占位替换检查，
+> 状态：Node 版与 Python 版脚本都是在 Linux 上写好、只做了语法与占位替换检查，
 > **尚未在真 Mac 上跑通过**。在 Mac 上第一次跑时若有报错，请把报错贴
 > 回来，脚本会跟着修。Linux 安装见
 > [docs/linux-install.md](linux-install.md)，Windows 见
-> `scripts/install.ps1`。
+> [docs/windows-install.md](windows-install.md)。
+
+## 方式一（推荐）：Node 单文件二进制
+
+`scripts/install-node-macos.sh` 从 GitHub Releases 下载对应架构的二进制
+（arm64 用 `nyra-macos-arm64`，Intel 用 `nyra-macos-x64`），**不需要 root，
+不需要 Python，也不需要 Node/Bun**（运行时自带）。
+
+```bash
+bash scripts/install-node-macos.sh
+bash scripts/install-node-macos.sh --version v0.3.0 --with-launchd
+```
+
+注意：二进制未签名、未公证，macOS Gatekeeper 首次运行会拦，需右键点
+二进制选“打开”放行一次。`.dmg` / `.pkg` 安装包本机做不了，是待办
+（见下），不要假装已提供。
+
+> 第 1 阶段说明：二进制是预览版，只含安装、doctor、向导与本地示例任务；
+> 模型任务在第 2 阶段移植，现阶段请用下面的 Python 方式。`--with-launchd`
+> 在第 1 阶段只装 plist 文件、不 `launchctl load`（`schedule daemon` 要到
+> 第 2–3 阶段才有，现在启动只会反复失败）；带 schedule 的版本发布后，再跑
+> `launchctl load ~/Library/LaunchAgents/ai.nyra.scheduler.plist`。
+
+## 方式二：Python 版（功能完整）
 
 `scripts/install-macos.sh` 把 Nyra 装到你的 home 目录里，**不需要 root**，
 也不往系统目录写东西。装完直接在终端跑 `nyra` 就行。
+
+### .dmg / .pkg（待办，未做）
+
+- 现状：只有上面的二进制直装脚本，没有 `.dmg`（拖放安装）与 `.pkg`
+  （安装器包）。本机是 Linux，做不出 macOS 安装包，也没法验证。
+- 待办：找一台 Mac（或 macOS CI）用 `create-dmg` / `pkgbuild` 做包，
+  并在真机上跑一次完整安装；做出来之前不要在文档里写“已提供”。
 
 ## 它会做什么
 

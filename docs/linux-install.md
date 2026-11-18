@@ -1,5 +1,29 @@
 # 在 Linux 上安装 Nyra（一键脚本）
 
+## 方式一（推荐）：Node 单文件二进制
+
+`scripts/install-node.sh` 从 GitHub Releases 下载对应架构的单文件二进制，**不需要 root，不需要 Python，也不需要 Node/Bun**（运行时自带）。
+
+```bash
+# 直接下载安装（默认最新版）
+bash scripts/install-node.sh
+
+# 指定版本 / 顺手装 systemd 用户服务
+bash scripts/install-node.sh --version v0.3.0 --with-systemd
+
+# 已编好二进制时从本地安装（不联网下载）
+bash scripts/build-binaries.sh --only linux-x64
+bash scripts/install-node.sh --from-file dist/nyra-linux-x64
+```
+
+它会：下载二进制到 `~/.local/share/nyra/nyra`、在 `~/.local/bin/nyra` 放符号链接、建 `~/.nyra`（0700）、跑 `nyra --version` 自检。重复跑就是升级，`~/.nyra` 里的数据不动。
+
+前置条件：`curl` 或 `wget`（二选一）；`--with-systemd` 时还要 `systemctl --user`。
+
+> 第 1 阶段说明：二进制是预览版，只含安装、doctor、向导与本地示例任务；模型任务在第 2 阶段移植，现阶段请用下面的 Python 方式。`--with-systemd` 在第 1 阶段只装服务文件、不启动（`schedule daemon` 要到第 2–3 阶段才有，现在启动只会反复失败）；带 schedule 的版本发布后，再跑 `systemctl --user enable --now nyra-scheduler.service`。
+
+## 方式二：Python 版（功能完整）
+
 `scripts/install.sh` 把 Nyra 装到你的 home 目录里，**不需要 root**，
 也不往系统目录写东西。装完直接在终端跑 `nyra` 就行。
 
