@@ -576,6 +576,10 @@ class TestProviderModelSwitch(unittest.TestCase):
 class TestLoadConfigHomePermissions(unittest.TestCase):
     """load_config 新建 ~/.nyra 时用 0700；已有目录不动。"""
 
+    # Windows 文件系统没有 POSIX 权限位：os.chmod(0o700/0o755) 在 NTFS 上
+    # 只影响只读标志，stat 看到的 mode 仍是 0o777，0700/0755 断言在
+    # Windows 上本就不适用；与 test_vault.py 的 0600 测试同例跳过。
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
     def test_new_home_created_0700(self):
         import nyra.config as config_module
 
@@ -587,6 +591,7 @@ class TestLoadConfigHomePermissions(unittest.TestCase):
             self.assertEqual(home.stat().st_mode & 0o777, 0o700)
             self.assertEqual(config["provider"], "deepseek")
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
     def test_existing_home_permissions_untouched(self):
         import nyra.config as config_module
 

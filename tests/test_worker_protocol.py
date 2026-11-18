@@ -486,7 +486,7 @@ class WorkerSubprocessTests(unittest.TestCase):
         proc = subprocess.Popen(
             [sys.executable, "-m", "nyra.worker", "--provider", "ollama"],
             cwd=repo, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, env=env,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env,
         )
         try:
             out, err = proc.communicate(
@@ -505,9 +505,14 @@ class WorkerSubprocessTests(unittest.TestCase):
 
     def test_help_exits_zero(self):
         repo = Path(__file__).resolve().parent.parent
+        # worker 把 stdout/stderr 显式重配成 UTF-8 再打印中文帮助；父进程
+        # 必须按 UTF-8 解码，不能用 Windows 默认的 locale 编码（英文环境
+        # 是 cp1252，0x8d 等字节无映射）：communicate() 的读线程会在解码
+        # 失败时死掉，result.stdout 变成 None，assertIn 报 TypeError。
         result = subprocess.run(
             [sys.executable, "-m", "nyra.worker", "--help"],
-            cwd=repo, capture_output=True, text=True, timeout=20,
+            cwd=repo, capture_output=True, text=True, encoding="utf-8",
+            timeout=20,
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("nyra.worker", result.stdout)

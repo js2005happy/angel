@@ -264,8 +264,14 @@ class MCPClient:
         except (OSError, ValueError) as exc:
             # 子进程可能在 poll() 检查和 flush 之间退出：Windows 上往已死
             # 子进程的 stdin 写会报 [Errno 22] Invalid argument（POSIX 上是
-            # BrokenPipeError）。这时真正的事件是“服务器已退出”，而不是写失败，
-            # 复查一次退出状态再决定报错文案。
+            # BrokenPipeError）。这时真正的事件是“服务器已退出”，而不是写失败。
+            # 但写失败的瞬间子进程可能还没被 poll() 看到已退出（Windows 上
+            # 管道断开与进程退出状态可见之间有竞态）：先等一小会儿让子进程
+            # 被回收，再复查退出状态；仍在运行才报写失败。
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
             if process.poll() is not None:
                 raise MCPError(
                     f"MCP 服务器已退出（退出码 {process.returncode}）"
