@@ -402,6 +402,27 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaises(JournalError):
                     journal.inspect()
 
+    def test_path_fallback_rechecks_directory_after_final_enumeration(self):
+        # The final path-based walk can race with a directory replacement.
+        # Verify that a final identity check is made before trusting records.
+        from angel import tool_journal as module
+        journal = ToolJournal("fallback-final-identity", root=self.root)
+        journal.begin("shell")
+        original_verify = module._verify_directory
+        checks = [0]
+
+        def changed_on_final_check(path, expected):
+            checks[0] += 1
+            if checks[0] == 3:
+                raise JournalError("日志目录在操作期间被替换")
+            return original_verify(path, expected)
+
+        with mock.patch.object(module.os, "supports_dir_fd", set()):
+            with mock.patch.object(module, "_verify_directory", side_effect=changed_on_final_check):
+                with self.assertRaisesRegex(JournalError, "被替换"):
+                    journal.inspect()
+        self.assertEqual(checks[0], 3)
+
     def test_mismatched_result_tool_is_unknown_not_reported_success(self):
         journal = ToolJournal("mismatched-tool", root=self.root)
         call = journal.begin("shell")
