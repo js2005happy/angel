@@ -16,6 +16,20 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_begin_rejects_pending_unknown_intent(self):
+        # An unfinished side effect is not safe to silently run past.
+        journal = ToolJournal("pending-before-begin", root=self.root)
+        pending_id = journal.begin("shell")
+        before = sorted(journal.path.iterdir())
+        with self.assertRaisesRegex(JournalError, "结果未知"):
+            journal.begin("http_post")
+        self.assertEqual(sorted(journal.path.iterdir()), before)
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 1)
+        # A legitimate result can still be recorded, then new work proceeds.
+        journal.finish(pending_id, "shell", success=True)
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 0)
+        self.assertTrue(journal.begin("http_post"))
+
     def test_begin_rejects_orphan_result_without_creating_intent(self):
         journal = ToolJournal("orphan-before-begin", root=self.root)
         journal._write("result_ok", "a" * 32, "shell")
