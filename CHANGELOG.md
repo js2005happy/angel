@@ -6,6 +6,7 @@
 - 安全：网页界面的 CSP、token 与 `Host` 校验不变；窗口只允许内置引导页与本次子进程的 `http://127.0.0.1:<端口>`，其他 http(s) / mailto 链接交给系统浏览器；网页没有 Tauri IPC（capabilities 不放行远程地址）。桌面端不播入场动画。
 - `nyra ui` 新增 `--print-url-json`（stdout 第一行一行 JSON：`nyra` / `version` / `url` / `host` / `port` / `token`，人读提示改到 stderr）与 `--exit-on-stdin-close`；`nyra/webui.py` 新增 `url_json()`、`watch_stdin_close()`。新增 `tests/test_desktop_ui_json.py`（参数、JSON 内容、stdin 关闭回调、真实子进程：读 JSON → 带 token 访问 200 / 不带 403 → 关 stdin 后退出码 0）。外壳自带 Rust 单元测试（启动行校验、导航白名单）。
 - 新增 `.github/workflows/desktop.yml`：只在手动触发与 `v*` tag 时运行，macos-latest 构建 universal `.dmg`，windows-latest 构建 `.msi` 与 NSIS `-setup.exe`，作为 workflow artifacts 上传（保留 14 天）；不建 Release。安装包**未签名**（macOS 只有 ad-hoc 签名、未公证），打开方法见新文档 `docs/desktop.md`。
+- 图标：全部由 `docs/assets/nyra-mark.svg` 生成（`desktop/scripts/make_icons.py`）：`icon.ico` 含 16/24/32/48/64/256，`icon.icns` 含 16–1024（@2x）；16/24/32 用加粗简化版（`desktop/icon-src/nyra-mark-small.svg`），光标填白以便在深色程序坞 / 任务栏上可辨；NSIS 安装程序图标显式指向同一 `icon.ico`。
 - 待办：Apple Developer ID 签名与公证、Windows 代码签名、自动更新、内置 Python；macOS / Windows 真机手动验证。
 
 ## 未发布（手机版 PWA + 扫码配对 + 入场动画）

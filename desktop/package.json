@@ -6,7 +6,7 @@
   "license": "SEE LICENSE IN ../LICENSE",
   "scripts": {
     "tauri": "tauri",
-    "icons": "tauri icon ../docs/assets/nyra-mark.svg --output src-tauri/icons",
+    "icons": "python3 scripts/make_icons.py",
     "dev": "tauri dev",
     "build": "tauri build"
   },
