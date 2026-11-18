@@ -376,7 +376,27 @@ python3 -m nyra --mode readonly "看看这个目录里有什么"
 python3 -m nyra --mode full "整理下载目录"
 ```
 
-**MCP 启动环境隔离**：默认启动 MCP 子进程时，只传递运行所需的少量系统环境变量（如 `PATH`、`HOME`、Windows 系统路径等）和显式配置的 `env`，不再自动传递 DeepSeek/OpenAI 等 API Key。确实需要额外环境变量的服务器可以在各自的配置中明确声明 `inherit_env`：
+**MCP 内置预置**：Nyra 自带 10 个预配置的 MCP 服务器，不用手写 `mcp_servers`。只要在 `~/.nyra/config.json` 里设 `"mcp_enabled": true`，默认就开 memory（知识图谱记忆）、sequential-thinking（结构化思考）、fetch（抓网页转 Markdown）、time（时间与时区）这 4 个；想多开就在 `mcp_presets` 列表里加名字：github（需 `GITHUB_PERSONAL_ACCESS_TOKEN`）、brave-search（需 `BRAVE_API_KEY`）、filesystem / git / sqlite（需在 `mcp_preset_args` 里给路径，如 `{"filesystem": ["D:/docs"], "git": ["D:/repo"], "sqlite": ["D:/data.db"]}`）、puppeteer（首次使用下载 Chromium）。fetch、git、time、sqlite 走 `uvx`（需装 uv），其余走 `npx`（需装 Node.js）。memory 的知识图谱默认存到 `~/.nyra/memory.jsonl`（不在 npx 缓存里，缓存清了也不丢）。预置只给配置：MCP 默认关闭，`auto` 模式下每个服务器启动前仍逐一确认；密钥缺失或路径未给时该预置会被跳过并说明原因。`mcp_servers` 里写的同名条目会覆盖预置。github、brave-search、sqlite、puppeteer 是官方已归档的服务器（不再维护），已在预置说明里注明；sqlite 用 `mcp 1.30.0` 才能跑（新版 SDK 删了 resources 接口）。
+
+**配对码协作**：两个 Nyra 可以配对后一起工作。宿主跑 `python3 -m nyra.pairing host`，屏幕上出现 6 位配对码（10 分钟过期、只能用一次、错 5 次作废）；客人在另一台机器上跑 `python3 -m nyra.pairing join <6 位码>`，配对成功后把任务发给宿主，宿主以只读模式跑完把结果传回来。任务只传文本与结果，不传任何凭据；配对只在你信任的网络里做（家里、办公室局域网），别在公共 Wi-Fi 上配对。
+
+**本地密码箱**：不想把 API Key 写进配置文件或聊天记录时，用密码箱。`python3 -m nyra.vault init` 设一个主密码，`python3 -m nyra.vault add DEEPSEEK_API_KEY` 按提示输 Key（不会显示在屏幕或命令历史里），以后 Nyra 需要这个 Key 时：环境变量里有就用环境变量，没有就自动去密码箱里取——取之前要先解锁，设环境变量 `NYRA_VAULT_PASSWORD` 就是解锁（只在你自己的机器上这么做）。密码箱文件在 `~/.nyra/vault.json`，加密存放，别人拿到文件也打不开；但主密码太弱、机器本身被入侵时仍不安全，高价值密钥请用专业密码管理器。`vault get` 会在你自己的终端上打印出明文，只在你主动要看的时候用。
+
+**本地知识库**：把喜欢的博主内容、文章、笔记收进知识库，再向它提问，Nyra 只按库里的内容回答、并注明依据了哪几条笔记，库里没有就直说不知道、不编造。数据全在本地 `~/.nyra/knowledge/<库名>/`（`kb.json` + `notes.jsonl`），标准库实现，不依赖第三方服务：
+
+```bash
+python3 -m nyra.knowledge create jianghushuo --description "个人成长、做事方法"
+python3 -m nyra.knowledge add jianghushuo --file ~/docs/notes.md     # .txt/.md，也可 --dir 批量收
+python3 -m nyra.knowledge add jianghushuo --url https://example.com/article   # 抓网页正文
+python3 -m nyra.knowledge add jianghushuo --text "……" --title "赚钱核心三问题"  # 直接贴文本
+python3 -m nyra.knowledge search jianghushuo "赚钱要明确什么"
+python3 -m nyra.knowledge ask jianghushuo "赚钱核心三问题是什么？"
+python3 -m nyra.knowledge list
+```
+
+收录时文本按标题与空行切成笔记（每条约 1500 字以内，带标题、来源、日期）；检索是本地 BM25（中英文分词）；提问默认走当前配置的 provider。注意：抖音视频链接本身拉不到完整文稿（视频页是 JS 渲染的，Nyra 只能拿到标题和描述），想把博主视频收进库，先把文稿/字幕文本贴进来，或用文章链接。跟 agent 主循环的自动调用（聊天时自动查库）等 A–E 合并后再接，现在先用命令行。
+
+**MCP 启动环境隔离**：默认启动 MCP 子进程时，只传递运行所需的少量系统环境变量（如 `PATH`、`HOME`、Windows 系统路径等）和显式配置的 `env`，不再自动传递 DeepSeek/OpenAI 等 API Key。确实需要额外环境变量的服务器可以在各自的配置中明确声明 `inherit_env`。另外会透传去凭据后的代理变量（`HTTP(S)_PROXY`、`ALL_PROXY`、`NO_PROXY`）与受信 CA 变量（`NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE` 等），否则公司网络或出口代理后面的机器首次下载 MCP 服务器会连不上；代理 URL 里嵌的密码不会传，代理必须认证的请在该服务器的 `inherit_env` 里显式声明完整 URL：
 
 ```json
 {

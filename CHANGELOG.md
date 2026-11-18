@@ -1,8 +1,24 @@
 # Nyra 变更记录
 
+## 未发布（配对码协作 + 本地密码箱 + 本地知识库 + CI 去位）
+
+- 新增 `nyra/knowledge.py`：本地 AI 知识库——建库、收录文本/文件/网页正文、分块存成本地笔记（`NYRA_HOME/knowledge/<库名>/kb.json` + `notes.jsonl`，每条带标题、来源、日期）、BM25 本地检索、`ask` 提问时把相关笔记交给模型回答并注明依据的笔记标题，库里没有就直说不知道、不编造。标准库 only，不依赖第三方服务。模块入口 `python3 -m nyra.knowledge create|list|add|search|ask|remove`（`add` 支持 `--file` / `--dir` / `--text` / `--url`；`remove` 需输入 yes 确认）。说明边界：抖音视频链接本身拉不到完整文稿（JS 渲染的页面只能拿到标题与描述），视频内容须先把文稿贴进来；跟 agent 主循环的自动调用等 A–E 合并后再接。新增 `tests/test_knowledge.py`（13 项，全离线）。
+- 新增 `nyra/pairing.py`：配对码协作——两个 Nyra 用 6 位数字码配对后一起工作。宿主显示配对码（10 分钟过期、一次性、错 5 次作废），客人输入码配对，拿到会话 token（只存内存）后可发任务；任务只在宿主以只读模式执行（不写文件、不跑 shell、不发网络请求），会话只传任务文本与结果，绝不传凭据；只在可信网络配对。宿主是本机 HTTP（0.0.0.0 临时端口，POST /pair、POST /task 须 Bearer token、GET /ping）+ UDP 47831 发现广播；客人有 discover（UDP 广播，5 秒）/pair/run_task/ping。模块入口 `python3 -m nyra.pairing host|join CODE`。新增 `tests/test_pairing.py`（19 项，全离线：错码/过期/5 次作废/无 token 401/发现走 127.0.0.1 单播）。
+- 新增 `nyra/vault.py`：本地加密密码箱——provider API Key / 账号密码加密存在本机 `NYRA_HOME/vault.json`（0600 文件、0700 目录），agent 用的时候读出来，绝不在聊天记录、日志里暴露明文。标准库 only：PBKDF2-HMAC-SHA256 200_000 次、64 字节密钥分加密/认证各 32、HMAC-CTR 异或加密、HMAC 验 MAC 后才解密、verifier 验主密码；解密失败统一报错，不区分密码错与文件被改。`config.py` 的 `resolve_provider` 加回退：环境变量里没 Key 且认证方式是 env（无连接器）时读密码箱，文件不存在、未设 `NYRA_VAULT_PASSWORD`、解锁失败时静默跳过、保持原报错，绝不弹 getpass。模块入口 `python3 -m nyra.vault init|add|get|list|remove|change-password`，密钥一律 getpass、拒绝 argv 传密钥。威胁模型写在模块 docstring 里：防读文件，不防机器被入侵/内存/弱主密码，未审计，高价值密钥用专业密码管理器。新增 `tests/test_vault.py`（35 项，全离线）。
+- CI 不再依赖 `.sh` 可执行位：快照式推送会丢文件模式（GitHub 上常为 644），测试与文档里原来直接跑 `./scripts/install.sh` / `./scripts/build_package.sh` 的地方全改成 `bash` 显式调用；两个静态测试改断言 shebang（不测模式位）；`docs/linux-install.md` 与 `docs/linux-packaging.md` 里的示例命令同步改成 `bash scripts/...`。去位验证：安装与打包测试 24 项全过。
+- 测试 585 → 681 项，全部通过。
+
+## 未发布（MCP 内置预置）
+
+- 新增 `nyra/mcp_presets.py`：内置 10 个 MCP 服务器预置，开箱即用，无需手写 `mcp_servers`。默认开启的 4 个（无需密钥、无需路径）：memory（知识图谱记忆）、sequential-thinking（结构化思考）、fetch（抓网页转 Markdown）、time（时间与时区）。按名启用的：github（需 GITHUB_PERSONAL_ACCESS_TOKEN）、brave-search（需 BRAVE_API_KEY）、filesystem / git / sqlite（需在 `mcp_preset_args` 里给路径）、puppeteer（首次使用下载 Chromium）。预置只给配置，不自动启动：MCP 默认关闭，`auto` 模式下每个服务器启动前仍逐一确认。
+- 配置新增 `mcp_presets`（默认 4 个即用型）与 `mcp_preset_args`（预置名 -> 追加参数，如 `{"filesystem": ["D:/docs"]}`）；`load_mcp_servers` 先合入预置，再叠加用户 `mcp_servers`（同名覆盖）；密钥缺失或路径未给时跳过并在 stderr 说明原因，密钥只通过 `inherit_env` 按名转发。`--list-mcp` 不变。
+- 新增 `tests/test_mcp_presets.py`（单元测试离线跑；真实服务器测试需 `NYRA_LIVE_MCP_TESTS=1`）：预置表结构、默认集与默认配置一致、解析（密钥缺失跳过/路径追加/同名覆盖/未知名跳过）、`load_mcp_servers` 合并行为；真实服务器逐个实测通过（见下）。
+- 实测（2026-11-18，本机，真实 npx/uvx 服务器）：memory、sequential-thinking、fetch、time、filesystem（临时目录）、git（临时仓库）、sqlite（临时数据库文件）、github 与 brave-search（假密钥，只验启动与工具列表）均能启动并列出工具；puppeteer 也已实测通过（旧版 2024-11-05，7 个工具：navigate/screenshot/click/fill/select/hover/evaluate，首次下载 Chromium 约 79 秒）。10 个预置至此全部实测通过。只收录 npm/PyPI 上确认存在的包：fetch、git、time 走 PyPI（`uvx mcp-server-*`，需装 uv），其余走 npm（`npx -y @modelcontextprotocol/server-*`，需装 Node.js）；github、brave-search、sqlite、puppeteer 为官方已归档服务器，已在预置说明里注明。
+- 实测中修了三个真问题：① 探测超时 5 秒不够（npx/uvx 首次下载要二三十秒，超时后回退握手会被现代服务器拒绝），`PROBE_TIMEOUT` 改到 60 秒，并加慢启动回归测试（假服务器 7 秒后才回探测，须走现代版）；② 子进程环境不传代理与 CA 变量，沙箱/公司出口代理下首次下载连不上：`_subprocess_env` 现透传代理变量（HTTP(S)_PROXY、ALL_PROXY、NO_PROXY、NODE_USE_ENV_PROXY）与受信 CA 变量（NODE_EXTRA_CA_CERTS、SSL_CERT_FILE、CURL_CA_BUNDLE、REQUESTS_CA_BUNDLE、GIT_SSL_CAINFO、AWS_CA_BUNDLE），代理 URL 里嵌的密码去掉再传，用户在 `inherit_env` / `env` 里显式声明的优先；③ sqlite 预置缺 `--db-path` 参数（服务器直接报错退出），且已归档的 sqlite 服务器与新版 MCP SDK 不兼容（`Server` 没有 `list_resources`），现用 `uvx --with mcp==1.30.0` 固定跑 1.x。memory 预置默认把知识图谱写到 `~/.nyra/memory.jsonl`（不在 npx 缓存里，缓存清了也不丢）。
+
 ## 未发布（MCP 协议升级到 2026-07-28）
 
-- MCP 客户端从 2024-11-05 升级到 2026-07-28：双时代协商——先用 `server/discover` 探测现代版（每次请求在 `_meta` 里自带 `io.modelcontextprotocol/protocolVersion`、`clientCapabilities`、`clientInfo`），探测失败（非现代错误或超时，最多等 5 秒）时回退旧版握手 `initialize`（最新握手版 2025-11-25）；旧版服务器返回的协议版本须在已知列表里（2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05），未知版本直接报错。只做 stdio，HTTP 传输不在本客户端范围。
+- MCP 客户端从 2024-11-05 升级到 2026-07-28：双时代协商——先用 `server/discover` 探测现代版（每次请求在 `_meta` 里自带 `io.modelcontextprotocol/protocolVersion`、`clientCapabilities`、`clientInfo`），探测失败（非现代错误或超时，最多等 60 秒）时回退旧版握手 `initialize`（最新握手版 2025-11-25）；旧版服务器返回的协议版本须在已知列表里（2025-11-25 / 2025-06-18 / 2025-03-26 / 2024-11-05），未知版本直接报错。只做 stdio，HTTP 传输不在本客户端范围。
 - `-32022 UnsupportedProtocolVersionError`：按服务器列出的 `supported` 重试现代版，没有共同版本时回退握手；迟到响应按已放弃的请求 id 丢弃，不冲掉握手的 id 匹配。
 - `tools/list` 跟随 `nextCursor` 分页；`tools/call` 返回 `resultType: input_required`（多轮往返）时直接报错，Nyra 暂不支持交互式追问；`clientInfo` 版本改成跟包版本（0.3.0），不再写死 0.2.0。
 - 新增 `tests/test_mcp_protocol_2026.py`（12 项）：现代/旧版/旧版低版本/空发现结果/`-32022` 回退/未知旧版拒绝/沉默探测超时回退/分页/多轮往返报错/`-32022` 重试；原有三个假服务器对未知方法改回 `-32601`（更贴近真实旧版服务器）。

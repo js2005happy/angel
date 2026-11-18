@@ -6,9 +6,9 @@ Nyra 是零 pip 依赖的纯 Python 程序，打包不需要编译：`scripts/bu
 ## 构建
 
 ```bash
-./scripts/build_package.sh            # 产出到 ./dist/
-./scripts/build_package.sh --out-dir /tmp/nyra-pkg
-./scripts/build_package.sh --no-deb   # 只要 tarball
+bash scripts/build_package.sh            # 产出到 ./dist/
+bash scripts/build_package.sh --out-dir /tmp/nyra-pkg
+bash scripts/build_package.sh --no-deb   # 只要 tarball
 ```
 
 产出：
@@ -54,7 +54,7 @@ nyra --version            # 应输出 Nyra 0.3.0
 
 ```bash
 tar -xzf nyra-0.3.0.tar.gz
-./nyra-0.3.0/scripts/install.sh --source ./nyra-0.3.0
+bash ./nyra-0.3.0/scripts/install.sh --source ./nyra-0.3.0
 ```
 
 `install.sh` 的完整用法见 [Linux 安装](linux-install.md)。

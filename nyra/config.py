@@ -34,6 +34,14 @@ DEFAULT_CONFIG = {
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
+    # 内置 MCP 预置（nyra/mcp_presets.py）：默认开启无需密钥/路径的
+    # memory、sequential-thinking、fetch、time；需要密钥/路径的预置
+    # 按名字加进这个列表就能启用（密钥走环境变量，路径走下方的
+    # mcp_preset_args）。用户在 mcp_servers 里写的同名条目会覆盖预置。
+    "mcp_presets": ["memory", "sequential-thinking", "fetch", "time"],
+    # 预置附加参数：预置名 -> 追加到命令后的参数列表，只用于需要
+    # 路径的预置，如 {"filesystem": ["D:/docs"], "git": ["D:/repo"]}。
+    "mcp_preset_args": {},
     "fallback_enabled": False,  # 默认关闭：模型自动兜底只由用户自己开启。
     "fallback_providers": ["deepseek", "xai", "ollama"],
     # 自定义 provider：名字 -> {base_url, default_model, env_key?, models?, allowed_hosts?}。
@@ -380,6 +388,14 @@ def resolve_provider(
     api_key = api_key or _env("API_KEY") or None
 
     connector_name = preset["connector"]
+    if api_key is None and env_key is not None and connector_name is None:
+        # 本地加密密码箱回退：环境变量里没有 Key、且认证方式将是
+        # env（无连接器）时，从 NYRA_HOME/vault.json 读。文件不存在、
+        # 未设 NYRA_VAULT_PASSWORD、解锁失败时静默跳过，保持原有
+        # “未设置 API Key”的报错行为；这里绝不弹 getpass。
+        from nyra.vault import get_credential
+
+        api_key = get_credential(env_key) or None
     if api_key is not None:
         auth = "env"
     elif connector_name is not None:

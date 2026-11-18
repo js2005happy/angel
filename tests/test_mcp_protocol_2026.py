@@ -5,6 +5,7 @@
 """
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -68,6 +69,18 @@ for line in sys.stdin:
     method = req.get("method")
     if MODE == "modern":
         if method == "server/discover":
+            ok(rid, DISCOVER_RESULT)
+        elif method == "tools/list":
+            ok(rid, {"resultType": "complete", "tools": TOOLS})
+        elif method == "tools/call":
+            ok(rid, {"resultType": "complete", "content": [{"type": "text", "text": "modern-ok"}]})
+        else:
+            err(rid, -32601, "Method not found")
+    elif MODE == "modern-slow-discover":
+        if method == "server/discover":
+            # 模拟 npx/uvx 首次下载：服务器 7 秒后才回探测。
+            # 探测超时（60 秒）必须等到它，不能误判为旧版。
+            time.sleep(7)
             ok(rid, DISCOVER_RESULT)
         elif method == "tools/list":
             ok(rid, {"resultType": "complete", "tools": TOOLS})
@@ -163,6 +176,45 @@ class MCPProtocol2026Test(unittest.TestCase):
     def methods(self):
         return [req.get("method") for req in self.requests()]
 
+    def test_subprocess_env_passes_proxy_without_credentials(self):
+        # 子进程要拿到代理与 CA 变量才能联网（npx/uvx 首次下载），
+        # 但代理 URL 里嵌的密码必须去掉；API Key 之类的凭据仍不传。
+        env = {
+            "https_proxy": "http://user:pass@proxy.example:3128",
+            "HTTP_PROXY": "http://proxy.example:3128",
+            "NODE_EXTRA_CA_CERTS": "/run/hatch/egress-tls/ca-bundle.pem",
+            "NO_PROXY": "localhost",
+            "DEEPSEEK_API_KEY": "sk-secret",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            client = MCPClient(self.config("modern"), timeout=10.0)
+            child_env = client._subprocess_env()
+        self.assertEqual(
+            child_env["https_proxy"], "http://proxy.example:3128"
+        )
+        self.assertEqual(child_env["HTTP_PROXY"], "http://proxy.example:3128")
+        self.assertEqual(
+            child_env["NODE_EXTRA_CA_CERTS"],
+            "/run/hatch/egress-tls/ca-bundle.pem",
+        )
+        self.assertEqual(child_env["NO_PROXY"], "localhost")
+        self.assertNotIn("DEEPSEEK_API_KEY", child_env)
+
+    def test_subprocess_env_explicit_proxy_wins(self):
+        # 用户在 inherit_env 里显式声明的代理变量优先，不被去凭据覆盖。
+        config = self.config("modern")
+        config.inherit_env = ["https_proxy"]
+        with patch.dict(
+            os.environ,
+            {"https_proxy": "http://user:pass@proxy.example:3128"},
+            clear=True,
+        ):
+            client = MCPClient(config, timeout=10.0)
+            child_env = client._subprocess_env()
+        self.assertEqual(
+            child_env["https_proxy"], "http://user:pass@proxy.example:3128"
+        )
+
     def test_modern_server_uses_discover_and_meta(self):
         client = MCPClient(self.config("modern"), timeout=10.0)
         try:
@@ -190,6 +242,19 @@ class MCPProtocol2026Test(unittest.TestCase):
                 meta["io.modelcontextprotocol/clientInfo"],
                 {"name": "Nyra", "version": NYRA_VERSION},
             )
+
+    def test_slow_start_server_still_negotiates_modern(self):
+        # 服务器 7 秒后才回探测（模拟 npx/uvx 首次下载）：探测必须
+        # 等到它，走现代版；不能因超时误判为旧版、发 initialize。
+        client = MCPClient(self.config("modern-slow-discover"), timeout=30.0)
+        try:
+            client.start()
+            self.assertEqual(client.era, "modern")
+            self.assertEqual(client.negotiated_version, "2026-07-28")
+            self.assertEqual([t["name"] for t in client.tools], ["echo"])
+        finally:
+            client.stop()
+        self.assertNotIn("initialize", self.methods())
 
     def test_legacy_server_falls_back_to_handshake(self):
         client = MCPClient(self.config("legacy"), timeout=10.0)
