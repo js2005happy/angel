@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Nyra Linux 安装脚本（Node 二进制版，只写 $HOME，不需要 root、不需要 Python）。
+#
+# 做什么：
+#   - 从 GitHub Releases 下载对应架构的 nyra 单文件二进制
+#     （nyra-linux-x64 / nyra-linux-arm64），放到 ~/.local/share/nyra/；
+#   - 在 ~/.local/bin/nyra 放一个指向二进制的符号链接；
+#   - 建 ~/.nyra（0700，Nyra 的配置与数据目录）；
+#   - 装完跑 `nyra --version` 自检（doctor 等配好 Key 后再跑，见下）；
+#   - 加 --with-systemd 时，再把 systemd/nyra-scheduler.service 装到
+#     ~/.config/systemd/user/（第 1 阶段只装文件、不 enable/start：
+#     二进制还没有 schedule daemon，见 docs/linux-systemd.md）。
+#
+# 用法：
+#   ./scripts/install-node.sh [--version TAG] [--from-file PATH]
+#                             [--prefix DIR] [--bin-dir DIR]
+#                             [--with-systemd] [--uninstall] [--help]
+#   默认 --version 是 latest（GitHub Releases 最新版）；已编好二进制时
+#   用 --from-file dist/nyra-linux-x64 从本地文件安装（不联网下载）。
+#   --version 传版本号时带 v 前缀，如 v0.3.0（不带 v 也行，脚本会补上）。
+#   重复跑就是升级：旧二进制会被替换，~/.nyra 里的数据不动。
+#
+# 要求：curl 或 wget（二选一）；--with-systemd 还要 systemctl。
+# 不装 Python、不装 Node、不装 Bun——二进制自带运行时。
+# Windows/macOS 产物未签名与未公证的问题见 docs/windows-install.md
+# 与 docs/macos-install.md；Linux 产物为动态链接，需要 glibc。
+
+set -euo pipefail
+
+REPO="js2005happy/nyra"
+VERSION="latest"
+FROM_FILE=""
+PREFIX="${HOME}/.local/share/nyra"
+BIN_DIR="${HOME}/.local/bin"
+WITH_SYSTEMD=0
+UNINSTALL=0
+
+log()  { printf '%s\n' "nyra-install: $*"; }
+die()  { printf '%s\n' "nyra-install: 错误：$*" >&2; exit 1; }
+
+# 拒绝危险的 --prefix：空、根目录、$HOME 本身、已存在的文件、含空格。
+# （与 scripts/install.sh 的 check_prefix 同款；卸载时 rm -rf $PREFIX，
+# 不拦住的话 --prefix / 或 --prefix $HOME 会删掉系统或整个 home。）
+check_prefix() {
+    local p="$1"
+    [ -n "$p" ] || die "--prefix 不能为空"
+    [ "$p" != "/" ] || die "--prefix 不能是 /"
+    [ "$p" != "$HOME" ] || die "--prefix 不能就是 \$HOME（会删掉你的 home）"
+    if [ -e "$p" ] && [ ! -d "$p" ]; then
+        die "--prefix 已存在且不是目录：$p"
+    fi
+    case "$p" in
+        *' '*) die "--prefix 不能含空格：$p（systemd 的 ExecStart 不好写）" ;;
+    esac
+}
+
+# 本脚本只在 Linux 上跑：在别的系统上直接拒绝，别装一半。
+# （macOS 用 scripts/install-node-macos.sh，Windows 用 scripts/install-node.ps1。）
+check_linux() {
+    [ "$(uname -s)" = "Linux" ] || die "这个脚本只在 Linux 上运行"
+}
+
+usage() {
+    sed -n '2,26p' "$0"
+    cat <<'EOF'
+
+选项：
+  --version TAG      Release 版本（默认 latest，如 v0.3.0）
+  --from-file PATH   从本地已编好的二进制安装（不联网下载）
+  --prefix DIR       安装位置（默认 ~/.local/share/nyra）
+  --bin-dir DIR      nyra 链接位置（默认 ~/.local/bin）
+  --with-systemd     再装 systemd 用户服务文件（只装文件、不启动，
+                     第 1 阶段二进制还没有 schedule daemon；
+                     只在带 systemd 的 Linux 上有效）
+  --uninstall        卸载：停掉并删掉服务、安装目录与链接；
+                     ~/.nyra（你的数据）会保留
+  --help             显示本帮助
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) [ $# -ge 2 ] || die "--version 需要一个参数"; VERSION="$2"; shift 2 ;;
+        --from-file) [ $# -ge 2 ] || die "--from-file 需要一个路径"; FROM_FILE="$2"; shift 2 ;;
+        --prefix) [ $# -ge 2 ] || die "--prefix 需要一个目录"; PREFIX="$2"; shift 2 ;;
+        --bin-dir) [ $# -ge 2 ] || die "--bin-dir 需要一个目录"; BIN_DIR="$2"; shift 2 ;;
+        --with-systemd) WITH_SYSTEMD=1; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        --help) usage; exit 0 ;;
+        *) die "未知选项 $1" ;;
+    esac
+done
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE_SRC="$ROOT/systemd/nyra-scheduler.service"
+SERVICE_DST="${HOME}/.config/systemd/user/nyra-scheduler.service"
+
+check_linux
+check_prefix "$PREFIX"
+# 版本号统一成 v 前缀（仓库标签是 v*；不带 v 传进来会 404）。
+if [ "$VERSION" != "latest" ]; then
+    case "$VERSION" in
+        v*) ;;
+        *) VERSION="v$VERSION" ;;
+    esac
+fi
+
+arch_name() {
+    case "$(uname -m)" in
+        x86_64|amd64) echo "nyra-linux-x64" ;;
+        aarch64|arm64) echo "nyra-linux-arm64" ;;
+        *) die "不支持的架构：$(uname -m)（目前只提供 x64 与 arm64 二进制）" ;;
+    esac
+}
+
+# 下载到临时文件、成功后再 mv 到位：下载失败（断网、404）时不留半截
+# 二进制，否则后面 chmod +x 与 --version 自检会对着损坏文件报错，
+# 而符号链接还指着它。
+download() {
+    local url="$1" dest="$2" tmp="$dest.tmp.$$"
+    rm -f "$tmp"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --progress-bar -o "$tmp" "$url" || { rm -f "$tmp"; die "下载失败：$url（检查网络，或到 https://github.com/$REPO/releases 手动下载）"; }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --show-progress -O "$tmp" "$url" || { rm -f "$tmp"; die "下载失败：$url（检查网络，或到 https://github.com/$REPO/releases 手动下载）"; }
+    else
+        die "需要 curl 或 wget 才能下载（二选一）"
+    fi
+    mv "$tmp" "$dest"
+}
+
+if [ "$UNINSTALL" -eq 1 ]; then
+    check_prefix "$PREFIX"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now nyra-scheduler.service 2>/dev/null || true
+    fi
+    rm -f "$SERVICE_DST" "$BIN_DIR/nyra"
+    rm -rf "$PREFIX"
+    log "已卸载（~/.nyra 里的数据保留）。"
+    exit 0
+fi
+
+ASSET="$(arch_name)"
+mkdir -p "$PREFIX" "$BIN_DIR"
+[ -d "${HOME}/.nyra" ] || mkdir -m 700 "${HOME}/.nyra"
+
+if [ -n "$FROM_FILE" ]; then
+    [ -f "$FROM_FILE" ] || die "找不到本地二进制：$FROM_FILE（先跑 ./scripts/build-binaries.sh）"
+    log "从本地文件安装：$FROM_FILE"
+    cp "$FROM_FILE" "$PREFIX/nyra"
+else
+    if [ "$VERSION" = "latest" ]; then
+        URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+    else
+        URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+    fi
+    log "下载 $URL"
+    download "$URL" "$PREFIX/nyra"
+fi
+chmod 755 "$PREFIX/nyra"
+ln -sf "$PREFIX/nyra" "$BIN_DIR/nyra"
+log "已装到 $PREFIX/nyra，链接在 $BIN_DIR/nyra"
+
+if [ "$WITH_SYSTEMD" -eq 1 ]; then
+    if [ -f "$SERVICE_SRC" ] && command -v systemctl >/dev/null 2>&1; then
+        mkdir -p "$(dirname "$SERVICE_DST")"
+        cp "$SERVICE_SRC" "$SERVICE_DST"
+        # systemd 服务原来调 python3 -m nyra、WorkingDirectory 指仓库：
+        # Node 版改调二进制，工作目录改回 $HOME（不需要仓库检出）。
+        sed -i "s|^ExecStart=.*|ExecStart=$BIN_DIR/nyra schedule daemon|" "$SERVICE_DST"
+        sed -i "s|^WorkingDirectory=.*|WorkingDirectory=%h|" "$SERVICE_DST"
+        sed -i "/^Environment=PYTHONUNBUFFERED=1$/d" "$SERVICE_DST"
+        # 第 1 阶段的二进制还没有 `schedule daemon`（第 2–3 阶段才有）：
+        # 现在 enable 的话服务会每 10 秒重启失败一次，只装文件、不启动；
+        # 等装了带 schedule 的版本后，再跑 systemctl --user enable --now。
+        log "警告：第 1 阶段二进制还没有 schedule daemon，服务文件已装到 $SERVICE_DST，但这次不 enable/start；带 schedule 的版本发布后，再跑：systemctl --user enable --now nyra-scheduler.service"
+    else
+        log "警告：没装 systemd 服务（缺文件或缺 systemctl），只装了二进制。"
+    fi
+fi
+
+log "自检："
+"$BIN_DIR/nyra" --version
+log "装好了。下一步：nyra setup（首次启动向导，三步到第一个任务），或 nyra doctor 自检。"
+log "提示：~/.local/bin 需要在 PATH 里；不在的话把 export PATH=\"\$HOME/.local/bin:\$PATH\" 加进 ~/.bashrc。"

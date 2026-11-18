@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Nyra macOS 安装脚本（Node 二进制版，只写 $HOME，不需要 root、不需要 Python）。
+#
+# 做什么：
+#   - 从 GitHub Releases 下载对应架构的二进制
+#     （arm64 用 nyra-macos-arm64，Intel 用 nyra-macos-x64），放到 ~/.local/share/nyra/；
+#   - 在 ~/.local/bin/nyra 放一个指向二进制的符号链接；
+#   - 建 ~/.nyra（0700，Nyra 的配置与数据目录）；
+#   - 装完跑 `nyra --version` 自检；
+#   - 加 --with-launchd 时，再把 launchd/ai.nyra.scheduler.plist 装到
+#     ~/Library/LaunchAgents/（第 1 阶段只装文件、不 load：二进制还没有
+#     schedule daemon，见 docs/macos-install.md）。
+#
+# 用法：
+#   ./scripts/install-node-macos.sh [--version TAG] [--from-file PATH]
+#                                   [--prefix DIR] [--bin-dir DIR]
+#                                   [--with-launchd] [--uninstall] [--help]
+#   默认 --version 是 latest；已编好二进制时用 --from-file 本地安装。
+#   --version 传版本号时带 v 前缀，如 v0.3.0（不带 v 也行，脚本会补上）。
+#
+# 要求：curl；--with-launchd 还要 launchctl。
+# 注意（诚实写，不编造）：
+#   - 二进制未签名、未公证：macOS Gatekeeper 首次运行会拦，
+#     需右键点“打开”放行一次，或等后续公证流程；不要编造“已签名”。
+#   - .dmg/.pkg 安装包：本机做不了，待办见 docs/macos-install.md，
+#     不要假装已提供。
+#   - 旧的 Python 版安装脚本是 scripts/install-macos.sh（仍可用）。
+set -euo pipefail
+
+REPO="js2005happy/nyra"
+VERSION="latest"
+FROM_FILE=""
+PREFIX="${HOME}/.local/share/nyra"
+BIN_DIR="${HOME}/.local/bin"
+WITH_LAUNCHD=0
+UNINSTALL=0
+
+log()  { printf '%s\n' "nyra-install: $*"; }
+die()  { printf '%s\n' "nyra-install: 错误：$*" >&2; exit 1; }
+
+# 拒绝危险的 --prefix：空、根目录、$HOME 本身、已存在的文件、含空格。
+# （与 scripts/install.sh 的 check_prefix 同款；卸载时 rm -rf $PREFIX，
+# 不拦住的话 --prefix / 或 --prefix $HOME 会删掉系统或整个 home。）
+check_prefix() {
+    local p="$1"
+    [ -n "$p" ] || die "--prefix 不能为空"
+    [ "$p" != "/" ] || die "--prefix 不能是 /"
+    [ "$p" != "$HOME" ] || die "--prefix 不能就是 \$HOME（会删掉你的 home）"
+    if [ -e "$p" ] && [ ! -d "$p" ]; then
+        die "--prefix 已存在且不是目录：$p"
+    fi
+    case "$p" in
+        *' '*) die "--prefix 不能含空格：$p" ;;
+    esac
+}
+
+# 本脚本只在 macOS 上跑：在别的系统上直接拒绝，别装一半。
+# （与 Python 版 scripts/install-macos.sh 的 check_darwin 同款。）
+check_darwin() {
+    [ "$(uname -s)" = "Darwin" ] || die "这个脚本只在 macOS 上运行"
+}
+
+usage() {
+    sed -n '2,27p' "$0"
+    cat <<'EOF'
+
+选项：
+  --version TAG      Release 版本（默认 latest，如 v0.3.0）
+  --from-file PATH   从本地已编好的二进制安装（不联网下载）
+  --prefix DIR       安装位置（默认 ~/.local/share/nyra）
+  --bin-dir DIR      nyra 链接位置（默认 ~/.local/bin）
+  --with-launchd     再装 launchd 定时任务文件（只装文件、不 load，
+                     第 1 阶段二进制还没有 schedule daemon）
+  --uninstall        卸载：停掉并删掉服务、安装目录与链接；
+                     ~/.nyra（你的数据）会保留
+  --help             显示本帮助
+EOF
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --version) [ $# -ge 2 ] || die "--version 需要一个参数"; VERSION="$2"; shift 2 ;;
+        --from-file) [ $# -ge 2 ] || die "--from-file 需要一个路径"; FROM_FILE="$2"; shift 2 ;;
+        --prefix) [ $# -ge 2 ] || die "--prefix 需要一个目录"; PREFIX="$2"; shift 2 ;;
+        --bin-dir) [ $# -ge 2 ] || die "--bin-dir 需要一个目录"; BIN_DIR="$2"; shift 2 ;;
+        --with-launchd) WITH_LAUNCHD=1; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        --help) usage; exit 0 ;;
+        *) die "未知选项 $1" ;;
+    esac
+done
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LABEL="ai.nyra.scheduler"
+PLIST_NAME="ai.nyra.scheduler.plist"
+PLIST_SRC="$ROOT/launchd/$PLIST_NAME"
+PLIST_DST="${HOME}/Library/LaunchAgents/$PLIST_NAME"
+
+check_darwin
+check_prefix "$PREFIX"
+# 版本号统一成 v 前缀（仓库标签是 v*；不带 v 传进来会 404）。
+if [ "$VERSION" != "latest" ]; then
+    case "$VERSION" in
+        v*) ;;
+        *) VERSION="v$VERSION" ;;
+    esac
+fi
+
+arch_asset() {
+    case "$(uname -m)" in
+        arm64) echo "nyra-macos-arm64" ;;
+        x86_64) echo "nyra-macos-x64" ;;
+        *) die "不支持的架构：$(uname -m)（目前只提供 arm64 与 x64 二进制）" ;;
+    esac
+}
+
+if [ "$UNINSTALL" -eq 1 ]; then
+    check_prefix "$PREFIX"
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    rm -f "$PLIST_DST" "$BIN_DIR/nyra"
+    rm -rf "$PREFIX"
+    log "已卸载（~/.nyra 里的数据保留）。"
+    exit 0
+fi
+
+ASSET="$(arch_asset)"
+mkdir -p "$PREFIX" "$BIN_DIR"
+[ -d "${HOME}/.nyra" ] || mkdir -m 700 "${HOME}/.nyra"
+
+if [ -n "$FROM_FILE" ]; then
+    [ -f "$FROM_FILE" ] || die "找不到本地二进制：$FROM_FILE（先跑 ./scripts/build-binaries.sh）"
+    log "从本地文件安装：$FROM_FILE"
+    cp "$FROM_FILE" "$PREFIX/nyra"
+else
+    command -v curl >/dev/null 2>&1 || die "需要 curl 才能下载"
+    if [ "$VERSION" = "latest" ]; then
+        URL="https://github.com/$REPO/releases/latest/download/$ASSET"
+    else
+        URL="https://github.com/$REPO/releases/download/$VERSION/$ASSET"
+    fi
+    log "下载 $URL"
+    # 先下到临时文件、成功后再 mv 到位：下载失败时不留半截二进制。
+    TMP_BIN="$PREFIX/nyra.tmp.$$"
+    rm -f "$TMP_BIN"
+    curl -fL --progress-bar -o "$TMP_BIN" "$URL" || { rm -f "$TMP_BIN"; die "下载失败，检查网络或到 https://github.com/$REPO/releases 手动下载 $ASSET"; }
+    mv "$TMP_BIN" "$PREFIX/nyra"
+fi
+chmod 755 "$PREFIX/nyra"
+ln -sf "$PREFIX/nyra" "$BIN_DIR/nyra"
+log "已装到 $PREFIX/nyra，链接在 $BIN_DIR/nyra"
+
+if [ "$WITH_LAUNCHD" -eq 1 ]; then
+    if [ -f "$PLIST_SRC" ] && command -v launchctl >/dev/null 2>&1; then
+        mkdir -p "$(dirname "$PLIST_DST")"
+        # plist 原来调 __NYRA_PYTHON__ -m nyra schedule daemon：
+        # Node 版把 ProgramArguments 的第一项换成二进制路径，删掉 -m / nyra 两行。
+        sed -e "s|__NYRA_PYTHON__|$BIN_DIR/nyra|g" \
+            -e "s|__NYRA_PREFIX__|$PREFIX|g" \
+            -e "s|__NYRA_HOME__|$HOME|g" \
+            -e "/<string>-m<\/string>/d" \
+            -e "/<string>nyra<\/string>/d" \
+            "$PLIST_SRC" > "$PLIST_DST"
+        chmod 644 "$PLIST_DST"
+        # 第 1 阶段的二进制还没有 `schedule daemon`（第 2–3 阶段才有）：
+        # 现在 load 的话 agent 会反复重启失败，只装文件、不 load；
+        # 等装了带 schedule 的版本后，再跑 launchctl load。
+        log "警告：第 1 阶段二进制还没有 schedule daemon，plist 已装到 $PLIST_DST，但这次不 launchctl load；带 schedule 的版本发布后，再跑：launchctl load $PLIST_DST"
+    else
+        log "警告：没装 launchd 服务（缺文件或缺 launchctl），只装了二进制。"
+    fi
+fi
+
+log "自检："
+"$BIN_DIR/nyra" --version
+log "装好了。下一步：nyra setup（首次启动向导），或 nyra doctor 自检。"
+log "注意：Gatekeeper 首次运行可能拦截，右键点二进制选“打开”放行一次。"
+log "提示：~/.local/bin 需要在 PATH 里；不在的话把 export PATH=\"\$HOME/.local/bin:\$PATH\" 加进 ~/.zshrc。"
