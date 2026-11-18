@@ -1,0 +1,726 @@
+// src/providers.ts — 模型 provider，与 Python 版 nyra/providers.py 同语义。
+// 14 个 OpenAI 兼容 HTTP provider + Codex CLI provider + 兜底链 + 多 Key 轮换。
+// 安全线：401/403 兜底不切换（换模型修不好认证）；多 Key 轮换时 401/403 也轮换，
+// 且报错绝不带 Key 值（两层 redact）；Codex 直接构造拒绝、定时任务禁用。
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { plaintextHttpError, type ResolvedProvider } from "./config.ts";
+
+export const RECOVERABLE_KINDS = ["quota", "rate_limit", "server", "timeout", "network"] as const;
+export type ProviderErrorKind =
+  | "auth" | "quota" | "rate_limit" | "server" | "client"
+  | "timeout" | "network" | "config" | "parse" | "redirect" | "unknown";
+
+export class ProviderError extends Error {
+  status: number | null;
+  kind: ProviderErrorKind;
+  constructor(message: string, opts?: { status?: number | null; kind?: ProviderErrorKind }) {
+    super(message);
+    this.name = "ProviderError";
+    this.status = opts?.status ?? null;
+    this.kind = opts?.kind ?? "unknown";
+  }
+  get recoverable(): boolean {
+    return (RECOVERABLE_KINDS as readonly string[]).includes(this.kind);
+  }
+}
+
+export function isRecoverableProviderError(exc: unknown): boolean {
+  return exc instanceof ProviderError && exc.recoverable;
+}
+
+export function kindForStatus(code: number): ProviderErrorKind {
+  if (code === 401 || code === 403) return "auth";
+  if (code === 402) return "quota";
+  if (code === 429) return "rate_limit";
+  if (code >= 500 && code < 600) return "server";
+  if (code >= 400 && code < 500) return "client";
+  return "server";
+}
+
+export function httpError(code: number, body: string, action = "API 请求"): ProviderError {
+  const kind = kindForStatus(code);
+  let message: string;
+  if (kind === "auth") message = `认证失败 (HTTP ${code})：API Key 无效或无权限，请检查凭证。详情：${body}`;
+  else if (kind === "quota") message = `余额不足 (HTTP 402)：请充值后再试。详情：${body}`;
+  else if (kind === "rate_limit") message = `请求过于频繁 (HTTP 429)：请稍后再试。详情：${body}`;
+  else message = `${action}失败 (HTTP ${code})：${body}`;
+  return new ProviderError(message, { status: code, kind });
+}
+
+export function normalizeMessages(messages: Record<string, unknown>[]): Record<string, unknown>[] {
+  return messages.map((message) => {
+    if (!message || typeof message !== "object") return message;
+    const content = message.content;
+    if (Array.isArray(content)) {
+      const parts = content.filter((p) => p && typeof p === "object" && "type" in (p as Record<string, unknown>));
+      return { ...message, content: parts };
+    }
+    if (typeof content === "string" || content === null || content === undefined) return message;
+    return { ...message, content: String(content) };
+  });
+}
+
+export interface ChatMessage {
+  role: string;
+  content: string | Record<string, unknown>[] | null;
+  tool_calls?: Record<string, unknown>[];
+  tool_call_id?: string;
+  [key: string]: unknown;
+}
+
+export interface ProviderLike {
+  name: string;
+  model: string;
+  baseUrl: string;
+  hasCredentials(): boolean;
+  chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout?: number): Promise<Record<string, unknown>>;
+  listModels(timeout?: number): Promise<string[]>;
+  redact(text: string): string;
+}
+
+export class Provider implements ProviderLike {
+  name: string;
+  baseUrl: string;
+  model: string;
+  apiKey: string | null;
+  auth: string;
+  connectorName: string | null;
+  allowedHosts: string[];
+
+  constructor(cfg: ResolvedProvider) {
+    // CLI provider 禁止直接构造（Python 版 __new__ 守卫）：定时任务与队列
+    // 不得使用 CLI provider；交互使用请走 buildProviderChain。
+    if (cfg.auth === "cli") {
+      throw new ProviderError(
+        "Codex CLI provider 不能直接构造：定时任务与队列不得使用 CLI provider；交互使用请走 buildProviderChain 显式选用 --provider codex",
+        { kind: "config" },
+      );
+    }
+    this.name = cfg.name;
+    this.baseUrl = cfg.baseUrl.replace(/\/+$/, "");
+    this.model = cfg.model;
+    this.apiKey = cfg.apiKey;
+    this.auth = cfg.auth;
+    this.connectorName = cfg.connectorName;
+    this.allowedHosts = cfg.allowedHosts;
+  }
+
+  hasCredentials(): boolean {
+    try {
+      if (this.auth === "none") return true;
+      if (this.apiKey !== null) return true;
+      if (this.auth === "connector") {
+        // Node 版第 2 阶段未接连接器凭证注入（doctor 已如实说明）：
+        // 连接器 auth 在 Node 侧视为无可用凭证，不静默发无认证请求。
+        return false;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  redact(text: string, authorizationHeader?: string): string {
+    const secrets = new Set<string>();
+    if (this.apiKey) secrets.add(this.apiKey);
+    if (authorizationHeader) {
+      secrets.add(authorizationHeader);
+      const parts = authorizationHeader.split(/\s+/, 2);
+      if (parts.length === 2 && parts[1]) secrets.add(parts[1]);
+    }
+    let out = text;
+    for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+      out = out.split(secret).join("[已隐藏]");
+    }
+    return out;
+  }
+
+  private applyAuth(headers: Record<string, string>): void {
+    if (this.auth === "env") {
+      if (this.apiKey === null) {
+        throw new ProviderError(`provider ${this.name} 未设置 API Key，请设置对应的环境变量 API Key 后重试`, { kind: "config" });
+      }
+      headers.Authorization = `Bearer ${this.apiKey}`;
+    } else if (this.auth === "connector") {
+      throw new ProviderError("无法使用已保存的连接器凭证，请检查连接器配置或设置环境变量 API Key 后重试", { kind: "config" });
+    } else if (this.auth === "none") {
+      // 不加认证头。
+    } else {
+      throw new ProviderError("该 provider 的认证方式无效", { kind: "config" });
+    }
+  }
+
+  private async postJson(url: string, payload: unknown, timeout: number, action: string): Promise<Record<string, unknown>> {
+    const err = plaintextHttpError(this.name, this.baseUrl);
+    if (err !== null) throw new ProviderError(err, { kind: "config" });
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    this.applyAuth(headers);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout * 1000);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if ((e as Error)?.name === "AbortError" || /aborted|timeout/i.test(msg)) {
+        throw new ProviderError("API 请求超时，请稍后重试", { kind: "timeout" });
+      }
+      throw new ProviderError(this.redact(`网络错误，无法连接到 ${this.baseUrl}：${msg}`, headers.Authorization), { kind: "network" });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new ProviderError("API 请求被重定向，已拒绝", { kind: "redirect" });
+    }
+    const rawBody = await response.text();
+    if (!response.ok) {
+      const body = this.redact(rawBody, headers.Authorization).slice(0, 1000);
+      throw httpError(response.status, body, action);
+    }
+    let result: unknown;
+    try {
+      result = JSON.parse(rawBody);
+    } catch {
+      throw new ProviderError("API 返回了无法解析的响应", { kind: "parse" });
+    }
+    if (!result || typeof result !== "object") {
+      throw new ProviderError("API 返回了无法解析的响应", { kind: "parse" });
+    }
+    return result as Record<string, unknown>;
+  }
+
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+    const payload: Record<string, unknown> = {
+      model: this.model,
+      messages: normalizeMessages(messages as Record<string, unknown>[]),
+    };
+    if (tools !== null && tools !== undefined) payload.tools = tools;
+    return this.postJson(`${this.baseUrl}/chat/completions`, payload, timeout, "API 请求");
+  }
+
+  async listModels(timeout = 30): Promise<string[]> {
+    const err = plaintextHttpError(this.name, this.baseUrl);
+    if (err !== null) throw new ProviderError(err, { kind: "config" });
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    this.applyAuth(headers);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout * 1000);
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/models`, {
+        method: "GET", headers, redirect: "manual", signal: controller.signal,
+      });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if ((e as Error)?.name === "AbortError") throw new ProviderError("API 请求超时，请稍后重试", { kind: "timeout" });
+      throw new ProviderError(this.redact(`网络错误，无法连接到 ${this.baseUrl}：${msg}`, headers.Authorization), { kind: "network" });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (response.status >= 300 && response.status < 400) {
+      throw new ProviderError("API 请求被重定向，已拒绝", { kind: "redirect" });
+    }
+    const rawBody = await response.text();
+    if (!response.ok) {
+      const body = this.redact(rawBody, headers.Authorization).slice(0, 1000);
+      throw httpError(response.status, body, "列出模型");
+    }
+    let result: unknown;
+    try {
+      result = JSON.parse(rawBody);
+    } catch {
+      throw new ProviderError("API 返回了无法解析的响应", { kind: "parse" });
+    }
+    if (!result || typeof result !== "object" || !Array.isArray((result as Record<string, unknown>).data)) {
+      throw new ProviderError("API 返回了无法解析的模型列表", { kind: "parse" });
+    }
+    const models: string[] = [];
+    for (const item of (result as Record<string, unknown>).data as unknown[]) {
+      if (item && typeof item === "object" && typeof (item as Record<string, unknown>).id === "string") {
+        models.push((item as Record<string, unknown>).id as string);
+      }
+    }
+    return models;
+  }
+}
+
+// ---- Codex CLI provider ----
+export const CODEX_PROMPT_PREFIX =
+  "You are Nyra, a text-only assistant. Reply in the user's language, " +
+  "concisely and directly. Do not call tools, run commands, browse the " +
+  "web, or modify files. Answer with text only.\n\n";
+export const CODEX_MIN_VERSION: [number, number, number] = [0, 164, 0];
+export const CODEX_DEFAULT_MODEL = "codex-default";
+export const CODEX_FORBIDDEN_ARGS = new Set([
+  "--dangerously-bypass-approvals-and-sandbox",
+  "--approve-for-me",
+  "--dangerously-bypass-hook-trust",
+  "-y",
+  "--full-auto",
+]);
+
+const CODEX_BINARY_CANDIDATES = [
+  "/opt/hatch-image/bin/codex",
+  join(process.env.HOME ?? "", ".local/bin/codex"),
+  "/usr/local/bin/codex",
+  "/usr/bin/codex",
+];
+
+let codexBinaryCache: string | null = null;
+let codexBinaryChecked = false;
+let codexAvailableCache: boolean | null = null;
+
+export function resetCodexCache(): void {
+  codexBinaryCache = null;
+  codexBinaryChecked = false;
+  codexAvailableCache = null;
+}
+
+export function findCodexBinary(binaryOverride?: string): string {
+  if (codexBinaryChecked) {
+    if (codexBinaryCache === null) throw new ProviderError("未找到 Codex CLI，请先安装 Codex 后重试", { kind: "config" });
+    return codexBinaryCache;
+  }
+  codexBinaryChecked = true;
+  const candidates = binaryOverride ? [binaryOverride] : CODEX_BINARY_CANDIDATES;
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      codexBinaryCache = candidate;
+      return candidate;
+    }
+  }
+  try {
+    const found = execFileSync("which", ["codex"], { encoding: "utf-8", timeout: 5000 }).trim();
+    if (found) {
+      codexBinaryCache = found;
+      return found;
+    }
+  } catch { /* fall through */ }
+  throw new ProviderError("未找到 Codex CLI，请先安装 Codex 后重试", { kind: "config" });
+}
+
+export function parseCodexVersion(text: string): [number, number, number] | null {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(text || "");
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+}
+
+function versionAtLeast(v: [number, number, number], min: [number, number, number]): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (v[i] > min[i]) return true;
+    if (v[i] < min[i]) return false;
+  }
+  return true;
+}
+
+export function codexAvailable(): boolean {
+  if (codexAvailableCache !== null) return codexAvailableCache;
+  let ok = false;
+  try {
+    const binary = findCodexBinary();
+    const version = spawnSync(binary, ["--version"], { encoding: "utf-8", timeout: 30000 });
+    const parsed = parseCodexVersion(version.stdout || "");
+    if (version.status === 0 && parsed && versionAtLeast(parsed, CODEX_MIN_VERSION)) {
+      // 只读退出码 + "Logged in" 标记；绝不打开、复制或记录任何凭据文件。
+      const login = spawnSync(binary, ["login", "status"], { encoding: "utf-8", timeout: 30000 });
+      const loginText = (login.stdout || "") + (login.stderr || "");
+      ok = login.status === 0 && loginText.includes("Logged in");
+    }
+  } catch {
+    ok = false;
+  }
+  codexAvailableCache = ok;
+  return ok;
+}
+
+export function serializeCodexPrompt(messages: ChatMessage[]): string {
+  const parts = [CODEX_PROMPT_PREFIX];
+  for (const message of messages ?? []) {
+    const role = String((message as Record<string, unknown>).role ?? "user");
+    let content = (message as Record<string, unknown>).content as unknown;
+    if (Array.isArray(content)) {
+      content = content.filter((p) => p && typeof p === "object").map((p) => String((p as Record<string, unknown>).text ?? "")).join("\n");
+    } else if (content === null || content === undefined) {
+      content = "";
+    } else {
+      content = String(content);
+    }
+    parts.push(`[${role}]\n${content}\n`);
+  }
+  return parts.join("\n");
+}
+
+const CODEX_AUTH_MARKERS = ["not logged in", "login required", "authentication", "unauthorized", "invalid api key"];
+const CODEX_QUOTA_MARKERS = ["usage limit", "out of credits", "credits exhausted", "quota exceeded", "weekly limit", "monthly limit", "usage credits"];
+const CODEX_RATE_MARKERS = ["rate limit", "rate_limit", "too many requests", "429"];
+const CODEX_CONFIG_MARKERS = ["model_not_found", "model is not supported", "unknown model"];
+const CODEX_NETWORK_MARKERS = ["network", "connection", "econnrefused", "dns", "econnreset", "broken pipe"];
+
+export function classifyCodexError(text: string): ProviderErrorKind {
+  const lowered = (text || "").toLowerCase();
+  if (CODEX_AUTH_MARKERS.some((m) => lowered.includes(m))) return "auth";
+  if (CODEX_QUOTA_MARKERS.some((m) => lowered.includes(m))) return "quota";
+  if (CODEX_RATE_MARKERS.some((m) => lowered.includes(m))) return "rate_limit";
+  if (CODEX_CONFIG_MARKERS.some((m) => lowered.includes(m))) return "config";
+  if (CODEX_NETWORK_MARKERS.some((m) => lowered.includes(m))) return "network";
+  if (lowered.includes("timed out") || lowered.includes("timeout")) return "timeout";
+  return "unknown";
+}
+
+export function eventMessageText(event: Record<string, unknown>): string | null {
+  const eventType = String(event.type ?? "");
+  if (!eventType.includes("message") && !eventType.includes("text")) return null;
+  for (const key of ["message", "text", "content"]) {
+    const value = event[key];
+    if (typeof value === "string" && value.trim()) return value;
+    if (value && typeof value === "object") {
+      const nested = (value as Record<string, unknown>).text ?? (value as Record<string, unknown>).content;
+      if (typeof nested === "string" && nested.trim()) return nested;
+    }
+  }
+  return null;
+}
+
+export function lastMessageFromJsonl(text: string): string | null {
+  let last: string | null = null;
+  for (const line of (text || "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>;
+      if (!event || typeof event !== "object") continue;
+      const msg = eventMessageText(event);
+      if (msg) last = msg;
+    } catch { /* ignore */ }
+  }
+  return last;
+}
+
+export function usageFromJsonl(text: string): Record<string, number> | null {
+  let usage: Record<string, unknown> | null = null;
+  for (const line of (text || "").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) continue;
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>;
+      if (!event || typeof event !== "object") continue;
+      const candidate = event.usage;
+      if (candidate && typeof candidate === "object") usage = candidate as Record<string, unknown>;
+    } catch { /* ignore */ }
+  }
+  if (!usage) return null;
+  const out: Record<string, number> = {};
+  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens"]) {
+    const v = usage[key];
+    if (typeof v === "number" && Number.isInteger(v)) out[key] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+export function codexChildEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.endsWith("_API_KEY")) env[k] = v;
+  }
+  return env;
+}
+
+export function buildCodexArgv(binary: string, model: string, outputFile: string, workdir: string): string[] {
+  const argv = [
+    binary, "exec", "--json", "-o", outputFile, "-s", "read-only", "-C", workdir,
+    "--ephemeral", "--skip-git-repo-check",
+    "-c", "features.browser_use=false",
+    "-c", "features.computer_use=false",
+    "-c", "features.plugins=false",
+  ];
+  if (model !== CODEX_DEFAULT_MODEL) argv.splice(2, 0, "-m", model);
+  for (const arg of argv) {
+    if (CODEX_FORBIDDEN_ARGS.has(arg)) {
+      throw new ProviderError("Codex 调用包含禁用的审批跳过参数，已拒绝", { kind: "config" });
+    }
+  }
+  return argv;
+}
+
+export class CliProvider implements ProviderLike {
+  name: string;
+  baseUrl: string;
+  model: string;
+  apiKey: null = null;
+  auth = "cli";
+  connectorName: null = null;
+  allowedHosts: string[] = [];
+
+  constructor(cfg: ResolvedProvider) {
+    this.name = cfg.name;
+    this.baseUrl = cfg.baseUrl;
+    this.model = cfg.model;
+  }
+
+  hasCredentials(): boolean {
+    return codexAvailable();
+  }
+
+  redact(text: string): string {
+    return text;
+  }
+
+  async listModels(_timeout = 30): Promise<string[]> {
+    return [this.model];
+  }
+
+  async chat(messages: ChatMessage[], _tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+    const binary = findCodexBinary();
+    if (!codexAvailable()) {
+      const minimum = CODEX_MIN_VERSION.join(".");
+      throw new ProviderError(`Codex CLI 未登录或版本过低，请先在 Codex 里登录并升级到 ${minimum} 或更高版本后重试`, { kind: "config" });
+    }
+    const prompt = serializeCodexPrompt(messages);
+    const workdir = mkdtempSync(join(tmpdir(), "nyra-codex-"));
+    const outputFile = join(workdir, "last_message.txt");
+    const argv = buildCodexArgv(binary, this.model, outputFile, workdir);
+    const [bin, ...args] = argv;
+    try {
+      const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise) => {
+        const child = spawn(bin, args, {
+          cwd: workdir, env: codexChildEnv(), detached: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          try { process.kill(-child.pid!, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+        }, timeout * 1000);
+        child.stdout?.on("data", (d: Buffer) => { stdout += d.toString("utf-8"); });
+        child.stderr?.on("data", (d: Buffer) => { stderr += d.toString("utf-8"); });
+        child.on("error", () => {
+          clearTimeout(timer);
+          resolvePromise({ code: 1, stdout, stderr: stderr || "无法启动 Codex CLI" });
+        });
+        child.on("close", (code) => {
+          clearTimeout(timer);
+          resolvePromise({ code, stdout, stderr, timedOut } as never);
+        });
+        child.stdin?.end(prompt);
+        void timedOut;
+      });
+      const timedOut = (result as unknown as { timedOut?: boolean }).timedOut;
+      if (timedOut) {
+        throw new ProviderError("Codex CLI 调用超时，请稍后重试", { kind: "timeout" });
+      }
+      let outputText = "";
+      try {
+        outputText = readFileSync(outputFile, "utf-8").trim();
+      } catch { outputText = ""; }
+      if (result.code !== 0) {
+        const detail = (result.stderr || result.stdout || "").slice(0, 1000);
+        throw new ProviderError(`Codex CLI 调用失败（退出码 ${result.code}）：${detail}`, { kind: classifyCodexError(detail) });
+      }
+      if (!outputText) outputText = lastMessageFromJsonl(result.stdout) ?? "";
+      if (!outputText) throw new ProviderError("Codex CLI 没有返回可用的回复", { kind: "parse" });
+      const out: Record<string, unknown> = {
+        choices: [{ message: { role: "assistant", content: outputText } }],
+        model: this.model,
+      };
+      const usage = usageFromJsonl(result.stdout);
+      if (usage) out.usage = usage;
+      return out;
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  }
+}
+
+export function describeProvider(provider: ProviderLike): string {
+  return provider.redact(`${provider.name} / ${provider.model} @ ${provider.baseUrl}`).split("\n").join(" ");
+}
+
+export interface SwitchRecord {
+  from: string;
+  to: string;
+  error: string;
+  kind: ProviderErrorKind;
+  status: number | null;
+}
+
+export class FallbackProvider implements ProviderLike {
+  providers: ProviderLike[];
+  onSwitch: ((record: SwitchRecord) => void) | null;
+  activeIndex = 0;
+  switches: SwitchRecord[] = [];
+
+  constructor(providers: ProviderLike[], onSwitch?: ((record: SwitchRecord) => void) | null) {
+    if (!providers.length) throw new Error("FallbackProvider needs at least one provider");
+    this.providers = [...providers];
+    this.onSwitch = onSwitch ?? null;
+  }
+
+  get name(): string { return this.providers[this.activeIndex].name; }
+  get model(): string { return this.providers[this.activeIndex].model; }
+  get baseUrl(): string { return this.providers[this.activeIndex].baseUrl; }
+
+  redact(text: string): string {
+    return this.providers[this.activeIndex].redact(text);
+  }
+
+  hasCredentials(): boolean {
+    return this.providers[0].hasCredentials();
+  }
+
+  async listModels(timeout = 30): Promise<string[]> {
+    return this.providers[this.activeIndex].listModels(timeout);
+  }
+
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+    const attempted: [string, string][] = [];
+    for (let index = 0; index < this.providers.length; index++) {
+      const provider = this.providers[index];
+      try {
+        const result = await provider.chat(messages, tools, timeout);
+        this.activeIndex = index;
+        return result;
+      } catch (exc: unknown) {
+        if (!(exc instanceof ProviderError)) throw exc;
+        attempted.push([provider.name, String(exc.message)]);
+        if (!exc.recoverable) throw exc;
+        if (index + 1 >= this.providers.length) break;
+        const nxt = this.providers[index + 1];
+        const record: SwitchRecord = { from: provider.name, to: nxt.name, error: String(exc.message), kind: exc.kind, status: exc.status };
+        this.switches.push(record);
+        this.activeIndex = index + 1;
+        this.onSwitch?.(record);
+      }
+    }
+    const detail = attempted.map(([n, e]) => `${n}：${e}`).join("；");
+    throw new ProviderError(`全部 ${this.providers.length} 个模型都失败了：${detail}`, { kind: "unknown" });
+  }
+}
+
+export class KeyRotatingProvider implements ProviderLike {
+  providers: ProviderLike[];
+  onSwitch: ((record: SwitchRecord) => void) | null;
+  activeIndex = 0;
+  switches: SwitchRecord[] = [];
+
+  constructor(providers: ProviderLike[], onSwitch?: ((record: SwitchRecord) => void) | null) {
+    if (!providers.length) throw new Error("KeyRotatingProvider needs at least one provider");
+    this.providers = [...providers];
+    this.onSwitch = onSwitch ?? null;
+  }
+
+  get name(): string { return this.providers[this.activeIndex].name; }
+  get model(): string { return this.providers[this.activeIndex].model; }
+  get baseUrl(): string { return this.providers[this.activeIndex].baseUrl; }
+
+  redact(text: string): string {
+    return this.providers[this.activeIndex].redact(text);
+  }
+
+  hasCredentials(): boolean {
+    return this.providers[0].hasCredentials();
+  }
+
+  async listModels(timeout = 30): Promise<string[]> {
+    return this.providers[this.activeIndex].listModels(timeout);
+  }
+
+  private label(index: number): string {
+    return `${this.providers[index].name} key ${index + 1}`;
+  }
+
+  private safeError(provider: ProviderLike, exc: ProviderError): string {
+    try {
+      return provider.redact(String(exc.message));
+    } catch {
+      return String(exc.message);
+    }
+  }
+
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+    const attempted: [number, string][] = [];
+    let lastExc: ProviderError | null = null;
+    for (let index = 0; index < this.providers.length; index++) {
+      const provider = this.providers[index];
+      try {
+        const result = await provider.chat(messages, tools, timeout);
+        this.activeIndex = index;
+        return result;
+      } catch (exc: unknown) {
+        if (!(exc instanceof ProviderError)) throw exc;
+        const safe = this.safeError(provider, exc);
+        attempted.push([index, safe]);
+        lastExc = exc;
+        if (index + 1 >= this.providers.length) break;
+        const record: SwitchRecord = {
+          from: this.label(index), to: this.label(index + 1),
+          error: safe, kind: exc.kind, status: exc.status,
+        };
+        this.switches.push(record);
+        this.activeIndex = index + 1;
+        this.onSwitch?.(record);
+      }
+    }
+    const detail = attempted.map(([i, e]) => `key ${i + 1}：${e}`).join("；");
+    throw new ProviderError(
+      `全部 ${this.providers.length} 个 API Key 都失败了：${detail}`,
+      { kind: lastExc?.kind ?? "unknown", status: lastExc?.status ?? null },
+    );
+  }
+}
+
+export function buildProviderChain(
+  primaryCfg: ResolvedProvider,
+  chainNames: string[],
+  onSwitch?: ((record: SwitchRecord) => void) | null,
+  opts?: {
+    providerCls?: new (cfg: ResolvedProvider) => ProviderLike;
+    resolver?: (name: string) => ResolvedProvider;
+    cliProviderCls?: new (cfg: ResolvedProvider) => ProviderLike;
+  },
+): ProviderLike {
+  const providerCls = opts?.providerCls ?? Provider;
+  const resolver = opts?.resolver;
+  const cliProviderCls = opts?.cliProviderCls ?? CliProvider;
+  if (primaryCfg.auth === "cli") return new cliProviderCls(primaryCfg);
+  const providers: ProviderLike[] = [new providerCls(primaryCfg)];
+  for (const name of chainNames.slice(1)) {
+    if (!resolver) break;
+    let candidateCfg: ResolvedProvider;
+    try {
+      candidateCfg = resolver(name);
+    } catch (exc: unknown) {
+      console.error(`兜底允许列表里跳过了无法解析的 provider ${name}：${exc instanceof Error ? exc.message : String(exc)}`);
+      continue;
+    }
+    if (candidateCfg.auth === "cli") {
+      console.error(`兜底允许列表里跳过了 CLI provider ${name}（不进兜底链）`);
+      continue;
+    }
+    let candidate: ProviderLike;
+    try {
+      candidate = new providerCls(candidateCfg);
+    } catch (exc: unknown) {
+      console.error(`兜底允许列表里跳过了无法解析的 provider ${name}：${exc instanceof Error ? exc.message : String(exc)}`);
+      continue;
+    }
+    if (!candidate.hasCredentials()) {
+      console.error(`兜底允许列表里跳过了未配置 Key 的 provider ${name}`);
+      continue;
+    }
+    providers.push(candidate);
+  }
+  if (providers.length === 1) return providers[0];
+  return new FallbackProvider(providers, onSwitch ?? null);
+}

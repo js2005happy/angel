@@ -1,0 +1,151 @@
+// src/approvalUi.ts — 交互审批选择器，与 Python 版 nyra/approval_ui.py 同语义。
+// Claude 式选择器：编号选项、Enter 确认、Esc 取消，默认选“是”。
+// 非 TTY 时行输入回退：空行 = 是（默认），EOF/Ctrl-C = 否（fail-closed）。
+// 任何无法识别的输入都是“否”，绝不抛错。
+import { createInterface } from "node:readline";
+
+export const YES = "yes";
+export const NO = "no";
+export const ALWAYS = "always";
+export type ApprovalChoice = "yes" | "no" | "always";
+
+export const APPROVAL_FOOTER = "Enter to confirm · Esc to cancel";
+
+export function approvalOptions(allowAlways: boolean, alwaysLabel?: string): [string, ApprovalChoice][] {
+  const options: [string, ApprovalChoice][] = [["是，执行一次", YES], ["否", NO]];
+  if (allowAlways) {
+    options.push([alwaysLabel ?? "始终允许（本次会话）", ALWAYS]);
+  }
+  return options;
+}
+
+export function renderApprovalMenu(options: [string, ApprovalChoice][], selected: number): string {
+  const lines: string[] = [];
+  options.forEach(([label], index) => {
+    const marker = index === selected ? "> " : "  ";
+    let text = `${marker}${index + 1}. ${label}`;
+    if (index === selected) text = `\x1b[7m${text}\x1b[0m`;
+    lines.push(text);
+  });
+  lines.push("");
+  lines.push(APPROVAL_FOOTER);
+  return lines.join("\n") + "\n";
+}
+
+export type KeyToken = "up" | "down" | "enter" | "esc" | "ctrl-c" | "y" | "n" | "a" | string;
+
+export function menuSelect(
+  options: [string, ApprovalChoice][],
+  readKey: () => KeyToken,
+  write: (text: string) => void,
+): ApprovalChoice {
+  let selected = 0;
+  const count = options.length;
+  write(renderApprovalMenu(options, selected));
+  for (;;) {
+    const key = readKey();
+    if (key === "up") selected = (selected - 1 + count) % count;
+    else if (key === "down") selected = (selected + 1) % count;
+    else if (key === "enter") return options[selected][1];
+    else if (key === "esc" || key === "ctrl-c") return NO;
+    else if (key === "y") return YES;
+    else if (key === "n") return NO;
+    else if (key === "a") {
+      for (const [, value] of options) if (value === ALWAYS) return ALWAYS;
+      return NO;
+    } else if (/^[0-9]$/.test(key)) {
+      const index = parseInt(key, 10) - 1;
+      if (index >= 0 && index < count) return options[index][1];
+      continue;
+    } else {
+      continue;
+    }
+    write(`\x1b[${count + 2}A\x1b[J` + renderApprovalMenu(options, selected));
+  }
+}
+
+/** 行输入回退：空行 = 是；EOF/Ctrl-C = 否（fail-closed）。 */
+export async function lineFallback(prompt: string, allowAlways: boolean): Promise<ApprovalChoice> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string | null>((resolvePromise) => {
+      rl.question(`${prompt} [是/否] `, (a) => resolvePromise(a));
+      rl.on("close", () => resolvePromise(null));
+    });
+    if (answer === null) return NO; // EOF
+    const a = answer.trim().toLowerCase();
+    if (a === "" || a === "y" || a === "yes" || a === "1") return YES;
+    if (allowAlways && (a === "a" || a === "always" || a === "3")) return ALWAYS;
+    return NO;
+  } catch {
+    return NO;
+  } finally {
+    rl.close();
+  }
+}
+
+/** TTY 时方向键菜单，否则行输入回退；菜单搭建失败也回退到行输入。 */
+export async function askApproval(prompt: string, allowAlways = false, alwaysLabel?: string): Promise<ApprovalChoice> {
+  const options = approvalOptions(allowAlways, alwaysLabel);
+  const stdinTty = Boolean(process.stdin.isTTY);
+  const stdoutTty = Boolean(process.stdout.isTTY);
+  if (stdinTty && stdoutTty) {
+    try {
+      process.stdout.write(prompt + "\n");
+      return await ttyMenu(options);
+    } catch {
+      // 回退到行输入。
+    }
+  }
+  return lineFallback(prompt, allowAlways);
+}
+
+function ttyMenu(options: [string, ApprovalChoice][]): Promise<ApprovalChoice> {
+  return new Promise((resolvePromise) => {
+    const stdin = process.stdin;
+    stdin.setRawMode?.(true);
+    stdin.resume();
+    let selected = 0;
+    const count = options.length;
+    const write = (t: string) => process.stdout.write(t);
+    write(renderApprovalMenu(options, selected));
+    const onData = (chunk: Buffer) => {
+      const b = chunk[0];
+      let key: KeyToken = "";
+      if (b === 0x1b) {
+        if (chunk.length >= 3 && chunk[1] === 0x5b) {
+          key = chunk[2] === 0x41 ? "up" : chunk[2] === 0x42 ? "down" : "";
+        } else {
+          key = "esc";
+        }
+      } else if (b === 0x0d || b === 0x0a) key = "enter";
+      else if (b === 0x03) key = "ctrl-c";
+      else key = String.fromCharCode(b).toLowerCase();
+      // 复用 menuSelect 的状态机：这里直接内联一步，避免 readKey 阻塞。
+      if (key === "up") selected = (selected - 1 + count) % count;
+      else if (key === "down") selected = (selected + 1) % count;
+      else if (key === "enter") return done(options[selected][1]);
+      else if (key === "esc" || key === "ctrl-c") return done(NO);
+      else if (key === "y") return done(YES);
+      else if (key === "n") return done(NO);
+      else if (key === "a") {
+        for (const [, v] of options) if (v === ALWAYS) return done(ALWAYS);
+        return done(NO);
+      } else if (/^[0-9]$/.test(key)) {
+        const idx = parseInt(key, 10) - 1;
+        if (idx >= 0 && idx < count) return done(options[idx][1]);
+        return;
+      } else {
+        return;
+      }
+      write(`\x1b[${count + 2}A\x1b[J` + renderApprovalMenu(options, selected));
+    };
+    const done = (choice: ApprovalChoice) => {
+      stdin.off("data", onData);
+      try { stdin.setRawMode?.(false); } catch { /* ignore */ }
+      stdin.pause();
+      resolvePromise(choice);
+    };
+    stdin.on("data", onData);
+  });
+}
