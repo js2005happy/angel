@@ -19,7 +19,8 @@
 - 退回路径：stdin/stdout 不是终端、`TERM=dumb`、Windows 不能开 VT 模式或 `NYRA_TUI=0` 时，交互模式保持原来的字标横幅 + `nyra[auto] ›` 纯文本界面；`NO_COLOR` 只去颜色不改布局；终端编码不支持方块字符时改用 ASCII。按键：macOS/Linux 用 `termios`，Windows 用 `msvcrt`（`\x00\x0f` 即 shift+tab）。界面文字默认中文，`language: "en"` 或 `NYRA_LANG=en` 切英文。零新增依赖。
 - 启动时间（本机中位数，改前 → 改后）：`--version` 110.6 → 110.6 ms，`import nyra.cli` 107.2 → 106.6 ms，伪终端里从启动到可输入 98.5 → 100.8 ms（`tui` 只在交互 TTY 路径里延迟导入）。
 - 新增 `tests/test_tui.py`（41 项：头部宽/窄/无色、状态栏宽/窄/NO_COLOR/ASCII/英文、上下文百分比、信任确认渲染、模式循环、POSIX 与 Windows 按键解析、TTY/dumb/NYRA_TUI/Windows VT 能力判断）与 `tests/test_trust.py`（14 项：信任存储、精确路径、损坏文件、权限、CLI 信任闸门在非 TTY/`--trust`/配置跳过/是/否下的行为）。另用伪终端实跑了 启动 → 信任确认 → 头部与状态栏 → shift+tab → 退出 全流程。如实说明：Windows 与 macOS 没在真机上手动跑过，Windows 路径靠 CI 单元测试与代码审查。
-- 测试 1035 → 1090 项，全部通过（skipped=10）。
+- 纯文本退回界面保留提示符上方的一行状态（`format_repl_status`）；`nyra/approval_ui.py` 的审批选择器与工具输出实时流不受影响。
+- 新增测试 55 项；当前全量 1111 项全部通过（skipped=10）。
 
 ## 未发布（电脑操作 + 视觉模型看屏 + 多模型调研 + 群聊多 Key）
 

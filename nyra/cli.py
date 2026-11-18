@@ -410,6 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument(
+        "--trust", action="store_true",
+        help="信任当前工作目录并记录（~/.nyra/trusted_workspaces.json），跳过首次运行的工作区信任确认；不放宽审批模式",
+    )
+    parser.add_argument(
         "--sandbox",
         choices=("local", "e2b"),
         default=None,
@@ -479,6 +483,45 @@ def _fallback_enabled(args) -> bool | None:
         return False
     if getattr(args, "fallback", False):
         return True
+    return None
+
+
+def _ensure_workspace_trusted(workdir: Path, args, config: dict) -> int | None:
+    """First interactive run in a folder: ask whether the user trusts it.
+
+    Returns None to continue, or an exit code when the user said no.
+    Only asked when both stdin and stdout are terminals; piped runs,
+    --json, scheduled tasks and workers keep their previous behaviour.
+    Trust never changes the approval mode.
+    """
+    from .trust import add_trusted, is_trusted
+
+    if getattr(args, "trust", False):
+        try:
+            add_trusted(workdir)
+        except OSError as exc:
+            print(f"警告：无法记录工作区信任：{exc}", file=sys.stderr)
+        return None
+    if config.get("skip_workspace_trust"):
+        return None
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+    if is_trusted(workdir):
+        return None
+    from . import tui
+
+    lang = tui.language(config)
+    if tui.tui_available():
+        trusted = tui.trust_prompt(str(workdir), color=use_color(), lang=lang)
+    else:
+        trusted = tui.trust_prompt_plain(str(workdir), lang=lang)
+    if not trusted:
+        print(tui.t("trust_declined", lang))
+        return 1
+    try:
+        add_trusted(workdir)
+    except OSError as exc:
+        print(f"警告：无法记录工作区信任（本次仍继续）：{exc}", file=sys.stderr)
     return None
 
 
@@ -861,6 +904,11 @@ def main(argv: list[str] | None = None) -> int:
         messages = resume_messages
         session_id = resume_state['session_id']
 
+    if sandbox_settings.backend != "e2b":
+        trust_exit = _ensure_workspace_trusted(workdir, args, config)
+        if trust_exit is not None:
+            return trust_exit
+
     backend = None
     if sandbox_settings.backend == "e2b":
         try:
@@ -940,11 +988,49 @@ def main(argv: list[str] | None = None) -> int:
                 print("本次运行用量：\n" + format_usage(agent.usage.snapshot()), file=sys.stderr)
 
         color = use_color()
-        print(
-            format_banner(
-                describe_provider(provider), mode, agent.session_id, color=color
+        from . import tui
+
+        use_tui = interactive and tui.tui_available()
+        lang = tui.language(config)
+
+        def switch_mode(new_mode: str) -> None:
+            nonlocal mcp_manager
+            validate_mode(new_mode)
+            if new_mode != agent.mode:
+                # Permission changes must apply to running subprocesses,
+                # not just subsequent tool invocations.
+                if mcp_manager is not None:
+                    try:
+                        mcp_manager.stop_all()
+                    finally:
+                        mcp_manager = None
+                        agent.mcp_manager = None
+                mcp_manager = build_mcp_manager(
+                    mode=new_mode, interactive=interactive
+                )
+                agent.mcp_manager = mcp_manager
+            if agent.mode != new_mode:
+                agent.ctx.approved_file_tools.clear()
+                agent.ctx.approved_shell_commands.clear()
+            agent.mode = new_mode
+            agent.ctx.mode = new_mode
+
+        if use_tui:
+            unicode = tui.supports_unicode(sys.stdout)
+            model_name, provider_name, billing = tui.provider_summary(provider)
+            for header_line in tui.render_header(
+                __version__, model_name,
+                f"{provider_name} · {tui.t(billing, lang)}" if provider_name else tui.t(billing, lang),
+                str(workdir), tui.terminal_width(), color=color, unicode=unicode,
+            ):
+                print(header_line)
+            print()
+        else:
+            print(
+                format_banner(
+                    describe_provider(provider), mode, agent.session_id, color=color
+                )
             )
-        )
         from .tasks import format_unread_inbox, mark_inbox_read
         notes = format_unread_inbox()
         if notes:
@@ -958,20 +1044,63 @@ def main(argv: list[str] | None = None) -> int:
             print(f"沙盒：E2B {backend.sandbox_id}，工作目录：{workdir}")
         if mcp_manager is not None:
             print(f"MCP 工具已加载：{len(mcp_manager.tool_schemas)} 个")
-        print(style("输入 /help 查看命令，直接输入文字开始对话。", "dim", enabled=color))
+        if use_tui:
+            print(style(tui.truncate(
+                f"{tui.t('session', lang)} {agent.session_id} · {tui.t('hint', lang)}",
+                tui.terminal_width() - 1,
+            ), "dim", enabled=color))
+            editor = tui.Prompt(color=color, lang=lang)
+            armed = {"full": False}
+            project = workdir.name if workdir != Path.home() and workdir.name else ""
+            if not project:
+                import getpass
+                try:
+                    project = getpass.getuser()
+                except Exception:
+                    project = ""
+
+            def status_lines() -> list:
+                return tui.render_status(
+                    getattr(provider, "model", "") or provider.name,
+                    project,
+                    agent.mode,
+                    tui.terminal_width(),
+                    context_pct=tui.context_percent(agent.usage.snapshot()),
+                    armed_full=armed["full"],
+                    color=color,
+                    unicode=unicode,
+                    lang=lang,
+                )
+
+            def on_shift_tab() -> None:
+                new_mode, armed["full"] = tui.cycle_mode(agent.mode, armed["full"])
+                if new_mode != agent.mode:
+                    switch_mode(new_mode)
+
+            def disarm() -> None:
+                armed["full"] = False
+
+            on_shift_tab.disarm = disarm
+        else:
+            print(style("输入 /help 查看命令，直接输入文字开始对话。", "dim", enabled=color))
 
         while True:
-            try:
-                status = format_repl_status(
-                    provider.model, workdir, agent.usage.snapshot(), agent.ctx.mode
-                )
-                line = input(repl_prompt(agent.ctx.mode, color=color, status=status))
-            except EOFError:
-                print()
-                break
-            except KeyboardInterrupt:
-                print()
-                break
+            if use_tui:
+                outcome, line = editor.read(status_lines, on_shift_tab)
+                if outcome != "submit":
+                    break
+            else:
+                try:
+                    status = format_repl_status(
+                        provider.model, workdir, agent.usage.snapshot(), agent.ctx.mode
+                    )
+                    line = input(repl_prompt(agent.ctx.mode, color=color, status=status))
+                except EOFError:
+                    print()
+                    break
+                except KeyboardInterrupt:
+                    print()
+                    break
 
             line = line.strip()
             if not line:
@@ -985,25 +1114,7 @@ def main(argv: list[str] | None = None) -> int:
             elif line.startswith("/mode "):
                 new_mode = line.split(None, 1)[1].strip()
                 try:
-                    validate_mode(new_mode)
-                    if new_mode != agent.mode:
-                        # Permission changes must apply to running subprocesses,
-                        # not just subsequent tool invocations.
-                        if mcp_manager is not None:
-                            try:
-                                mcp_manager.stop_all()
-                            finally:
-                                mcp_manager = None
-                                agent.mcp_manager = None
-                        mcp_manager = build_mcp_manager(
-                            mode=new_mode, interactive=interactive
-                        )
-                        agent.mcp_manager = mcp_manager
-                    if agent.mode != new_mode:
-                        agent.ctx.approved_file_tools.clear()
-                        agent.ctx.approved_shell_commands.clear()
-                    agent.mode = new_mode
-                    agent.ctx.mode = new_mode
+                    switch_mode(new_mode)
                     print(f"已切换为 {new_mode} 模式")
                 except ValueError as exc:
                     print(f"错误：{exc}")
