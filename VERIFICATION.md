@@ -1,3 +1,8 @@
+## 2026-11-18 ToolJournal 读取后目录项元数据复核（仅静态）
+
+- 静态审阅确认末次目录项检查从仅核对 inode 扩展至大小、链接数、mtime/ctime 和 POSIX 权限。回归测试源码模拟最终目录项大小改变，未执行。
+- 未运行测试、CI 或 Windows 实机检查；同权限篡改、TOCTOU、Windows ACL 和稳定目录句柄仍未解决。
+
 ## 2026-11-18 Windows ToolJournal 写后目录项复核（仅静态）
 
 - 源码审阅：Windows 回退写入路径在 `fsync` 与 `fstat` 后核对 `lstat` 目录项及 reparse 属性、文件身份、大小；失败关闭。新增两项模拟测试源码，**未执行测试或 CI**。Windows ACL、目录句柄和并发竞态仍未解决。
