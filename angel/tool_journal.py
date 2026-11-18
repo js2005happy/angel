@@ -307,6 +307,10 @@ class ToolJournal:
                         or not stat.S_ISDIR(final_dir.st_mode)
                         or stat.S_IMODE(final_dir.st_mode) & 0o077):
                     raise JournalError("日志读取目录句柄在枚举后发生变化")
+            # Detect entries added, removed or renamed while reading. This
+            # is a snapshot consistency check, not a cross-process lock.
+            if directory_fd is not None and set(os.listdir(directory_fd)) != set(names):
+                raise JournalError("日志目录在读取期间发生并发变化")
             return records
         finally:
             if directory_fd is not None:
