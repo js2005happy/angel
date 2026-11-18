@@ -72,6 +72,24 @@ def _reject_windows_event_reparse(info: os.stat_result) -> None:
         raise JournalError("事件文件不能是 Windows 重解析点")
 
 
+def _verify_written_windows_entry(path: Path, written: os.stat_result) -> None:
+    """Fail closed if the Windows event name no longer refers to our file.
+
+    This is a post-write best-effort check, not a stable Windows handle or ACL.
+    """
+    if os.name != "nt":
+        return
+    try:
+        entry = os.lstat(path)
+    except OSError as exc:
+        raise JournalError("无法核验写入后的 Windows 事件文件") from exc
+    _reject_windows_event_reparse(entry)
+    if (not stat.S_ISREG(entry.st_mode)
+            or (entry.st_dev, entry.st_ino) != (written.st_dev, written.st_ino)
+            or entry.st_size != written.st_size):
+        raise JournalError("写入后的 Windows 事件文件已被替换")
+
+
 def _directory_identity(path: Path) -> tuple[int, int] | None:
     """Snapshot the directory identity; detect replacement during an operation.
 
@@ -354,6 +372,7 @@ class ToolJournal:
                             or (os.name == "posix" and
                                 stat.S_IMODE(written.st_mode) & 0o077)):
                         raise JournalError("写入事件文件元数据不安全")
+                _verify_written_windows_entry(self.path / filename, written)
             _verify_directory(self.path, identity)
         except OSError as exc:
             raise JournalError("写入事件失败；工具结果必须人工核查") from exc
