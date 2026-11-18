@@ -512,7 +512,7 @@ class InfoAndPageTests(WebUITestCase):
         self.assertTrue(html_text.strip().startswith("<!doctype html>"))
         self.assertIsNone(re.search(r"""(src|href)\s*=\s*["']?\s*(https?:)?//""", html_text, re.I))
         self.assertIsNone(re.search(r"@import|url\(\s*['\"]?(https?:)?//", html_text, re.I))
-        self.assertNotRegex(html_text, r"<link\b")
+        self.assertIsNone(re.search(r"<link[^>]+href\s*=\s*['\"]?\s*(https?:)?//", html_text, re.I))
         self.assertNotRegex(html_text, r"<script[^>]+src=")
 
     def test_evidence_and_plan_in_view(self):
@@ -560,14 +560,19 @@ class UIv2Tests(WebUITestCase):
              "kimi", "glm", "gemini", "mistral", "groq", "together", "custom",
              "codex"},
         )
-        self.assertEqual(info["tool_count"], 15)
-        self.assertEqual(len(info["tools"]), 15)
+        self.assertEqual(info["tool_count"], 24)
+        self.assertEqual(len(info["tools"]), 24)
         by_name = {t["name"]: t for t in info["tools"]}
         for name in ("write_file", "edit_file", "apply_patch", "shell",
-                     "http_post", "memory_append", "save_skill", "plan"):
+                     "http_post", "memory_append", "save_skill", "plan",
+                     "browser_navigate", "browser_click",
+                     "browser_screenshot", "computer_screenshot",
+                     "computer_click", "computer_type", "computer_key",
+                     "computer_windows"):
             self.assertTrue(by_name[name]["needs_approval"], name)
         for name in ("read_file", "list_dir", "web_fetch", "web_search",
-                     "grep_search", "git_status", "delegate"):
+                     "grep_search", "git_status", "delegate",
+                     "multi_model_research"):
             self.assertFalse(by_name[name]["needs_approval"], name)
         self.assertEqual(
             {s["name"] for s in info["skills"]},
@@ -794,6 +799,73 @@ class ProviderSwitchTests(WebUITestCase):
         self.assertEqual(info["fallback_chain"][0], "ollama")
         with self.assertRaises(ValueError):
             state.set_provider("no-such-provider")
+
+
+class PWATests(WebUITestCase):
+    def test_manifest_requires_token(self):
+        self.start()
+        status, _, _ = self.request("/manifest.json", token=False)
+        self.assertEqual(status, 403)
+        status, data = self.get_json("/manifest.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["name"], "Nyra")
+        self.assertEqual(data["short_name"], "Nyra")
+        self.assertEqual(data["display"], "standalone")
+        self.assertEqual(data["start_url"], "/")
+        self.assertEqual(data["scope"], "/")
+        self.assertEqual(data["theme_color"], "#5F7D5C")
+        self.assertEqual(data["background_color"], "#F3F5F4")
+        self.assertEqual(data["icons"][0]["src"], "/nyra-mark.svg")
+
+    def test_manifest_accepts_query_token(self):
+        # Browsers fetch the manifest without the X-Nyra-Token header,
+        # so the token rides in the query string, like the page itself.
+        self.start()
+        status, data = self.get_json(
+            f"/manifest.json?token={self.state.token}", token=False
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["name"], "Nyra")
+
+    def test_manifest_content_type(self):
+        self.start()
+        _, _, headers = self.request("/manifest.json")
+        self.assertIn("application/manifest+json", headers.get("Content-Type", ""))
+
+    def test_icon_requires_token_and_serves_svg(self):
+        self.start()
+        status, _, _ = self.request("/nyra-mark.svg", token=False)
+        self.assertEqual(status, 403)
+        status, raw, headers = self.request("/nyra-mark.svg")
+        self.assertEqual(status, 200)
+        self.assertIn("image/svg+xml", headers.get("Content-Type", ""))
+        self.assertTrue(raw.lstrip().startswith(b"<svg"))
+
+    def test_icon_missing_file_is_404(self):
+        self.start()
+        with mock.patch.object(
+            Path, "read_bytes", side_effect=FileNotFoundError("no icon")
+        ):
+            status, _ = self.get_json("/nyra-mark.svg")
+        self.assertEqual(status, 404)
+
+    def test_page_has_pwa_tags(self):
+        self.start()
+        status, raw, headers = self.request("/", token=True)
+        self.assertEqual(status, 200)
+        html = raw.decode("utf-8")
+        self.assertIn('rel="manifest"', html)
+        self.assertIn('id="manifest-link"', html)
+        self.assertIn('rel="apple-touch-icon"', html)
+        self.assertIn('name="theme-color" content="#5F7D5C"', html)
+        self.assertIn('name="mobile-web-app-capable"', html)
+        self.assertIn('name="apple-mobile-web-app-capable"', html)
+        self.assertIn('name="apple-mobile-web-app-status-bar-style"', html)
+        self.assertEqual(html.count('name="viewport"'), 1)
+        self.assertIn("viewport-fit=cover", html)
+        self.assertIn(
+            "manifest-src 'self'", headers.get("Content-Security-Policy", "")
+        )
 
 
 if __name__ == "__main__":
