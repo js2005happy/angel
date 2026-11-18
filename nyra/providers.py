@@ -101,6 +101,41 @@ def _load_surrogate() -> object:
     return _surrogate
 
 
+def _normalize_messages(messages: list[dict]) -> list[dict]:
+    """Normalize chat messages for the OpenAI-compatible chat API.
+
+    ``str`` content goes out unchanged. A ``list`` of content parts
+    (OpenAI shape, e.g. ``[{"type": "text", "text": ...},
+    {"type": "image_url", ...}]`` as built by ``nyra.vision``) is
+    passed through unchanged so a vision model can receive
+    screenshots; malformed parts (not a dict, or no "type") are
+    dropped rather than sent to the API. Anything else is coerced
+    to ``str``. The Codex CLI path is text-only and flattens parts
+    separately in ``_serialize_codex_prompt``.
+    """
+    normalized: list[dict] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            normalized.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = [
+                part for part in content
+                if isinstance(part, dict) and "type" in part
+            ]
+            item = dict(message)
+            item["content"] = parts
+            normalized.append(item)
+        elif isinstance(content, str) or content is None:
+            normalized.append(message)
+        else:
+            item = dict(message)
+            item["content"] = str(content)
+            normalized.append(item)
+    return normalized
+
+
 class Provider:
     def __new__(cls, cfg=None, *args, **kwargs):
         # CLI provider（Codex）禁止直接构造：全仓库唯一的直接
@@ -210,7 +245,7 @@ class Provider:
         if err is not None:
             raise ProviderError(err, kind="config")
 
-        payload = {"model": self.model, "messages": messages}
+        payload = {"model": self.model, "messages": _normalize_messages(messages)}
         if tools is not None:
             payload["tools"] = tools
 
@@ -865,6 +900,113 @@ class FallbackProvider:
         raise ProviderError(
             f"全部 {len(self.providers)} 个模型都失败了：{detail}",
             kind="unknown",
+        )
+
+
+class KeyRotatingProvider:
+    """Try API keys of one provider+model in order; rotate on ANY failure.
+
+    A drop-in replacement for Provider with the same chat() interface.
+    Wraps already-constructed Provider instances that share one provider
+    and model but carry different api_keys (one per group-chat bot, see
+    nyra.groups.Bot.api_keys — keys are per-bot, never shared across
+    bots). Unlike FallbackProvider, EVERY ProviderError triggers a
+    rotation — including 401/403 auth failures, because a different key
+    of the same model can fix auth, while switching models cannot.
+    Each chat() call starts from the first key again. Every rotation is
+    recorded in `switches` (same record shape as FallbackProvider, with
+    from/to naming the key index, e.g. "deepseek key 1"). When all keys
+    fail, the single ProviderError lists each attempt by key index only
+    — never by key value — and keeps the last failure's kind/status so
+    an outer FallbackProvider can still decide whether the failure is
+    recoverable.
+    """
+
+    def __init__(self, providers, on_switch=None):
+        if not providers:
+            raise ValueError("KeyRotatingProvider needs at least one provider")
+        self.providers = list(providers)
+        self.on_switch = on_switch
+        self.active_index = 0
+        self.switches = []
+
+    @property
+    def name(self):
+        return self.providers[self.active_index].name
+
+    @property
+    def model(self):
+        return self.providers[self.active_index].model
+
+    @property
+    def base_url(self):
+        return self.providers[self.active_index].base_url
+
+    def _redact(self, text, request=None):
+        return self.providers[self.active_index]._redact(text, request)
+
+    def has_credentials(self):
+        # The first key decides, mirroring FallbackProvider (the primary
+        # decides) so callers gating on credentials see a stable answer.
+        return self.providers[0].has_credentials()
+
+    def list_models(self, timeout=30.0):
+        return self.providers[self.active_index].list_models(timeout=timeout)
+
+    def _label(self, index):
+        return f"{self.providers[index].name} key {index + 1}"
+
+    def _safe_error(self, provider, exc):
+        """Error text with this provider's key redacted, if it leaked in.
+
+        Real Providers already redact their own key in error bodies;
+        this is the second line of defence, so a leaky server echo can
+        never put a key into the aggregated error, the switch records
+        or the server log (via on_switch).
+        """
+        text = str(exc)
+        redact = getattr(provider, "_redact", None)
+        if callable(redact):
+            try:
+                return redact(text)
+            except Exception:
+                return text
+        return text
+
+    def chat(self, messages, tools=None, timeout=120.0):
+        attempted = []
+        last_exc = None
+        for index, provider in enumerate(self.providers):
+            try:
+                result = provider.chat(messages, tools=tools, timeout=timeout)
+            except ProviderError as exc:
+                safe_error = self._safe_error(provider, exc)
+                attempted.append((index, safe_error))
+                last_exc = exc
+                if index + 1 >= len(self.providers):
+                    break
+                nxt = self.providers[index + 1]
+                record = {
+                    "from": self._label(index),
+                    "to": self._label(index + 1),
+                    "error": safe_error,
+                    "kind": exc.kind,
+                    "status": exc.status,
+                }
+                self.switches.append(record)
+                self.active_index = index + 1
+                if self.on_switch is not None:
+                    self.on_switch(record)
+                continue
+            self.active_index = index
+            return result
+        detail = "；".join(
+            f"key {index + 1}：{error}" for index, error in attempted
+        )
+        raise ProviderError(
+            f"全部 {len(self.providers)} 个 API Key 都失败了：{detail}",
+            kind=last_exc.kind if last_exc is not None else "unknown",
+            status=last_exc.status if last_exc is not None else None,
         )
 
 

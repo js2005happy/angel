@@ -14,8 +14,14 @@ PAGE_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
+<link rel="manifest" id="manifest-link" href="/manifest.json">
+<link rel="apple-touch-icon" id="apple-touch-icon" href="/nyra-mark.svg">
+<meta name="theme-color" content="#5F7D5C">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Nyra</title>
 <style>
 :root{--bg:#F3F5F4;--panel:#E9EDEA;--surface:#FFFFFF;--text:#2A2D34;--muted:#6E7278;--line:#DEE3DE;--primary:#5F7D5C;--primary-dark:#4E6A4B;--accent:#6B8CAE;--warm:#E07856;--ok:#4C9A6C;--bad:#C24B42;--code:#2A2D34;--codet:#E9EBF0;
@@ -157,8 +163,27 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{border:0;background:var(--surface);padding:7px 14px;cursor:pointer;font-size:13px}
 .seg button.active{background:var(--primary);color:#fff}
+.art-list{display:grid;gap:6px;margin-bottom:12px}
+.art-item{display:flex;align-items:center;gap:8px;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:8px 10px;cursor:pointer;font-size:13px;width:100%}
+.art-item:hover{border-color:var(--accent)}
+.art-item.active{border-color:var(--primary);box-shadow:inset 3px 0 0 var(--primary)}
+.art-item .k{font:700 10.5px var(--mono);border-radius:999px;padding:1px 7px;background:rgba(107,140,174,.18);color:var(--accent);flex:none}
+.art-item b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.art-view{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden;margin-bottom:12px}
+.art-view h5{margin:0;padding:9px 12px;font-size:12.5px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.art-view .art-body{padding:10px 12px;max-height:420px;overflow:auto}
+.art-view .art-body pre{background:var(--code);color:var(--codet);padding:10px 12px;border-radius:10px;overflow:auto;font-size:12.5px;margin:0}
+.art-view .art-body p{margin:0 0 8px}.art-view .art-body p:last-child{margin:0}
+.art-view .art-body code{background:rgba(107,140,174,.18);padding:1px 5px;border-radius:5px;font-size:12.5px}
+.art-view .art-body pre code{background:none;padding:0}
+.art-view .art-body h3,.art-view .art-body h4{margin:10px 0 6px;font-size:15px}
+.art-view .art-body ul,.art-view .art-body ol{margin:4px 0 8px;padding-left:22px}
+.art-view .art-body a{color:var(--accent)}
+.art-view iframe{width:100%;height:340px;border:0;display:block;background:#fff}
+.art-note{font-size:11.5px;color:var(--muted);padding:8px 12px;border-top:1px solid var(--line)}
 @media (max-width:1240px){.shell{grid-template-columns:268px 1fr}.right{display:none}.shell.show-right .right{display:block;position:fixed;right:0;top:52px;bottom:0;width:324px;z-index:5;box-shadow:-10px 0 30px rgba(0,0,0,.15)}}
 @media (max-width:760px){.shell{grid-template-columns:1fr}.left{display:none}.shell.show-left .left{display:block;position:fixed;left:0;top:52px;bottom:0;width:268px;z-index:5;box-shadow:10px 0 30px rgba(0,0,0,.15)}.menu{display:inline-block}.pill.prov{display:none}.pill.modechip{display:none}}
+@media (max-width:760px){.top{gap:8px;padding:0 10px}.brand small{display:none}.ibtn,.send,.new,.chip,.tabs button,.nav button,.sess,.yes,.no{min-height:44px}.send{padding:10px 18px}.ibtn{padding:9px 12px}body{overflow-x:hidden}}
 </style>
 </head>
 <body>
@@ -283,6 +308,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
     <div class="tabs">
       <button id="tab-evidence" class="active" type="button">证据链</button>
       <button id="tab-status" type="button">运行状态</button>
+      <button id="tab-artifacts" type="button">产物</button>
     </div>
     <div id="pane-evidence">
       <div class="card plan"><h4>计划</h4><div id="plan"><div class="empty">这个会话还没有调用 plan。</div></div></div>
@@ -291,6 +317,14 @@ table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}td,th{
     <div id="pane-status" hidden>
       <div class="card"><h4>模型</h4><div class="kv" id="model-kv"></div></div>
       <div class="card"><h4>Token 用量</h4><div class="kv" id="usage-kv"></div><div class="hint" id="usage-hint">仅统计当前进程中 API 返回的真实用量。</div></div>
+    </div>
+    <div id="pane-artifacts" hidden>
+      <div class="card"><h4>产物</h4><div class="art-list" id="artifact-list"><div class="empty">对话里出现的代码与 HTML 会自动出现在这里。</div></div></div>
+      <div class="art-view" id="artifact-view" hidden>
+        <h5 id="artifact-title"></h5>
+        <div class="art-body" id="artifact-body"></div>
+        <div class="art-note" id="artifact-note"></div>
+      </div>
     </div>
   </aside>
 </div>
@@ -319,6 +353,10 @@ var params=new URLSearchParams(location.search);
 var TOKEN=params.get("token")||"";
 document.getElementById("groupLink").href="/groups?token="+encodeURIComponent(TOKEN);
 document.getElementById("group-open").href="/groups?token="+encodeURIComponent(TOKEN);
+// Manifest 与图标是浏览器子资源请求，不带 X-Nyra-Token 请求头，
+// 所以 token 走查询串（与页面本身一致）。Chrome 在 manifest
+// 链接 href 变化时会重新拉取。
+if(TOKEN){var ml=document.getElementById("manifest-link");if(ml)ml.href="/manifest.json?token="+encodeURIComponent(TOKEN);var ai=document.getElementById("apple-touch-icon");if(ai)ai.href="/nyra-mark.svg?token="+encodeURIComponent(TOKEN)}
 var state={sid:null,next:0,live:[],status:"idle",timer:null,info:null,pending:null,view:"chat"};
 var $=function(id){return document.getElementById(id)};
 function api(path,opts){opts=opts||{};opts.headers=Object.assign({"X-Nyra-Token":TOKEN,"Content-Type":"application/json"},opts.headers||{});
@@ -378,12 +416,12 @@ function renderTranscript(messages){var log=$("log");log.innerHTML="";
   if(!messages.length&&!state.live.length){log.innerHTML='<div class="welcome"><h1>今天想让 Nyra 做什么？</h1><p>Nyra 会通过调用工具完成任务：读写文件、执行命令、联网查证。每一步都会出现在这里。</p></div>';return}
   messages.forEach(function(m){
     if(m.role==="user")addMsg("user",m.content||"");
-    else if(m.role==="assistant"){if(m.content)addMsg("assistant",m.content);(m.tool_calls||[]).forEach(function(tc){var f=tc.function||{};toolCard(tc.id,f.name,f.arguments)})}
+    else if(m.role==="assistant"){if(m.content){addMsg("assistant",m.content);scanArtifacts(m.content)}(m.tool_calls||[]).forEach(function(tc){var f=tc.function||{};toolCard(tc.id,f.name,f.arguments)})}
     else if(m.role==="tool"){setResult(findCard(m.tool_call_id),m.content||"")}
   });}
 function applyEvent(ev){var d=ev.data||{};
   if(ev.type==="user")addMsg("user",d.content);
-  else if(ev.type==="assistant"||ev.type==="final"){if(d.content)addMsg("assistant",d.content)}
+  else if(ev.type==="assistant"||ev.type==="final"){if(d.content){addMsg("assistant",d.content);scanArtifacts(d.content)}}
   else if(ev.type==="tool_start")toolCard(d.id,d.name,d.arguments);
   else if(ev.type==="tool_result")setResult(findCard(d.id),d.result);
   else if(ev.type==="approval")approvalBox($("log").querySelector(".tool:last-of-type"),d);
@@ -402,8 +440,93 @@ function renderSide(v){renderUsage(v.usage,v.auto_compact_count||0);var p=$("pla
   else p.innerHTML='<div class="empty">这个会话还没有调用 plan。</div>';
   var e=$("evidence");if(!v.evidence.length){e.innerHTML='<div class="empty">联网抓取的页面原文会作为证据列在这里。</div>';return}
   e.innerHTML="";v.evidence.forEach(function(x){var a=el("div","ev");var safe=/^https?:\/\//.test(x.source);a.innerHTML=(safe?'<a target="_blank" rel="noopener noreferrer"></a>':'<span></span>')+"<small></small>";var l=a.firstChild;l.textContent=x.query?("搜索："+x.query):x.source;if(safe)l.href=x.source;a.querySelector("small").textContent=[x.kind,x.time,x.file].filter(Boolean).join(" · ");e.appendChild(a)})}
+/* --- Artifacts panel ---
+ * The server has no artifact endpoint and its routes are fixed, so this
+ * panel derives artifacts from the messages already polled through
+ * session_view — the client-side mirror of nyra/artifacts.py
+ * detect_artifacts: fenced code blocks and HTML blocks. Artifact
+ * content NEVER reaches innerHTML on this page: code goes through
+ * textContent, Markdown is built with DOM APIs only, and HTML renders
+ * only inside a sandboxed iframe via srcdoc. */
+var artifacts=[];
+var artifactSeen={};
+var artifactSel=null;
+var artifactSid=null;
+function artifactHash(s){var h=5381,i;for(i=0;i<s.length;i++){h=((h<<5)+h+s.charCodeAt(i))|0}return (h>>>0).toString(36)}
+function artifactKey(kind,title,content){return kind+"|"+title+"|"+artifactHash(content)}
+function clearEl(node){while(node.firstChild)node.removeChild(node.firstChild)}
+function addArtifact(kind,title,content,lang){var key=artifactKey(kind,title,content);if(artifactSeen[key])return;artifactSeen[key]=1;
+  artifacts.push({id:"a"+artifacts.length+"-"+artifactHash(content),kind:kind,title:title,content:content,lang:lang||""});renderArtifactList()}
+var HTML_START=/^\s*<(?:!DOCTYPE\s+html|html|body|div|section|article|main|table|ul|ol|form|svg|details|blockquote|pre|h[1-6]|p)\b/i;
+var HTML_CLOSE=/<\/[A-Za-z][A-Za-z0-9]*\s*>/;
+var FENCE_RE=/```([^\s`]*)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm;
+function scanHtmlBlocks(text){var lines=text.split("\n");var i=0;
+  while(i<lines.length){if(!HTML_START.test(lines[i])){i++;continue}
+    var j=i,seen=false;
+    while(j<lines.length){if(HTML_CLOSE.test(lines[j]))seen=true;
+      if(seen){var nxt=j+1<lines.length?lines[j+1]:"";
+        if(nxt.trim()===""||/^\s*</.test(nxt)){j++;continue}break}
+      j++}
+    if(seen){var block=lines.slice(i,j+1).join("\n").replace(/\n+$/,"");
+      if(block)addArtifact("html","HTML 页面",block,"html");i=j+1}
+    else i++}}
+function scanArtifacts(text){if(!text)return;var m;
+  FENCE_RE.lastIndex=0;
+  while((m=FENCE_RE.exec(text))){var lang=(m[1]||"").trim();
+    if(lang.toLowerCase()==="html")addArtifact("html","HTML 页面",m[2],"html");
+    else addArtifact("code",lang?lang+" 代码":"代码片段",m[2],lang)}
+  FENCE_RE.lastIndex=0;
+  scanHtmlBlocks(text.replace(FENCE_RE,""))}
+/* Markdown subset for artifacts, DOM-only (no innerHTML): headings,
+ * bold/italic, inline code, fenced code blocks, lists, links. Mirrors
+ * nyra/artifacts.py markdown_to_html. Source text enters only through
+ * textContent, so HTML in the source can never execute. */
+function mdText(parent,text){var re=/(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g;
+  var last=0,m;
+  while((m=re.exec(text))){if(m.index>last)parent.appendChild(document.createTextNode(text.slice(last,m.index)));
+    var tok=m[0];
+    if(tok.charAt(0)==="`"){var c=document.createElement("code");c.textContent=tok.slice(1,-1);parent.appendChild(c)}
+    else if(tok.indexOf("**")===0){var b=document.createElement("strong");b.textContent=tok.slice(2,-2);parent.appendChild(b)}
+    else if(tok.charAt(0)==="*"){var em=document.createElement("em");em.textContent=tok.slice(1,-1);parent.appendChild(em)}
+    else{var mm=tok.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);var a=document.createElement("a");a.textContent=mm[1];a.href=mm[2];a.target="_blank";a.rel="noopener noreferrer";parent.appendChild(a)}
+    last=m.index+tok.length}
+  if(last<text.length)parent.appendChild(document.createTextNode(text.slice(last)))}
+function mdBlocks(frag,text){var lines=text.split("\n");var list=null;
+  function closeList(){if(list){frag.appendChild(list);list=null}}
+  lines.forEach(function(line){var m;
+    if((m=line.match(/^\s*[-*]\s+(.+)$/))){if(!list||list.tagName!=="UL"){closeList();list=document.createElement("ul")}var li=document.createElement("li");mdText(li,m[1]);list.appendChild(li);return}
+    if((m=line.match(/^\s*\d+[.)]\s+(.+)$/))){if(!list||list.tagName!=="OL"){closeList();list=document.createElement("ol")}var li=document.createElement("li");mdText(li,m[1]);list.appendChild(li);return}
+    closeList();
+    if((m=line.match(/^#{1,3}\s+(.+)$/))){var h=document.createElement("h3");mdText(h,m[1]);frag.appendChild(h);return}
+    if((m=line.match(/^#{4,6}\s+(.+)$/))){var h4=document.createElement("h4");mdText(h4,m[1]);frag.appendChild(h4);return}
+    if(line.trim()==="")return;
+    var p=document.createElement("p");mdText(p,line);frag.appendChild(p)});
+  closeList()}
+function mdArtifact(src){var frag=document.createDocumentFragment();
+  var parts=String(src||"").split(/```([^\s`]*)[ \t]*\n([\s\S]*?)^```[ \t]*$/gm);
+  for(var k=0;k<parts.length;k++){
+    if(k%3===2){var pre=document.createElement("pre");var code=document.createElement("code");code.textContent=parts[k];pre.appendChild(code);frag.appendChild(pre);continue}
+    if(k%3===1)continue;
+    mdBlocks(frag,parts[k])}
+  return frag}
+function renderArtifactList(){var box=$("artifact-list");if(!box)return;clearEl(box);
+  if(!artifacts.length){var e=el("div","empty");e.textContent="对话里出现的代码与 HTML 会自动出现在这里。";box.appendChild(e);return}
+  artifacts.forEach(function(a){var b=el("button","art-item");if(artifactSel===a.id)b.classList.add("active");
+    var k=el("span","k");k.textContent=a.kind;b.appendChild(k);
+    var t=el("b");t.textContent=a.title;b.appendChild(t);
+    b.onclick=function(){selectArtifact(a.id)};box.appendChild(b)})}
+function selectArtifact(id){artifactSel=id;var a=null;
+  artifacts.forEach(function(x){if(x.id===id)a=x});
+  renderArtifactList();var view=$("artifact-view");if(!a){view.hidden=true;return}
+  view.hidden=false;$("artifact-title").textContent=a.title+(a.lang?" · "+a.lang:"");
+  var body=$("artifact-body");clearEl(body);
+  var note=$("artifact-note");
+  if(a.kind==="code"){var pre=document.createElement("pre");var code=document.createElement("code");code.textContent=a.content;pre.appendChild(code);body.appendChild(pre);note.textContent="代码以纯文本显示，不会执行。"}
+  else if(a.kind==="html"){var f=document.createElement("iframe");f.setAttribute("sandbox","allow-scripts");f.setAttribute("srcdoc",a.content);f.setAttribute("title",a.title);body.appendChild(f);note.textContent="HTML 在沙盒 iframe 中渲染，与本页面隔离。"}
+  else{body.appendChild(mdArtifact(a.content));note.textContent="Markdown 子集渲染（标题、粗斜体、代码、列表、链接）；原文中的 HTML 已转义，不会执行。"}}
+function resetArtifacts(sid){if(artifactSid===sid)return;artifactSid=sid;artifacts=[];artifactSeen={};artifactSel=null;renderArtifactList()}
 function setBusy(b){$("send").disabled=b;$("send").textContent=b?"执行中…":"发送";var dot=$("prov").querySelector(".dot");if(b)dot.className="dot run";else dot.className="dot "+(state.info&&state.info.credentials?"on":"off")}
-function loadSession(sid,keepLive){state.sid=sid;state.next=0;state.live=[];
+function loadSession(sid,keepLive){state.sid=sid;state.next=0;state.live=[];resetArtifacts(sid);
   document.querySelectorAll(".sess").forEach(function(b){b.classList.toggle("active",b.dataset.id===sid)});
   return api("/api/sessions/"+encodeURIComponent(sid)).then(function(v){renderTranscript(v.messages);v.events.forEach(applyEvent);state.next=v.next;renderSide(v);
     if(v.status==="error"&&v.error)$("log").appendChild(el("div","err-line","")).textContent="错误："+v.error;
@@ -416,7 +539,7 @@ function loadSessions(){return api("/api/sessions").then(function(r){var box=$("
   if(!r.sessions.length){box.innerHTML='<div class="empty">还没有会话。</div>';return}
   r.sessions.forEach(function(s){var b=el("button","sess");b.dataset.id=s.id;b.innerHTML="<b></b><span></span>";b.querySelector("b").textContent=s.preview||"（空会话）";b.querySelector("span").textContent=s.id+" · "+s.count+" 条";
     if(s.id===state.sid)b.classList.add("active");b.onclick=function(){loadSession(s.id);$("shell").classList.remove("show-left")};box.appendChild(b)})})}
-function newSession(){return api("/api/sessions",{method:"POST",body:"{}"}).then(function(r){state.sid=r.id;renderTranscript([]);renderSide({plan:null,evidence:[]});
+function newSession(){return api("/api/sessions",{method:"POST",body:"{}"}).then(function(r){state.sid=r.id;resetArtifacts(r.id);renderTranscript([]);renderSide({plan:null,evidence:[]});
   document.querySelectorAll(".sess").forEach(function(b){b.classList.remove("active")});$("input").focus()})}
 function send(){var t=$("input").value.trim();if(!t||state.status==="running")return;var go=state.sid?Promise.resolve():newSession();
   go.then(function(){$("input").value="";autosize();if(!$("log").querySelector(".msg,.tool"))$("log").innerHTML="";
@@ -524,8 +647,9 @@ $("memory-scope").onchange=function(){
 $("memory-dialog").addEventListener("cancel",function(e){if(memoryDirty()&&!window.confirm("有未保存的编辑，确定关闭吗？"))e.preventDefault()});
 $("toggle-right").onclick=function(){$("shell").classList.toggle("show-right")};$("toggle-left").onclick=function(){$("shell").classList.toggle("show-left")};
 $("nav").addEventListener("click",function(e){var b=e.target.closest("button[data-view]");if(!b)return;showView(b.dataset.view)});
-$("tab-evidence").onclick=function(){$("tab-evidence").classList.add("active");$("tab-status").classList.remove("active");$("pane-evidence").hidden=false;$("pane-status").hidden=true};
-$("tab-status").onclick=function(){$("tab-status").classList.add("active");$("tab-evidence").classList.remove("active");$("pane-status").hidden=false;$("pane-evidence").hidden=true};
+$("tab-evidence").onclick=function(){$("tab-evidence").classList.add("active");$("tab-status").classList.remove("active");$("tab-artifacts").classList.remove("active");$("pane-evidence").hidden=false;$("pane-status").hidden=true;$("pane-artifacts").hidden=true};
+$("tab-status").onclick=function(){$("tab-status").classList.add("active");$("tab-evidence").classList.remove("active");$("tab-artifacts").classList.remove("active");$("pane-status").hidden=false;$("pane-evidence").hidden=true;$("pane-artifacts").hidden=true};
+$("tab-artifacts").onclick=function(){$("tab-artifacts").classList.add("active");$("tab-evidence").classList.remove("active");$("tab-status").classList.remove("active");$("pane-artifacts").hidden=false;$("pane-evidence").hidden=true;$("pane-status").hidden=true};
 renderSwatches();
 loadInfo().then(loadSessions).then(function(){renderTranscript([])}).catch(function(e){$("log").innerHTML="";$("log").appendChild(el("div","err-line")).textContent="无法连接 Nyra：" + e.message});
 })();

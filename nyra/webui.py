@@ -554,11 +554,14 @@ class UIState:
 NEEDS_APPROVAL_TOOLS = frozenset({
     "write_file", "edit_file", "apply_patch", "shell",
     "http_post", "memory_append", "save_skill", "plan",
+    "browser_navigate", "browser_click", "browser_screenshot",
+    "computer_screenshot", "computer_click", "computer_type",
+    "computer_key", "computer_windows",
 })
 
 
 def list_tools() -> list[dict]:
-    """The 15 built-in tools with their approval flag (no poppy tools)."""
+    """The 24 built-in tools with their approval flag (no poppy tools)."""
     out = []
     for schema in TOOL_SCHEMAS:
         fn = schema.get("function") or {}
@@ -745,6 +748,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(HTTPStatus.OK, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
         if path == "/favicon.ico":
             return self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
+        if path == "/manifest.json":
+            # Browsers fetch the manifest as a subresource without the
+            # X-Nyra-Token header, so the token rides in the query string,
+            # exactly like the page itself. The page JS rewrites this link
+            # with the token on load (see webui_page.py).
+            if not self._token_ok(allow_query=True):
+                return self._error(HTTPStatus.FORBIDDEN, "token 无效")
+            return self._send(
+                HTTPStatus.OK,
+                json.dumps(MANIFEST, ensure_ascii=False).encode("utf-8"),
+                "application/manifest+json",
+            )
+        if path == "/nyra-mark.svg":
+            # Same token rule as the manifest (the browser fetches the icon
+            # as a subresource). 404 when the repo's docs tree is absent
+            # (e.g. an installed copy without docs/).
+            if not self._token_ok(allow_query=True):
+                return self._error(HTTPStatus.FORBIDDEN, "token 无效")
+            icon_path = (
+                Path(__file__).resolve().parent.parent
+                / "docs"
+                / "assets"
+                / "nyra-mark.svg"
+            )
+            try:
+                data = icon_path.read_bytes()
+            except OSError:
+                return self._error(HTTPStatus.NOT_FOUND, "未找到")
+            return self._send(HTTPStatus.OK, data, "image/svg+xml")
         if path == "/groups":
             if not self._token_ok(allow_query=True):
                 return self._send(
@@ -1037,7 +1069,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 CSP = (
-    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    "default-src 'none'; manifest-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
     "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
     "frame-ancestors 'none'"
 )
@@ -1048,4 +1080,29 @@ FORBIDDEN_PAGE = """<!doctype html><meta charset="utf-8"><title>Nyra</title>
 <body style="font:16px system-ui;padding:40px;color:#2A2D34;background:#F3F5F4">
 <h1>需要访问 token</h1><p>请使用启动 <code>python3 -m nyra ui</code> 时终端里打印的完整链接（含 <code>?token=</code>）。</p>
 <p>Open the full link printed in the terminal (it contains <code>?token=</code>).</p></body>"""
+
+# Web App Manifest for installing the UI on a phone ("Add to Home Screen").
+# Colors follow the UI v2 palette: paper #F3F5F4, sage #5F7D5C.
+# start_url is "/" on purpose: the access token is random per start, so it
+# cannot be baked into this static manifest. Tapping the installed icon
+# opens the token-required page; open the printed link (with token) first,
+# then install. See docs/mobile-pwa.md.
+MANIFEST = {
+    "name": "Nyra",
+    "short_name": "Nyra",
+    "description": "Nyra — 本地 AI 助手（网页界面）",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#F3F5F4",
+    "theme_color": "#5F7D5C",
+    "icons": [
+        {
+            "src": "/nyra-mark.svg",
+            "sizes": "any",
+            "type": "image/svg+xml",
+            "purpose": "any",
+        },
+    ],
+}
 
