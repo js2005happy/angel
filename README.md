@@ -19,7 +19,7 @@
 
 <p align="center">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 681 项" src="https://img.shields.io/badge/tests-681%20passing-0B0B0C">
+  <img alt="测试 689 项" src="https://img.shields.io/badge/tests-689%20passing-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -54,6 +54,8 @@
 
 ## 快速开始
 
+需要 Python 3.10+（`python3 --version` 验证）；Windows 上把下面命令里的 `python3` 换成 `python`（官网安装面板同样口径）。
+
 ```bash
 git clone https://github.com/js2005happy/nyra.git nyra && cd nyra
 export DEEPSEEK_API_KEY=sk-...          # 或任意已支持的模型 Key
@@ -78,6 +80,10 @@ python3 -m nyra ui --open                # 本地网页界面
 - **多机器人群聊**：一个房间里组长、架构师、开发者、审查员分工讨论，各自记忆与权限独立（默认只读）。
 - **扩展**：接标准 MCP 服务器（stdio），用 `skills/` 与自定义斜杠命令沉淀你的做法。
 - **隔离执行**：`--sandbox e2b` 让文件与命令跑在 E2B 云沙盒里，不碰本机。
+- **配对码协作**：两个 Nyra 用 6 位配对码配对，宿主以只读模式跑任务、只传任务文本与结果（[手册](GUIDE.md#审批模式)）。
+- **本地密码箱**：API Key 加密存在本机，不写进配置文件或聊天记录（[手册](GUIDE.md#审批模式)）。
+- **本地知识库**：把文本、文件、网页收进知识库再提问，只按库内内容回答并注明依据（[手册](GUIDE.md#审批模式)）。
+- **MCP 内置预置**：10 个常用 MCP 服务器开箱即用，不用手写配置（[手册](GUIDE.md#审批模式)）。
 
 ## 审批模式
 
@@ -137,7 +143,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 681 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 689 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可

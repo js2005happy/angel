@@ -6,7 +6,8 @@
 - 新增 `nyra/pairing.py`：配对码协作——两个 Nyra 用 6 位数字码配对后一起工作。宿主显示配对码（10 分钟过期、一次性、错 5 次作废），客人输入码配对，拿到会话 token（只存内存）后可发任务；任务只在宿主以只读模式执行（不写文件、不跑 shell、不发网络请求），会话只传任务文本与结果，绝不传凭据；只在可信网络配对。宿主是本机 HTTP（0.0.0.0 临时端口，POST /pair、POST /task 须 Bearer token、GET /ping）+ UDP 47831 发现广播；客人有 discover（UDP 广播，5 秒）/pair/run_task/ping。模块入口 `python3 -m nyra.pairing host|join CODE`。新增 `tests/test_pairing.py`（19 项，全离线：错码/过期/5 次作废/无 token 401/发现走 127.0.0.1 单播）。
 - 新增 `nyra/vault.py`：本地加密密码箱——provider API Key / 账号密码加密存在本机 `NYRA_HOME/vault.json`（0600 文件、0700 目录），agent 用的时候读出来，绝不在聊天记录、日志里暴露明文。标准库 only：PBKDF2-HMAC-SHA256 200_000 次、64 字节密钥分加密/认证各 32、HMAC-CTR 异或加密、HMAC 验 MAC 后才解密、verifier 验主密码；解密失败统一报错，不区分密码错与文件被改。`config.py` 的 `resolve_provider` 加回退：环境变量里没 Key 且认证方式是 env（无连接器）时读密码箱，文件不存在、未设 `NYRA_VAULT_PASSWORD`、解锁失败时静默跳过、保持原报错，绝不弹 getpass。模块入口 `python3 -m nyra.vault init|add|get|list|remove|change-password`，密钥一律 getpass、拒绝 argv 传密钥。威胁模型写在模块 docstring 里：防读文件，不防机器被入侵/内存/弱主密码，未审计，高价值密钥用专业密码管理器。新增 `tests/test_vault.py`（35 项，全离线）。
 - CI 不再依赖 `.sh` 可执行位：快照式推送会丢文件模式（GitHub 上常为 644），测试与文档里原来直接跑 `./scripts/install.sh` / `./scripts/build_package.sh` 的地方全改成 `bash` 显式调用；两个静态测试改断言 shebang（不测模式位）；`docs/linux-install.md` 与 `docs/linux-packaging.md` 里的示例命令同步改成 `bash scripts/...`。去位验证：安装与打包测试 24 项全过。
-- 测试 585 → 681 项，全部通过。
+- 测试 585 → 689 项，全部通过。
+- 文档补齐与小修：GUIDE“项目结构”补 19 个模块、工具数 15 改 18（加 3 个 Poppy opt-in 工具说明）、“路线图”一节换成待开发项集中清单、“测试”一节测试数 472 改 689；README“它能做什么”加配对码、密码箱、知识库、MCP 预置四项，快速开始补 Python 3.10+ 要求与 Windows `python -m nyra` 命令；修 `--provider ollama` 不带 `--model` 时错传 deepseek-flash 的问题（config.py 的 resolve_provider：配置默认值漏到新 provider 时改用新 provider 的预置默认模型）、load_config 新建 `~/.nyra` 时用 0700（已有目录不动）。新增 `tests/test_generic_providers.py` 回归测试 8 项。
 
 ## 未发布（MCP 内置预置）
 

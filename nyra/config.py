@@ -296,7 +296,15 @@ def load_config() -> dict:
     config = DEFAULT_CONFIG.copy()
 
     if not config_path.exists():
-        NYRA_HOME.mkdir(parents=True, exist_ok=True)
+        try:
+            NYRA_HOME.mkdir(parents=True, mode=0o700)
+        except FileExistsError:
+            # 目录已存在（例如只删了 config.json，或并发创建）：
+            # 不改已有目录的权限。
+            pass
+        else:
+            # 刚新建的目录：umask 也可能放宽权限，显式收紧到 0700。
+            os.chmod(NYRA_HOME, 0o700)
         with config_path.open("w", encoding="utf-8") as file:
             json.dump(DEFAULT_CONFIG, file, indent=2)
         return config
@@ -340,6 +348,25 @@ def resolve_provider(
     preset = presets[name]
 
     resolved_model = model
+    if resolved_model is not None:
+        # cli 传的是 args.model or profile["model"]，不带 --model 时
+        # 就是配置里默认 provider 的模型——它只是“配置默认值”，
+        # 不是用户给当前 provider 显式选的模型。如果配置的
+        # provider 与当前 provider 不同，且这个模型名不在当前
+        # provider 的已知模型里，就丢掉它，让下面走当前 provider
+        # 的预置默认（例如 --provider ollama 不带 --model 时用
+        # qwen2.5:7b，而不是把 deepseek-flash 传给 ollama）。
+        # 例外：模型名在当前 provider 的已知模型里时保留（用户
+        # 显式传的就是它）；预置没有已知模型列表时（custom）也保留。
+        settings = get_config()
+        preset_models = preset.get("models") or []
+        if (
+            settings.get("provider") != name
+            and resolved_model == settings.get("model")
+            and preset_models
+            and resolved_model not in preset_models
+        ):
+            resolved_model = None
     if resolved_model is None:
         resolved_model = _env("MODEL")
     if resolved_model is None:

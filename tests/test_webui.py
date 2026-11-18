@@ -546,7 +546,7 @@ class InfoAndPageTests(WebUITestCase):
 
 
 class UIv2Tests(WebUITestCase):
-    """UI v2: new sage-green palette, plush mascot, 14 providers / 15 tools."""
+    """UI v2: new sage-green palette, 14 providers / 15 tools."""
 
     def test_info_includes_providers_tools_skills(self):
         self.start()
@@ -574,7 +574,7 @@ class UIv2Tests(WebUITestCase):
             {"file-organizer", "verify-research", "web-research"},
         )
 
-    def test_page_uses_new_palette_and_mascot(self):
+    def test_page_uses_new_palette_and_no_mascot(self):
         html_text = webui.PAGE_HTML
         # New palette tokens (light + dark).
         for token in ("#F3F5F4", "#5F7D5C", "#6B8CAE", "#E07856", "#1F2420"):
@@ -586,9 +586,13 @@ class UIv2Tests(WebUITestCase):
         self.assertNotIn("#111A42", style)
         self.assertNotIn("#EAC45F", style)
         self.assertIn("已退役", html_text)
-        # Mascot is embedded as a data URI (self-contained, no external image).
-        self.assertIn("data:image/jpeg;base64,", html_text)
-        self.assertNotIn("MASCOT_BUNNY", html_text)
+        # No mascot at all (removed 2026-11-18): no embedded image, no
+        # mascot switcher, no mascot copy.
+        self.assertNotIn("data:image/jpeg;base64,", html_text)
+        for token in ("MASCOT_BUNNY", "MASCOT_BEAR", "MASCOT_OLD",
+                      "mascot-img", "setMascot", "nyra-mascot", "小兔",
+                      "毛绒", "data-mascot"):
+            self.assertNotIn(token, html_text, token)
         # Six views exist in the page.
         for view in ("view-chat", "view-skills", "view-schedule",
                      "view-group", "view-brand", "view-settings"):
