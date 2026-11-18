@@ -1,5 +1,27 @@
 # Linux 打包（tarball 与 .deb）
 
+## Node 二进制版（第 1 阶段起默认）
+
+`scripts/build-package-node.sh` 把已编好的 Linux 二进制打成发布物，版本号只从 `package.json` 的 `version` 读。
+
+```bash
+bash scripts/build-binaries.sh --only linux-x64   # 先编出二进制
+bash scripts/build-package-node.sh                # 产出到 ./dist/
+bash scripts/build-package-node.sh --no-deb       # 只要 tarball
+bash scripts/build-package-node.sh --arch arm64 --binary dist/nyra-linux-arm64
+```
+
+产出：
+
+| 文件 | 内容 |
+| --- | --- |
+| `nyra-node-<版本>.tar.gz` | 解压即用的归档，顶层目录 `nyra-node-<版本>/`，含 `nyra` 二进制、README.md、GUIDE.md、CHANGELOG.md、LICENSE 与 `docs/linux-*.md` |
+| `nyra-node_<版本>_amd64.deb` | Debian 包，装到 `/usr/share/nyra`，启动器 `/usr/bin/nyra`，只声明 `Depends: libc6`（不要求 Python） |
+
+白名单打包：`.git`、`.venv`、`__pycache__`、`dist/` 里的其他产物、`node_modules/` 绝不进包。没有 `dpkg-deb` 的机器上只产出 tarball 并警告，不报错。
+
+## Python 版（仍可用）
+
 Nyra 是零 pip 依赖的纯 Python 程序，打包不需要编译：`scripts/build_package.sh`
 从当前检出产出两件发布物，版本号只从 `nyra/__init__.py` 的 `__version__` 读。
 
