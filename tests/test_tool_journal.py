@@ -31,6 +31,27 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "重解析点"):
                     module._verify_written_windows_entry(self.root / "event.json", written)
 
+    def test_windows_postwrite_entry_metadata_change_is_rejected(self):
+        # Model an in-place modification after fsync: identity and size
+        # still match, but metadata must invalidate the commit claim.
+        from angel import tool_journal as module
+        from types import SimpleNamespace
+        written = SimpleNamespace(st_dev=1, st_ino=2, st_size=12,
+                                  st_mtime_ns=100, st_ctime_ns=100)
+        for changed in ("st_mtime_ns", "st_ctime_ns", "st_nlink"):
+            fields = dict(st_dev=1, st_ino=2, st_size=12,
+                          st_mode=stat.S_IFREG | 0o600,
+                          st_file_attributes=0, st_nlink=1,
+                          st_mtime_ns=100, st_ctime_ns=100)
+            fields[changed] = 2 if changed == "st_nlink" else 101
+            with self.subTest(changed=changed):
+                with mock.patch.object(module.os, "name", "nt"):
+                    with mock.patch.object(module.os, "lstat",
+                                           return_value=SimpleNamespace(**fields)):
+                        with self.assertRaisesRegex(JournalError, "替换或修改"):
+                            module._verify_written_windows_entry(
+                                self.root / "event.json", written)
+
     def test_windows_postwrite_entry_identity_mismatch_is_rejected(self):
         from angel import tool_journal as module
         from unittest.mock import Mock
