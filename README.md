@@ -18,8 +18,8 @@
 </p>
 
 <p align="center">
-  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 1011 项" src="https://img.shields.io/badge/tests-1011%20passing-0B0B0C">
+  <img alt="Python 3.10+ / Node 单文件" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
+  <img alt="测试 1234 项" src="https://img.shields.io/badge/tests-1234%20passing-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -54,6 +54,26 @@
 
 ## 快速开始
 
+**新用户：下载、运行，两步**（Node 单文件二进制，不用装 Python、不用装 Node）：
+
+```bash
+# 1）下载：到 https://github.com/js2005happy/nyra/releases 下最新版，
+#    按平台拿一个文件（Linux x64：nyra-linux-x64；Windows：nyra-windows-x64.exe；
+#    macOS arm64：nyra-macos-arm64，Intel：nyra-macos-x64）
+# 2）运行（以 Linux 为例）：
+chmod +x nyra-linux-x64
+./nyra-linux-x64 setup      # 首次启动向导（中文，三步到第一个任务）
+./nyra-linux-x64 doctor     # 中文自检：Key、网络、目录权限、磁盘
+```
+
+> 注意：带 Node 二进制的 Release 随 `v*` 标签发布，在第一个这样的 Release 出现之前，上面第 1 步还下不到文件——先本地构建再跑：`bash scripts/build-binaries.sh --only linux-x64`（产物在 `dist/`，Windows/macOS 同理，只编对应目标）。
+
+还没 Key 也能先跑 `--help` / `--version` / `--list-providers`（不联网、不花钱）。跑模型任务需要 Key：没设 Key 时会直接打印设置说明并退出（退出码 1），不会发请求、不会产生费用。没有 Key 可先用本地模型：`nyra --provider ollama "…"`（需本机装好 Ollama）或 `--provider codex`（复用本机 Codex 登录）。
+
+> 注意：第 1 阶段的 Node 二进制是预览版，只含安装、doctor、向导与本地示例任务；模型任务（agent 核心）在第 2 阶段移植。现阶段跑模型任务请用下面的 Python 方式，二进制会明确告诉你、不会假装跑成功。Windows/macOS 二进制未签名、未公证，首次运行会有系统提示（见各平台安装文档）。
+
+**旧方式（Python 版，功能完整，仍可用，不强制切）：**
+
 需要 Python 3.10+（`python3 --version` 验证）；Windows 上把下面命令里的 `python3` 换成 `python`（官网安装面板同样口径）。
 
 ```bash
@@ -65,14 +85,12 @@ python3 -m nyra                          # 交互模式
 python3 -m nyra ui --open                # 本地网页界面
 ```
 
-还没 Key 也能先跑 `--help` / `--version` / `--list-providers`（不联网、不花钱）。跑任务需要 Key：没设 Key 时会直接打印上面的设置说明并退出（退出码 1），不会发请求、不会产生费用。没有 Key 可先用本地模型：`python3 -m nyra --provider ollama "…"`（需本机装好 Ollama）或 `--provider codex`（复用本机 Codex 登录）。
-
-想一键装到 `~/.local/bin`（可选 systemd 服务）：见 [docs/linux-install.md](docs/linux-install.md)；已 clone 好仓库时跑 `./scripts/install.sh --source . --with-systemd`。
+想一键装到 `~/.local/bin`（可选 systemd 服务）：Node 二进制用 `./scripts/install-node.sh`，见 [docs/linux-install.md](docs/linux-install.md)；Python 版已 clone 好仓库时跑 `./scripts/install.sh --source . --with-systemd`。
 
 想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
-想拿现成的发布包（tarball / .deb）：见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build_package.sh`。
+想拿现成的发布包（tarball / .deb）：Node 二进制见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build-package-node.sh`；Python 版跑 `./scripts/build_package.sh`。
 
-Windows 上装：exe 单文件（不用装 Python）或一键脚本，见 [docs/windows-install.md](docs/windows-install.md)。
+Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚本，见 [docs/windows-install.md](docs/windows-install.md)。
 
 交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
 
@@ -162,7 +180,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 1011 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 1234 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可

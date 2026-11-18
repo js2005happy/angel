@@ -81,6 +81,24 @@ python -m nyra eigenflux policy audit --room alpha --bot lead
 
 ## 快速开始
 
+**新用户：下载、运行，两步**（Node 单文件二进制，不用装 Python、不用装 Node）：
+
+```bash
+# 1）下载：到 https://github.com/js2005happy/nyra/releases 下最新版，
+#    按平台拿一个文件（Linux x64：nyra-linux-x64；Windows：nyra-windows-x64.exe；
+#    macOS arm64：nyra-macos-arm64，Intel：nyra-macos-x64）
+# 2）运行（以 Linux 为例）：
+chmod +x nyra-linux-x64
+./nyra-linux-x64 setup      # 首次启动向导（中文，三步到第一个任务）
+./nyra-linux-x64 doctor     # 中文自检：Key、网络、目录权限、磁盘
+```
+
+第 1 阶段的 Node 二进制是预览版，只含安装、doctor、向导与本地示例任务；模型任务（agent 核心）在第 2 阶段移植，现阶段请用下面的 Python 方式。
+
+> 注意：带 Node 二进制的 Release 随 `v*` 标签发布，在第一个这样的 Release 出现之前，先本地构建：`bash scripts/build-binaries.sh --only linux-x64`（产物在 `dist/`）。
+
+**旧方式（Python 版，功能完整，仍可用，不强制切）：**
+
 先把仓库克隆到本地，再进入仓库目录——下面所有命令都在这个目录里运行：
 
 ```bash
@@ -589,7 +607,7 @@ python3 -m nyra --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的工
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 964 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 1234 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -654,6 +672,9 @@ nyra/
 ├── docs/              项目官网（GitHub Pages，纯静态）
 ├── skills/            自带示例技能
 ├── tests/             mock 测试
+├── tests/node/        Node 测试（bun test tests/node，516 项）
+├── src/               Node 运行时（第 1 阶段）：cli.ts（入口）/ config.ts（配置与 provider 预置）/ doctor.ts（中文自检）/ wizard.ts（首次启动向导）/ exampleTask.ts（本地示例任务）/ noKey.ts（无 Key 说明），其余 agent/ gateway/ mcp/ memory/ pairing/ providers/ skills/ tools/ vault/ 是第 2–3 阶段移植的占位
+├── scripts/build-binaries.sh    Bun --compile 编 5 个平台产物；scripts/install-node.sh / install-node-macos.sh / install-node.ps1 各平台一键安装；scripts/build-package-node.sh 打 Linux tarball / .deb
 ├── README.md
 ├── DESIGN.md          架构与设计来源
 ├── VERIFICATION.md    验证报告
