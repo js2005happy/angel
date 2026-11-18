@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal 读取权限拒绝不再视为空日志）
+
+- 读取入口不再通过 Path.exists() 判断空日志；统一使用 _directory_identity()，仅真实 FileNotFoundError 返回空列表，访问拒绝触发 JournalError。新增模拟回归测试源码，未运行；不提供 Windows ACL 或跨进程事务。
+
 ## 未发布（2026-11-19，ToolJournal 目录访问拒绝诊断）
 
 - 目录身份核验改用 lstat 并仅将 FileNotFoundError 视为不存在；其他 OSError（例如访问拒绝）明确失败关闭，避免将不可核验的日志误判为空。新增模拟 PermissionError 的回归测试源码，未执行。Windows ACL 与稳定句柄仍未实现。
