@@ -11,6 +11,29 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_path_fallback_rejects_concurrent_new_entry(self):
+        # Force the path fallback on POSIX without running on Windows.
+        from angel import tool_journal as module
+        journal = ToolJournal("fallback-snapshot-race", root=self.root)
+        cid = journal.begin("shell")
+        journal.finish(cid, "shell", success=True)
+        original_iterdir = Path.iterdir
+        calls = 0
+
+        def changing_iterdir(path):
+            nonlocal calls
+            entries = list(original_iterdir(path))
+            if path == journal.path:
+                calls += 1
+                if calls == 2:
+                    return iter(entries + [path / ("intent-" + "a" * 32 + ".json")])
+            return iter(entries)
+
+        with mock.patch.object(module.os, "supports_dir_fd", set()):
+            with mock.patch.object(Path, "iterdir", changing_iterdir):
+                with self.assertRaisesRegex(JournalError, "并发变化"):
+                    journal.inspect()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
