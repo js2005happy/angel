@@ -262,6 +262,14 @@ class MCPClient:
             process.stdin.write(payload + "\n")
             process.stdin.flush()
         except (OSError, ValueError) as exc:
+            # 子进程可能在 poll() 检查和 flush 之间退出：Windows 上往已死
+            # 子进程的 stdin 写会报 [Errno 22] Invalid argument（POSIX 上是
+            # BrokenPipeError）。这时真正的事件是“服务器已退出”，而不是写失败，
+            # 复查一次退出状态再决定报错文案。
+            if process.poll() is not None:
+                raise MCPError(
+                    f"MCP 服务器已退出（退出码 {process.returncode}）"
+                ) from exc
             raise MCPError(f"写入 MCP 服务器失败：{exc}") from exc
 
     @staticmethod

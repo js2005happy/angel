@@ -54,10 +54,13 @@ class SystemdUnitTests(unittest.TestCase):
         parts = exec_start.split()
         self.assertGreaterEqual(len(parts), 3)
         exe = parts[0]
-        self.assertTrue(
-            Path(exe).is_file() or shutil.which(exe),
-            f"ExecStart executable not found: {exe}",
-        )
+        # systemd 单元只在 Linux 上运行：Windows 上永远没有 /usr/bin/python3，
+        # 可执行文件是否存在只能在非 Windows 上断言；命令本身的形状各平台一致。
+        if sys.platform != "win32":
+            self.assertTrue(
+                Path(exe).is_file() or shutil.which(exe),
+                f"ExecStart executable not found: {exe}",
+            )
         self.assertEqual(parts[1:4], ["-m", "nyra", "schedule"])
         self.assertIn("daemon", parts)
 
@@ -96,6 +99,11 @@ class SystemdUnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
             env["HOME"] = tmp
+            # Windows 管道的默认编码是 ANSI 代码页（英文 runner 上是 cp1252），
+            # 写不进中文时 configure_stdio 的 backslashreplace 会把中文输出
+            # 写成 \uXXXX 转义文本，父进程再也匹配不到原文。两端都强制 UTF-8，
+            # 守护进程本身的中文输出在 Windows 上就是对的，只是测试取数方式要一致。
+            env["PYTHONIOENCODING"] = "utf-8"
             proc = subprocess.run(
                 [
                     sys.executable,
@@ -112,6 +120,7 @@ class SystemdUnitTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=60,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)

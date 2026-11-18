@@ -106,6 +106,10 @@ class VaultCoreTest(VaultTestBase):
         self.vault.path.write_text(json.dumps(doc), encoding="utf-8")
         self.assertFalse(Vault().unlock(PASSWORD))
 
+    # Windows 文件系统没有 POSIX 权限位：os.chmod(0o600) 在 NTFS 上只影响
+    # 只读标志，stat 看到的 mode 仍是 0o666，0600/0700 断言在 Windows 上
+    # 本就不适用；密码箱的加密本身不受影响。
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
     def test_new_file_permissions_0600(self):
         self.vault.init(PASSWORD)
         mode = stat.S_IMODE(self.vault.path.stat().st_mode)

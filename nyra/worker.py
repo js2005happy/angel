@@ -445,11 +445,16 @@ def build_agent(args, on_event, approve_fn) -> Agent:
 
 
 def main(argv=None) -> int:
+    # --help 的中文说明在解析参数时就打印，而那时 stderr 的 UTF-8 重配还
+    # 没执行：Windows 管道默认 ANSI 代码页（英文环境是 cp1252），中文写不进
+    # 去会抛 UnicodeEncodeError 导致 --help 退出码 1。解析前先把两端都配成
+    # UTF-8；Linux 上 stdout/stderr 本来就是 UTF-8，等于无操作。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     args = build_parser().parse_args(argv)
-    try:
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
     emitter = WorkerEmitter(sys.stdout)
     try:
         worker = Worker(agent=None, emitter=emitter, io=WorkerIO(sys.stdin, emitter))
