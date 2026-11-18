@@ -1,3 +1,8 @@
+## 2026-11-19 — 日志目录权限错误与缺失区分（仅静态）
+
+- 静态核对 `_directory_identity`：旧 `Path.exists()` 的平台/版本差异可能把访问错误当作不存在；现仅对 `FileNotFoundError` 返回 None，其余 `OSError` 触发 `JournalError`。新增 mock PermissionError 测试源码。
+- 未运行测试、CI、安装或 Windows 实机验证；不宣称原生 ACL、目录句柄绑定或完整事务已完成。
+
 ## 2026-11-19 — POSIX 事件写入同步后的目录句柄复核（仅静态）
 
 - 静态检查：原 POSIX 写入路径在 fsync(directory_fd) 后直接关闭句柄；本轮增加最终 fstat 类型、身份、权限校验，补充 mock 模拟测试源码。未运行测试、CI 或安装；真实平台表现未知。最后检查后仍存在 TOCTOU。
