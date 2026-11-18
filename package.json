@@ -1,0 +1,26 @@
+{
+  "bin": {
+    "nyra": "./dist/nyra-linux-x64"
+  },
+  "description": "Nyra — 跑在你电脑上的开源 AI Agent（Node 运行时，第 1 阶段：安装与第一次使用）",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "license": "MIT",
+  "name": "nyra",
+  "private": true,
+  "scripts": {
+    "build": "bun build --target=bun --outfile dist/nyra src/cli.ts",
+    "build:binaries": "bash scripts/build-binaries.sh",
+    "doctor": "bun run src/cli.ts doctor",
+    "probes": "bash scripts/run-probes.sh",
+    "setup": "bun run src/cli.ts setup",
+    "test": "bun test tests/node",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "type": "module",
+  "version": "0.3.0",
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
