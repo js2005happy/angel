@@ -64,6 +64,26 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "元数据不安全"):
                     journal.begin("shell")
 
+    def test_windows_reparse_point_without_is_junction(self):
+        from angel import tool_journal as module
+        from unittest.mock import Mock
+        original_lstat = Path.lstat
+
+        def fake_lstat(path, *args, **kwargs):
+            info = original_lstat(path, *args, **kwargs)
+            fake = Mock(wraps=info)
+            fake.st_file_attributes = (
+                stat.FILE_ATTRIBUTE_REPARSE_POINT if path == self.root else 0
+            )
+            return fake
+
+        with mock.patch.object(module.os, "name", "nt"):
+            with mock.patch.object(Path, "lstat", fake_lstat):
+                with mock.patch.object(Path, "is_junction", None, create=True):
+                    with self.assertRaisesRegex(JournalError, "重解析点"):
+                        ToolJournal("reparse-session", root=self.root)
+        self.assertFalse((self.root / "reparse-session").exists())
+
     def test_directory_junction_is_rejected_when_supported(self):
         # Simulate a Windows NTFS junction without requiring Windows or
         # creating an actual reparse point on the test host.
