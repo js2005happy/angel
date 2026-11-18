@@ -31,7 +31,7 @@ class JournalError(ValueError):
 
 def _safe_directory(path: Path) -> None:
     current = path
-    while current != current.parent:
+    while True:
         # Windows NTFS junctions are reparse points but not necessarily
         # reported by is_symlink(). Reject them on runtimes exposing the
         # standard-library Path.is_junction() API (Python 3.12+).
