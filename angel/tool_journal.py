@@ -86,8 +86,11 @@ def _verify_written_windows_entry(path: Path, written: os.stat_result) -> None:
     _reject_windows_event_reparse(entry)
     if (not stat.S_ISREG(entry.st_mode)
             or (entry.st_dev, entry.st_ino) != (written.st_dev, written.st_ino)
-            or entry.st_size != written.st_size):
-        raise JournalError("写入后的 Windows 事件文件已被替换")
+            or entry.st_nlink != 1
+            or entry.st_size != written.st_size
+            or entry.st_mtime_ns != written.st_mtime_ns
+            or entry.st_ctime_ns != written.st_ctime_ns):
+        raise JournalError("写入后的 Windows 事件文件已被替换或修改")
 
 
 def _directory_identity(path: Path) -> tuple[int, int] | None:
