@@ -1,9 +1,9 @@
 """Tests for the memory_append and save_skill tools.
 
-These two tools write real files under ~/.angel/ and had no unit tests
+These two tools write real files under ~/.nyra/ and had no unit tests
 (VERIFICATION.md v1 known limitation 3). memory_append now writes to the
 ToolContext's memory_path instead of the process-wide default, so the tests
-below never touch the real ~/.angel/MEMORY.md.
+below never touch the real ~/.nyra/MEMORY.md.
 """
 
 import sys
@@ -14,9 +14,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel import memory as memory_mod
-from angel.skills import load_skills, parse_skill_file
-from angel.tools import ToolContext, execute_tool
+from nyra import memory as memory_mod
+from nyra.skills import load_skills, parse_skill_file
+from nyra.tools import ToolContext, execute_tool
 
 
 def _ctx(tmp: Path, mode: str = "full", interactive: bool = False) -> ToolContext:

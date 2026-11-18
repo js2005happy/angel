@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
-from angel.agent import build_mcp_manager
+from nyra.agent import build_mcp_manager
 
 
 FAKE_SERVER = r'''
@@ -36,7 +36,13 @@ for line in sys.stdin:
     elif method == "tools/call":
         result = {"content": [{"type": "text", "text": "ok"}]}
     else:
-        result = {}
+        # 旧版服务器对握手前收到的未知方法回方法未找到，客户端据此回退。
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0", "id": request["id"],
+            "error": {"code": -32601, "message": "Method not found"},
+        }) + "\n")
+        sys.stdout.flush()
+        continue
     sys.stdout.write(json.dumps({
         "jsonrpc": "2.0", "id": request["id"], "result": result
     }) + "\n")
@@ -57,6 +63,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
     def config(self, *names):
         return {
             "mcp_enabled": True,
+            "mcp_presets": [],
             "mcp_servers": {
                 name: {
                     "command": sys.executable,
@@ -68,21 +75,21 @@ class MCPStartupPolicyTest(unittest.TestCase):
         }
 
     def test_readonly_never_loads_or_starts_external_processes(self):
-        with patch("angel.agent.load_config", return_value=self.config("bad")) as load:
+        with patch("nyra.agent.load_config", return_value=self.config("bad")) as load:
             result = build_mcp_manager(mode="readonly", interactive=True)
         self.assertIsNone(result)
         load.assert_not_called()
         self.assertFalse((self.root / "bad.started").exists())
 
     def test_unattended_auto_does_not_start_servers(self):
-        with patch("angel.agent.load_config", return_value=self.config("bad")) as load:
+        with patch("nyra.agent.load_config", return_value=self.config("bad")) as load:
             result = build_mcp_manager(mode="auto", interactive=False)
         self.assertIsNone(result)
         load.assert_not_called()
         self.assertFalse((self.root / "bad.started").exists())
 
     def test_interactive_auto_denial_prevents_startup(self):
-        with patch("angel.agent.load_config", return_value=self.config("no")), \
+        with patch("nyra.agent.load_config", return_value=self.config("no")), \
              patch("builtins.input", return_value="n") as answer, \
              patch("sys.stdout", new_callable=io.StringIO) as output:
             result = build_mcp_manager(mode="auto", interactive=True)
@@ -93,7 +100,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
         self.assertFalse((self.root / "no.started").exists())
 
     def test_interactive_auto_starts_only_approved_servers(self):
-        with patch("angel.agent.load_config", return_value=self.config("no", "yes")), \
+        with patch("nyra.agent.load_config", return_value=self.config("no", "yes")), \
              patch("builtins.input", side_effect=["no", "yes"]) as answer:
             manager = build_mcp_manager(mode="auto", interactive=True)
         self.assertIsNotNone(manager)
@@ -107,7 +114,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
             manager.stop_all()
 
     def test_full_mode_starts_without_prompt(self):
-        with patch("angel.agent.load_config", return_value=self.config("yes")), \
+        with patch("nyra.agent.load_config", return_value=self.config("yes")), \
              patch("builtins.input", side_effect=AssertionError("unexpected prompt")):
             manager = build_mcp_manager(mode="full", interactive=False)
         self.assertIsNotNone(manager)
@@ -119,7 +126,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
     def test_legacy_windows_console_does_not_crash_on_consent_prompt(self):
         raw = io.BytesIO()
         terminal = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
-        with patch("angel.agent.load_config", return_value=self.config("legacy")), \
+        with patch("nyra.agent.load_config", return_value=self.config("legacy")), \
              patch("builtins.input", return_value="n"), \
              patch("sys.stdout", terminal):
             result = build_mcp_manager(mode="auto", interactive=True)
@@ -129,13 +136,13 @@ class MCPStartupPolicyTest(unittest.TestCase):
         self.assertFalse((self.root / "legacy.started").exists())
 
     def test_unknown_mode_fails_closed(self):
-        with patch("angel.agent.load_config", return_value=self.config("bad")) as load:
+        with patch("nyra.agent.load_config", return_value=self.config("bad")) as load:
             result = build_mcp_manager(mode="unrecognized", interactive=True)
         self.assertIsNone(result)
         load.assert_not_called()
 
     def test_repl_switch_from_full_to_readonly_stops_existing_server(self):
-        from angel.cli import main
+        from nyra.cli import main
 
         manager = MagicMock()
         manager.tool_schemas = [{"function": {"name": "mcp_fake_echo"}}]
@@ -143,13 +150,13 @@ class MCPStartupPolicyTest(unittest.TestCase):
         agent.mode = "full"
         agent.ctx.mode = "full"
         agent.session_id = "test-session"
-        with patch("angel.cli.load_config", return_value={
+        with patch("nyra.cli.load_config", return_value={
             "provider": "deepseek", "model": "deepseek-flash",
             "mode": "full", "max_turns": 3, "profiles": {},
         }), \
-             patch("angel.cli.Provider") as provider_class, \
-             patch("angel.cli.Agent", return_value=agent), \
-             patch("angel.cli.build_mcp_manager", side_effect=[manager, None]) as start, \
+             patch("nyra.cli.Provider") as provider_class, \
+             patch("nyra.cli.Agent", return_value=agent), \
+             patch("nyra.cli.build_mcp_manager", side_effect=[manager, None]) as start, \
              patch("builtins.input", side_effect=["/mode readonly", "/exit"]), \
              patch("sys.stdout", new_callable=io.StringIO):
             provider_class.return_value.has_credentials.return_value = True

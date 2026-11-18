@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from angel.tools import ToolContext, ToolError, _check_approval, execute_tool
+from nyra.tools import ToolContext, ToolError, _check_approval, execute_tool
 
 
 class RecordingBackend:
@@ -158,7 +158,7 @@ class WorkspaceWriteTest(unittest.TestCase):
         self.ctx.mode = "auto"
         self.ctx.interactive = True
         with patch("builtins.input") as prompt, \
-             patch("angel.tools.subprocess.run") as spawn:
+             patch("nyra.tools.subprocess.run") as spawn:
             for cwd in ["..", str(outside_dir), *symlinks]:
                 with self.subTest(cwd=cwd):
                     response = execute_tool(
@@ -171,7 +171,7 @@ class WorkspaceWriteTest(unittest.TestCase):
     def test_shell_normalizes_cwd_for_local_execution(self):
         nested = self.workdir / "nested"
         nested.mkdir()
-        with patch("angel.tools.subprocess.run") as spawn:
+        with patch("nyra.tools.subprocess.run") as spawn:
             spawn.return_value.stdout = "ok"
             spawn.return_value.stderr = ""
             output = execute_tool("shell", {

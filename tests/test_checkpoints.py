@@ -6,13 +6,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import angel.agent as agent_module
-import angel.memory as memory_module
-from angel.agent import Agent
-from angel.checkpoints import (
+import nyra.agent as agent_module
+import nyra.memory as memory_module
+from nyra.agent import Agent
+from nyra.checkpoints import (
     CheckpointError, CheckpointStore, MAX_FILE_BYTES,
 )
-from angel.tools import ToolContext, execute_tool
+from nyra.tools import ToolContext, execute_tool
 
 
 def response(content="", calls=None):
@@ -216,7 +216,7 @@ class CheckpointAgentTests(unittest.TestCase):
         self.workdir = self.root / "project"
         self.workdir.mkdir()
         self.patches = [
-            patch.object(agent_module, "ANGEL_HOME", self.root / "home"),
+            patch.object(agent_module, "NYRA_HOME", self.root / "home"),
             patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"),
         ]
         for p in self.patches:

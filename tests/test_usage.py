@@ -6,11 +6,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import angel.agent as agent_module
-import angel.cli as cli
-import angel.memory as memory_module
-from angel.agent import Agent
-from angel.usage import UsageTracker, context_limit, format_usage
+import nyra.agent as agent_module
+import nyra.cli as cli
+import nyra.memory as memory_module
+from nyra.agent import Agent
+from nyra.usage import UsageTracker, context_limit, format_usage
 
 
 def reply(content, usage=None):
@@ -98,7 +98,7 @@ class RuntimeUsageTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.patches = [
-            mock.patch.object(agent_module, "ANGEL_HOME", self.root / "home"),
+            mock.patch.object(agent_module, "NYRA_HOME", self.root / "home"),
             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"),
         ]
         for patcher in self.patches:
@@ -123,6 +123,9 @@ class RuntimeUsageTest(unittest.TestCase):
         self.assertEqual([k for k, _ in events], ["usage", "final"])
 
     def test_cli_status_and_one_shot_stderr_not_stdout(self):
+        run_patch = mock.patch.object(cli, "NYRA_HOME", self.root)
+        run_patch.start()
+        self.addCleanup(run_patch.stop)
         config = {
             "provider": "deepseek", "model": "deepseek-flash", "mode": "readonly",
             "max_turns": 3, "profiles": {}, "context_window_tokens": 2048
@@ -160,8 +163,8 @@ class RuntimeUsageTest(unittest.TestCase):
             self.assertIn("上下文剩余：未知", out.getvalue())
 
     def test_ui_exposes_per_session_usage_and_page_status(self):
-        from angel.webui import UIState
-        from angel.webui_page import PAGE_HTML
+        from nyra.webui import UIState
+        from nyra.webui_page import PAGE_HTML
 
         state = UIState(self.root, context_window_tokens=4096,
                         provider_factory=lambda: Provider([reply("hi", {

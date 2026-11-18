@@ -15,14 +15,14 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.config import (  # noqa: E402
+from nyra.config import (  # noqa: E402
     DEFAULT_CONFIG,
     ProviderConfig,
     get_provider_presets,
     plaintext_http_error,
     resolve_provider,
 )
-from angel.providers import FallbackProvider, Provider, ProviderError  # noqa: E402
+from nyra.providers import FallbackProvider, Provider, ProviderError  # noqa: E402
 
 
 def _config(**overrides):
@@ -150,7 +150,7 @@ class TestCustomProviderParse(unittest.TestCase):
 class TestEnvCustomProvider(unittest.TestCase):
     def test_env_custom_http_external_rejected(self):
         cfg = _config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ,
                 {
@@ -165,7 +165,7 @@ class TestEnvCustomProvider(unittest.TestCase):
 
     def test_env_custom_http_localhost_resolves(self):
         cfg = _config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ,
                 {
@@ -183,7 +183,7 @@ class TestProviderRequestGuard(unittest.TestCase):
     def test_chat_http_external_raises_config_without_sending(self):
         provider = _provider()
         with mock.patch(
-            "angel.providers.build_opener_for", side_effect=_never_send
+            "nyra.providers.build_opener_for", side_effect=_never_send
         ):
             with self.assertRaises(ProviderError) as ctx:
                 provider.chat([{"role": "user", "content": "hi"}])
@@ -194,7 +194,7 @@ class TestProviderRequestGuard(unittest.TestCase):
     def test_list_models_http_external_raises_config_without_sending(self):
         provider = _provider()
         with mock.patch(
-            "angel.providers.build_opener_for", side_effect=_never_send
+            "nyra.providers.build_opener_for", side_effect=_never_send
         ):
             with self.assertRaises(ProviderError) as ctx:
                 provider.list_models()
@@ -213,7 +213,7 @@ class TestProviderRequestGuard(unittest.TestCase):
             get_provider_presets(cfg)
         provider = _provider()
         with mock.patch(
-            "angel.providers.build_opener_for", side_effect=_never_send
+            "nyra.providers.build_opener_for", side_effect=_never_send
         ):
             with self.assertRaises(ProviderError) as request_ctx:
                 provider.chat([{"role": "user", "content": "hi"}])
@@ -234,7 +234,7 @@ class TestProviderRequestGuard(unittest.TestCase):
         )
         chain = FallbackProvider([primary, backup])
         with mock.patch(
-            "angel.providers.build_opener_for", side_effect=_never_send
+            "nyra.providers.build_opener_for", side_effect=_never_send
         ):
             with self.assertRaises(ProviderError) as ctx:
                 chain.chat([{"role": "user", "content": "hi"}])

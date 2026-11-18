@@ -1,0 +1,33 @@
+# Nyra scheduler daemon, as a systemd user service.
+#
+# Install: see docs/linux-systemd.md. This is a *user* unit: it runs as your
+# own user, needs no root, and writes nothing outside your home directory.
+# It only keeps `python3 -m nyra schedule daemon` running; the daemon itself
+# checks the schedule every 60 seconds and runs due tasks (see
+# `nyra schedule list` / `nyra schedule add`).
+#
+# Paths: the checkout is assumed to be ~/nyra (WorkingDirectory=%h/nyra).
+# If you cloned it elsewhere, change WorkingDirectory to that path.
+# /usr/bin/python3 is the system Python on Debian/Ubuntu; if `which python3`
+# prints a different path on your machine, change ExecStart to match it.
+
+[Unit]
+Description=Nyra scheduler daemon (runs scheduled tasks)
+Documentation=https://github.com/js2005happy/nyra/blob/main/docs/linux-systemd.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/nyra
+ExecStart=/usr/bin/python3 -m nyra schedule daemon
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+# Hardening: user service, no privileges to gain, nothing outside $HOME written.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=true
+
+[Install]
+WantedBy=default.target

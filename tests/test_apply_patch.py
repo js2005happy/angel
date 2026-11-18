@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from angel.agent import Agent
-from angel.checkpoints import CheckpointStore
-from angel.patches import PatchError, apply_unified_patch, unified_preview
-from angel.tools import ToolContext, execute_tool
-from angel.webui_page import PAGE_HTML
+from nyra.agent import Agent
+from nyra.checkpoints import CheckpointStore
+from nyra.patches import PatchError, apply_unified_patch, unified_preview
+from nyra.tools import ToolContext, execute_tool
+from nyra.webui_page import PAGE_HTML
 
 
 def patch_text(path, hunks):
@@ -224,7 +224,7 @@ class ToolPatchTest(unittest.TestCase):
             self.assertIn("+++ b/file.txt", summary)
             self.assertIn("-old", summary)
 
-    def test_conflicting_external_edit_is_not_displayed_as_angel_diff(self):
+    def test_conflicting_external_edit_is_not_displayed_as_nyra_diff(self):
         self.ctx.mode = "full"
         self.assertIn("已应用补丁", self.apply())
         (self.workdir / "file.txt").write_text("external work\n", encoding="utf-8")

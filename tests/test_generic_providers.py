@@ -10,6 +10,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
@@ -18,16 +19,17 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.cli import main  # noqa: E402
-from angel.config import (  # noqa: E402
+from nyra.cli import main  # noqa: E402
+from nyra.config import (  # noqa: E402
     DEFAULT_CONFIG,
     ProviderConfig,
     get_provider_presets,
     known_provider_names,
+    load_config,
     resolve_fallback_chain,
     resolve_provider,
 )
-from angel.providers import (  # noqa: E402
+from nyra.providers import (  # noqa: E402
     FallbackProvider,
     Provider,
     ProviderError,
@@ -109,6 +111,13 @@ class TestBuiltinPresets(unittest.TestCase):
                 if name == "custom":
                     self.assertIsNone(preset["base_url"])
                     continue
+                if preset.get("auth") == "cli":
+                    # CLI providers have no HTTP endpoint (cli:// marker).
+                    self.assertTrue(
+                        preset["base_url"].startswith("cli://"), name
+                    )
+                    self.assertTrue(preset["default_model"], name)
+                    continue
                 self.assertTrue(
                     preset["base_url"].startswith(("http://", "https://")),
                     name,
@@ -126,7 +135,7 @@ class TestBuiltinPresets(unittest.TestCase):
 class TestCustomProviders(unittest.TestCase):
     def test_custom_provider_resolves_with_env_key(self):
         cfg = _custom_config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ, {"MYLLM_API_KEY": "sk-test"}, clear=False
             ):
@@ -139,7 +148,7 @@ class TestCustomProviders(unittest.TestCase):
 
     def test_custom_provider_unknown_fields_ignored(self):
         cfg = _custom_config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ, {"MYLLM_API_KEY": "sk-test"}, clear=False
             ):
@@ -199,7 +208,7 @@ class TestCustomProviders(unittest.TestCase):
                 }
             },
         )
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
                 os.environ, {"DEEPSEEK_API_KEY": "sk-test"}, clear=False
             ):
@@ -207,7 +216,7 @@ class TestCustomProviders(unittest.TestCase):
         self.assertEqual(resolved.base_url, "https://proxy.example.com/v1")
         self.assertEqual(resolved.model, "my-deepseek")
 
-    def test_custom_provider_without_env_key_uses_angel_api_key(self):
+    def test_custom_provider_without_env_key_uses_legacy_api_key_fallback(self):
         cfg = _config(
             custom_providers={
                 "keyless": {
@@ -216,9 +225,9 @@ class TestCustomProviders(unittest.TestCase):
                 }
             }
         )
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(
-                os.environ, {"ANGEL_API_KEY": "sk-fallback"}, clear=False
+                os.environ, {"NYRA_API_KEY": "sk-fallback"}, clear=False
             ):
                 resolved = resolve_provider("keyless")
         self.assertEqual(resolved.api_key, "sk-fallback")
@@ -226,7 +235,7 @@ class TestCustomProviders(unittest.TestCase):
 
     def test_custom_provider_missing_key_is_config_error_on_chat(self):
         cfg = _custom_config()
-        with mock.patch("angel.config.load_config", return_value=cfg):
+        with mock.patch("nyra.config.load_config", return_value=cfg):
             with mock.patch.dict(os.environ, {}, clear=True):
                 resolved = resolve_provider("myllm")
         provider = Provider(resolved)
@@ -315,7 +324,7 @@ class TestListModels(unittest.TestCase):
     def _run_list_models(self, action):
         provider = self._provider()
         with mock.patch(
-            "angel.providers.build_opener_for",
+            "nyra.providers.build_opener_for",
             return_value=self._fake_opener(action),
         ):
             return provider.list_models()
@@ -382,7 +391,7 @@ class TestListModels(unittest.TestCase):
     def test_bad_json_is_parse_error(self):
         models = self._provider()
         with mock.patch(
-            "angel.providers.build_opener_for",
+            "nyra.providers.build_opener_for",
             return_value=self._fake_opener(
                 lambda request: _FakeResponse(b"not json")
             ),
@@ -433,7 +442,7 @@ class _FakeCliProvider:
 class TestCliFlags(unittest.TestCase):
     def test_list_providers_prints_presets(self):
         cfg = _custom_config()
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             out = io.StringIO()
             with redirect_stdout(out):
                 code = main(["--list-providers"])
@@ -446,7 +455,7 @@ class TestCliFlags(unittest.TestCase):
 
     def test_list_providers_bad_custom_config_errors(self):
         cfg = _config(custom_providers={"broken": {"default_model": "m1"}})
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             out = io.StringIO()
             with redirect_stdout(out):
                 code = main(["--list-providers"])
@@ -464,12 +473,12 @@ class TestCliFlags(unittest.TestCase):
             connector_name=None,
             allowed_hosts=[],
         )
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             with mock.patch(
-                "angel.cli.resolve_provider", return_value=fake_cfg
+                "nyra.cli.resolve_provider", return_value=fake_cfg
             ):
                 with mock.patch(
-                    "angel.cli.build_provider_chain",
+                    "nyra.cli.build_provider_chain",
                     return_value=_FakeCliProvider(["m1", "m2"]),
                 ):
                     out = io.StringIO()
@@ -495,12 +504,12 @@ class TestCliFlags(unittest.TestCase):
             def list_models(self, timeout=30.0):
                 raise ProviderError("认证失败", kind="auth")
 
-        with mock.patch("angel.cli.load_config", return_value=cfg):
+        with mock.patch("nyra.cli.load_config", return_value=cfg):
             with mock.patch(
-                "angel.cli.resolve_provider", return_value=fake_cfg
+                "nyra.cli.resolve_provider", return_value=fake_cfg
             ):
                 with mock.patch(
-                    "angel.cli.build_provider_chain",
+                    "nyra.cli.build_provider_chain",
                     return_value=FailingProvider([]),
                 ):
                     out = io.StringIO()
@@ -508,6 +517,92 @@ class TestCliFlags(unittest.TestCase):
                         code = main(["--list-models"])
         self.assertEqual(code, 1)
         self.assertIn("认证失败", out.getvalue())
+
+
+class TestProviderModelSwitch(unittest.TestCase):
+    """切换 provider 时，不带 --model 就用新 provider 的预置默认模型。
+
+    cli 传的是 args.model or profile["model"]，不带 --model 时就是
+    配置里默认 provider 的模型；resolve_provider 要认出这是“配置
+    默认值漏过来”，而不是用户给新 provider 显式选的模型。
+    """
+
+    def setUp(self):
+        self._env_patch = mock.patch.dict(os.environ)
+        self._env_patch.start()
+        os.environ.pop("NYRA_MODEL", None)
+
+    def tearDown(self):
+        self._env_patch.stop()
+
+    def test_ollama_without_model_uses_preset_default(self):
+        cfg = _config()  # 默认 provider deepseek，model deepseek-flash
+        with mock.patch("nyra.config.load_config", return_value=cfg):
+            resolved = resolve_provider("ollama", "deepseek-flash")
+        self.assertEqual(resolved.name, "ollama")
+        self.assertEqual(resolved.model, "qwen2.5:7b")
+
+    def test_ollama_explicit_model_kept(self):
+        cfg = _config()
+        with mock.patch("nyra.config.load_config", return_value=cfg):
+            resolved = resolve_provider("ollama", "qwen2.5:7b")
+        self.assertEqual(resolved.model, "qwen2.5:7b")
+
+    def test_same_provider_keeps_config_model(self):
+        cfg = _config()
+        with mock.patch("nyra.config.load_config", return_value=cfg):
+            resolved = resolve_provider("deepseek", "deepseek-flash")
+        self.assertEqual(resolved.model, "deepseek-flash")
+
+    def test_switch_to_deepseek_uses_deepseek_default(self):
+        cfg = _config(provider="ollama", model="qwen2.5:7b")
+        with mock.patch("nyra.config.load_config", return_value=cfg):
+            resolved = resolve_provider("deepseek", "qwen2.5:7b")
+        self.assertEqual(resolved.model, "deepseek-flash")
+
+    def test_none_model_uses_preset_default(self):
+        cfg = _config()
+        with mock.patch("nyra.config.load_config", return_value=cfg):
+            resolved = resolve_provider("ollama", None)
+        self.assertEqual(resolved.model, "qwen2.5:7b")
+
+    def test_codex_without_model_uses_codex_default(self):
+        cfg = _config()
+        with mock.patch("nyra.config.load_config", return_value=cfg):
+            resolved = resolve_provider("codex", "deepseek-flash")
+        self.assertEqual(resolved.model, "codex-default")
+
+
+class TestLoadConfigHomePermissions(unittest.TestCase):
+    """load_config 新建 ~/.nyra 时用 0700；已有目录不动。"""
+
+    # Windows 文件系统没有 POSIX 权限位：os.chmod(0o700/0o755) 在 NTFS 上
+    # 只影响只读标志，stat 看到的 mode 仍是 0o777，0700/0755 断言在
+    # Windows 上本就不适用；与 test_vault.py 的 0600 测试同例跳过。
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
+    def test_new_home_created_0700(self):
+        import nyra.config as config_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".nyra"
+            with mock.patch.object(config_module, "NYRA_HOME", home):
+                config = load_config()
+            self.assertTrue((home / "config.json").exists())
+            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(config["provider"], "deepseek")
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
+    def test_existing_home_permissions_untouched(self):
+        import nyra.config as config_module
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".nyra"
+            home.mkdir()
+            os.chmod(home, 0o755)
+            with mock.patch.object(config_module, "NYRA_HOME", home):
+                load_config()
+            self.assertEqual(home.stat().st_mode & 0o777, 0o755)
+            self.assertTrue((home / "config.json").exists())
 
 
 if __name__ == "__main__":

@@ -7,11 +7,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-import angel.cli as cli
-import angel.poppy_identity as identity
-from angel.agent import Agent
-from angel.poppy import PoppyError
-from angel.tools import ToolContext, execute_tool
+import nyra.cli as cli
+import nyra.poppy_identity as identity
+from nyra.agent import Agent
+from nyra.poppy import PoppyError
+from nyra.tools import ToolContext, execute_tool
 
 
 DOMAIN = "store.example.com"
@@ -254,7 +254,7 @@ class OAuthIdentityToolTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_agent_tool_disabled_unless_explicit_poppy_flag(self):
-        with mock.patch("angel.tools.inspect_poppy_identity") as check:
+        with mock.patch("nyra.tools.inspect_poppy_identity") as check:
             result = execute_tool("poppy_identity_check", {"site": DOMAIN}, self.ctx)
         self.assertIn("未启用", result)
         check.assert_not_called()
@@ -271,7 +271,7 @@ class OAuthIdentityToolTests(unittest.TestCase):
 
     def test_enabled_readonly_tool_is_diagnostic_only(self):
         self.ctx.poppy_enabled = True
-        with mock.patch("angel.tools.inspect_poppy_identity", return_value={
+        with mock.patch("nyra.tools.inspect_poppy_identity", return_value={
             "issuer_link_verified": True, "remote_calls_allowed": False,
         }) as check:
             result = execute_tool("poppy_identity_check",
@@ -281,7 +281,7 @@ class OAuthIdentityToolTests(unittest.TestCase):
         check.assert_called_once_with(DOMAIN)
 
     def test_cli_no_credentials_or_mcp_and_json_conflict(self):
-        with mock.patch("angel.poppy_identity.inspect_poppy_identity", return_value={
+        with mock.patch("nyra.poppy_identity.inspect_poppy_identity", return_value={
             "status": "issuer_metadata_verified",
             "remote_calls_allowed": False,
         }), mock.patch.object(cli, "Provider") as provider, \

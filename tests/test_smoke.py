@@ -1,4 +1,4 @@
-"""Angel smoke tests (stdlib unittest only).
+"""Nyra smoke tests (stdlib unittest only).
 
 Run from the project root:
     python3 -m unittest discover tests
@@ -24,32 +24,32 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from angel.agent import Agent, AgentError  # noqa: E402
-from angel.compact import (  # noqa: E402
+from nyra.agent import Agent, AgentError  # noqa: E402
+from nyra.compact import (  # noqa: E402
     build_compact_messages,
     compact_messages,
     compact_session_file,
 )
-from angel.config import (  # noqa: E402
-    ANGEL_HOME,
+from nyra.config import (  # noqa: E402
+    NYRA_HOME,
     list_profiles,
     resolve_profile,
     resolve_provider,
 )
-from angel.evidence import EvidenceStore  # noqa: E402
-from angel.mcp import (  # noqa: E402
+from nyra.evidence import EvidenceStore  # noqa: E402
+from nyra.mcp import (  # noqa: E402
     MCPClient,
     MCPError,
     MCPServerConfig,
     MCPToolManager,
     load_mcp_servers,
 )
-from angel.memory import (  # noqa: E402
+from nyra.memory import (  # noqa: E402
     load_session,
     new_session_id,
     save_session,
 )
-from angel.scheduler import (  # noqa: E402
+from nyra.scheduler import (  # noqa: E402
     ScheduleError,
     add_task,
     due_tasks,
@@ -61,18 +61,18 @@ from angel.scheduler import (  # noqa: E402
     run_due_tasks,
     save_schedule,
 )
-from angel.skills import (  # noqa: E402
+from nyra.skills import (  # noqa: E402
     load_skills,
     match_skills,
     parse_skill_file,
 )
-from angel.tools import (  # noqa: E402
+from nyra.tools import (  # noqa: E402
     ToolContext,
     _parse_baidu_html,
     _parse_bing_html,
     execute_tool,
 )
-import angel.tools as tools_module  # noqa: E402
+import nyra.tools as tools_module  # noqa: E402
 
 
 def tool_call(call_id, name, arguments):
@@ -111,7 +111,7 @@ class AgentLoopTest(unittest.TestCase):
 
     def tearDown(self):
         for sid in self.sessions:
-            p = ANGEL_HOME / "sessions" / f"{sid}.jsonl"
+            p = NYRA_HOME / "sessions" / f"{sid}.jsonl"
             if p.exists():
                 p.unlink()
 
@@ -131,7 +131,7 @@ class AgentLoopTest(unittest.TestCase):
         provider = FakeProvider(
             [
                 assistant_message(
-                    calls=[tool_call("c1", "write_file", {"path": "hello.txt", "content": "你好，Angel！"})]
+                    calls=[tool_call("c1", "write_file", {"path": "hello.txt", "content": "你好，Nyra！"})]
                 ),
                 assistant_message(
                     calls=[tool_call("c2", "read_file", {"path": "hello.txt"})]
@@ -142,7 +142,7 @@ class AgentLoopTest(unittest.TestCase):
         agent = self.make_agent(provider)
         result = agent.run("创建一个问候文件并读回来")
         self.assertEqual(result, "文件已创建并读取完毕。")
-        self.assertEqual((self.tmp / "hello.txt").read_text(encoding="utf-8"), "你好，Angel！")
+        self.assertEqual((self.tmp / "hello.txt").read_text(encoding="utf-8"), "你好，Nyra！")
         self.assertEqual(provider.calls, 3)
 
     def test_delegate_subagent(self):
@@ -193,7 +193,7 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(provider.calls, 3)
 
     def test_provider_error_surfaces(self):
-        from angel.providers import ProviderError
+        from nyra.providers import ProviderError
 
         class FailingProvider:
             def chat(self, messages, tools=None, timeout=120):
@@ -212,8 +212,8 @@ class ToolsTest(unittest.TestCase):
             workdir=self.tmp,
             mode="full",
             interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md",
-            skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md",
+            skills_dir=NYRA_HOME / "skills",
         )
 
     def test_write_read_edit_list(self):
@@ -242,7 +242,7 @@ class ToolsTest(unittest.TestCase):
     def test_readonly_blocks_writes(self):
         ro = ToolContext(
             workdir=self.tmp, mode="readonly", interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md", skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md", skills_dir=NYRA_HOME / "skills",
         )
         out = execute_tool("write_file", {"path": "c.txt", "content": "x"}, ro)
         self.assertIn("只读模式", out)
@@ -252,7 +252,7 @@ class ToolsTest(unittest.TestCase):
     def test_auto_non_interactive_blocks_writes(self):
         auto = ToolContext(
             workdir=self.tmp, mode="auto", interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md", skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md", skills_dir=NYRA_HOME / "skills",
         )
         out = execute_tool("write_file", {"path": "d.txt", "content": "x"}, auto)
         self.assertIn("非交互模式", out)
@@ -316,7 +316,7 @@ class ConfigAndSessionTest(unittest.TestCase):
             save_session(sid, msgs)
             self.assertEqual(load_session(sid), msgs)
         finally:
-            p = ANGEL_HOME / "sessions" / f"{sid}.jsonl"
+            p = NYRA_HOME / "sessions" / f"{sid}.jsonl"
             if p.exists():
                 p.unlink()
 
@@ -327,7 +327,7 @@ class CliTest(unittest.TestCase):
         env = dict(os.environ)
         env["PYTHONPATH"] = str(root)
         out = subprocess.run(
-            [sys.executable, "-m", "angel", "--list-skills"],
+            [sys.executable, "-m", "nyra", "--list-skills"],
             cwd=root, env=env, capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -337,11 +337,11 @@ class CliTest(unittest.TestCase):
     def test_version_flag(self):
         root = Path(__file__).resolve().parent.parent
         out = subprocess.run(
-            [sys.executable, "-m", "angel", "--version"],
+            [sys.executable, "-m", "nyra", "--version"],
             cwd=root, capture_output=True, text=True, timeout=60,
         )
         self.assertEqual(out.returncode, 0)
-        self.assertIn("Angel 0.3.0", out.stdout)
+        self.assertIn("Nyra 0.3.0", out.stdout)
 
 
 FAKE_MCP_SERVER = '''\
@@ -368,6 +368,9 @@ for line in sys.stdin:
     elif method == "tools/call":
         args = (req.get("params") or {}).get("arguments") or {}
         send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "回显：" + str(args.get("text", ""))}], "isError": False}})
+    elif rid is not None:
+        # 旧版服务器对握手前收到的未知方法回方法未找到，客户端据此回退。
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "Method not found"}})
     # 通知（无 id）直接忽略
 '''
 
@@ -424,7 +427,10 @@ class MCPTest(unittest.TestCase):
 
     def test_load_mcp_servers_skips_bad(self):
         servers = load_mcp_servers(
-            {"mcp_servers": {"good": {"command": "python3"}, "bad": {"args": []}}}
+            {
+                "mcp_servers": {"good": {"command": "python3"}, "bad": {"args": []}},
+                "mcp_presets": [],
+            }
         )
         self.assertEqual(list(servers), ["good"])
 
@@ -481,7 +487,7 @@ class SchedulerTest(unittest.TestCase):
         return task
 
     def test_validate_rejects_bad_tasks(self):
-        from angel.scheduler import _validate_task
+        from nyra.scheduler import _validate_task
 
         for bad in (
             {},
@@ -685,8 +691,8 @@ class EvidenceTest(unittest.TestCase):
                     workdir=Path(d),
                     mode="full",
                     interactive=False,
-                    memory_path=ANGEL_HOME / "MEMORY.md",
-                    skills_dir=ANGEL_HOME / "skills",
+                    memory_path=NYRA_HOME / "MEMORY.md",
+                    skills_dir=NYRA_HOME / "skills",
                     evidence=store,
                 )
                 out = execute_tool(
@@ -723,8 +729,8 @@ class NewToolsTest(unittest.TestCase):
             workdir=self.tmp,
             mode="full",
             interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md",
-            skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md",
+            skills_dir=NYRA_HOME / "skills",
         )
 
     def test_grep_search_plain_and_regex(self):
@@ -777,7 +783,7 @@ class NewToolsTest(unittest.TestCase):
     def test_http_post_blocked_readonly(self):
         ro = ToolContext(
             workdir=self.tmp, mode="readonly", interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md", skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md", skills_dir=NYRA_HOME / "skills",
         )
         out = execute_tool(
             "http_post", {"url": f"http://127.0.0.1:{self.port}/x", "body": "{}"}, ro
@@ -800,7 +806,7 @@ class WebSearchParserTest(unittest.TestCase):
         self.assertIn("摘要二", results[1])
 
     def test_parse_bing_captcha(self):
-        from angel.tools import ToolError
+        from nyra.tools import ToolError
 
         with self.assertRaises(ToolError):
             _parse_bing_html("<html>captcha challenge</html>", 8)
@@ -820,7 +826,7 @@ class WebSearchParserTest(unittest.TestCase):
         self.assertIn("摘要二", results[1])
 
     def test_parse_baidu_blocked(self):
-        from angel.tools import ToolError
+        from nyra.tools import ToolError
 
         with self.assertRaises(ToolError):
             _parse_baidu_html("<html>百度安全验证</html>", 8)
@@ -830,8 +836,8 @@ class WebSearchParserTest(unittest.TestCase):
             workdir=Path(tempfile.mkdtemp()),
             mode="full",
             interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md",
-            skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md",
+            skills_dir=NYRA_HOME / "skills",
         )
         original = tools_module._fetch_search_page
 
@@ -889,8 +895,8 @@ class SandboxBackendTest(unittest.TestCase):
             workdir=Path("/home/user"),
             mode="full",
             interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md",
-            skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md",
+            skills_dir=NYRA_HOME / "skills",
             backend=self.backend,
         )
 
@@ -899,8 +905,8 @@ class SandboxBackendTest(unittest.TestCase):
         self.assertIn("已写入", out)
         self.assertEqual(self.backend.files["/home/user/hello.txt"], "你好")
         self.assertEqual(execute_tool("read_file", {"path": "hello.txt"}, self.ctx), "你好")
-        self.assertIn("已写入", execute_tool("edit_file", {"path": "hello.txt", "old_text": "你好", "new_text": "你好，Angel"}, self.ctx))
-        self.assertEqual(self.backend.files["/home/user/hello.txt"], "你好，Angel")
+        self.assertIn("已写入", execute_tool("edit_file", {"path": "hello.txt", "old_text": "你好", "new_text": "你好，Nyra"}, self.ctx))
+        self.assertEqual(self.backend.files["/home/user/hello.txt"], "你好，Nyra")
         self.assertIn("hello.txt", execute_tool("list_dir", {"path": "/home/user"}, self.ctx))
         # Nothing touched the local filesystem.
         self.assertEqual(list(self.tmp.iterdir()), [])
@@ -933,8 +939,8 @@ class SandboxBackendTest(unittest.TestCase):
     def test_backend_readonly_still_blocks(self):
         ro = ToolContext(
             workdir=Path("/home/user"), mode="readonly", interactive=False,
-            memory_path=ANGEL_HOME / "MEMORY.md",
-            skills_dir=ANGEL_HOME / "skills",
+            memory_path=NYRA_HOME / "MEMORY.md",
+            skills_dir=NYRA_HOME / "skills",
             backend=self.backend,
         )
         out = execute_tool("write_file", {"path": "x.txt", "content": "x"}, ro)
@@ -942,7 +948,7 @@ class SandboxBackendTest(unittest.TestCase):
         self.assertNotIn("/home/user/x.txt", self.backend.files)
 
     def test_e2b_backend_missing_sdk(self):
-        from angel.e2b_backend import E2BBackend, E2BError
+        from nyra.e2b_backend import E2BBackend, E2BError
 
         with unittest.mock.patch.dict(sys.modules, {"e2b": None}):
             with self.assertRaises(E2BError) as ctx:
@@ -950,13 +956,13 @@ class SandboxBackendTest(unittest.TestCase):
         self.assertIn("pip install e2b", str(ctx.exception))
 
     def test_resolve_e2b_api_key_prefers_env(self):
-        from angel.e2b_backend import resolve_e2b_api_key
+        from nyra.e2b_backend import resolve_e2b_api_key
 
         with unittest.mock.patch.dict(os.environ, {"E2B_API_KEY": "env-key-123"}):
             self.assertEqual(resolve_e2b_api_key(), "env-key-123")
 
     def test_resolve_sandbox_defaults_env_and_invalid(self):
-        from angel.config import resolve_sandbox
+        from nyra.config import resolve_sandbox
 
         base = {"sandbox": "local", "e2b_template": "base", "e2b_timeout": 3600, "e2b_sandbox_id": None}
         settings = resolve_sandbox(config=base)

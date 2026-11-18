@@ -11,11 +11,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import angel.agent as agent_module
-import angel.cli as cli
-import angel.json_mode as json_mode
-import angel.memory as memory_module
-from angel.providers import ProviderError
+import nyra.agent as agent_module
+import nyra.cli as cli
+import nyra.json_mode as json_mode
+import nyra.memory as memory_module
+import nyra.runs as runs_module
+from nyra.providers import ProviderError
 
 
 def assistant(content="", calls=None, usage=None):
@@ -63,7 +64,8 @@ class JsonModeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.patchers = [
-            mock.patch.object(agent_module, "ANGEL_HOME", self.root / "angelhome"),
+            mock.patch.object(runs_module, "NYRA_HOME", self.root / "nyrahome"),
+            mock.patch.object(agent_module, "NYRA_HOME", self.root / "nyrahome"),
             mock.patch.object(memory_module, "SESSIONS_DIR", self.root / "sessions"),
             mock.patch.object(memory_module, "MEMORY_PATH", self.root / "private-memory"),
         ]
@@ -110,6 +112,12 @@ class JsonModeTests(unittest.TestCase):
             stack.enter_context(mock.patch("sys.stderr", err))
             code = cli.main(["--json", "--workdir", str(self.root), *argv])
         lines = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        if lines[0]['type'] == 'run_started':
+            self.assertIn('run_id', lines[0])
+            self.assertEqual(lines[-1]['type'], 'run_state')
+            self.assertEqual(lines[-1]['run_id'], lines[0]['run_id'])
+            self.assertIn(lines[-1]['status'], ('completed_unverified', 'incomplete', 'failed', 'interrupted'))
+            lines = lines[:-1]
         return code, lines, err.getvalue(), provider
 
     def _chain_fakes(self, primary_outcomes, backup_outcomes):
@@ -147,7 +155,7 @@ class JsonModeTests(unittest.TestCase):
         started = next(event for event in events if event["type"] == "run_started")
         self.assertEqual(started["provider"], "deepseek")
         completed = next(event for event in events if event["type"] == "run_completed")
-        self.assertEqual(completed["output"], "备用模型答复")
+        self.assertTrue(completed["output"].startswith("备用模型答复"), completed["output"])
         # The completion names the provider that actually answered.
         self.assertEqual(completed["provider"], "xai")
         self.assertEqual(completed["model"], "grok-4.3")
@@ -233,7 +241,10 @@ class JsonModeTests(unittest.TestCase):
                          ["run_started", "usage", "run_completed"])
         self.assertEqual([event["seq"] for event in events], [1, 2, 3])
         self.assertTrue(all(event["schema_version"] == 1 for event in events))
-        self.assertEqual(events[-1]["output"], "计划完成")
+        self.assertTrue(events[-1]["output"].startswith("计划完成"))
+        self.assertIn("未验证", events[-1]["output"])
+        self.assertNotIn("已验证", events[-1]["output"])
+        self.assertFalse(events[-1]["verified"])
         self.assertEqual(events[-1]["exit_code"], 0)
         self.assertEqual(events[-1]["usage"]["total_tokens"], 60)
         self.assertIn("human-readable provider warning", stderr.lower())
@@ -330,9 +341,9 @@ class JsonModeTests(unittest.TestCase):
         self.assertIn("RuntimeError", stderr)
 
     def test_real_module_entrypoint_emits_jsonl_on_invalid_invocation(self):
-        # This exercises python -m angel, not only the in-process main function.
+        # This exercises python -m nyra, not only the in-process main function.
         completed = subprocess.run(
-            [sys.executable, "-m", "angel", "--json"],
+            [sys.executable, "-m", "nyra", "--json"],
             cwd=str(Path(__file__).resolve().parent.parent),
             capture_output=True, text=True, timeout=15,
             check=False,

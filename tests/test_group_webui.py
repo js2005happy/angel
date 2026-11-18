@@ -10,9 +10,9 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
-from angel import agent as agent_module, config as config_module, memory as memory_module
-from angel.groups import GroupStore
-from angel.webui import UIState, make_server
+from nyra import agent as agent_module, config as config_module, memory as memory_module
+from nyra.groups import GroupStore
+from nyra.webui import UIState, make_server
 
 
 class RoomProvider:
@@ -33,8 +33,8 @@ class GroupAPITest(unittest.TestCase):
         self.workdir = self.base / "work"
         self.workdir.mkdir()
         self.patchers = [
-            patch.object(config_module, "ANGEL_HOME", self.base / "home"),
-            patch.object(agent_module, "ANGEL_HOME", self.base / "home"),
+            patch.object(config_module, "NYRA_HOME", self.base / "home"),
+            patch.object(agent_module, "NYRA_HOME", self.base / "home"),
             patch.object(memory_module, "SESSIONS_DIR", self.base / "home" / "sessions"),
         ]
         for p in self.patchers:
@@ -56,7 +56,7 @@ class GroupAPITest(unittest.TestCase):
         self.temp.cleanup()
 
     def fetch(self, path, body=None, token=True):
-        headers = {"X-Angel-Token": self.state.token} if token else {}
+        headers = {"X-Nyra-Token": self.state.token} if token else {}
         if body is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
@@ -104,7 +104,7 @@ class GroupAPITest(unittest.TestCase):
         self.assertIn("script-src 'self'", headers["Content-Security-Policy"])
         status, js, headers = self.fetch("/group-ui.js", token=False)
         self.assertEqual(status, 200)
-        self.assertIn(b"X-Angel-Token", js)
+        self.assertIn(b"X-Nyra-Token", js)
         self.assertIn("javascript", headers["Content-Type"])
 
 

@@ -1,4 +1,4 @@
-# Angel 功能迭代队列
+# Nyra 功能迭代队列
 
 排序依据：预期使用价值 ÷ 实现难度，结合安全风险、依赖关系与现有代码基础调整。所有功能优先选用合适的技术栈，保持核心无强制第三方依赖；实际可按需使用原生 JavaScript 等。
 
@@ -12,7 +12,7 @@
 | E3 | 收件箱、feed、订阅与公开广播 | 待开发：逐项授权、公开信号过滤、持久任务与可审计状态，默认禁止 |
 | E4 | 多机器人协作匹配 | 待开发：仅共享明确允许公开的信息，按 Agent 单独预算与权限 |
 
-EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络安装与公开发布/订阅是不同的授权决定；每个独立 Agent 必须持有独立 `EIGENFLUX_HOME`。遵循官方 [`skills/install.md`](https://github.com/phronesis-io/eigenflux/blob/main/skills/install.md)，不自行实现私钥导出或捏造连通状态。
+EigenFlux 不替代 Nyra 的本地 agent 编排或 Poppy 身份模型。网络安装与公开发布/订阅是不同的授权决定；每个独立 Agent 必须持有独立 `EIGENFLUX_HOME`。遵循官方 [`skills/install.md`](https://github.com/phronesis-io/eigenflux/blob/main/skills/install.md)，不自行实现私钥导出或捏造连通状态。
 
 ## Agent 协议与商务互通（Poppy / UCP）
 
@@ -22,7 +22,7 @@ EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络�
 | P2 | 站点权限账本与 scoped 审批 | 已实现 PR #19：精确站点/账户/scope 本地意向、撤销与审计（部分；远端调用审批尚未实现） |
 | P3 | Poppy Session + 认证、HTTP MCP/OpenAPI | 已实现 PR #20：OAuth issuer 双向公共元数据核验（部分）；真实 Session、OAuth 登录、DPoP、HTTP MCP 未实现 |
 | P4 | UCP 购物及商店 Agent 对话 | 待开发：真实协议互通验证与交易前人工批准；不能把 discovery 当作已完成购买 |
-| P5 | Angel 对外发布自身能力 | 待开发：服务化时再考虑托管 poppy.json 与安全的 MCP/OpenAPI 服务器 |
+| P5 | Nyra 对外发布自身能力 | 待开发：服务化时再考虑托管 poppy.json 与安全的 MCP/OpenAPI 服务器 |
 
 1.0 官方规范已于 2026-11-14 发布并冻结；实际站点可能仍部署旧版本，严格记录实现版本 1.0，并且默认不开启发现工具；不采用猜测的能力 schema，不因网站声明就自动授予外部权限。该队列与可靠性优先队列并行，不能牺牲正在开发的成本上限和长任务可信度。
 
@@ -54,7 +54,7 @@ EigenFlux 不替代 Angel 的本地 agent 编排或 Poppy 身份模型。网络�
 
 ## 第二梯队
 
-流式输出、图片输入、会话全文搜索、并行子 Agent、Angel MCP Server、HTTP MCP、Linux 本地沙箱、真实浏览器工具、编辑器集成。
+流式输出、图片输入、会话全文搜索、并行子 Agent、Nyra MCP Server、HTTP MCP、Linux 本地沙箱、真实浏览器工具、编辑器集成。
 
 ## 开发原则
 

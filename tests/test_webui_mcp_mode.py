@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from angel.webui import UIState
+from nyra.webui import UIState
 
 
 class WebUIMCPModeTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class WebUIMCPModeTests(unittest.TestCase):
         state = UIState(self.workdir, mode="full", mcp_manager=manager)
         run = state.get_run("session-1")
         run.agent = MagicMock()
-        with patch("angel.agent.build_mcp_manager", return_value=None) as builder:
+        with patch("nyra.agent.build_mcp_manager", return_value=None) as builder:
             self.assertEqual(state.set_mode("readonly"), "readonly")
         manager.stop_all.assert_called_once()
         builder.assert_called_once_with(mode="readonly", interactive=False)
@@ -33,7 +33,7 @@ class WebUIMCPModeTests(unittest.TestCase):
     def test_switch_to_full_starts_only_after_mode_change_requested(self):
         state = UIState(self.workdir, mode="auto")
         manager = MagicMock()
-        with patch("angel.agent.build_mcp_manager", return_value=manager) as builder:
+        with patch("nyra.agent.build_mcp_manager", return_value=manager) as builder:
             self.assertIsNone(state.mcp_manager)
             self.assertEqual(state.set_mode("full"), "full")
         builder.assert_called_once_with(mode="full", interactive=False)
@@ -45,7 +45,7 @@ class WebUIMCPModeTests(unittest.TestCase):
         run = state.get_run("running-session")
         with run.lock:
             run.status = "running"
-        with patch("angel.agent.build_mcp_manager") as builder:
+        with patch("nyra.agent.build_mcp_manager") as builder:
             with self.assertRaisesRegex(RuntimeError, "正在执行"):
                 state.set_mode("readonly")
         manager.stop_all.assert_not_called()
@@ -55,7 +55,7 @@ class WebUIMCPModeTests(unittest.TestCase):
     def test_same_mode_does_not_restart_mcp(self):
         manager = MagicMock()
         state = UIState(self.workdir, mode="full", mcp_manager=manager)
-        with patch("angel.agent.build_mcp_manager") as builder:
+        with patch("nyra.agent.build_mcp_manager") as builder:
             self.assertEqual(state.set_mode("full"), "full")
         builder.assert_not_called()
         manager.stop_all.assert_not_called()

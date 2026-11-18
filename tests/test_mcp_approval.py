@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from angel.agent import Agent
+from nyra.agent import Agent
 
 
 def response(content="", calls=None):
@@ -69,11 +69,11 @@ class MCPApprovalTest(unittest.TestCase):
         provider = ScriptedProvider([response(calls=calls), response("done")])
 
         with tempfile.TemporaryDirectory() as temp:
-            # Keep tests independent of ~/.angel and external providers.
-            with patch("angel.agent.EvidenceStore"), \
-                 patch("angel.agent.load_memory_summary", return_value=""), \
-                 patch("angel.agent.load_agents_md", return_value=""), \
-                 patch("angel.agent.save_session"), \
+            # Keep tests independent of ~/.nyra and external providers.
+            with patch("nyra.agent.EvidenceStore"), \
+                 patch("nyra.agent.load_memory_summary", return_value=""), \
+                 patch("nyra.agent.load_agents_md", return_value=""), \
+                 patch("nyra.agent.save_session"), \
                  patch("builtins.input", side_effect=answer) as input_mock, \
                  patch("sys.stdout", new_callable=io.StringIO) as stdout:
                 agent = Agent(
