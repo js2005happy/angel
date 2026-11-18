@@ -60,22 +60,24 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check versions match nyra/__init__.py
-        run: |
-          py=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' nyra/__init__.py)
-          conf=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
-          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -1)
-          echo "nyra=$py tauri.conf=$conf Cargo.toml=$cargo"
-          if [ "$py" != "$conf" ] || [ "$py" != "$cargo" ]; then
-            echo "::error::desktop version must match nyra/__init__.py ($py)"; exit 1
-          fi
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+
+      - name: Check versions match nyra/__init__.py
+        # Runs after Set up Node on purpose: the check itself uses `node -p`.
+        run: |
+          py=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' nyra/__init__.py)
+          conf=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -1)
+          pkg=$(node -p "require('./desktop/package.json').version")
+          echo "nyra=$py tauri.conf=$conf Cargo.toml=$cargo package.json=$pkg"
+          if [ "$py" != "$conf" ] || [ "$py" != "$cargo" ] || [ "$py" != "$pkg" ]; then
+            echo "::error::desktop version must match nyra/__init__.py ($py)"; exit 1
+          fi
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
