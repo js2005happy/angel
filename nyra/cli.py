@@ -811,7 +811,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.prompt is not None:
             try:
-                result = agent.run(args.prompt)
+                from .runs import RunRecorder, RunStore
+                recorder = RunRecorder(RunStore(NYRA_HOME / "runs"), agent, args.prompt)
+                print(f"运行记录：{recorder.run_id}", file=sys.stderr)
+                result = recorder.run(args.prompt)
                 print(result)
                 return 0
             except AgentError as exc:

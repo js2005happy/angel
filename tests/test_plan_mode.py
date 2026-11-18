@@ -198,6 +198,9 @@ class PlanCLITests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        home_patch = mock.patch.object(cli, "NYRA_HOME", self.root / "home")
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
         self.cfg = {
             "provider": "mock", "model": "mock-model",
             "mode": "full", "sandbox": "e2b",
@@ -248,6 +251,11 @@ class PlanCLITests(unittest.TestCase):
         text = render_plan("user task", "step one")
         digest = save_plan(self.root, text)
         fake_agent = mock.MagicMock()
+        fake_agent.session_id = "plan-session"
+        fake_agent.workdir = self.root
+        fake_agent.mode = "auto"
+        fake_agent.max_turns = 3
+        fake_agent.checkpoints = None
         fake_agent.run.return_value = "已按审批执行"
         fake_agent.usage.snapshot.return_value = {
             "calls": 0, "reported_calls": 0, "missing_calls": 0,

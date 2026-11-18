@@ -123,6 +123,9 @@ class RuntimeUsageTest(unittest.TestCase):
         self.assertEqual([k for k, _ in events], ["usage", "final"])
 
     def test_cli_status_and_one_shot_stderr_not_stdout(self):
+        run_patch = mock.patch.object(cli, "NYRA_HOME", self.root)
+        run_patch.start()
+        self.addCleanup(run_patch.stop)
         config = {
             "provider": "deepseek", "model": "deepseek-flash", "mode": "readonly",
             "max_turns": 3, "profiles": {}, "context_window_tokens": 2048

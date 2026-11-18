@@ -27,6 +27,7 @@ from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .memory import load_session
 from .providers import Provider, build_provider_chain
 from .usage import context_limit
+from .runs import RunRecorder, RunStore
 
 SCHEMA_VERSION = 1
 EXIT_SUCCESS = 0
@@ -94,6 +95,7 @@ def run_json(args) -> int:
     backend = None
     mcp_manager = None
     agent = None
+    recorder = None
 
     # Existing modules contain human-readable diagnostics. They must never
     # corrupt the machine-readable stdout channel.
@@ -206,11 +208,12 @@ def run_json(args) -> int:
                 on_event=out.agent_event,
                 poppy_enabled=args.poppy,
             )
+            recorder = RunRecorder(RunStore(), agent, args.prompt)
             out.emit(
-                "run_started", session_id=agent.session_id,
+                "run_started", run_id=recorder.run_id, session_id=agent.session_id,
                 provider=provider.name, model=provider.model, mode=mode,
             )
-            answer = agent.run(args.prompt)
+            answer = recorder.run(args.prompt)
             usage = agent.usage.snapshot()
             # provider/model always name the provider that actually
             # answered, not the one configured first; model_switches
@@ -242,6 +245,9 @@ def run_json(args) -> int:
             print(f"Nyra JSONL runtime exception: {type(exc).__name__}", file=sys.stderr)
             return out.failed("runtime_error", "执行失败，请查看 stderr", EXIT_RUNTIME)
         finally:
+            if recorder is not None:
+                out.emit("run_state", run_id=recorder.run_id,
+                         status=recorder.store.load(recorder.run_id)["status"])
             if mcp_manager is not None:
                 try:
                     mcp_manager.stop_all()

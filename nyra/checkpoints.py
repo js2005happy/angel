@@ -196,6 +196,17 @@ class CheckpointStore:
                         self._active_path = None
                 raise
 
+    def record_position(self) -> int:
+        """返回记录位置，供运行日志只读取本次任务的文件。"""
+        with self._lock:
+            return len(self._records())
+
+    def files_changed_since(self, record_index: int) -> list[str]:
+        """从检查点元数据读取文件名，不接受模型汇报。"""
+        with self._lock:
+            return sorted({name for _, record in self._records()[record_index:]
+                           for name in record['files']})
+
     def history(self) -> list[dict]:
         with self._lock:
             return [
