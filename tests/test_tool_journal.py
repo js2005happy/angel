@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import stat
 import unittest
 from unittest import mock
 
@@ -14,6 +15,31 @@ class JournalTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+
+    def test_write_rejects_unexpected_post_write_file_size(self):
+        # Simulate a concurrent truncate after fsync without running it.
+        from angel import tool_journal as module
+        journal = ToolJournal("post-write-size", root=self.root)
+        original_fstat = module.os.fstat
+        original_fsync = module.os.fsync
+        synced = set()
+
+        def tracked_fsync(fd):
+            synced.add(fd)
+            return original_fsync(fd)
+
+        def changed_fstat(fd):
+            info = original_fstat(fd)
+            if fd in synced and stat.S_ISREG(info.st_mode):
+                values = list(info)
+                values[6] = info.st_size + 1
+                return os.stat_result(values)
+            return info
+
+        with mock.patch.object(module.os, "fsync", side_effect=tracked_fsync):
+            with mock.patch.object(module.os, "fstat", side_effect=changed_fstat):
+                with self.assertRaisesRegex(JournalError, "元数据不安全"):
+                    journal.begin("shell")
 
     def test_directory_junction_is_rejected_when_supported(self):
         # Simulate a Windows NTFS junction without requiring Windows or
