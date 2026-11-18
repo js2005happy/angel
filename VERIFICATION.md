@@ -1,3 +1,8 @@
+## 2026-11-18 Windows ToolJournal 写后目录项复核（仅静态）
+
+- 源码审阅：Windows 回退写入路径在 `fsync` 与 `fstat` 后核对 `lstat` 目录项及 reparse 属性、文件身份、大小；失败关闭。新增两项模拟测试源码，**未执行测试或 CI**。Windows ACL、目录句柄和并发竞态仍未解决。
+- 需求证据（外部反馈）：Codex #52173（2026-10-08）与 #55217（2026-10-19）报告 Windows reparse point 误报；仅表明跨平台路径判定的重要性，不证明 Nyra 同类缺陷。
+
 ## 2026-11-18 ToolJournal finish 全局歧义门禁（静态审阅）
 
 - 静态检查：`finish()` 现在先调用 `inspect()`，若 `journal_ambiguous` 为真则拒绝写入结果。测试源码构造合法未结 intent 和无关孤立 result，断言拒绝且文件列表不变。
