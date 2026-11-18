@@ -38,9 +38,15 @@ def _safe_directory(path: Path) -> None:
         is_junction = getattr(current, "is_junction", None)
         # Windows exposes reparse points in lstat even on Python 3.11,
         # which does not provide Path.is_junction().
-        if os.name == "nt" and current.exists():
+        if os.name == "nt":
+            # Do not gate lstat on exists(): a dangling junction/reparse
+            # point may report exists() == False while still redirecting a
+            # later path operation. Only a genuinely missing entry is safe
+            # to skip; all other metadata failures are fail-closed.
             try:
                 attrs = current.lstat().st_file_attributes
+            except FileNotFoundError:
+                attrs = 0
             except (AttributeError, OSError) as exc:
                 raise JournalError("无法核验 Windows 日志目录重解析点") from exc
             if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
