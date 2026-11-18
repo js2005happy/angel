@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal 目录类型检查拒绝语义）
+
+- `_safe_directory()` 的末次目录类型检查由 `exists()/is_dir()` 改为 `lstat()`，仅明确缺失允许继续；权限拒绝或其他元数据读取错误保守抛出 `JournalError`。新增模拟回归测试源码，未执行。该增量不实现 Windows ACL、稳定句柄或跨进程事务。
+
 ## 未发布（2026-11-19，ToolJournal 读取权限拒绝不再视为空日志）
 
 - 读取入口不再通过 Path.exists() 判断空日志；统一使用 _directory_identity()，仅真实 FileNotFoundError 返回空列表，访问拒绝触发 JournalError。新增模拟回归测试源码，未运行；不提供 Windows ACL 或跨进程事务。
