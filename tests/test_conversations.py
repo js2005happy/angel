@@ -52,11 +52,11 @@ class ConversationStoreTest(unittest.TestCase):
         self.assertIsInstance(self.store.fts5_available, bool)
         self.assertEqual(self.store.fts5_available, _fts5_supported())
 
-        # Windows 文件系统没有 POSIX 权限位：os.chmod(0o600) 在 NTFS 上只影响
-        # 只读标志，stat 看到的 mode 仍是 0o666；与 test_vault.py 的 0600
-        # 测试同例跳过。
-        @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
-        def test_db_file_is_0600(self):
+    # Windows 文件系统没有 POSIX 权限位：os.chmod(0o600) 在 NTFS 上只影响
+    # 只读标志，stat 看到的 mode 仍是 0o666；与 test_vault.py 的 0600
+    # 测试同例跳过。
+    @unittest.skipIf(sys.platform == "win32", "POSIX permission bits do not exist on Windows")
+    def test_db_file_is_0600(self):
         mode = stat.S_IMODE(os.stat(self.store.db_path).st_mode)
         self.assertEqual(mode, 0o600)
 
