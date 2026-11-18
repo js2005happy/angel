@@ -19,7 +19,7 @@
 
 <p align="center">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 632 项" src="https://img.shields.io/badge/tests-632%20passing-0B0B0C">
+  <img alt="测试 1011 项" src="https://img.shields.io/badge/tests-1011%20passing-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -54,6 +54,8 @@
 
 ## 快速开始
 
+需要 Python 3.10+（`python3 --version` 验证）；Windows 上把下面命令里的 `python3` 换成 `python`（官网安装面板同样口径）。
+
 ```bash
 git clone https://github.com/js2005happy/nyra.git nyra && cd nyra
 export DEEPSEEK_API_KEY=sk-...          # 或任意已支持的模型 Key
@@ -67,6 +69,8 @@ python3 -m nyra ui --open                # 本地网页界面
 
 想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
 想拿现成的发布包（tarball / .deb）：见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build_package.sh`。
+
+Windows 上装：exe 单文件（不用装 Python）或一键脚本，见 [docs/windows-install.md](docs/windows-install.md)。
 
 交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
 
@@ -86,6 +90,10 @@ python3 -m nyra ui --open                # 本地网页界面
 - **多机器人群聊**：一个房间里组长、架构师、开发者、审查员分工讨论，各自记忆与权限独立（默认只读）。
 - **扩展**：接标准 MCP 服务器（stdio），用 `skills/` 与自定义斜杠命令沉淀你的做法。
 - **隔离执行**：`--sandbox e2b` 让文件与命令跑在 E2B 云沙盒里，不碰本机。
+- **配对码协作**：两个 Nyra 用 6 位配对码配对，宿主以只读模式跑任务、只传任务文本与结果（[手册](GUIDE.md#审批模式)）。
+- **本地密码箱**：API Key 加密存在本机，不写进配置文件或聊天记录（[手册](GUIDE.md#审批模式)）。
+- **本地知识库**：把文本、文件、网页收进知识库再提问，只按库内内容回答并注明依据（[手册](GUIDE.md#审批模式)）。
+- **MCP 内置预置**：10 个常用 MCP 服务器开箱即用，不用手写配置（[手册](GUIDE.md#审批模式)）。
 
 ## 审批模式
 
@@ -145,7 +153,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 632 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 1011 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可

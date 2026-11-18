@@ -34,6 +34,14 @@ DEFAULT_CONFIG = {
     "profiles": {},
     "mcp_servers": {},
     "mcp_enabled": False,
+    # 内置 MCP 预置（nyra/mcp_presets.py）：默认开启无需密钥/路径的
+    # memory、sequential-thinking、fetch、time；需要密钥/路径的预置
+    # 按名字加进这个列表就能启用（密钥走环境变量，路径走下方的
+    # mcp_preset_args）。用户在 mcp_servers 里写的同名条目会覆盖预置。
+    "mcp_presets": ["memory", "sequential-thinking", "fetch", "time"],
+    # 预置附加参数：预置名 -> 追加到命令后的参数列表，只用于需要
+    # 路径的预置，如 {"filesystem": ["D:/docs"], "git": ["D:/repo"]}。
+    "mcp_preset_args": {},
     "fallback_enabled": False,  # 默认关闭：模型自动兜底只由用户自己开启。
     "fallback_providers": ["deepseek", "xai", "ollama"],
     # 自定义 provider：名字 -> {base_url, default_model, env_key?, models?, allowed_hosts?}。
@@ -288,7 +296,15 @@ def load_config() -> dict:
     config = DEFAULT_CONFIG.copy()
 
     if not config_path.exists():
-        NYRA_HOME.mkdir(parents=True, exist_ok=True)
+        try:
+            NYRA_HOME.mkdir(parents=True, mode=0o700)
+        except FileExistsError:
+            # 目录已存在（例如只删了 config.json，或并发创建）：
+            # 不改已有目录的权限。
+            pass
+        else:
+            # 刚新建的目录：umask 也可能放宽权限，显式收紧到 0700。
+            os.chmod(NYRA_HOME, 0o700)
         with config_path.open("w", encoding="utf-8") as file:
             json.dump(DEFAULT_CONFIG, file, indent=2)
         return config
@@ -332,6 +348,25 @@ def resolve_provider(
     preset = presets[name]
 
     resolved_model = model
+    if resolved_model is not None:
+        # cli 传的是 args.model or profile["model"]，不带 --model 时
+        # 就是配置里默认 provider 的模型——它只是“配置默认值”，
+        # 不是用户给当前 provider 显式选的模型。如果配置的
+        # provider 与当前 provider 不同，且这个模型名不在当前
+        # provider 的已知模型里，就丢掉它，让下面走当前 provider
+        # 的预置默认（例如 --provider ollama 不带 --model 时用
+        # qwen2.5:7b，而不是把 deepseek-flash 传给 ollama）。
+        # 例外：模型名在当前 provider 的已知模型里时保留（用户
+        # 显式传的就是它）；预置没有已知模型列表时（custom）也保留。
+        settings = get_config()
+        preset_models = preset.get("models") or []
+        if (
+            settings.get("provider") != name
+            and resolved_model == settings.get("model")
+            and preset_models
+            and resolved_model not in preset_models
+        ):
+            resolved_model = None
     if resolved_model is None:
         resolved_model = _env("MODEL")
     if resolved_model is None:
@@ -380,6 +415,14 @@ def resolve_provider(
     api_key = api_key or _env("API_KEY") or None
 
     connector_name = preset["connector"]
+    if api_key is None and env_key is not None and connector_name is None:
+        # 本地加密密码箱回退：环境变量里没有 Key、且认证方式将是
+        # env（无连接器）时，从 NYRA_HOME/vault.json 读。文件不存在、
+        # 未设 NYRA_VAULT_PASSWORD、解锁失败时静默跳过，保持原有
+        # “未设置 API Key”的报错行为；这里绝不弹 getpass。
+        from nyra.vault import get_credential
+
+        api_key = get_credential(env_key) or None
     if api_key is not None:
         auth = "env"
     elif connector_name is not None:

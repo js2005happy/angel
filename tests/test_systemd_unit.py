@@ -48,16 +48,20 @@ class SystemdUnitTests(unittest.TestCase):
         # The checkout the unit points at is this repository.
         self.assertTrue((ROOT / "nyra" / "cli.py").is_file())
 
+    @unittest.skipIf(os.name == "nt", "systemd unit paths are POSIX-only")
     def test_exec_start_runs_the_scheduler_daemon(self):
         unit = _parse_unit()
         exec_start = unit["Service"].get("ExecStart", "")
         parts = exec_start.split()
         self.assertGreaterEqual(len(parts), 3)
         exe = parts[0]
-        self.assertTrue(
-            Path(exe).is_file() or shutil.which(exe),
-            f"ExecStart executable not found: {exe}",
-        )
+        # systemd 单元只在 Linux 上运行：Windows 上永远没有 /usr/bin/python3，
+        # 可执行文件是否存在只能在非 Windows 上断言；命令本身的形状各平台一致。
+        if sys.platform != "win32":
+            self.assertTrue(
+                Path(exe).is_file() or shutil.which(exe),
+                f"ExecStart executable not found: {exe}",
+            )
         self.assertEqual(parts[1:4], ["-m", "nyra", "schedule"])
         self.assertIn("daemon", parts)
 
@@ -96,6 +100,11 @@ class SystemdUnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
             env["HOME"] = tmp
+            # Windows 管道的默认编码是 ANSI 代码页（英文 runner 上是 cp1252），
+            # 写不进中文时 configure_stdio 的 backslashreplace 会把中文输出
+            # 写成 \uXXXX 转义文本，父进程再也匹配不到原文。两端都强制 UTF-8，
+            # 守护进程本身的中文输出在 Windows 上就是对的，只是测试取数方式要一致。
+            env["PYTHONIOENCODING"] = "utf-8"
             proc = subprocess.run(
                 [
                     sys.executable,
@@ -112,6 +121,7 @@ class SystemdUnitTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=60,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -119,7 +129,9 @@ class SystemdUnitTests(unittest.TestCase):
             self.assertIn("共运行 1 轮", proc.stdout)
 
     @unittest.skipIf(
-        shutil.which("systemd-analyze") is None, "systemd-analyze not installed"
+        shutil.which("systemd-analyze") is None
+        or not os.path.isdir("/run/systemd/system"),
+        "systemd-analyze not installed or systemd not running (e.g. container)",
     )
     def test_systemd_analyze_verify(self):
         proc = subprocess.run(

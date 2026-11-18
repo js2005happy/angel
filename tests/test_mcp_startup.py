@@ -63,6 +63,7 @@ class MCPStartupPolicyTest(unittest.TestCase):
     def config(self, *names):
         return {
             "mcp_enabled": True,
+            "mcp_presets": [],
             "mcp_servers": {
                 name: {
                     "command": sys.executable,

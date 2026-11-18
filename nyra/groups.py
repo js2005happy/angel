@@ -7,7 +7,7 @@ another. All work starts from an explicit user message (no runaway loops).
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import json
 import os
@@ -22,11 +22,18 @@ from typing import Callable
 from .agent import Agent, AgentError
 from .config import load_config, resolve_fallback_chain, resolve_provider, validate_mode
 from .memory import load_session
-from .providers import Provider, build_provider_chain
+from .providers import (
+    FallbackProvider,
+    KeyRotatingProvider,
+    Provider,
+    ProviderError,
+    build_provider_chain,
+)
 
 _ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _MENTION = re.compile(r"(?<![A-Za-z0-9_])@([a-z][a-z0-9_-]{0,31})")
 MAX_BOTS = 6
+MAX_API_KEYS = 5
 MAX_ROUNDS = 2
 MAX_BOT_TURNS = 3
 MAX_INPUT_CHARS = 6000
@@ -85,12 +92,24 @@ def _write_json(path: Path, data: dict) -> None:
 
 @dataclass(frozen=True)
 class Bot:
+    """One group-chat member.
+
+    `api_keys` (optional): this bot's OWN API keys for its provider+model
+    (max 5). The bot rotates through its own keys when one fails; keys
+    are never shared with other bots and there is no room-level shared
+    key pool. Keys are stored in room.json under NYRA_HOME/groups (a
+    0700 directory) and are NEVER sent to the web UI — GroupStore.get()
+    and create() strip them from the returned room data. No vault
+    indirection in this round.
+    """
+
     id: str
     name: str
     role: str
     instructions: str
     provider: str | None = None
     model: str | None = None
+    api_keys: list[str] | None = None
     mode: str = "readonly"
 
     def validate(self) -> "Bot":
@@ -106,6 +125,14 @@ class Bot:
             _text(self.provider, "provider", 80)
         if self.model is not None:
             _text(self.model, "model", 180)
+        if self.api_keys is not None:
+            if not isinstance(self.api_keys, list):
+                raise GroupError("api_keys 必须是字符串列表")
+            if len(self.api_keys) > MAX_API_KEYS:
+                raise GroupError(f"每个机器人最多配置 {MAX_API_KEYS} 个 API Key")
+            for key in self.api_keys:
+                if not isinstance(key, str) or not key.strip():
+                    raise GroupError("api_keys 里不能有空 Key")
         return self
 
     @classmethod
@@ -139,6 +166,26 @@ def _recent_messages(messages: list[dict], user_turns: int = 3) -> list[dict]:
     if len(user_indices) > user_turns:
         return messages[user_indices[-user_turns]:]
     return messages
+
+
+def _public_bot(raw) -> dict:
+    """A bot dict safe to hand to the web UI: api_keys stripped.
+
+    The web UI's group routes serve GroupStore.get()/create() results
+    as-is to the browser, so keys must never reach those return values.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    bot = dict(raw)
+    bot.pop("api_keys", None)
+    return bot
+
+
+def _public_room(room: dict) -> dict:
+    """A room dict safe to hand to the web UI (bots without api_keys)."""
+    data = dict(room)
+    data["bots"] = [_public_bot(bot) for bot in room.get("bots", [])]
+    return data
 
 
 class GroupStore:
@@ -211,11 +258,15 @@ class GroupStore:
                 "instance_id": secrets.token_hex(16),
             }
             _write_json(path, data)
-            return data
+            # Returned to the caller (and by the web UI straight to the
+            # browser): never include api_keys.
+            return _public_room(data)
 
     def get(self, room_id: str) -> dict:
         with self._guard(room_id):
-            return self._read(room_id)
+            # The web UI serves this as-is; strip api_keys here. Internal
+            # paths that need the keys (send/_bot_response) use _read.
+            return _public_room(self._read(room_id))
 
     def list_rooms(self) -> list[dict]:
         if not self.root.exists():
@@ -234,21 +285,98 @@ class GroupStore:
             })
         return result
 
+    def _fallback_entries(self, chain_names: list[str]) -> list:
+        """Fallback providers after the primary, mirroring
+        build_provider_chain's skip rules (unresolvable / CLI /
+        credential-less entries are skipped with a stderr note) so the
+        key-rotating primary keeps the same fallback semantics."""
+        entries = []
+        for name in chain_names:
+            try:
+                candidate_cfg = resolve_provider(name)
+            except (ValueError, ProviderError) as exc:
+                print(
+                    f"兜底允许列表里跳过了无法解析的 provider {name}：{exc}",
+                    file=sys.stderr,
+                )
+                continue
+            if getattr(candidate_cfg, "auth", None) == "cli":
+                print(
+                    f"兜底允许列表里跳过了 CLI provider {name}（不进兜底链）",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                candidate = Provider(candidate_cfg)
+            except (ValueError, ProviderError) as exc:
+                print(
+                    f"兜底允许列表里跳过了无法解析的 provider {name}：{exc}",
+                    file=sys.stderr,
+                )
+                continue
+            check = getattr(candidate, "has_credentials", None)
+            if callable(check) and not check():
+                print(
+                    f"兜底允许列表里跳过了未配置 Key 的 provider {name}",
+                    file=sys.stderr,
+                )
+                continue
+            entries.append(candidate)
+        return entries
+
+    def _key_rotating_provider(self, bot: Bot):
+        """A bot's own keys for its provider+model, with the usual
+        fallback chain around them.
+
+        Composition: the KeyRotatingProvider is the primary entry of a
+        FallbackProvider whose later entries are the same providers
+        resolve_fallback_chain would give the plain path. Key rotation
+        happens first (any failure, including 401/403); if every key
+        fails, the outer chain decides by the last failure's kind —
+        recoverable (402/429/5xx/…) falls through to the next model,
+        auth does not, exactly like the plain path. When fallback is
+        off or yields no extra entries, the rotating provider is
+        returned alone. An injected provider_factory is NOT used here
+        (it bypasses _provider entirely, same as today).
+        """
+        base = resolve_provider(bot.provider, bot.model)
+        if getattr(base, "auth", None) == "cli":
+            raise GroupError(
+                "CLI provider（Codex）没有 API Key，不能为机器人配置 api_keys"
+            )
+        keyed = [
+            # Force auth "env": the base config may be "connector" (no env
+            # key), in which case Provider would ignore api_key and use the
+            # connector for every "key". An explicitly configured key must
+            # actually be sent as the Bearer token.
+            Provider(replace(base, api_key=key, auth="env"))
+            for key in bot.api_keys
+        ]
+        rotating = KeyRotatingProvider(keyed, on_switch=_fallback_notice)
+        chain_names = resolve_fallback_chain(bot.provider, load_config())
+        fallbacks = self._fallback_entries(chain_names[1:])
+        if not fallbacks:
+            return rotating
+        return FallbackProvider(
+            [rotating, *fallbacks], on_switch=_fallback_notice
+        )
+
     def _provider(self, bot: Bot):
         # Same fallback chain as the CLI entries: on a recoverable
         # failure the bot's call moves to the next provider. An injected
         # provider_factory (tests, web UI) is used as-is.
-        provider = (
-            self.provider_factory(bot)
-            if self.provider_factory is not None
-            else build_provider_chain(
+        if self.provider_factory is not None:
+            provider = self.provider_factory(bot)
+        elif bot.api_keys:
+            provider = self._key_rotating_provider(bot)
+        else:
+            provider = build_provider_chain(
                 resolve_provider(bot.provider, bot.model),
                 resolve_fallback_chain(bot.provider, load_config()),
                 on_switch=_fallback_notice,
                 provider_cls=Provider,
                 resolver=resolve_provider,
             )
-        )
         check = getattr(provider, "has_credentials", None)
         if callable(check) and not check():
             raise GroupError("模型凭证未配置")

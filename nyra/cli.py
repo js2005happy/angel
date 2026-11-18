@@ -98,17 +98,9 @@ def format_banner(
     provider_desc: str, mode: str, session_id: str, color: bool = False
 ) -> str:
     """The REPL start-up banner."""
-    halo = style("◯", "gold", enabled=color)
-    title = style(f"Nyra {__version__}", "bold", enabled=color)
-    label = lambda text: style(text, "dim", enabled=color)  # noqa: E731
-    return "\n".join(
-        [
-            f"{halo} {title}  {label('全能 AI 助手 · Python 标准库')}",
-            f"  {label('模型')}  {provider_desc}",
-            f"  {label('模式')}  {mode}",
-            f"  {label('会话')}  {session_id}",
-        ]
-    )
+    from nyra.banner import render_banner
+
+    return render_banner(__version__, provider_desc, mode, session_id, color=color)
 
 
 def repl_prompt(mode: str, color: bool = False) -> str:

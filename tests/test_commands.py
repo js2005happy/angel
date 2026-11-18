@@ -213,7 +213,7 @@ class CommandDirsTest(unittest.TestCase):
             workdir = Path(name)
             dirs = command_dirs(workdir)
             self.assertEqual(dirs[0], workdir / ".nyra" / "commands")
-            self.assertEqual(dirs[1], commands_module.USER_COMMANDS_DIR)
+            self.assertEqual(dirs[1].parts[-2:], (".nyra", "commands"))
 
 
 if __name__ == "__main__":

@@ -427,7 +427,10 @@ class MCPTest(unittest.TestCase):
 
     def test_load_mcp_servers_skips_bad(self):
         servers = load_mcp_servers(
-            {"mcp_servers": {"good": {"command": "python3"}, "bad": {"args": []}}}
+            {
+                "mcp_servers": {"good": {"command": "python3"}, "bad": {"args": []}},
+                "mcp_presets": [],
+            }
         )
         self.assertEqual(list(servers), ["good"])
 

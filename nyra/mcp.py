@@ -4,6 +4,9 @@
 把 MCP 服务器提供的工具变成 Nyra 可调用的工具。
 配置来自 ~/.nyra/config.json 的 "mcp_servers" 一节，格式与 Claude Code 的
 mcpServers 一致：{"name": {"command": "...", "args": [...], "env": {...}}}。
+内置预置见 nyra/mcp_presets.py，由 "mcp_presets" 列表启用（默认
+memory、sequential-thinking、fetch、time），需要密钥/路径的预置按名
+启用，用户在 mcp_servers 里写的同名条目会覆盖预置。
 
 协议版本（MCP 规范 https://modelcontextprotocol.io/specification/）：
 双时代客户端——优先现代版 ``2026-07-28``（无状态无握手，每次请求在
@@ -23,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 
 
@@ -67,7 +71,11 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 
 # 发现探测最多等这么久：沉默的旧版服务器不会回 server/discover，
 # 超时即按旧版处理，不必等满整个请求超时。
-PROBE_TIMEOUT = 5.0
+# 发现探测只等这么久：服务器可能要现装依赖（npx/uvx 首次下载常需
+# 几十秒），探测超时后会回退旧版握手；探测等太短会把还没启动好的
+# 服务器误判为旧版。60 秒覆盖常规首次下载，仍有上限；客户端超时
+# 更短时取两者中更小的值。
+PROBE_TIMEOUT = 60.0
 
 
 # MCP servers run outside the agent's tool approval boundary while starting.
@@ -80,6 +88,38 @@ MCP_BOOTSTRAP_ENV = (
     "VIRTUAL_ENV",
 )
 ENV_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+# 代理与受信 CA 是网络引导配置，不是凭据：npx/uvx 首次下载、
+# 以及 MCP 服务器自身的联网都要走代理；出口代理做 TLS 拦截时
+# 工具要靠这些 CA 变量认它的自签 CA 才连得上。只在父环境里有
+# 才传；代理 URL 里嵌的 userinfo（user:pass@host）去掉再传——
+# 本机代理允许无认证访问，而把代理密码交给第三方 MCP 服务器
+# 进程不值得。代理必须认证的，请用户在该服务器的 inherit_env
+# 里显式声明完整 URL。
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+    "NODE_USE_ENV_PROXY",
+    "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO", "AWS_CA_BUNDLE",
+)
+
+
+def _strip_proxy_credentials(value: str) -> str:
+    """去掉代理 URL 里的 userinfo；非 URL 的值（如 NO_PROXY 列表）原样返回。"""
+    if "://" not in value:
+        return value
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return value
+    if "@" not in parts.netloc:
+        return value
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urllib.parse.urlunsplit(
+        (parts.scheme, host, parts.path, parts.query, parts.fragment)
+    )
 
 
 @dataclass
@@ -154,6 +194,10 @@ class MCPClient:
         names = set(MCP_BOOTSTRAP_ENV) | set(self.config.inherit_env)
         env = {key: os.environ[key] for key in names if key in os.environ}
         env.update(self.config.env)
+        # 代理变量：用户在 inherit_env / env 里显式声明的优先，不覆盖。
+        for key in _PROXY_ENV_VARS:
+            if key not in env and key in os.environ:
+                env[key] = _strip_proxy_credentials(os.environ[key])
         # Keep stdio JSON-RPC valid on Windows even with legacy code pages.
         env.setdefault("PYTHONIOENCODING", "utf-8")
         return env
@@ -218,6 +262,20 @@ class MCPClient:
             process.stdin.write(payload + "\n")
             process.stdin.flush()
         except (OSError, ValueError) as exc:
+            # 子进程可能在 poll() 检查和 flush 之间退出：Windows 上往已死
+            # 子进程的 stdin 写会报 [Errno 22] Invalid argument（POSIX 上是
+            # BrokenPipeError）。这时真正的事件是“服务器已退出”，而不是写失败。
+            # 但写失败的瞬间子进程可能还没被 poll() 看到已退出（Windows 上
+            # 管道断开与进程退出状态可见之间有竞态）：先等一小会儿让子进程
+            # 被回收，再复查退出状态；仍在运行才报写失败。
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass
+            if process.poll() is not None:
+                raise MCPError(
+                    f"MCP 服务器已退出（退出码 {process.returncode}）"
+                ) from exc
             raise MCPError(f"写入 MCP 服务器失败：{exc}") from exc
 
     @staticmethod
@@ -462,7 +520,9 @@ class MCPClient:
                     return
             self._initialize_legacy()
             return
-        except MCPError:
+        except MCPError as exc:
+            if str(exc) == "MCP 服务器已退出":
+                raise  # 进程已退出，旧版握手也写不进去（Windows 上会报 EINVAL）
             self._initialize_legacy()
             return
         try:
@@ -592,11 +652,48 @@ class MCPClient:
 
 
 def load_mcp_servers(config: dict) -> dict[str, MCPServerConfig]:
-    raw_servers = config.get("mcp_servers", {})
-    if not isinstance(raw_servers, dict):
-        return {}
+    """Load MCP server configs: built-in presets first, user entries win.
+
+    Presets come from config["mcp_presets"] (a list of preset names;
+    defaults to DEFAULT_MCP_PRESETS when the key is absent; an
+    explicitly empty list disables all presets). A preset that needs
+    a key or a path is skipped with a stderr message when the
+    requirement is missing. User entries in config["mcp_servers"]
+    override a preset of the same name.
+    """
+    from nyra.mcp_presets import DEFAULT_MCP_PRESETS, resolve_preset
 
     servers = {}
+
+    preset_names = config.get("mcp_presets", DEFAULT_MCP_PRESETS)
+    if not isinstance(preset_names, list) or not all(
+        isinstance(name, str) for name in preset_names
+    ):
+        print(
+            "mcp_presets 应为预置名列表，已忽略并使用默认预置",
+            file=sys.stderr,
+        )
+        preset_names = list(DEFAULT_MCP_PRESETS)
+    preset_args = config.get("mcp_preset_args") or {}
+    if not isinstance(preset_args, dict):
+        preset_args = {}
+    for name in preset_names:
+        raw, reason = resolve_preset(name, preset_args)
+        if raw is None:
+            print(reason, file=sys.stderr)
+            continue
+        try:
+            servers[name] = MCPServerConfig.from_dict(name, raw)
+        except MCPError as exc:
+            print(
+                f"跳过无效 MCP 预置 {name}: {exc}",
+                file=sys.stderr,
+            )
+
+    raw_servers = config.get("mcp_servers", {})
+    if not isinstance(raw_servers, dict):
+        return servers
+
     for name, raw in raw_servers.items():
         try:
             servers[name] = MCPServerConfig.from_dict(name, raw)
