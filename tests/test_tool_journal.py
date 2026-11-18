@@ -90,6 +90,19 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(sorted(journal.path.iterdir()), before)
         self.assertTrue(journal.inspect()["journal_ambiguous"])
 
+    def test_ambiguous_journal_does_not_report_partial_success(self):
+        # An unrelated orphan must invalidate the apparent success totals.
+        journal = ToolJournal("global-ambiguity-counts", root=self.root)
+        cid = journal.begin("shell")
+        journal.finish(cid, "shell", success=True)
+        journal._write("result_error", "f" * 32, "http_post")
+        status = journal.inspect()
+        self.assertTrue(status["journal_ambiguous"])
+        self.assertEqual(status["reported_ok"], 0)
+        self.assertEqual(status["reported_errors"], 0)
+        self.assertEqual(status["unknown_outcomes"], 2)
+        self.assertFalse(status["safe_to_auto_resume"])
+
     def test_begin_rejects_orphan_result_without_creating_intent(self):
         journal = ToolJournal("orphan-before-begin", root=self.root)
         journal._write("result_ok", "a" * 32, "shell")
