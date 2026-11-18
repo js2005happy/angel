@@ -464,6 +464,29 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "权限过宽"):
                 journal.begin("shell")
 
+    def test_posix_reader_rejects_changed_entry_set_after_enumeration(self):
+        # A concurrent writer can add an intent after the initial listdir.
+        # Fail closed instead of returning an incomplete journal snapshot.
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        from angel import tool_journal as module
+        journal = ToolJournal("changed-entry-set", root=self.root)
+        journal.begin("shell")
+        original_listdir = module.os.listdir
+        calls = [0]
+
+        def changed(fd):
+            names = original_listdir(fd)
+            calls[0] += 1
+            if calls[0] == 2:
+                return names + ["intent-" + "a" * 32 + ".json"]
+            return names
+
+        with mock.patch.object(module.os, "listdir", side_effect=changed):
+            with self.assertRaisesRegex(JournalError, "并发变化"):
+                journal.inspect()
+        self.assertEqual(calls[0], 2)
+
     def test_posix_reader_uses_directory_relative_file_open(self):
         import os
         from angel import tool_journal as module
