@@ -9,6 +9,7 @@ Exit codes:
   1 runtime/provider/tool failure
   2 invalid configuration or command arguments
   3 model reached max_turns without a final answer
+  4 verification command failed (verify_failed)
   130 interrupted by the user
 """
 
@@ -27,12 +28,17 @@ from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .memory import load_session
 from .providers import Provider, build_provider_chain
 from .usage import context_limit
+from .runs import (
+    RunRecorder, RunStore, prepare_resume, RunNotResumable,
+    accept_verify_command, resolve_verify_origin, resolve_verify_settings, tests_modified,
+)
 
 SCHEMA_VERSION = 1
 EXIT_SUCCESS = 0
 EXIT_RUNTIME = 1
 EXIT_ARGUMENT = 2
 EXIT_INCOMPLETE = 3
+EXIT_VERIFY = 4
 EXIT_INTERRUPTED = 130
 
 
@@ -59,6 +65,17 @@ class JsonLines:
         """Expose useful events, but never dump raw tool arguments or results."""
         if kind in ("usage", "auto_compact", "auto_compact_failed", "auto_compact_skipped"):
             self.emit(kind, **data)
+        elif kind == "verify_started":
+            self.emit("verify_started", command=data.get("command", ""))
+        elif kind == "verify_result":
+            self.emit(
+                "verify_result",
+                command=data.get("command", ""),
+                exit_code=data.get("exit_code"),
+                passed=bool(data.get("passed")),
+                attempt=data.get("attempt"),
+                tests_modified=bool(data.get("tests_modified")),
+            )
         elif kind == "tool_start":
             self.emit("tool_start", id=data.get("id", ""), name=data.get("name", ""))
         elif kind == "tool_result":
@@ -94,12 +111,13 @@ def run_json(args) -> int:
     backend = None
     mcp_manager = None
     agent = None
+    recorder = None
 
     # Existing modules contain human-readable diagnostics. They must never
     # corrupt the machine-readable stdout channel.
     with redirect_stdout(sys.stderr):
         try:
-            if not isinstance(args.prompt, str) or not args.prompt.strip():
+            if not args.resume_run and (not isinstance(args.prompt, str) or not args.prompt.strip()):
                 return out.failed(
                     "invalid_arguments",
                     "--json 仅支持单次非交互任务，请提供任务文本",
@@ -116,6 +134,13 @@ def run_json(args) -> int:
                 )
 
             try:
+                resume_state = None
+                interrupted_tool_calls = 0
+                if args.resume_run:
+                    resume_state, resume_messages, interrupted_tool_calls = prepare_resume(
+                        RunStore(), args.resume_run,
+                        workdir=args.workdir if getattr(args, 'workdir_explicit', args.workdir != '.') else None,
+                        mode=args.mode, max_turns=args.max_turns)
                 config = load_config()
                 settings = resolve_sandbox(
                     config=config,
@@ -128,6 +153,9 @@ def run_json(args) -> int:
                     args.max_turns if args.max_turns is not None
                     else config.get("max_turns") or 20
                 )
+                if resume_state:
+                    mode = resume_state['mode']
+                    max_turns = resume_state['max_turns']
                 if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
                     raise ValueError("--max-turns 必须为正整数")
                 if args.context_window is not None and context_limit(args.context_window) is None:
@@ -151,6 +179,8 @@ def run_json(args) -> int:
                     Path(args.workdir) if args.workdir != "."
                     else Path(DEFAULT_SANDBOX_WORKDIR)
                 ) if settings.backend == "e2b" else Path(args.workdir).resolve()
+                if resume_state:
+                    workdir = Path(resume_state['workdir'])
                 if settings.backend == "local" and not workdir.is_dir():
                     raise ValueError("工作目录不存在")
                 messages = None
@@ -158,7 +188,11 @@ def run_json(args) -> int:
                     messages = load_session(args.resume)
                     if messages is None:
                         raise ValueError("指定的会话不存在")
-            except ValueError as exc:
+                if resume_state:
+                    messages = resume_messages
+            except RunNotResumable as exc:
+                return out.failed('run_not_resumable', str(exc), EXIT_ARGUMENT)
+            except (ValueError, OSError) as exc:
                 return out.failed("invalid_configuration", str(exc), EXIT_ARGUMENT)
 
             # --json uses the same fallback chain as the CLI entries:
@@ -192,13 +226,13 @@ def run_json(args) -> int:
                     EXIT_ARGUMENT,
                 )
 
-            if settings.backend == "e2b":
+            if settings.backend == "e2b" and not resume_state:
                 backend = connect_backend(settings)
             # Non-interactive auto/readonly never starts MCP processes.
             mcp_manager = build_mcp_manager(mode=mode, interactive=False)
             agent = Agent(
                 provider=provider, workdir=workdir, mode=mode,
-                max_turns=max_turns, session_id=args.resume, messages=messages,
+                max_turns=max_turns, session_id=resume_state["session_id"] if resume_state else args.resume, messages=messages,
                 interactive=False, backend=backend, mcp_manager=mcp_manager,
                 context_window_tokens=window,
                 auto_compact_enabled=auto_compact,
@@ -206,11 +240,39 @@ def run_json(args) -> int:
                 on_event=out.agent_event,
                 poppy_enabled=args.poppy,
             )
-            out.emit(
-                "run_started", session_id=agent.session_id,
-                provider=provider.name, model=provider.model, mode=mode,
+            task = resume_state['task'] if resume_state else args.prompt
+            timeout, retries = resolve_verify_settings(
+                getattr(args, 'verify_timeout', None),
+                getattr(args, 'verify_retries', None),
+                config,
             )
-            answer = agent.run(args.prompt)
+            skip_reason = None
+            if resume_state:
+                verify_cmd = None
+            else:
+                verify_cmd, source = resolve_verify_origin(
+                    getattr(args, 'verify', None), config, workdir)
+                # --json 非交互：AGENTS.md 来源必须显式 --trust-agents-verify。
+                verify_cmd, skip_reason = accept_verify_command(
+                    verify_cmd, source,
+                    trust_agents=getattr(args, 'trust_agents_verify', False),
+                    interactive=False,
+                )
+            recorder = RunRecorder(
+                RunStore(), agent, task, state=resume_state,
+                interrupted_tool_calls=interrupted_tool_calls,
+                verify_cmd=verify_cmd, verify_skip_reason=skip_reason,
+                verify_timeout=timeout, verify_retries=retries,
+            )
+            if resume_state:
+                out.emit('run_resumed', run_id=recorder.run_id, session_id=agent.session_id,
+                         turn=resume_state['turn'], interrupted_tool_calls=interrupted_tool_calls)
+            else:
+                out.emit(
+                    "run_started", run_id=recorder.run_id, session_id=agent.session_id,
+                    provider=provider.name, model=provider.model, mode=mode,
+                )
+            answer = recorder.run(task)
             usage = agent.usage.snapshot()
             # provider/model always name the provider that actually
             # answered, not the one configured first; model_switches
@@ -218,19 +280,35 @@ def run_json(args) -> int:
             final_provider = provider.name
             final_model = provider.model
             switches = list(getattr(provider, "switches", []))
+            state = recorder.store.load(recorder.run_id)
+            status = state["status"]
+            modified = bool(tests_modified(state.get("changed_files") or []))
             if out.incomplete:
                 out.emit(
                     "run_incomplete", exit_code=EXIT_INCOMPLETE,
                     output=answer, usage=usage,
                     provider=final_provider, model=final_model,
-                    model_switches=switches,
+                    model_switches=switches, verified=False,
+                    tests_modified=modified, status=status,
                 )
                 return EXIT_INCOMPLETE
+            if status == "verify_failed":
+                out.emit(
+                    "run_failed",
+                    error={"code": "verify_failed", "message": "验证未通过"},
+                    exit_code=EXIT_VERIFY, output=answer, usage=usage,
+                    provider=final_provider, model=final_model,
+                    model_switches=switches,
+                    verified=False, tests_modified=modified, status=status,
+                )
+                return EXIT_VERIFY
             out.emit(
                 "run_completed", exit_code=EXIT_SUCCESS,
                 output=answer, usage=usage,
                 provider=final_provider, model=final_model,
                 model_switches=switches,
+                verified=(status == "verified"),
+                tests_modified=modified, status=status,
             )
             return EXIT_SUCCESS
         except KeyboardInterrupt:
@@ -242,6 +320,9 @@ def run_json(args) -> int:
             print(f"Nyra JSONL runtime exception: {type(exc).__name__}", file=sys.stderr)
             return out.failed("runtime_error", "执行失败，请查看 stderr", EXIT_RUNTIME)
         finally:
+            if recorder is not None:
+                out.emit("run_state", run_id=recorder.run_id,
+                         status=recorder.store.load(recorder.run_id)["status"])
             if mcp_manager is not None:
                 try:
                     mcp_manager.stop_all()

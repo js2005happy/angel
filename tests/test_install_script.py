@@ -34,13 +34,13 @@ def _write_stub(path, body):
 
 
 class InstallScriptStaticTests(unittest.TestCase):
-    def test_script_exists_and_is_executable(self):
+    def test_script_exists_and_has_shebang(self):
         self.assertTrue(SCRIPT.is_file(), "scripts/install.sh missing")
-        if os.name == "nt":
-            return  # Windows 没有可执行位
+        # 可执行位不测：快照式推送会丢文件模式（GitHub 上常为 644），
+        # 脚本一律用 `bash scripts/install.sh` 显式调用，不依赖该位。
         self.assertTrue(
-            bool(SCRIPT.stat().st_mode & stat.S_IXUSR),
-            "scripts/install.sh should be executable",
+            SCRIPT.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash"),
+            "scripts/install.sh should start with a bash shebang",
         )
 
     def test_no_privilege_escalation_or_remote_pipe(self):

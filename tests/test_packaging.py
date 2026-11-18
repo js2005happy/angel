@@ -41,12 +41,14 @@ VERSION = _version()
 
 
 class PackagingStaticTests(unittest.TestCase):
-    def test_script_exists_and_is_executable(self):
+    def test_script_exists_and_has_shebang(self):
         self.assertTrue(SCRIPT.is_file(), "scripts/build_package.sh missing")
-        if os.name == "nt":
-            return  # Windows 没有可执行位
-        self.assertTrue(bool(SCRIPT.stat().st_mode & stat.S_IXUSR),
-                        "scripts/build_package.sh is not executable")
+        # 可执行位不测：快照式推送会丢文件模式（GitHub 上常为 644），
+        # 脚本一律用 `bash scripts/build_package.sh` 显式调用，不依赖该位。
+        self.assertTrue(
+            SCRIPT.read_text(encoding="utf-8").startswith("#!/usr/bin/env bash"),
+            "scripts/build_package.sh should start with a bash shebang",
+        )
 
     def test_bash_syntax_ok(self):
         if not POSIX:
@@ -58,7 +60,7 @@ class PackagingStaticTests(unittest.TestCase):
     def test_help_exits_zero(self):
         if not POSIX:
             self.skipTest("--help needs bash")
-        result = subprocess.run([str(SCRIPT), "--help"],
+        result = subprocess.run(["bash", str(SCRIPT), "--help"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--out-dir", result.stdout)
@@ -66,7 +68,7 @@ class PackagingStaticTests(unittest.TestCase):
     def test_unknown_option_fails(self):
         if not POSIX:
             self.skipTest("option parsing needs bash")
-        result = subprocess.run([str(SCRIPT), "--nope"],
+        result = subprocess.run(["bash", str(SCRIPT), "--nope"],
                                 capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
 
@@ -78,7 +80,7 @@ class PackagingBuildTests(unittest.TestCase):
         cls._tmp = tempfile.TemporaryDirectory()
         cls.out_dir = Path(cls._tmp.name) / "dist"
         result = subprocess.run(
-            [str(SCRIPT), "--out-dir", str(cls.out_dir)],
+            ["bash", str(SCRIPT), "--out-dir", str(cls.out_dir)],
             cwd=ROOT, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         cls.tarball = cls.out_dir / f"nyra-{VERSION}.tar.gz"
@@ -129,7 +131,7 @@ class PackagingBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "dist"
             result = subprocess.run(
-                [str(SCRIPT), "--out-dir", str(out), "--no-deb"],
+                ["bash", str(SCRIPT), "--out-dir", str(out), "--no-deb"],
                 cwd=ROOT, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue((out / f"nyra-{VERSION}.tar.gz").is_file())

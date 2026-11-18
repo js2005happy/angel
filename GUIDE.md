@@ -193,6 +193,18 @@ Nyra 的 `MEMORY.md` 不属于会话 JSONL：每个新会话都可重新读取�
 
 接口通过原有 Web UI 随机 token 和本机 Host 检查保护；不在模型信息、会话列表等无关 API 中泄漏记忆内容。记忆仅支持 UTF-8，网页编辑器每文件上限 64 KiB，已有符号链接记忆文件不可被网页读写。修改后请手动保存，新的长期记忆在下一次 Agent 请求中生效；敏感记忆请不要复制到公开聊天或截图中。
 
+## 记忆模式：读别的 agent 的记忆
+
+Nyra 能读别的 agent 的记忆，照 Muse 的记忆导入模式做，分快照导入/导出和聊天导入两种，外加配对读记忆和本地读取——全部只读、只追加，导入前先脱敏。
+
+**快照导出/导入**：`python3 -m nyra.memory_exchange export` 把自己的记忆导出成固定五章（身份 / 事实 / 偏好 / 目标与承诺 / 关系）的 Markdown 快照，无可靠信息的章节省略；`export-prompt` 打印一段提示词，贴到别的 AI 聊天里，让对方按同样格式输出快照；`import [FILE]`（不给文件就读 stdin）把快照合并进 `~/.nyra/MEMORY.md`，只追加不覆盖，已存在的内容跳过。导出与导入两端都先脱敏：含密码、密钥、token 的行直接删掉并计数。
+
+**配对读记忆**：跟另一台 Nyra 配对成功后，`python3 -m nyra.memory_exchange peer <配对码> [HOST PORT]` 读对方的记忆快照并导入。宿主提供 GET /memory（须 Bearer token，返回脱敏后的快照）；客人侧再脱敏一次。只在可信网络用，配对规则见配对码协作一节。
+
+**本地读取**：`python3 -m nyra.memory_exchange local codex` 读本机 `~/.codex/memories_1.sqlite`（只读打开；本机 Codex 版本没有 memories 表，记忆在 stage1_outputs.raw_memory 里，两种结构都支持）；`local claude` 读 `~/.claude/CLAUDE.md` 与 `MEMORY.md`；`local dir <目录>` 读指定目录下的 MEMORY.md / AGENTS.md / CLAUDE.md。找不到文件或库里没有内容时报“未找到”，不编造。读到的内容转成快照文本，走同一条导入合并路径。
+
+**聊天导入**：`python3 -m nyra.memory_exchange import-zip FILE.zip` 支持 ChatGPT / Claude 的聊天导出（conversations.json）。只做清单与存档：解析出对话（标题、日期、消息数），原文存到 `~/.nyra/memory-imports/<日期>-<来源>/`，MEMORY.md 里只追加一行导入记录。不做自动事实提炼（那需要模型调用，会编造），提炼以后用知识库的 ask 做。
+
 ## 多机器人群聊（Python 核心 + JavaScript 界面）
 
 启动原有本地网页界面：
@@ -376,7 +388,27 @@ python3 -m nyra --mode readonly "看看这个目录里有什么"
 python3 -m nyra --mode full "整理下载目录"
 ```
 
-**MCP 启动环境隔离**：默认启动 MCP 子进程时，只传递运行所需的少量系统环境变量（如 `PATH`、`HOME`、Windows 系统路径等）和显式配置的 `env`，不再自动传递 DeepSeek/OpenAI 等 API Key。确实需要额外环境变量的服务器可以在各自的配置中明确声明 `inherit_env`：
+**MCP 内置预置**：Nyra 自带 10 个预配置的 MCP 服务器，不用手写 `mcp_servers`。只要在 `~/.nyra/config.json` 里设 `"mcp_enabled": true`，默认就开 memory（知识图谱记忆）、sequential-thinking（结构化思考）、fetch（抓网页转 Markdown）、time（时间与时区）这 4 个；想多开就在 `mcp_presets` 列表里加名字：github（需 `GITHUB_PERSONAL_ACCESS_TOKEN`）、brave-search（需 `BRAVE_API_KEY`）、filesystem / git / sqlite（需在 `mcp_preset_args` 里给路径，如 `{"filesystem": ["D:/docs"], "git": ["D:/repo"], "sqlite": ["D:/data.db"]}`）、puppeteer（首次使用下载 Chromium）。fetch、git、time、sqlite 走 `uvx`（需装 uv），其余走 `npx`（需装 Node.js）。memory 的知识图谱默认存到 `~/.nyra/memory.jsonl`（不在 npx 缓存里，缓存清了也不丢）。预置只给配置：MCP 默认关闭，`auto` 模式下每个服务器启动前仍逐一确认；密钥缺失或路径未给时该预置会被跳过并说明原因。`mcp_servers` 里写的同名条目会覆盖预置。github、brave-search、sqlite、puppeteer 是官方已归档的服务器（不再维护），已在预置说明里注明；sqlite 用 `mcp 1.30.0` 才能跑（新版 SDK 删了 resources 接口）。
+
+**配对码协作**：两个 Nyra 可以配对后一起工作。宿主跑 `python3 -m nyra.pairing host`，屏幕上出现 6 位配对码（10 分钟过期、只能用一次、错 5 次作废）；客人在另一台机器上跑 `python3 -m nyra.pairing join <6 位码>`，配对成功后把任务发给宿主，宿主以只读模式跑完把结果传回来。任务只传文本与结果，不传任何凭据；配对只在你信任的网络里做（家里、办公室局域网），别在公共 Wi-Fi 上配对。
+
+**本地密码箱**：不想把 API Key 写进配置文件或聊天记录时，用密码箱。`python3 -m nyra.vault init` 设一个主密码，`python3 -m nyra.vault add DEEPSEEK_API_KEY` 按提示输 Key（不会显示在屏幕或命令历史里），以后 Nyra 需要这个 Key 时：环境变量里有就用环境变量，没有就自动去密码箱里取——取之前要先解锁，设环境变量 `NYRA_VAULT_PASSWORD` 就是解锁（只在你自己的机器上这么做）。密码箱文件在 `~/.nyra/vault.json`，加密存放，别人拿到文件也打不开；但主密码太弱、机器本身被入侵时仍不安全，高价值密钥请用专业密码管理器。`vault get` 会在你自己的终端上打印出明文，只在你主动要看的时候用。
+
+**本地知识库**：把喜欢的博主内容、文章、笔记收进知识库，再向它提问，Nyra 只按库里的内容回答、并注明依据了哪几条笔记，库里没有就直说不知道、不编造。数据全在本地 `~/.nyra/knowledge/<库名>/`（`kb.json` + `notes.jsonl`），标准库实现，不依赖第三方服务：
+
+```bash
+python3 -m nyra.knowledge create jianghushuo --description "个人成长、做事方法"
+python3 -m nyra.knowledge add jianghushuo --file ~/docs/notes.md     # .txt/.md，也可 --dir 批量收
+python3 -m nyra.knowledge add jianghushuo --url https://example.com/article   # 抓网页正文
+python3 -m nyra.knowledge add jianghushuo --text "……" --title "赚钱核心三问题"  # 直接贴文本
+python3 -m nyra.knowledge search jianghushuo "赚钱要明确什么"
+python3 -m nyra.knowledge ask jianghushuo "赚钱核心三问题是什么？"
+python3 -m nyra.knowledge list
+```
+
+收录时文本按标题与空行切成笔记（每条约 1500 字以内，带标题、来源、日期）；检索是本地 BM25（中英文分词）；提问默认走当前配置的 provider。注意：抖音视频链接本身拉不到完整文稿（视频页是 JS 渲染的，Nyra 只能拿到标题和描述），想把博主视频收进库，先把文稿/字幕文本贴进来，或用文章链接。跟 agent 主循环的自动调用（聊天时自动查库）等 A–E 合并后再接，现在先用命令行。
+
+**MCP 启动环境隔离**：默认启动 MCP 子进程时，只传递运行所需的少量系统环境变量（如 `PATH`、`HOME`、Windows 系统路径等）和显式配置的 `env`，不再自动传递 DeepSeek/OpenAI 等 API Key。确实需要额外环境变量的服务器可以在各自的配置中明确声明 `inherit_env`。另外会透传去凭据后的代理变量（`HTTP(S)_PROXY`、`ALL_PROXY`、`NO_PROXY`）与受信 CA 变量（`NODE_EXTRA_CA_CERTS`、`SSL_CERT_FILE` 等），否则公司网络或出口代理后面的机器首次下载 MCP 服务器会连不上；代理 URL 里嵌的密码不会传，代理必须认证的请在该服务器的 `inherit_env` 里显式声明完整 URL：
 
 ```json
 {
@@ -448,21 +480,21 @@ python3 -m nyra ui --port 9000 --workdir ~/project --mode auto
 
 本地网页界面，纯标准库 `http.server` + 一个内嵌的 HTML/CSS/JS 页面，不引用任何 CDN 或外部资源。UI v2（三栏 + 六视图，2026-11-17）：
 
-- **左栏**——品牌卡（毛绒小兔头像）与六视图导航（对话 / 技能与工具 / 定时任务 / 群聊 / 品牌与外观 / 设置），会话列表在对话视图内，可新建会话，也可点开历史会话继续。
+- **左栏**——品牌卡与六视图导航（对话 / 技能与工具 / 定时任务 / 群聊 / 品牌与外观 / 设置），会话列表在对话视图内，可新建会话，也可点开历史会话继续。
 - **中栏：对话**——用户/助手消息（基本 Markdown 渲染），执行中轮询显示进度；每次工具调用是一张可折叠卡片（工具名、参数、结果摘要）。auto 模式下需要审批时卡片里出现“批准 / 拒绝”按钮，走的是和终端相同的审批门（`tools.py` 的 `_check_approval`），readonly / full 行为不变；10 分钟无人处理按拒绝处理。
-- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 14 个 provider 预设 / 15 个内置工具更新。
-- **技能与工具视图**——3 个内置技能与 15 个内置工具一览（每个工具标明是否需要审批）。
+- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 14 个 provider 预设 / 24 个内置工具更新。
+- **技能与工具视图**——3 个内置技能与 24 个内置工具一览（每个工具标明是否需要审批）。
 - **定时任务视图**——读 `~/.nyra/schedule.json`，可查看、启用/停用、删除定时任务（走 `/api/schedule`，只调 `scheduler.py` 的公开函数）；网页端新建定时任务暂缓开放（等任务队列合并 E 后恢复，`POST /api/schedule` 的 add 返回 409），请用 `nyra schedule add` 命令添加；行里显示任务的 provider / 模型与上次运行时间、状态、摘要。
 - **群聊视图**——群列表与“打开群聊页面”入口（带 `?room=<id>`，群聊页打开即选中该群，不存在时回退第一个）；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 14 个预设。
-- **品牌与外观视图**——11 色板、形象切换（默认奶油白毛绒小兔，备选蜜糖色毛绒小熊，localStorage 记忆选择）、字体示例与使用规则。
+- **品牌与外观视图**——11 色板、字体示例与使用规则。
 - **设置视图**——provider 下拉可用（14 个预设，`/api/info` 返回，含各 provider 的模型列表做输入提示）：选 provider + 填模型后点“应用”调真实的 `POST /api/provider`，新会话立即生效，已有会话保持原 provider，重启后恢复配置文件中的设置；未知 provider / 明文 http 外网地址会直接报 400。模式三段切换（调真实 `/api/mode`，失败时界面自动回滚到实际值）；Keys 表含自定义 provider（来自 `get_provider_presets`）；MCP 与证据链状态只读；API Key 只显示是否已配置，**绝不回显值**。
-- **顶栏**——小兔圆形头像、provider 芯片与模式芯片；配色为鼠尾草绿主色 + 雾蓝强调 + 蜜桃珊瑚小面积点缀（浅色底 `#F3F5F4`，另有深炭底暗色变体）；形象图以 base64 内嵌在页面里，不引用外部图片。
+- **顶栏**——provider 芯片与模式芯片；配色为鼠尾草绿主色 + 雾蓝强调 + 蜜桃珊瑚小面积点缀（浅色底 `#F3F5F4`，另有深炭底暗色变体）。
 
 安全：默认只监听 `127.0.0.1`（`--host` 改成非本机地址时会打印警告）；每次启动随机生成一个访问 token，页面链接通过 `?token=` 带入，所有 API 请求都必须在请求头里带上它（防 CSRF），监听本机地址时还会校验 `Host` 头。网页界面目前在本地执行工具（不接 E2B 沙盒），会按配置启动 MCP 服务器（默认关闭）。
 
 ## 技能（Skills）
 
-技能是 `skills/*.md` 文件（自带三个示例：`web-research` 网上调研、`file-organizer` 文件整理、`verify-research` 核查式调研），格式：
+技能是 `skills/*.md` 文件（自带四个示例：`web-research` 网上调研、`file-organizer` 文件整理、`verify-research` 核查式调研、`deep-thinking` 深度思考十问），格式：
 
 ```markdown
 ---
@@ -478,7 +510,7 @@ Nyra 会按任务关键词自动加载最相关的技能。你自己的技能存
 
 ## 工具
 
-Nyra 有 15 个工具：`read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`shell`（带危险命令黑名单）、`web_fetch`、`web_search`、`memory_append`、`save_skill`、`delegate`（子 agent）、`plan`（先写计划再执行）、`grep_search`、`git_status`、`http_post`。
+Nyra 有 24 个工具：`read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`shell`（带危险命令黑名单）、`web_fetch`、`web_search`、`memory_append`、`save_skill`、`delegate`（子 agent）、`plan`（先写计划再执行）、`grep_search`、`git_status`、`http_post`、`browser_navigate` / `browser_click` / `browser_screenshot`（CDP 浏览器）、`computer_screenshot` / `computer_click` / `computer_type` / `computer_key` / `computer_windows`（电脑操作，均需审批）、`multi_model_research`（多模型并行调研），以及默认关闭、需显式开启的 3 个 Poppy opt-in 工具：`poppy_discover`、`poppy_identity_check`、`poppy_permission_check`（只做公开协议发现与本地权限意向核验，不登录、不发交易）。
 
 - **plan**：多步骤任务先写计划文件（默认 `plan.md`）再执行。
 - **delegate**：把子任务交给一个子 agent（轮数受限），拿回摘要再继续。
@@ -504,7 +536,7 @@ python3 -m nyra --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的工
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 472 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 964 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -518,9 +550,39 @@ nyra/
 │   ├── __main__.py    入口：python3 -m nyra
 │   ├── cli.py         参数解析 + 交互 REPL + schedule 子命令
 │   ├── agent.py       agent 主循环（plan → 工具调用 → 汇报）
-│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）+ 通用 provider 预设与 /models 发现
+│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）+ 同模型多 Key 轮换（KeyRotatingProvider）+ 通用 provider 预设与 /models 发现
 │   ├── commands.py    自定义斜杠命令 + /init 的 AGENTS.md 模板
-│   ├── tools.py       15 个工具 + 审批 + shell 黑名单
+│   ├── tools.py       24 个工具 + 审批 + shell 黑名单
+│   ├── computer.py    电脑操作：三后端（Linux xdotool / Windows ctypes / macOS osascript+screencapture），截屏/点击/输入/按键/列窗口
+│   ├── vision.py      视觉模型看屏：image part 拼装 + 模型是否带视觉判断（agent.py 接线等 A–E 后）
+│   ├── multi_model.py 多模型调研：同一问题并行问多个模型，综合成共识/分歧/独特观点三节
+│   ├── server.py      独立 API 服务器（http.server + SSE 流式事件，默认 127.0.0.1:8766）
+│   ├── artifacts.py   Artifacts 富文本产物：存储、检测、Markdown 渲染
+│   ├── conversations.py  sqlite 对话记忆：FTS5 全文检索 + 检索注入 prompt
+│   ├── websocket.py   最小 WebSocket 客户端（标准库，供 CDP 用）
+│   ├── cdp_browser.py CDP 浏览器客户端：导航/求值/点击/截图（只连本机 Chrome）
+│   ├── banner.py      终端横幅：NYRA 四字母字标（11 行 × 42 列 `#`）
+│   ├── untrusted.py   提示词注入防御：外部内容打标记 + 指令句拦截
+│   ├── knowledge.py   本地 AI 知识库：收文本/文件/网页，分块存笔记，BM25 检索后交给模型回答
+│   ├── mcp_presets.py 内置 MCP 服务器预置（默认 memory、sequential-thinking、fetch、time）
+│   ├── pairing.py     配对码协作：两个 Nyra 用 6 位码配对，宿主只读跑任务
+│   ├── memory_exchange.py  记忆模式：快照导入/导出、配对读记忆、本地读 Codex/Claude 记忆、聊天 .zip 导入
+│   ├── vault.py       本地加密密码箱：PBKDF2 + HMAC-CTR，存 provider API Key
+│   ├── worker.py      混合 Go 迁移第 1 批：Python worker 入口（python3 -m nyra.worker）
+│   ├── worker_protocol.py  worker 协议 v1：宿主与 worker 间的 stdio JSONL 契约
+│   ├── checkpoints.py 写入前检查点：崩溃感知快照、/undo 与 /rewind
+│   ├── plan_mode.py   两阶段计划模式：先审计划（SHA-256 批准），后执行
+│   ├── json_mode.py   非交互 JSON Lines 输出协议（stdout 只出机器可读行）
+│   ├── groups.py      多机器人群聊：文件式房间、@mention 路由、串行轮流、每机器人独立多 API Key 轮换
+│   ├── poppy.py       Poppy 1.0 公开协议发现（默认关闭，只读校验）
+│   ├── poppy_identity.py  Poppy OAuth issuer 双向元数据核验（只读预检）
+│   ├── poppy_permissions.py  Poppy 站点权限意向账本（本地记录，非 OAuth 授权）
+│   ├── poppy_permissions_cli.py  Poppy 权限意向的命令行管理入口
+│   ├── eigenflux_adapter.py  EigenFlux bare-CLI 就绪诊断（不安装、不认证、不广播）
+│   ├── eigenflux_policy.py  EigenFlux 本地网络权限上限（按机器人独立，默认拒绝）
+│   ├── memory_browser.py  长期记忆的安全编辑（带版本号，防 Web UI 覆盖冲突）
+│   ├── patches.py     严格单文件 unified 补丁与审批用 diff 预览
+│   ├── usage.py       provider 上报的 Token 用量统计（不估算、不编造）
 │   ├── skills.py      技能加载 / 匹配 / 保存
 │   ├── memory.py      长期记忆 + AGENTS.md + 会话存储
 │   ├── config.py      配置 + provider 注册表 + provider 档案 + 沙盒设置
@@ -545,4 +607,14 @@ nyra/
 
 ## 路线图
 
-见 [DESIGN.md](DESIGN.md)：真沙箱、浏览器工具（需真实浏览器驱动）、GEPA 式自动学习、桌面 UI（本地网页界面已可用，独立桌面应用未开始）、多会话并发。
+待开发项集中清单（详见 [DESIGN.md](DESIGN.md) 与 [ROADMAP.md](ROADMAP.md)；已实现的不再列）：
+
+- **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录——现在命令仍以运行 Nyra 的用户身份执行，full 模式只在信任的目录用。
+- **浏览器工具**：已实现（`nyra/cdp_browser.py` + `nyra/websocket.py`，标准库 WebSocket 直连本机 Chrome 的 CDP：BrowserNavigate / BrowserClick / BrowserScreenshot，不用 Playwright/Chromium 驱动）；`web_fetch` 的纯文本抓取仍保留作只读途径。
+- **可靠性队列**：长任务断点续跑 + 结果自证、费用上限及实时成本看板、多 Agent 真实状态板。
+- **Poppy**：P4（UCP 购物及商店 Agent 对话）、P5（Nyra 对外发布自身能力）；P3 的真实 Session、OAuth 登录、DPoP、HTTP MCP 也未实现。
+- **EigenFlux**：E2（经用户批准的安装与入网 onboarding）、E3（收件箱、feed、订阅与公开广播）、E4（多机器人协作匹配）。
+- **第一梯队**：hooks（前后置钩子）、Telegram 网关。
+- **第二梯队**：流式输出、图片输入、会话全文搜索、并行子 Agent、Nyra MCP Server、HTTP MCP、编辑器集成。
+- **服务化第 2 步**：用户到沙盒的映射表 + 持久卷（第 1 步 E2B 单用户原型已做）。
+- **其他**：知识库接 agent 主循环（现在只能命令行用）、GEPA 式自动学习、桌面 UI（本地网页界面已可用，独立桌面应用未开始）、多会话并发。

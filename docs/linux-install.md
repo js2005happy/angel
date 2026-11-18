@@ -26,15 +26,15 @@ Nyra 是零 pip 依赖，脚本不联网装任何东西（除了 `git clone` 那
 
 ```bash
 # 方式一：还没 clone 仓库，让脚本自己从 GitHub 拉
-./scripts/install.sh
+bash scripts/install.sh
 
 # 方式二：已经 clone 好了，从当前检出安装（不用再下一遍）
 git clone https://github.com/js2005happy/nyra.git
 cd nyra
-./scripts/install.sh --source .
+bash scripts/install.sh --source .
 
 # 方式三：顺手把调度器装成 systemd 用户服务，开机自启、崩了自动重启
-./scripts/install.sh --source . --with-systemd
+bash scripts/install.sh --source . --with-systemd
 ```
 
 装完如果提示 `~/.local/bin 不在 PATH 里`，按提示加一行到你的
@@ -68,13 +68,13 @@ nyra "解释一下这个项目的结构"
 再跑一遍安装命令就行，例如：
 
 ```bash
-./scripts/install.sh --source .
+bash scripts/install.sh --source .
 ```
 
 ## 卸载
 
 ```bash
-./scripts/install.sh --uninstall
+bash scripts/install.sh --uninstall
 ```
 
 这会停掉并删掉 systemd 服务、删掉安装目录与启动器。**`~/.nyra` 会保留**，

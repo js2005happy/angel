@@ -104,6 +104,7 @@ class Agent:
         self.auto_compact_enabled = bool(auto_compact_enabled)
         self.auto_compact_threshold = validate_auto_compact_threshold(auto_compact_threshold)
         self.auto_compact_count = 0
+        self.turn = 0
         self.system_instructions = system_instructions
         self.memory_path = Path(memory_path) if memory_path is not None else NYRA_HOME / "MEMORY.md"
         self.delegate_depth = delegate_depth
@@ -113,6 +114,8 @@ class Agent:
         # Optional observer for front ends (REPL grouping, web UI). It only
         # sees events; it never changes how the loop runs.
         self.on_event = on_event
+        # 最终回答后的可选钩子：返回消息列表则继续循环（用于验证重试）。
+        self.on_final = None
         self.workdir = Path(workdir)
         self.mode = mode
         self.max_turns = max_turns
@@ -282,17 +285,24 @@ class Agent:
         return "\n\n".join(sections)
 
     def run(self, task: str) -> str:
+        return self._run_loop(task, resume=False)
+
+    def resume(self, task: str) -> str:
+        """沿用历史和原任务，重新构建系统提示，不重新发送任务。"""
+        return self._run_loop(task, resume=True)
+
+    def _run_loop(self, task: str, resume: bool) -> str:
         if self.delegate_depth == 0:
-            # Each top-level user request starts a fresh child-agent allowance.
             self._delegate_budget.reset()
             if self.checkpoints is not None:
                 self.checkpoints.begin_turn()
         system = self.build_system_prompt(task)
-        messages: list[dict] = (
-            [{"role": "system", "content": system}]
-            + self.messages
-            + [{"role": "user", "content": task}]
-        )
+        messages = [{"role": "system", "content": system}] + self.messages
+        if not resume:
+            messages.append({"role": "user", "content": task})
+        elif self.messages and self.messages[-1].get("role") == "assistant" and not self.messages[-1].get("tool_calls"):
+            messages.append({"role": "user", "content": "（续跑）请继续完成原任务；先核实当前状态。"})
+        turn_offset = self.turn if resume else 0
 
         attempted_auto_compact = False
         for _ in range(self.max_turns):
@@ -306,6 +316,8 @@ class Agent:
             except ProviderError as exc:
                 raise AgentError(str(exc)) from exc
 
+            # 运行记录读取的模型轮次计数；不新增对外事件，前端观察器不受影响。
+            self.turn = turn_offset + _ + 1
             self.usage.record(resp)
             if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
                 self._emit("usage", self.usage.snapshot())
@@ -319,15 +331,24 @@ class Agent:
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
+            if tool_calls:
+                # 工具执行前先保存调用，便于中断后核实未完成的副作用。
+                save_session(self.session_id, messages[1:])
 
             if tool_calls and assistant_msg["content"]:
                 self._emit("assistant", {"content": assistant_msg["content"]})
 
             if not tool_calls:
                 final = msg.get("content") or ""
-                self._emit("final", {"content": final})
                 self.messages = messages[1:]
                 save_session(self.session_id, self.messages)
+                followup = self.on_final(final, messages) if self.on_final is not None else None
+                if followup:
+                    messages.extend(followup)
+                    self.messages = messages[1:]
+                    save_session(self.session_id, self.messages)
+                    continue
+                self._emit("final", {"content": final})
                 return final
 
             for tc in tool_calls:
@@ -377,7 +398,8 @@ class Agent:
                     }
                 )
 
-            save_session(self.session_id, messages[1:])
+                # 每个结果立即保存，避免后续工具中断丢失已知结果。
+                save_session(self.session_id, messages[1:])
 
         self.messages = messages[1:]
         save_session(self.session_id, self.messages)

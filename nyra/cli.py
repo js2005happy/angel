@@ -98,17 +98,9 @@ def format_banner(
     provider_desc: str, mode: str, session_id: str, color: bool = False
 ) -> str:
     """The REPL start-up banner."""
-    halo = style("◯", "gold", enabled=color)
-    title = style(f"Nyra {__version__}", "bold", enabled=color)
-    label = lambda text: style(text, "dim", enabled=color)  # noqa: E731
-    return "\n".join(
-        [
-            f"{halo} {title}  {label('全能 AI 助手 · Python 标准库')}",
-            f"  {label('模型')}  {provider_desc}",
-            f"  {label('模式')}  {mode}",
-            f"  {label('会话')}  {session_id}",
-        ]
-    )
+    from nyra.banner import render_banner
+
+    return render_banner(__version__, provider_desc, mode, session_id, color=color)
 
 
 def repl_prompt(mode: str, color: bool = False) -> str:
@@ -315,6 +307,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=VALID_MODES,
         help="审批模式：readonly 只读 / auto 每次确认 / full 全权",
     )
+    parser.add_argument("--resume-run", help="从运行记录断点续跑")
+    parser.add_argument("--verify", help="任务完成后运行的验证命令（退出码 0 才算验证通过）")
+    parser.add_argument("--verify-timeout", type=int, default=None, help="验证命令超时秒数，默认 300")
+    parser.add_argument("--verify-retries", type=int, default=None, help="验证失败后最多重试次数，默认 2")
+    parser.add_argument(
+        "--trust-agents-verify",
+        action="store_true",
+        help="信任并冻结工作目录 AGENTS.md 中的 verify: 命令；非交互或 --json 时必须指定，否则该命令不会执行",
+    )
     parser.add_argument("--resume", help="继续指定会话 id")
     parser.add_argument("--list-skills", action="store_true", help="列出已加载的技能")
     parser.add_argument(
@@ -479,6 +480,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         args = parser.parse_args(raw)
 
+    args.workdir_explicit = any(item == '--workdir' or item.startswith('--workdir=') for item in raw)
+    if args.resume_run and any((args.prompt is not None, args.resume, args.plan_mode,
+                               args.execute_plan, args.approve_plan, args.compact,
+                               args.list_mcp, args.list_profiles, args.list_sessions, args.list_skills,
+                               args.inspect_poppy_identity is not None, args.discover_poppy is not None)):
+        message = '--resume-run 不能与任务文本、--resume、计划、压缩或列表命令组合使用'
+        if args.json_mode:
+            from .json_mode import invalid_arguments
+            return invalid_arguments(sys.stdout, message)
+        print('错误：' + message, file=sys.stderr)
+        return 2
+
     if args.inspect_poppy_identity is not None:
         if args.json_mode:
             from .json_mode import invalid_arguments
@@ -609,6 +622,24 @@ def main(argv: list[str] | None = None) -> int:
             args.mode = args.mode or "auto"
             # Do not inherit a saved e2b setting when the approval is local.
             args.sandbox = "local"
+
+    resume_state = None
+    interrupted_tool_calls = 0
+    if args.resume_run:
+        from .runs import RunStore, prepare_resume
+        try:
+            resume_store = RunStore(NYRA_HOME / 'runs')
+            resume_state, resume_messages, interrupted_tool_calls = prepare_resume(
+                resume_store, args.resume_run,
+                workdir=args.workdir if args.workdir_explicit else None,
+                mode=args.mode, max_turns=args.max_turns)
+        except (ValueError, OSError) as exc:
+            print(f'错误：{exc}', file=sys.stderr)
+            return 2
+        args.workdir = resume_state['workdir']
+        args.mode = resume_state['mode']
+        args.max_turns = resume_state['max_turns']
+        args.sandbox = 'local'
 
     try:
         sandbox_settings = resolve_sandbox(
@@ -787,6 +818,10 @@ def main(argv: list[str] | None = None) -> int:
         messages = loaded
         session_id = args.resume
 
+    if resume_state is not None:
+        messages = resume_messages
+        session_id = resume_state['session_id']
+
     backend = None
     if sandbox_settings.backend == "e2b":
         try:
@@ -817,10 +852,43 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        if args.prompt is not None:
+        if args.prompt is not None or resume_state is not None:
             try:
-                result = agent.run(args.prompt)
+                from .runs import (
+                    RunRecorder, RunStore, accept_verify_command,
+                    resolve_verify_origin, resolve_verify_settings,
+                )
+                task = resume_state['task'] if resume_state else args.prompt
+                config = load_config()
+                timeout, retries = resolve_verify_settings(
+                    args.verify_timeout, args.verify_retries, config)
+                # 续跑只用 state 里已确认并冻结的验证命令，不再读取 AGENTS.md。
+                skip_reason = None
+                if resume_state:
+                    verify_cmd = None
+                else:
+                    verify_cmd, source = resolve_verify_origin(
+                        args.verify, config, agent.workdir)
+                    verify_cmd, skip_reason = accept_verify_command(
+                        verify_cmd, source,
+                        trust_agents=args.trust_agents_verify,
+                        interactive=interactive,
+                    )
+                recorder = RunRecorder(
+                    RunStore(NYRA_HOME / "runs"), agent, task,
+                    state=resume_state, interrupted_tool_calls=interrupted_tool_calls,
+                    verify_cmd=verify_cmd, verify_skip_reason=skip_reason,
+                    verify_timeout=timeout, verify_retries=retries,
+                )
+                if resume_state:
+                    print(f"续跑运行记录：{recorder.run_id}（中断的工具调用 {interrupted_tool_calls} 个，未自动重试）", file=sys.stderr)
+                else:
+                    print(f"运行记录：{recorder.run_id}", file=sys.stderr)
+                result = recorder.run(task)
                 print(result)
+                status = recorder.store.load(recorder.run_id)["status"]
+                if status == "verify_failed":
+                    return 4
                 return 0
             except AgentError as exc:
                 print(f"错误：{exc}")
