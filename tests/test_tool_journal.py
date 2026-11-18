@@ -16,6 +16,32 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_windows_postwrite_entry_reparse_is_rejected(self):
+        # No Windows host or actual junction required: test the metadata gate.
+        from angel import tool_journal as module
+        from unittest.mock import Mock
+        normal = os.stat(self.root)
+        written = Mock(st_dev=normal.st_dev, st_ino=normal.st_ino,
+                       st_size=12, st_mode=stat.S_IFREG | 0o600)
+        entry = Mock(st_dev=normal.st_dev, st_ino=normal.st_ino,
+                     st_size=12, st_mode=stat.S_IFREG | 0o600,
+                     st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        with mock.patch.object(module.os, "name", "nt"):
+            with mock.patch.object(module.os, "lstat", return_value=entry):
+                with self.assertRaisesRegex(JournalError, "重解析点"):
+                    module._verify_written_windows_entry(self.root / "event.json", written)
+
+    def test_windows_postwrite_entry_identity_mismatch_is_rejected(self):
+        from angel import tool_journal as module
+        from unittest.mock import Mock
+        written = Mock(st_dev=1, st_ino=2, st_size=12)
+        entry = Mock(st_dev=1, st_ino=3, st_size=12,
+                     st_mode=stat.S_IFREG | 0o600, st_file_attributes=0)
+        with mock.patch.object(module.os, "name", "nt"):
+            with mock.patch.object(module.os, "lstat", return_value=entry):
+                with self.assertRaisesRegex(JournalError, "已被替换"):
+                    module._verify_written_windows_entry(self.root / "event.json", written)
+
     def test_directory_anchor_is_checked_for_symlinks(self):
         # Even the filesystem anchor must be inspected, rather than skipped
         # by the ancestor walk. Use a mock to avoid touching the real root.
