@@ -1,0 +1,168 @@
+# Node 单文件可执行：构建 5 个平台产物 + 跨平台冒烟验证。
+#
+# 触发：v* 标签（发 Release）、改到 Node 源码/构建脚本的 PR、手动。
+# 流程：ubuntu-latest 上用 Bun 一次编出 5 个产物（Bun --compile 交叉编译，
+# 第 0 阶段已验证格式）；随后 windows-latest 与 macos-latest 各下一个
+# 对应产物跑 --version / --example 冒烟（真机运行验证，不是只看格式）。
+# Release 只在打 v* 标签时创建，二进制挂为 Release 附件，不进 git。
+# 注意：产物未签名、未公证——Windows SmartScreen 与 macOS Gatekeeper
+# 的首次运行提示仍存在（见 docs/windows-install.md / docs/macos-install.md），
+# 本 workflow 只验证“能跑”，不解决签名问题。
+
+name: Node binaries
+
+on:
+  push:
+    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/node/**'
+      - 'scripts/build-binaries.sh'
+      - 'scripts/build-package-node.sh'
+      - 'scripts/install-node.sh'
+      - 'scripts/probes/**'
+      - 'package.json'
+      - '.github/workflows/node-binaries.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/node/**'
+      - 'scripts/build-binaries.sh'
+      - 'scripts/probes/**'
+      - 'package.json'
+      - '.github/workflows/node-binaries.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write # 发 Release 时需要；平时只读构建不受影响
+
+concurrency:
+  group: node-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build 5 binaries (ubuntu-latest / Bun)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - name: Run Node tests
+        run: bun test tests/node
+
+      - name: Run Bun API probes
+        run: bash scripts/run-probes.sh
+
+      - name: Build binaries
+        run: bash scripts/build-binaries.sh
+
+      - name: Check formats
+        run: file dist/*
+
+      - name: Smoke test (Linux)
+        run: |
+          export NYRA_HOME="$RUNNER_TEMP/.nyra"
+          ./dist/nyra-linux-x64 --version
+          ./dist/nyra-linux-x64 --help | head -5
+          ./dist/nyra-linux-x64 --example
+
+      # install-node.sh 与 build-package-node.sh 以前没有任何自动化测试：
+      # 只在隔离 HOME 里跑 --from-file 安装与打包冒烟，不联网下载。
+      - name: Smoke test install script (Linux, --from-file)
+        run: |
+          export HOME="$RUNNER_TEMP/fakehome"
+          mkdir -p "$HOME"
+          bash scripts/install-node.sh --from-file dist/nyra-linux-x64 \
+            --prefix "$RUNNER_TEMP/nyra-install" --bin-dir "$RUNNER_TEMP/bin"
+          "$RUNNER_TEMP/bin/nyra" --version
+          "$RUNNER_TEMP/bin/nyra" --example
+
+      - name: Smoke test Node packaging
+        run: |
+          bash scripts/build-package-node.sh --binary dist/nyra-linux-x64 \
+            --out-dir "$RUNNER_TEMP/pkg-out"
+          ls "$RUNNER_TEMP/pkg-out"/nyra-node-*.tar.gz
+          ls "$RUNNER_TEMP/pkg-out"/nyra-node_*.deb
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nyra-binaries
+          path: dist/*
+          if-no-files-found: error
+
+  verify-windows:
+    name: Smoke test nyra.exe (windows-latest)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: nyra-binaries
+          path: binaries
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:NYRA_HOME = Join-Path $env:RUNNER_TEMP ".nyra"
+          .\binaries\nyra-windows-x64.exe --version
+          .\binaries\nyra-windows-x64.exe --help | Select-Object -First 5
+          .\binaries\nyra-windows-x64.exe --example
+
+  verify-macos:
+    name: Smoke test macOS binary (macos-latest)
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: nyra-binaries
+          path: binaries
+
+      - name: Smoke test
+        run: |
+          arch="$(uname -m)"
+          if [ "$arch" = "arm64" ]; then bin="binaries/nyra-macos-arm64"; else bin="binaries/nyra-macos-x64"; fi
+          chmod +x "$bin"
+          export NYRA_HOME="$RUNNER_TEMP/.nyra"
+          "$bin" --version
+          "$bin" --help | head -5
+          "$bin" --example
+
+  release:
+    name: Attach binaries to GitHub Release
+    needs: [build, verify-windows, verify-macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: nyra-binaries
+          path: dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          prerelease: true # 第 1 阶段是预览版；0.4.0 正式版在第 4 阶段再去掉
+          generate_release_notes: true
+          body: |
+            Nyra Node 运行时第 1 阶段预览：单文件可执行（Bun --compile）。
+            下载对应平台的文件，给执行权限，直接运行；首次使用跑 `nyra setup`。
+            注意：Windows/macOS 产物未签名、未公证，首次运行会有系统提示（见安装文档）。
+            模型任务（agent 核心）在第 2 阶段移植，本预览版只含安装、doctor、向导与本地示例任务；
+            模型任务请继续用 Python 版（`python3 -m nyra`）。
