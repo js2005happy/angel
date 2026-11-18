@@ -346,7 +346,12 @@ fn python_version(program: &Path, prefix: &[String], env: &HashMap<String, Strin
 }
 
 fn can_import_nyra(l: &Launcher, env: &HashMap<String, String>) -> bool {
-    let mut cmd = launcher_command(l, env);
+    // Probe with the bare interpreter: drop the trailing `-m nyra`.
+    let mut probe = l.clone();
+    if probe.prefix.ends_with(&["-m".to_string(), "nyra".to_string()]) {
+        probe.prefix.truncate(probe.prefix.len() - 2);
+    }
+    let mut cmd = launcher_command(&probe, env);
     cmd.args(["-c", "import nyra.webui"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
