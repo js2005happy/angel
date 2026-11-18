@@ -11,6 +11,10 @@ tools.py 的审批门（通过 ToolContext.approve_fn），不重写核心逻辑
   无法设置自定义请求头而不触发预检，服务器也不回应 CORS）。
 - 监听本机地址时校验 Host 头，防 DNS 重绑定。
 - API Key 只报告“是否已配置”，绝不回显其值。
+- 手机（PWA，`/m`）：用一次性配对码换设备专属 token（请求头
+  X-Nyra-Device），磁盘上只存哈希，可在设置里撤销；只有带 --pair 或
+  --host 时才监听局域网。配对、撤销、查看设备只认电脑端的启动 token，
+  手机 token 不能再去配对别的设备。见 docs/mobile-pwa.md。
 """
 
 import argparse
@@ -53,6 +57,12 @@ from .tools import APPROVE_ALWAYS, SESSION_GRANT_TOOLS, TOOL_SCHEMAS
 from .usage import context_limit
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 from .webui_page import PAGE_HTML
+from .webui_mobile import MOBILE_HTML, MOBILE_MANIFEST, STARTUP_SIZES, solid_png
+from .webui_mobile_assets import ICONS as MOBILE_ICONS
+from . import qrcode as qr_module
+from .pairing import (
+    DeviceRegistry, PairingError, default_devices_path, lan_ipv4_addresses,
+)
 from .webui_fonts import FONTS as UI_FONTS
 
 DEFAULT_HOST = "127.0.0.1"
@@ -62,6 +72,7 @@ MAX_BODY = 256 * 1024
 MAX_EVENT_TEXT = 4000
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+DEVICE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 # Session -> working directory, written by the web UI when a session sends
 # its first message, so the sidebar can group sessions by project. Lives
 # next to the session files (list_sessions only reads *.jsonl).
@@ -134,7 +145,13 @@ class UIState:
         context_window_tokens: int | None = None,
         auto_compact_enabled: bool = False,
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
+        devices: DeviceRegistry | None = None,
     ) -> None:
+        self._devices = devices
+        self._devices_lock = threading.Lock()
+        # Base URL a phone on the LAN can reach (set by make_server when the
+        # server listens beyond loopback); None means pairing is unavailable.
+        self.pair_origin: str | None = None
         self.workdir = Path(workdir)
         self.mode = validate_mode(mode)
         self.groups = GroupStore(config_module.NYRA_HOME / "groups")
@@ -382,6 +399,54 @@ class UIState:
                     revision: str, content: str) -> dict:
         path, root = self.memory_target(scope, room, bot)
         return replace_memory(path, revision, content, root=root)
+
+    # -- phones -------------------------------------------------------------
+    @property
+    def devices(self) -> DeviceRegistry:
+        with self._devices_lock:
+            if self._devices is None:
+                self._devices = DeviceRegistry(default_devices_path())
+            return self._devices
+
+    def pair_link(self, code: str) -> str:
+        """The URL a phone scans: LAN address + one-time code in the fragment
+        (the fragment never reaches server logs or Referer headers)."""
+        if not self.pair_origin:
+            raise PairingError(
+                "网页界面只监听本机（127.0.0.1），手机连不上。请用 "
+                "python3 -m nyra ui --pair 重新启动"
+            )
+        return f"{self.pair_origin}/m#pair={code}"
+
+    def start_pairing(self) -> dict:
+        if not self.pair_origin:
+            self.pair_link("")  # raises with the explanation
+        info = self.devices.start_pairing()
+        url = self.pair_link(info["code"])
+        matrix = qr_module.encode(url, "M")
+        return {
+            "code": info["code"],
+            "expires_in": info["expires_in"],
+            "url": url,
+            "svg": qr_module.to_svg(matrix, title="Nyra 配对二维码"),
+        }
+
+    def pending_approvals(self) -> list[dict]:
+        """Every approval waiting right now, across sessions (for the phone's
+        badge / title). No secrets: tool name and the same summary the
+        approval card shows."""
+        with self.lock:
+            items = list(self.approvals.items())
+        out = []
+        for approval_id, (run, pending) in items:
+            out.append({
+                "id": approval_id,
+                "session": run.session_id,
+                "tool": pending.get("tool"),
+                "summary": pending.get("summary"),
+                "always": bool(pending.get("always")),
+            })
+        return out
 
     # -- sessions -----------------------------------------------------------
     def get_run(self, session_id: str, create: bool = True) -> Run | None:
@@ -866,6 +931,26 @@ class Handler(BaseHTTPRequestHandler):
             supplied.encode("utf-8", "surrogateescape"), self.state.token.encode("utf-8")
         )
 
+    def _device(self) -> dict | None:
+        """The paired phone presenting a valid X-Nyra-Device token, if any."""
+        supplied = self.headers.get("X-Nyra-Device") or ""
+        if not supplied:
+            return None
+        return self.state.devices.authenticate(supplied)
+
+    def _api_auth(self) -> str | None:
+        """'owner' (desktop start token), 'device' (paired phone) or None
+        after an error response has been sent."""
+        if self._token_ok():
+            return "owner"
+        if self.headers.get("X-Nyra-Device"):
+            if self._device() is not None:
+                return "device"
+            self._error(HTTPStatus.UNAUTHORIZED, "这台设备未配对或已被撤销")
+            return None
+        self._error(HTTPStatus.FORBIDDEN, "token 无效")
+        return None
+
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
         if length > MAX_BODY:
@@ -880,11 +965,40 @@ class Handler(BaseHTTPRequestHandler):
         parts = urllib.parse.urlsplit(self.path)
         return parts.path, urllib.parse.parse_qs(parts.query)
 
+    def _mobile_get(self, path: str) -> bool:
+        """Public phone shell: the page and its static assets carry no
+        secrets, so they need no token (an installed app opens /m without
+        one). Every API call they make is still authenticated."""
+        if path in ("/m", "/m/"):
+            self._send(HTTPStatus.OK, MOBILE_HTML.encode("utf-8"),
+                       "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
+            return True
+        if path == "/m/manifest.json":
+            self._send(HTTPStatus.OK,
+                       json.dumps(MOBILE_MANIFEST, ensure_ascii=False).encode("utf-8"),
+                       "application/manifest+json")
+            return True
+        match = re.fullmatch(r"/m/icon-(180|192|512)\.png", path)
+        if match:
+            self._send(HTTPStatus.OK, MOBILE_ICONS[int(match.group(1))], "image/png")
+            return True
+        match = re.fullmatch(r"/m/startup/(\d{3,4})x(\d{3,4})\.png", path)
+        if match:
+            size = (int(match.group(1)), int(match.group(2)))
+            if size not in STARTUP_SIZES:
+                self._error(HTTPStatus.NOT_FOUND, "未找到")
+                return True
+            self._send(HTTPStatus.OK, solid_png(*size), "image/png")
+            return True
+        return False
+
     # -- verbs --------------------------------------------------------------
     def do_GET(self):
         if not self._host_ok():
             return self._error(HTTPStatus.MISDIRECTED_REQUEST, "Host 不被允许")
         path, query = self._route()
+        if path.startswith("/m") and self._mobile_get(path):
+            return None
         if path in ("/", "/index.html"):
             if not self._token_ok(allow_query=True):
                 body = FORBIDDEN_PAGE.encode("utf-8")
@@ -897,7 +1011,7 @@ class Handler(BaseHTTPRequestHandler):
             # Fonts ship inside the package (nyra/webui_fonts.py) and are
             # fetched by the page with the token header, then loaded via
             # the FontFace API: no font-src needed in the CSP.
-            if not self._token_ok():
+            if not self._token_ok() and self._device() is None:
                 return self._error(HTTPStatus.FORBIDDEN, "token 无效")
             data = UI_FONTS.get(match.group(1))
             if data is None:
@@ -950,8 +1064,19 @@ class Handler(BaseHTTPRequestHandler):
             )
         if not path.startswith("/api/"):
             return self._error(HTTPStatus.NOT_FOUND, "未找到")
-        if not self._token_ok():
-            return self._error(HTTPStatus.FORBIDDEN, "token 无效")
+        who = self._api_auth()
+        if who is None:
+            return None
+        if path == "/api/approvals":
+            return self._json(HTTPStatus.OK, {"approvals": self.state.pending_approvals()})
+        if path in ("/api/devices", "/api/pair/status"):
+            if who != "owner":
+                return self._error(HTTPStatus.FORBIDDEN, "只能在电脑上管理已配对设备")
+            return self._json(HTTPStatus.OK, {
+                "devices": self.state.devices.list_devices(),
+                "pairing": self.state.devices.pairing_status(),
+                "lan": bool(self.state.pair_origin),
+            })
         if path == "/api/groups":
             return self._json(
                 HTTPStatus.OK, {"groups": self.state.groups.list_rooms()}
@@ -1005,12 +1130,43 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._error(HTTPStatus.MISDIRECTED_REQUEST, "Host 不被允许")
         path, _ = self._route()
-        if not self._token_ok():
-            return self._error(HTTPStatus.FORBIDDEN, "token 无效")
+        if path == "/api/pair":
+            # The one unauthenticated API: a phone trades the one-time code
+            # (short-lived, single use, limited attempts) for its own token.
+            try:
+                body = self._body()
+            except (ValueError, UnicodeDecodeError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, f"请求无效：{exc}")
+            try:
+                device = self.state.devices.redeem(
+                    str(body.get("code") or ""), str(body.get("name") or "")
+                )
+            except PairingError as exc:
+                return self._error(HTTPStatus.UNAUTHORIZED, str(exc))
+            except OSError as exc:
+                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"保存设备失败：{exc}")
+            return self._json(HTTPStatus.OK, device)
+        who = self._api_auth()
+        if who is None:
+            return None
         try:
             body = self._body()
         except (ValueError, UnicodeDecodeError) as exc:
             return self._error(HTTPStatus.BAD_REQUEST, f"请求无效：{exc}")
+        if path == "/api/pair/start" or re.fullmatch(r"/api/devices/[^/]+/revoke", path):
+            if who != "owner":
+                return self._error(HTTPStatus.FORBIDDEN, "只能在电脑上管理已配对设备")
+            if path == "/api/pair/start":
+                try:
+                    return self._json(HTTPStatus.OK, self.state.start_pairing())
+                except PairingError as exc:
+                    return self._error(HTTPStatus.CONFLICT, str(exc))
+            device_id = path.split("/")[3]
+            if not DEVICE_ID_RE.match(device_id):
+                return self._error(HTTPStatus.BAD_REQUEST, "设备 id 无效")
+            if not self.state.devices.revoke(device_id):
+                return self._error(HTTPStatus.NOT_FOUND, "设备不存在")
+            return self._json(HTTPStatus.OK, {"ok": True})
         if path == "/api/memory":
             try:
                 result = self.state.memory_save(
@@ -1178,7 +1334,23 @@ def make_server(
             "token 就能操作 Nyra（读写文件、执行命令）。除非你清楚风险，请使用默认的 127.0.0.1。",
             file=stream,
         )
-    return UIServer((host, port), state, verbose=verbose)
+    server = UIServer((host, port), state, verbose=verbose)
+    if not is_loopback_host(host):
+        state.pair_origin = lan_origin(server)
+    return server
+
+
+def lan_origin(server: UIServer) -> str | None:
+    """http://<LAN IP>:<port> for a server bound beyond loopback."""
+    host, port = server.server_address[:2]
+    if host in ("0.0.0.0", "", "::"):
+        candidates = lan_ipv4_addresses()
+        if not candidates:
+            return None
+        host = candidates[0]
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
 
 
 def ui_url(server: UIServer) -> str:
@@ -1194,6 +1366,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址（默认 127.0.0.1，只允许本机访问）")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="端口（默认 8765，0 表示随机）")
     parser.add_argument("--open", action="store_true", help="启动后自动打开浏览器")
+    parser.add_argument(
+        "--pair", action="store_true",
+        help="连接手机：监听局域网（默认 0.0.0.0），并在终端显示配对二维码",
+    )
     parser.add_argument("--workdir", default=".", help="工作目录")
     parser.add_argument("--mode", choices=VALID_MODES, default=None, help="审批模式（默认读配置，一般为 auto）")
     parser.add_argument("--provider", default=None, help="模型 provider")
@@ -1205,6 +1381,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.pair and args.host == DEFAULT_HOST:
+        args.host = "0.0.0.0"
     workdir = Path(args.workdir).resolve()
     if not workdir.is_dir():
         print(f"错误：工作目录不存在：{workdir}")
@@ -1244,6 +1422,8 @@ def main(argv: list[str] | None = None) -> int:
     url = ui_url(server)
     print(f"Nyra {__version__} 网页界面已启动：{url}")
     print("这个链接里含有本次启动的访问 token，请不要分享。按 Ctrl+C 停止。")
+    if args.pair:
+        print_pairing(state)
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
@@ -1255,6 +1435,31 @@ def main(argv: list[str] | None = None) -> int:
         if mcp_manager is not None:
             mcp_manager.stop_all()
     return 0
+
+
+def print_pairing(state: UIState, stream=None) -> bool:
+    """Print the phone-pairing QR code (Unicode blocks) and the one-time code."""
+    out = stream if stream is not None else sys.stdout
+    try:
+        info = state.start_pairing()
+    except PairingError as exc:
+        print(f"无法生成配对码：{exc}", file=out)
+        return False
+    ansi = hasattr(out, "isatty") and out.isatty() and os.environ.get("NO_COLOR") is None
+    print("", file=out)
+    print("用手机相机扫描下面的二维码，连接这台电脑上的 Nyra：", file=out)
+    try:
+        print(qr_module.to_terminal(qr_module.encode(info["url"], "M"), ansi=ansi), file=out)
+    except UnicodeEncodeError:
+        print("（终端不支持方块字符，二维码无法显示，请手动打开下面的地址）", file=out)
+    print(f"或在手机浏览器打开：{state.pair_origin}/m  并输入配对码 {info['code']}", file=out)
+    minutes = max(1, info["expires_in"] // 60)
+    print(
+        f"配对码 {minutes} 分钟内有效、只能用一次、错 5 次作废；过期后在网页“设置 → 手机”里点“连接手机”重新生成。",
+        file=out,
+    )
+    print("只在自己信任的 Wi-Fi 里配对；已配对的手机可以在设置里撤销。", file=out)
+    return True
 
 
 CSP = (

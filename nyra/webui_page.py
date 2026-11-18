@@ -249,6 +249,12 @@ svg.i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-widt
 .pagev h2{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:0 0 4px}
 .pagev .sub{color:var(--mu);font-size:13px;margin:0 0 20px}
 .pagev h3{font-size:13px;font-weight:600;margin:24px 0 10px}
+.pair-box{display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin:12px 0 4px;padding:16px;border:1px solid var(--line2);border-radius:12px}
+.pair-qr{width:200px;height:200px;flex:none;background:#fff;border-radius:8px;overflow:hidden}.pair-qr svg{display:block;width:100%;height:100%}
+.pair-info p{margin:0 0 8px;font-size:13px}.pair-info code{font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
+.pair-info .pair-code{font-family:var(--mono);font-size:28px;font-weight:700;letter-spacing:.2em;margin:4px 0}
+.devs{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.dev{display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--line2);border-radius:10px;font-size:13px}.dev .tx{flex:1;min-width:0}.dev small{display:block;color:var(--mu);font-size:12px}
 .pagev code{font-size:12px;background:var(--chip);padding:1px 5px;border-radius:5px}
 .form-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
 .form-row label{font-size:13px;color:var(--mu)}
@@ -414,6 +420,15 @@ dialog h2{margin:0 0 6px;font-size:17px;font-weight:600}
       <h3>API Key</h3>
       <p class="hint2">Key 只从环境变量读取：在启动 <code>nyra ui</code> 的终端里设置对应环境变量（例如 <code>export DEEPSEEK_API_KEY=…</code>），然后重启界面。页面不会输入、显示或保存 Key，只显示是否已配置。</p>
       <table><thead><tr><th>Provider</th><th>环境变量</th><th>状态</th></tr></thead><tbody id="keys"></tbody></table>
+      <h3>手机</h3>
+      <p class="hint2">用手机遥控这台电脑上的 Nyra：扫码配对后，手机上可以看会话、发任务、批准操作。手机只连这台电脑，不经过任何外部服务。</p>
+      <div class="form-row"><button class="tbtn p" id="pair-start" type="button">连接手机</button><span class="hint2" id="pair-status" role="status"></span></div>
+      <div class="pair-box" id="pair-box" hidden>
+        <div class="pair-qr" id="pair-qr" aria-label="配对二维码"></div>
+        <div class="pair-info"><p>用手机相机扫码，或在手机浏览器打开<br><code id="pair-url"></code><br>并输入配对码</p><p class="pair-code" id="pair-code"></p><p class="hint2" id="pair-exp"></p></div>
+      </div>
+      <p class="hint2">配对码几分钟内有效、只能用一次、错 5 次作废。每台手机拿到自己的长期 token（电脑上只存哈希），可随时在下面撤销。</p>
+      <div class="devs" id="dev-list"></div>
       <h3>运行配置</h3>
       <div class="kv" id="cfg-kv"></div>
     </div></section>
@@ -897,7 +912,23 @@ function loadGroups(){return api("/api/groups").then(function(r){var box=$("grou
   if(!r.groups.length){box.appendChild(el("div","empty","还没有机器人群。在群聊页面新建一个群。"));return}
   r.groups.forEach(function(g){var row=el("div","sched-row");var grow=el("div","grow");grow.appendChild(el("b",null,g.name));grow.appendChild(el("span",null,g.bots+" 位机器人"));row.appendChild(grow);
     var open=el("a","tbtn p","打开");open.href="/groups?token="+encodeURIComponent(TOKEN)+"&room="+encodeURIComponent(g.id);row.appendChild(open);box.appendChild(row)})}).catch(function(e){var b=$("group-list");b.textContent="";b.appendChild(el("div","empty","群列表读取失败："+e.message))})}
-function showView(name){S.view=name;
+/* ---------- phones: pairing + paired devices (desktop token only) ---------- */
+function loadDevices(){return api("/api/devices").then(function(r){var box=$("dev-list");box.textContent="";
+  $("pair-status").textContent=r.lan?"":"当前只监听本机，手机连不上；用 python3 -m nyra ui --pair 启动后再连接。";
+  if(!r.devices.length){box.appendChild(el("div","hint2","还没有配对的手机。"));return}
+  r.devices.forEach(function(d){var row=el("div","dev");var tx=el("div","tx");tx.appendChild(el("b",null,d.name));tx.appendChild(el("small",null,"配对于 "+fmtTime(d.created)+" · 最近使用 "+fmtTime(d.last_seen)));row.appendChild(tx);
+    var b=el("button","tbtn","撤销");b.type="button";b.onclick=function(){if(!window.confirm("撤销“"+d.name+"”？这台手机将立即无法再连接。"))return;
+      api("/api/devices/"+d.id+"/revoke",{method:"POST",body:"{}"}).then(function(){toast("已撤销 "+d.name);loadDevices()}).catch(function(e){toast("撤销失败："+e.message)})};
+    row.appendChild(b);box.appendChild(row)})}).catch(function(e){$("pair-status").textContent="读取设备失败："+e.message})}
+var pairTimer=null;
+function startPairing(){clearInterval(pairTimer);$("pair-status").textContent="正在生成配对码…";
+  api("/api/pair/start",{method:"POST",body:"{}"}).then(function(r){$("pair-status").textContent="";$("pair-box").hidden=false;$("pair-qr").innerHTML=r.svg;$("pair-url").textContent=r.url.split("#")[0];$("pair-code").textContent=r.code;
+    var end=Date.now()+r.expires_in*1000;function tick(){var left=Math.round((end-Date.now())/1000);if(left<=0){clearInterval(pairTimer);$("pair-exp").textContent="配对码已过期，请重新生成。";$("pair-qr").style.opacity=".25";return}
+      $("pair-exp").textContent="剩余 "+Math.floor(left/60)+":"+("0"+left%60).slice(-2)+" · 配对成功后会出现在下面的列表里";if(left%3===0)loadDevices()}
+    $("pair-qr").style.opacity="1";tick();pairTimer=setInterval(tick,1000)})
+  .catch(function(e){$("pair-box").hidden=true;$("pair-status").textContent=e.message})}
+$("pair-start").onclick=startPairing;
+function showView(name){S.view=name;if(name==="settings")loadDevices();
   document.querySelectorAll("#nav [data-view], #open-settings").forEach(function(b){b.classList.toggle("on",b.dataset.view===name)});
   ["chat","skills","schedule","group","settings"].forEach(function(v){$("view-"+v).hidden=v!==name});
   var showR=name==="chat"&&S.reviewOpen;$("right").hidden=!showR;$("toggle-right").setAttribute("aria-pressed",String(showR));$("toggle-right").disabled=name!=="chat";

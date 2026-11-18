@@ -1,5 +1,14 @@
 # Nyra 变更记录
 
+## 未发布（手机版 PWA + 扫码配对 + 入场动画）
+
+- 手机页面：`python3 -m nyra ui` 新增 `/m`（`nyra/webui_mobile.py`），按手机设计稿做：会话列表（按项目分组，运行中 / 等待批准标记，“新会话”悬浮按钮）、对话流（用户气泡、回复、工具步骤行）、审批卡（“允许一次 / 本会话始终允许 / 拒绝”，按钮高 ≥ 50px，diff 可横向滚动）、底部输入框；浅色 / 深色跟随系统；安卓返回键回到列表。有待审批时页面标题 `(N) Nyra` + Badging API 角标 + 列表顶部横幅（新增 `GET /api/approvals` 列出所有会话的待审批项）；不做推送通知。独立 manifest（`/m/manifest.json`，`start_url` `/m`，`background_color` / `theme_color` `#0B0B0C`，PNG 图标 180/192/512 含 maskable）与 12 种 iPhone 尺寸的 `apple-touch-startup-image`（服务端生成的纯色 PNG，与动画首帧同色，不闪白）。`/m` 页面与静态资源不含秘密、无需 token；CSP 与桌面页面相同，未放宽。
+- 入场动画：只在手机上以安装后的独立窗口启动时播放（`display-mode: standalone` 或 iOS `navigator.standalone`，且为触屏、短边 ≤ 1024px），每次冷启动一次（`sessionStorage`），约 3.4 秒，点一下跳过；`prefers-reduced-motion` 时只淡入标志。复用昨天的动画时间轴（`frame(t)` → SVG），按竖屏重新取景；纯 CSS/JS，不含 mp4，零外部请求。桌面网页、手机浏览器普通标签页、官网都不播（有测试）。
+- 扫码配对：`python3 -m nyra ui --pair` 监听局域网（打印风险警告）并在终端用 Unicode 半块字符画出二维码；网页“设置 → 手机”的“连接手机”显示 SVG 二维码 + 配对码 + 倒计时，并列出已配对设备、可撤销。二维码内容为 `http://<局域网IP>:<端口>/m#pair=<码>`（码在 fragment 里，不进日志）。新增 `nyra/qrcode.py`：纯 Python QR 编码器（字节模式、L/M 级、版本 1–40、8 种掩码按罚分选优），结构参考 Project Nayuki 的 QR Code generator（MIT），独立精简重写。
+- 设备鉴权：`nyra/pairing.py` 新增 `DeviceRegistry`（基于原有配对码规则）：6 位码、5 分钟有效、一次性、错 5 次作废、重新生成即作废旧码；配对成功发设备专属 token（只返回一次），`~/.nyra/devices.json` 只存 SHA-256（0600、原子写入、最多 20 台），别的进程改了登记表（如 `python3 -m nyra.pairing revoke`）会自动重读。网页界面新增 `POST /api/pair`（唯一免鉴权的 API）、`GET /api/devices`、`POST /api/pair/start`、`POST /api/devices/{id}/revoke`——后三个只认电脑端启动 token；手机用请求头 `X-Nyra-Device`，无效时回 401。默认仍只绑 `127.0.0.1`，此时“连接手机”返回 409 并提示用 `--pair`。
+- 文档：`docs/mobile-pwa.md` 改写为扫码流程；GUIDE 网页界面一节加“手机”小节。如实说明：只用 Playwright 模拟 iPhone 14 / Pixel 7（Chromium）跑通过，没在真机上装过。
+- 新增 `tests/test_mobile_pwa.py`（二维码可解码——装了 zxing-cpp 时用它解码并与自写校验器交叉核对，否则用自写校验器：读格式位、去掩码、解交织、RS 校验子为零、解析字节模式；配对码过期 / 一次性 / 限次 / 新码作废旧码；token 只存哈希、撤销、跨进程撤销；动画判断规则用 node 跑多组环境；`/m` 免 token 而 API 仍鉴权、CSP 不变、完整配对流程与权限边界、`--pair`）。
+
 ## 未发布（网页界面桌面端 v2）
 
 - 网页界面（`python3 -m nyra ui`）按已定稿的桌面端设计稿重写前端（`nyra/webui_page.py`）：黑白极简、浅色/深色跟随系统；左侧按项目分组的会话列表 + 搜索 + 新建会话；对话流里工具调用折叠成步骤行（读取 / 搜索 / 编辑 / 运行…），运行中显示“正在工作 · Ns”、结束显示“工作了 Ns · N 个步骤”；审批卡片带审批时的真实 diff，按钮为“拒绝 / 本会话始终允许 / 允许一次”；一轮改动结束后出现改动文件卡；右侧审阅面板（改动 / 计划 / 证据 / 终端 / 产物 / 用量）；底部输入框带审批模式切换、模型选择与计划模式开关；顶栏显示运行状态、等待批准、本会话 Token 用量；状态栏显示工作目录、模式、上下文占用、MCP。390px 手机宽度可用，全键盘可操作，`prefers-reduced-motion` 时关动画，无开场动画。品牌标志内联 `docs/assets/nyra-mark.svg`；旧的“品牌与外观”色板页与鼠尾草绿配色退役，PWA manifest 与 theme-color 同步改为黑白（`#0B0B0C` / `#FFFFFF`）。只做内核真实支持的功能：设计稿里的 diff 逐行评论、提交 / 在编辑器打开、云电脑、终端实时输入没有做按钮。

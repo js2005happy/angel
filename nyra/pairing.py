@@ -16,12 +16,21 @@ Wi-Fi 或其他不可信网络上使用。
 
 配对成功后客人还能读宿主的记忆快照（GET /memory，须 Bearer token，
 返回宿主脱敏后的快照；读记忆也只读，绝不传凭据。见 memory_exchange.py）。
+
+手机配对（网页界面 / PWA，见 docs/mobile-pwa.md）也在这里：
+DeviceRegistry 发一次性配对码（6 位、5 分钟有效、一次性、错 5 次作废），
+手机用配对码换取设备专属的长期 token；磁盘上只存 token 的 SHA-256，
+可以随时撤销。命令行：
+    python3 -m nyra.pairing devices         # 列出已配对的手机
+    python3 -m nyra.pairing revoke ID       # 撤销一台手机
 """
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
+import os
 import secrets
 import socket
 import sys
@@ -29,7 +38,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 DISCOVERY_PORT = 47831
 DISCOVERY_MAGIC = "NYRA-PAIR-SEARCH"
@@ -460,6 +471,238 @@ class PairingClient:
         return snapshot
 
 
+# ---------------------------------------------------------------------------
+# 手机配对：网页界面（PWA）用的一次性配对码 + 设备专属长期 token
+# ---------------------------------------------------------------------------
+DEVICE_CODE_TTL_SECONDS = 300  # 手机配对码：5 分钟
+DEVICES_FILE = "devices.json"
+MAX_DEVICES = 20
+MAX_DEVICE_NAME = 40
+LAST_SEEN_WRITE_INTERVAL = 60.0
+
+
+def hash_device_token(token: str) -> str:
+    """设备 token 的 SHA-256（十六进制）。token 是 32 字节随机数，不需要慢哈希。"""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _clean_name(name) -> str:
+    text = "".join(ch for ch in str(name or "") if ch.isprintable()).strip()
+    return text[:MAX_DEVICE_NAME] or "手机"
+
+
+class DeviceRegistry:
+    """已配对手机的登记表 + 当前一次性配对码。
+
+    - 配对码：6 位数字，默认 5 分钟有效，一次性；错 ``max_attempts`` 次作废。
+      同一时刻只有一个有效配对码，重新生成会让旧码立即失效。
+    - 配对成功发一个设备专属 token（``secrets.token_urlsafe(32)``），只在
+      这一次返回给手机；磁盘上只存它的 SHA-256。
+    - 撤销即从登记表删除，之后该 token 立即失效。
+    - 文件权限 0600（POSIX），原子写入。
+    """
+
+    def __init__(
+        self,
+        path: Path | str,
+        code_ttl: float = DEVICE_CODE_TTL_SECONDS,
+        max_attempts: int = MAX_FAILED_ATTEMPTS,
+        clock=time.monotonic,
+    ) -> None:
+        self.path = Path(path)
+        self.code_ttl = code_ttl
+        self.max_attempts = max_attempts
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._code: str | None = None
+        self._code_expires_at = 0.0
+        self._failed = 0
+        self._last_seen_written: dict[str, float] = {}
+        self._mtime = None
+        self._devices: list[dict] = self._load()
+
+    # -- storage -------------------------------------------------------------
+    def _stat_mtime(self):
+        """文件“版本”：mtime + inode + 大小（原子替换会换 inode，粗粒度
+        时间戳的文件系统上也能发现别的进程写过）。"""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_ino, st.st_size)
+
+    def _refresh(self) -> None:
+        """登记表文件被别的进程改过（如命令行撤销）时重新读取。调用方持锁。"""
+        mtime = self._stat_mtime()
+        if mtime != self._mtime:
+            self._devices = self._load()
+
+    def _load(self) -> list[dict]:
+        self._mtime = self._stat_mtime()
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        items = data.get("devices") if isinstance(data, dict) else None
+        out = []
+        for item in items or []:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+                and isinstance(item.get("token_sha256"), str)
+                and len(item["token_sha256"]) == 64
+            ):
+                out.append(item)
+        return out
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + f".{secrets.token_hex(4)}.tmp")
+        body = json.dumps({"devices": self._devices}, ensure_ascii=False, indent=1)
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+        self._mtime = self._stat_mtime()
+
+    # -- pairing code --------------------------------------------------------
+    def start_pairing(self) -> dict:
+        """生成新的一次性配对码（旧码立即作废）。"""
+        with self._lock:
+            self._code = generate_code()
+            self._code_expires_at = self._clock() + self.code_ttl
+            self._failed = 0
+            return {"code": self._code, "expires_in": int(self.code_ttl)}
+
+    def pairing_status(self) -> dict:
+        with self._lock:
+            active = self._code is not None and self._clock() < self._code_expires_at
+            left = max(0, int(self._code_expires_at - self._clock())) if active else 0
+            return {"active": active, "expires_in": left}
+
+    def cancel_pairing(self) -> None:
+        with self._lock:
+            self._code = None
+
+    def redeem(self, code: str, name: str = "") -> dict:
+        """用配对码换设备 token。成功返回 {"id", "name", "token"}（token
+        只此一次返回）；失败抛 PairingError（原因写在异常里）。"""
+        if not isinstance(code, str):
+            raise PairingError("配对码无效")
+        code = code.strip()
+        with self._lock:
+            if self._code is None:
+                raise PairingError("没有进行中的配对，请在电脑上重新生成配对码")
+            if self._clock() >= self._code_expires_at:
+                self._code = None
+                raise PairingError("配对码已过期，请在电脑上重新生成")
+            if not hmac.compare_digest(code.encode("utf-8"), self._code.encode("utf-8")):
+                self._failed += 1
+                if self._failed >= self.max_attempts:
+                    self._code = None
+                    raise PairingError("配对码错误次数过多，已作废，请在电脑上重新生成")
+                raise PairingError("配对码错误")
+            self._code = None  # 一次性
+            self._refresh()
+            if len(self._devices) >= MAX_DEVICES:
+                raise PairingError(f"已配对设备太多（上限 {MAX_DEVICES}），请先撤销不用的设备")
+            token = secrets.token_urlsafe(32)
+            device = {
+                "id": secrets.token_hex(8),
+                "name": _clean_name(name),
+                "token_sha256": hash_device_token(token),
+                "created": _now_iso(),
+                "last_seen": _now_iso(),
+            }
+            self._devices.append(device)
+            self._save()
+            return {"id": device["id"], "name": device["name"], "token": token}
+
+    # -- tokens --------------------------------------------------------------
+    def authenticate(self, token: str) -> dict | None:
+        """token 有效返回该设备（不含哈希）的副本，否则 None。常量时间比对。"""
+        if not token or not isinstance(token, str) or len(token) > 200:
+            return None
+        digest = hash_device_token(token)
+        found = None
+        with self._lock:
+            self._refresh()
+            for device in self._devices:
+                if hmac.compare_digest(digest, device["token_sha256"]):
+                    found = device
+            if found is None:
+                return None
+            now = self._clock()
+            last = self._last_seen_written.get(found["id"])
+            if last is None or now - last >= LAST_SEEN_WRITE_INTERVAL:
+                self._last_seen_written[found["id"]] = now
+                found["last_seen"] = _now_iso()
+                try:
+                    self._save()
+                except OSError:
+                    pass
+            return {k: v for k, v in found.items() if k != "token_sha256"}
+
+    def list_devices(self) -> list[dict]:
+        with self._lock:
+            self._refresh()
+            return [
+                {k: v for k, v in d.items() if k != "token_sha256"}
+                for d in self._devices
+            ]
+
+    def revoke(self, device_id: str) -> bool:
+        with self._lock:
+            self._refresh()
+            before = len(self._devices)
+            self._devices = [d for d in self._devices if d.get("id") != device_id]
+            if len(self._devices) == before:
+                return False
+            self._last_seen_written.pop(device_id, None)
+            self._save()
+            return True
+
+
+def default_devices_path() -> Path:
+    from nyra import config as config_module
+
+    return Path(config_module.NYRA_HOME) / DEVICES_FILE
+
+
+def lan_ipv4_addresses() -> list[str]:
+    """本机可能的局域网 IPv4（不发包：只做本地路由查询与主机名解析）。"""
+    seen: list[str] = []
+    for probe in ("10.255.255.255", "192.168.255.255", "172.31.255.255"):
+        ip = _local_ip_for(probe)
+        if ip and not ip.startswith("127.") and ip not in seen:
+            seen.append(ip)
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127.") and ip not in seen:
+                seen.append(ip)
+    except OSError:
+        pass
+    private = [ip for ip in seen if ip.startswith(("192.168.", "10.")) or
+               (ip.startswith("172.") and 16 <= int(ip.split(".")[1]) <= 31)]
+    return private + [ip for ip in seen if ip not in private]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if not args:
@@ -480,6 +723,24 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             host.stop()
         return 0
+    if args[0] == "devices":
+        registry = DeviceRegistry(default_devices_path())
+        devices = registry.list_devices()
+        if not devices:
+            print("还没有配对的手机。", flush=True)
+        for d in devices:
+            print(f"{d['id']}  {d['name']}  配对于 {d.get('created', '?')}  最近 {d.get('last_seen', '?')}", flush=True)
+        return 0
+    if args[0] == "revoke":
+        if len(args) < 2:
+            print("用法：python3 -m nyra.pairing revoke <设备 ID>", flush=True)
+            return 2
+        registry = DeviceRegistry(default_devices_path())
+        if registry.revoke(args[1]):
+            print(f"已撤销 {args[1]}，立即生效（运行中的网页界面会重新读取登记表）。", flush=True)
+            return 0
+        print(f"没有这个设备：{args[1]}", flush=True)
+        return 1
     if args[0] == "join":
         if len(args) < 2:
             print("用法：python3 -m nyra.pairing join <6 位配对码>", flush=True)
@@ -506,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             except PairingError as exc:
                 print(f"任务失败：{exc}", flush=True)
         return 0
-    print("用法：python3 -m nyra.pairing host | join <6 位配对码>", flush=True)
+    print("用法：python3 -m nyra.pairing host | join <6 位配对码> | devices | revoke <设备 ID>", flush=True)
     return 2
 
 
