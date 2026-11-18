@@ -19,7 +19,9 @@ Endpoints (all under ``/api/``):
   every event as a ``data:`` line, missed events replayed from the
   ``since`` cursor, a heartbeat comment every ~15s, and a final
   ``run_finished`` event when the run ends.
-- ``POST /api/approvals/{id}/decide`` — ``{"approve": true|false}``.
+- ``POST /api/approvals/{id}/decide`` — ``{"approve": true|false,
+  "always": false}``; ``always`` grants it for the session (400 when the
+  tool has no session scope).
 
 Security mirrors the web UI exactly: loopback only by default (a
 non-loopback bind prints a warning), every request except health must
@@ -337,7 +339,13 @@ class Handler(BaseHTTPRequestHandler):
             approval_id = match.group(1)
             if not APPROVAL_ID_RE.match(approval_id):
                 return self._error(HTTPStatus.NOT_FOUND, "审批已失效")
-            if not self.state.decide(approval_id, bool(body.get("approve"))):
+            try:
+                ok = self.state.decide(
+                    approval_id, bool(body.get("approve")), always=bool(body.get("always"))
+                )
+            except ValueError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            if not ok:
                 return self._error(HTTPStatus.NOT_FOUND, "审批已失效")
             return self._json(HTTPStatus.OK, {"ok": True})
         return self._error(HTTPStatus.NOT_FOUND, "未找到")

@@ -47,13 +47,20 @@ class ToolContext:
     # Optional approval callback (tool_name, summary) -> bool. When set, it
     # replaces the terminal [y/N] prompt for interactive auto mode, so other
     # front ends (such as the local web UI) reuse the same approval gate.
-    approve_fn: Callable[[str, str], bool] | None = None
+    # It may also return APPROVE_ALWAYS ("always") for a session grant.
+    approve_fn: Callable[[str, str], bool | str] | None = None
     # 审批观察器只接收工具名和决定；None 表示即将询问。
     approval_observer: Callable[[str, bool | None], None] | None = None
     # Explicit, session-local approvals for a small set of file tools and
     # identical shell command strings. Never persisted or reused by other runs.
     approved_file_tools: set[tuple[str, str, str, int]] = field(default_factory=set)
     approved_shell_commands: set[tuple[str, str, str, int, int]] = field(default_factory=set)
+    # Grants made through approve_fn ("allow for this session" in the web
+    # UI). Kept apart from the terminal grants above so a cached terminal
+    # answer never bypasses the web approval gate, and vice versa. Same
+    # scopes as the terminal: one tool on one file, or one identical shell
+    # command in the same directory, backend and timeout.
+    approve_fn_grants: set[tuple] = field(default_factory=set)
     # Optional local text-file checkpoint manager; never applies to shell/MCP/E2B.
     checkpoint: object | None = None
     # Opt-in: Poppy discovery is deliberately disabled by default.
@@ -599,6 +606,11 @@ def _workspace_write_path(ctx: ToolContext, path: str) -> Path | str:
 
 
 _SESSION_FILE_TOOLS = frozenset(("write_file", "edit_file", "plan"))
+# Tools whose approval can be granted for the rest of a session (scoped as
+# described on ToolContext.approve_fn_grants). Front ends use this to decide
+# whether to offer an "allow for this session" choice.
+SESSION_GRANT_TOOLS = _SESSION_FILE_TOOLS | frozenset(("shell",))
+APPROVE_ALWAYS = "always"
 
 
 def _workspace_shell_cwd(ctx: ToolContext, cwd: str | None) -> Path | str:
@@ -657,22 +669,29 @@ def _check_approval(
             raise ToolError(
                 "非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行"
             )
-        # A frontend approval callback always takes precedence: cached grants
-        # from a previous terminal prompt must not bypass the Web UI gate.
-        if ctx.approve_fn is not None:
-            _observe_approval(ctx, tool_name, None)
-            approved = ctx.approve_fn(tool_name, summary)
-            _observe_approval(ctx, tool_name, bool(approved))
-            if not approved:
-                raise ToolError("用户拒绝执行")
-            return
-
         file_scope = (
             tool_name, str(file_target), _approval_root(ctx), id(ctx.backend)
         ) if tool_name in _SESSION_FILE_TOOLS and file_target is not None else None
         shell_scope = (
             command, cwd, _approval_root(ctx), timeout, id(ctx.backend)
         ) if tool_name == "shell" and command is not None and cwd is not None else None
+
+        # A frontend approval callback always takes precedence: cached grants
+        # from a previous terminal prompt must not bypass the Web UI gate.
+        # It may answer APPROVE_ALWAYS to grant the same scope as the
+        # terminal's "a" for the rest of this session (approve_fn_grants).
+        if ctx.approve_fn is not None:
+            grant = file_scope or shell_scope
+            if grant is not None and grant in ctx.approve_fn_grants:
+                return
+            _observe_approval(ctx, tool_name, None)
+            approved = ctx.approve_fn(tool_name, summary)
+            _observe_approval(ctx, tool_name, bool(approved))
+            if not approved:
+                raise ToolError("用户拒绝执行")
+            if approved == APPROVE_ALWAYS and grant is not None:
+                ctx.approve_fn_grants.add(grant)
+            return
         if file_scope is not None and file_scope in ctx.approved_file_tools:
             return
         if shell_scope is not None and shell_scope in ctx.approved_shell_commands:

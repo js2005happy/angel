@@ -581,16 +581,13 @@ class UIv2Tests(WebUITestCase):
 
     def test_page_uses_new_palette_and_no_mascot(self):
         html_text = webui.PAGE_HTML
-        # New palette tokens (light + dark).
-        for token in ("#F3F5F4", "#5F7D5C", "#6B8CAE", "#E07856", "#1F2420"):
+        # Desktop v2 palette (black-and-white, 2026-11-18): light + dark.
+        for token in ("#FFFFFF", "#0D0D0D", "#0B0B0C", "#EDEDED", "prefers-color-scheme:dark"):
             self.assertIn(token, html_text, token)
-        # Old ink/gold brand colours are retired: they must not appear as
-        # actual CSS values. They may still be named in the brand view's
-        # "retired" usage rule, which explicitly says not to use them.
+        # Retired palettes (ink/gold, then sage) are not used as CSS values.
         style = re.search(r"<style>(.*?)</style>", html_text, re.S).group(1)
-        self.assertNotIn("#111A42", style)
-        self.assertNotIn("#EAC45F", style)
-        self.assertIn("已退役", html_text)
+        for retired in ("#111A42", "#EAC45F", "#5F7D5C", "#F3F5F4"):
+            self.assertNotIn(retired, style, retired)
         # No mascot at all (removed 2026-11-18): no embedded image, no
         # mascot switcher, no mascot copy.
         self.assertNotIn("data:image/jpeg;base64,", html_text)
@@ -598,10 +595,12 @@ class UIv2Tests(WebUITestCase):
                       "mascot-img", "setMascot", "nyra-mascot", "小兔",
                       "毛绒", "data-mascot"):
             self.assertNotIn(token, html_text, token)
-        # Six views exist in the page.
+        # Five views exist in the page (the brand/palette showcase view was
+        # dropped with the desktop v2 redesign; the brand lives in docs/).
         for view in ("view-chat", "view-skills", "view-schedule",
-                     "view-group", "view-brand", "view-settings"):
+                     "view-group", "view-settings"):
             self.assertIn(view, html_text, view)
+        self.assertNotIn("view-brand", html_text)
 
     def test_schedule_endpoints(self):
         import nyra.scheduler as scheduler_module
@@ -813,8 +812,8 @@ class PWATests(WebUITestCase):
         self.assertEqual(data["display"], "standalone")
         self.assertEqual(data["start_url"], "/")
         self.assertEqual(data["scope"], "/")
-        self.assertEqual(data["theme_color"], "#5F7D5C")
-        self.assertEqual(data["background_color"], "#F3F5F4")
+        self.assertEqual(data["theme_color"], "#0B0B0C")
+        self.assertEqual(data["background_color"], "#FFFFFF")
         self.assertEqual(data["icons"][0]["src"], "/nyra-mark.svg")
 
     def test_manifest_accepts_query_token(self):
@@ -857,7 +856,8 @@ class PWATests(WebUITestCase):
         self.assertIn('rel="manifest"', html)
         self.assertIn('id="manifest-link"', html)
         self.assertIn('rel="apple-touch-icon"', html)
-        self.assertIn('name="theme-color" content="#5F7D5C"', html)
+        self.assertIn('name="theme-color" content="#FFFFFF"', html)
+        self.assertIn('name="theme-color" content="#0B0B0C"', html)
         self.assertIn('name="mobile-web-app-capable"', html)
         self.assertIn('name="apple-mobile-web-app-capable"', html)
         self.assertIn('name="apple-mobile-web-app-status-bar-style"', html)

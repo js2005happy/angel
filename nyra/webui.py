@@ -49,10 +49,11 @@ from .config import (
 )
 from .providers import Provider, build_provider_chain, describe_provider
 from .skills import load_skills
-from .tools import TOOL_SCHEMAS
+from .tools import APPROVE_ALWAYS, SESSION_GRANT_TOOLS, TOOL_SCHEMAS
 from .usage import context_limit
 from .compact import validate_auto_compact_threshold, DEFAULT_AUTO_COMPACT_THRESHOLD
 from .webui_page import PAGE_HTML
+from .webui_fonts import FONTS as UI_FONTS
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -60,6 +61,12 @@ APPROVAL_TIMEOUT = 600.0
 MAX_BODY = 256 * 1024
 MAX_EVENT_TEXT = 4000
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
+SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+# Session -> working directory, written by the web UI when a session sends
+# its first message, so the sidebar can group sessions by project. Lives
+# next to the session files (list_sessions only reads *.jsonl).
+PROJECTS_FILE = "ui-projects.json"
+MAX_PROJECT_ENTRIES = 2000
 
 
 def is_loopback_host(host: str) -> bool:
@@ -146,6 +153,7 @@ class UIState:
         self.approvals: dict[str, tuple[Run, dict]] = {}
         self.lock = threading.Lock()
         self._mode_lock = threading.Lock()
+        self._projects_lock = threading.Lock()
 
     def _on_switch(self, record) -> None:
         """Report a provider switch to the server log and to the chat.
@@ -430,6 +438,122 @@ class UIState:
             "auto_compact_count": run.agent.auto_compact_count if run is not None and run.agent is not None else 0,
         }
 
+    # -- projects -----------------------------------------------------------
+    def _projects_path(self) -> Path:
+        return Path(memory_module.SESSIONS_DIR) / PROJECTS_FILE
+
+    def _load_projects(self) -> dict:
+        try:
+            data = json.loads(self._projects_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            k: v for k, v in data.items()
+            if isinstance(k, str) and isinstance(v, str) and SESSION_ID_RE.match(k)
+        }
+
+    def _remember_project(self, session_id: str) -> None:
+        """Record which working directory a session ran in (best effort)."""
+        workdir = str(self.workdir.resolve())
+        with self._projects_lock:
+            data = self._load_projects()
+            if data.get(session_id) == workdir:
+                return
+            data[session_id] = workdir
+            if len(data) > MAX_PROJECT_ENTRIES:
+                data = dict(list(data.items())[-MAX_PROJECT_ENTRIES:])
+            path = self._projects_path()
+            try:
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                tmp = path.with_name(path.name + f".{secrets.token_hex(4)}.tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, path)
+            except OSError:
+                pass  # grouping is cosmetic; never fail a run over it
+
+    def sessions_view(self) -> dict:
+        """Session list plus the project (working directory) each ran in.
+
+        Sessions the web UI never ran (CLI sessions, older sessions) have
+        project None: the page lists them under "other", it never guesses.
+        """
+        projects = self._load_projects()
+        sessions = []
+        for item in memory_module.list_sessions():
+            item = dict(item)
+            workdir = projects.get(item.get("id", ""))
+            item["workdir"] = workdir
+            item["project"] = Path(workdir).name if workdir else None
+            sessions.append(item)
+        current = self.workdir.resolve()
+        return {
+            "sessions": sessions,
+            "project": {"name": current.name or str(current), "workdir": str(current)},
+        }
+
+    # -- plan mode ----------------------------------------------------------
+    def plan(self, session_id: str, text: str) -> Run:
+        """Read-only planning (same path as `nyra --plan`): writes only plan.md."""
+        with self._mode_lock:
+            run = self.get_run(session_id)
+            with run.lock:
+                if run.status == "running":
+                    raise RuntimeError("这个会话正在执行任务，请等它完成")
+                run.events = []
+                run.error = ""
+                run.status = "running"
+            run.base_messages = (
+                list(run.agent.messages) if run.agent is not None
+                else (memory_module.load_session(session_id) or [])
+            )
+        self._record(run, "user", {"content": text, "plan": True})
+        thread = threading.Thread(
+            target=self._plan_work, args=(run, text),
+            name=f"nyra-ui-plan-{session_id}", daemon=True,
+        )
+        run.thread = thread
+        thread.start()
+        return run
+
+    def _plan_work(self, run: Run, text: str) -> None:
+        from .plan_mode import PlanError, build_plan, render_plan, save_plan
+        from .providers import ProviderError
+
+        try:
+            provider = self.provider()
+            has = getattr(provider, "has_credentials", None)
+            if callable(has) and not has():
+                raise PlanError(
+                    "未找到可用的 API 凭据：请设置对应 provider 的环境变量 Key 后重启 ui"
+                )
+            details = build_plan(provider, text, self.workdir)
+            body = render_plan(text, details)
+            digest = save_plan(self.workdir, body)
+            self._remember_project(run.session_id)
+            # "plan" is not clipped by _record (plans are capped by plan_mode).
+            self._record(run, "plan_ready", {"plan": body, "sha256": digest, "path": "plan.md"})
+            with run.lock:
+                run.status = "done"
+        except (PlanError, ProviderError, ValueError, OSError) as exc:
+            with run.lock:
+                run.status = "error"
+                run.error = f"规划失败：{exc}"
+        except Exception as exc:  # never kill the server thread silently
+            with run.lock:
+                run.status = "error"
+                run.error = f"规划失败：{type(exc).__name__}: {exc}"
+
+    def execute_plan(self, session_id: str, digest: str) -> Run:
+        """Run the reviewed plan.md, verified by its exact SHA-256."""
+        from .plan_mode import approved_execution_task, read_approved_plan
+
+        if self.mode == "readonly":
+            raise ValueError("只读模式不能执行计划，请切换到 auto 或 full 模式")
+        approved = read_approved_plan(self.workdir, digest)  # PlanError is a ValueError
+        return self.send(session_id, approved_execution_task(approved))
+
     # -- running ------------------------------------------------------------
     def send(self, session_id: str, text: str) -> Run:
         # Serialize new runs with mode switches to avoid a race with MCP stop.
@@ -472,6 +596,7 @@ class UIState:
                 run.error = f"无法启动：{exc}"
             return run
         self._record(run, "user", {"content": text})
+        self._remember_project(session_id)
         thread = threading.Thread(
             target=self._work, args=(run, text), name=f"nyra-ui-{session_id}", daemon=True
         )
@@ -509,13 +634,17 @@ class UIState:
         with run.lock:
             run.events.append({"seq": len(run.events), "type": kind, "data": clean, "ts": time.time()})
 
-    def _approve(self, run: Run, tool: str, summary: str) -> bool:
+    def _approve(self, run: Run, tool: str, summary: str) -> bool | str:
         approval_id = secrets.token_hex(8)
         waiter = threading.Event()
+        # "always" says whether a session grant is possible for this tool
+        # (same scopes as the terminal's "a" answer; see tools.py).
+        can_always = tool in SESSION_GRANT_TOOLS
         pending = {
             "id": approval_id,
             "tool": tool,
             "summary": summary,
+            "always": can_always,
             "event": waiter,
             "decision": None,
         }
@@ -523,27 +652,42 @@ class UIState:
             self.approvals[approval_id] = (run, pending)
         with run.lock:
             run.pending = pending
-        self._record(run, "approval", {"id": approval_id, "tool": tool, "summary": summary})
+        self._record(run, "approval", {
+            "id": approval_id, "tool": tool, "summary": summary, "always": can_always,
+        })
         answered = waiter.wait(APPROVAL_TIMEOUT)
         with self.lock:
             self.approvals.pop(approval_id, None)
         with run.lock:
             run.pending = None
-        approved = bool(answered and pending["decision"])
+        decision = pending["decision"] if answered else None
+        approved = bool(decision)
+        always = decision == APPROVE_ALWAYS
         self._record(
             run,
             "approval_result",
-            {"id": approval_id, "approved": approved, "timeout": not answered},
+            {"id": approval_id, "approved": approved, "always": always,
+             "timeout": not answered},
         )
-        return approved
+        return APPROVE_ALWAYS if always else approved
 
-    def decide(self, approval_id: str, approve: bool) -> bool:
+    def decide(self, approval_id: str, approve: bool, always: bool = False) -> bool:
+        """Answer a pending approval. always=True grants it for the session.
+
+        Raises ValueError when a session grant is asked for a tool that has
+        no session scope (it would silently become a one-time approval).
+        """
         with self.lock:
             item = self.approvals.get(approval_id)
         if item is None:
             return False
         _, pending = item
-        pending["decision"] = bool(approve)
+        if approve and always:
+            if not pending.get("always"):
+                raise ValueError("这个操作不支持“本会话始终允许”，请逐次批准")
+            pending["decision"] = APPROVE_ALWAYS
+        else:
+            pending["decision"] = bool(approve)
         pending["event"].set()
         return True
 
@@ -748,6 +892,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(HTTPStatus.OK, PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
         if path == "/favicon.ico":
             return self._send(HTTPStatus.NO_CONTENT, b"", "image/x-icon")
+        match = re.fullmatch(r"/assets/fonts/([a-z0-9-]+\.woff)", path)
+        if match:
+            # Fonts ship inside the package (nyra/webui_fonts.py) and are
+            # fetched by the page with the token header, then loaded via
+            # the FontFace API: no font-src needed in the CSP.
+            if not self._token_ok():
+                return self._error(HTTPStatus.FORBIDDEN, "token 无效")
+            data = UI_FONTS.get(match.group(1))
+            if data is None:
+                return self._error(HTTPStatus.NOT_FOUND, "未找到")
+            return self._send(HTTPStatus.OK, data, "font/woff")
         if path == "/manifest.json":
             # Browsers fetch the manifest as a subresource without the
             # X-Nyra-Token header, so the token rides in the query string,
@@ -833,7 +988,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return self._json(HTTPStatus.OK, result)
         if path == "/api/sessions":
-            return self._json(HTTPStatus.OK, {"sessions": memory_module.list_sessions()})
+            return self._json(HTTPStatus.OK, self.state.sessions_view())
         match = re.fullmatch(r"/api/sessions/([^/]+)", path)
         if match:
             sid = urllib.parse.unquote(match.group(1))
@@ -950,9 +1105,43 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as exc:
                 return self._error(HTTPStatus.CONFLICT, str(exc))
             return self._json(HTTPStatus.ACCEPTED, {"id": sid, "status": run.status, "error": run.error})
+        match = re.fullmatch(r"/api/sessions/([^/]+)/plan", path)
+        if match:
+            sid = urllib.parse.unquote(match.group(1))
+            if not SESSION_ID_RE.match(sid):
+                return self._error(HTTPStatus.BAD_REQUEST, "会话 id 无效")
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return self._error(HTTPStatus.BAD_REQUEST, "任务不能为空")
+            try:
+                run = self.state.plan(sid, text)
+            except RuntimeError as exc:
+                return self._error(HTTPStatus.CONFLICT, str(exc))
+            return self._json(HTTPStatus.ACCEPTED, {"id": sid, "status": run.status, "error": run.error})
+        match = re.fullmatch(r"/api/sessions/([^/]+)/plan/execute", path)
+        if match:
+            sid = urllib.parse.unquote(match.group(1))
+            if not SESSION_ID_RE.match(sid):
+                return self._error(HTTPStatus.BAD_REQUEST, "会话 id 无效")
+            digest = str(body.get("sha256") or "")
+            if not SHA256_RE.match(digest):
+                return self._error(HTTPStatus.BAD_REQUEST, "需要完整的 64 位 SHA-256 计划校验值")
+            try:
+                run = self.state.execute_plan(sid, digest)
+            except RuntimeError as exc:
+                return self._error(HTTPStatus.CONFLICT, str(exc))
+            except (ValueError, OSError) as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return self._json(HTTPStatus.ACCEPTED, {"id": sid, "status": run.status, "error": run.error})
         match = re.fullmatch(r"/api/approvals/([0-9a-f]{16})", path)
         if match:
-            if not self.state.decide(match.group(1), bool(body.get("approve"))):
+            try:
+                ok = self.state.decide(
+                    match.group(1), bool(body.get("approve")), always=bool(body.get("always"))
+                )
+            except ValueError as exc:
+                return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            if not ok:
                 return self._error(HTTPStatus.NOT_FOUND, "审批已失效")
             return self._json(HTTPStatus.OK, {"ok": True})
         return self._error(HTTPStatus.NOT_FOUND, "未找到")
@@ -1082,7 +1271,8 @@ FORBIDDEN_PAGE = """<!doctype html><meta charset="utf-8"><title>Nyra</title>
 <p>Open the full link printed in the terminal (it contains <code>?token=</code>).</p></body>"""
 
 # Web App Manifest for installing the UI on a phone ("Add to Home Screen").
-# Colors follow the UI v2 palette: paper #F3F5F4, sage #5F7D5C.
+# Colors follow the desktop v2 design (black-and-white): paper #FFFFFF,
+# ink #0B0B0C (the page sets light/dark theme-color itself).
 # start_url is "/" on purpose: the access token is random per start, so it
 # cannot be baked into this static manifest. Tapping the installed icon
 # opens the token-required page; open the printed link (with token) first,
@@ -1094,8 +1284,8 @@ MANIFEST = {
     "start_url": "/",
     "scope": "/",
     "display": "standalone",
-    "background_color": "#F3F5F4",
-    "theme_color": "#5F7D5C",
+    "background_color": "#FFFFFF",
+    "theme_color": "#0B0B0C",
     "icons": [
         {
             "src": "/nyra-mark.svg",

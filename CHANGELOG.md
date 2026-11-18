@@ -1,5 +1,16 @@
 # Nyra 变更记录
 
+## 未发布（网页界面桌面端 v2）
+
+- 网页界面（`python3 -m nyra ui`）按已定稿的桌面端设计稿重写前端（`nyra/webui_page.py`）：黑白极简、浅色/深色跟随系统；左侧按项目分组的会话列表 + 搜索 + 新建会话；对话流里工具调用折叠成步骤行（读取 / 搜索 / 编辑 / 运行…），运行中显示“正在工作 · Ns”、结束显示“工作了 Ns · N 个步骤”；审批卡片带审批时的真实 diff，按钮为“拒绝 / 本会话始终允许 / 允许一次”；一轮改动结束后出现改动文件卡；右侧审阅面板（改动 / 计划 / 证据 / 终端 / 产物 / 用量）；底部输入框带审批模式切换、模型选择与计划模式开关；顶栏显示运行状态、等待批准、本会话 Token 用量；状态栏显示工作目录、模式、上下文占用、MCP。390px 手机宽度可用，全键盘可操作，`prefers-reduced-motion` 时关动画，无开场动画。品牌标志内联 `docs/assets/nyra-mark.svg`；旧的“品牌与外观”色板页与鼠尾草绿配色退役，PWA manifest 与 theme-color 同步改为黑白（`#0B0B0C` / `#FFFFFF`）。只做内核真实支持的功能：设计稿里的 diff 逐行评论、提交 / 在编辑器打开、云电脑、终端实时输入没有做按钮。
+- 后端最小补充（都有测试）：
+  - “本会话始终允许”：`tools.py` 的 `approve_fn` 可回 `APPROVE_ALWAYS`，按终端 `a` 相同的范围（同一文件的 `write_file` / `edit_file` / `plan`，或完全相同的 shell 命令 + 目录 + 超时）记在 `ToolContext.approve_fn_grants`，与终端缓存授权分开记账、互不放行；`SESSION_GRANT_TOOLS` 标出可用的工具。网页 `POST /api/approvals/{id}` 与 API 服务器 `POST /api/approvals/{id}/decide` 都接受 `{"approve": true, "always": true}`，对没有会话范围的工具返回 400；审批事件与 `pending` 里多一个 `always` 字段，`approval_result` 也标明是否为会话授权。
+  - 会话按项目分组：网页端发消息时把会话的工作目录记到 `~/.nyra/sessions/ui-projects.json`（原子替换，最多 2000 条，坏文件忽略）；`GET /api/sessions` 每条会话多 `workdir` / `project`（未记录的为 `null`，不猜），并返回当前 `project`。
+  - 计划模式：`POST /api/sessions/{id}/plan`（与 `nyra --plan` 同一条只读规划路径，只写 `plan.md`，事件 `plan_ready` 带全文与 SHA-256）和 `POST /api/sessions/{id}/plan/execute`（`{"sha256": …}`，校验不符或只读模式返回 400，执行仍走正常审批）。
+  - 字体：Inter（400/600）与 JetBrains Mono（400）的拉丁子集 WOFF 以 Python 数据随包（`nyra/webui_fonts.py`，SIL OFL 1.1，约 77 KB），`GET /assets/fonts/<名>.woff` 须请求头 token；页面用 FontFace API 从 ArrayBuffer 加载，CSP 不变（未加 `font-src`），零外部请求。
+- 新增 `tests/test_webui_v2.py`（24 项：会话授权范围与隔离、两套 API 的 `always`、项目分组、计划模式生成/执行/只读拒绝/失败、字体鉴权、CSP 不变、页面控件与无假按钮）；`tests/test_webui.py` 的配色、视图、manifest 断言随新设计更新。用 Playwright + 本地桩模型实际点过：发消息、审批卡、允许一次 / 本会话始终允许 / 拒绝、看 diff 与终端、切模式、切会话、计划模式生成并执行，桌面 1440 / 手机 390 / 深色均截图检查，控制台零错误、零外部请求。
+- 测试 1011 → 1035 项，全部通过（skipped=10）。
+
 ## 未发布（电脑操作 + 视觉模型看屏 + 多模型调研 + 群聊多 Key）
 
 - 电脑操作：新增 `nyra/computer.py`（`ComputerControl`，标准库 only，三后端：Linux xdotool、Windows ctypes 直调 user32/gdi32、macOS osascript + screencapture；`screenshot` / `click` / `move` / `type_text` / `press` / `windows` / `screen_size`，坐标校验、按键归一化；DISPLAY 未设或 xdotool 缺失时报清错，不自启 X 服务、不装东西、不联网）与 `nyra/tools.py` 的 5 个新工具（`computer_screenshot` / `computer_click` / `computer_type` / `computer_key` / `computer_windows`，全部进 `MUTATING_TOOLS`，照 `browser_*` 规矩走 `_check_approval` + `wrap_untrusted` + 证据目录）。`nyra/webui.py` 的 `NEEDS_APPROVAL_TOOLS` 与 `/api/info` 工具数同步补到 24（`tests/test_webui.py` 断言 18→24）。新增 `tests/test_computer.py`（44 项，全 mock）。如实说明：本机无桌面，`sudo apt-get install -y xdotool` 一次尝试即失败（源里没有这个包），没跑成 Xvfb 真冒烟；Windows/macOS 后端只在 mock 上验过，没在真机上跑过；Nyra 本身不“看图找按钮”，坐标须来自用户、窗口几何，或视觉模型看了截屏后报的点。
