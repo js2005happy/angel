@@ -65,6 +65,8 @@ python3 -m nyra                          # 交互模式
 python3 -m nyra ui --open                # 本地网页界面
 ```
 
+还没 Key 也能先跑 `--help` / `--version` / `--list-providers`（不联网、不花钱）。跑任务需要 Key：没设 Key 时会直接打印上面的设置说明并退出（退出码 1），不会发请求、不会产生费用。没有 Key 可先用本地模型：`python3 -m nyra --provider ollama "…"`（需本机装好 Ollama）或 `--provider codex`（复用本机 Codex 登录）。
+
 想一键装到 `~/.local/bin`（可选 systemd 服务）：见 [docs/linux-install.md](docs/linux-install.md)；已 clone 好仓库时跑 `./scripts/install.sh --source . --with-systemd`。
 
 想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
