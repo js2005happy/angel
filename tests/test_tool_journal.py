@@ -423,6 +423,40 @@ class JournalTests(unittest.TestCase):
                     journal.inspect()
         self.assertEqual(checks[0], 3)
 
+    @unittest.skipUnless(os.name == "posix" and os.open in os.supports_dir_fd, "POSIX dir_fd only")
+    def test_posix_reader_rechecks_directory_fd_after_final_enumeration(self):
+        # A concurrent chmod during the second listdir must fail closed.
+        from angel import tool_journal as module
+        from unittest.mock import Mock
+        journal = ToolJournal("final-fd-enumeration", root=self.root)
+        journal.begin("shell")
+        original_listdir = module.os.listdir
+        original_fstat = module.os.fstat
+        final_enumerated = [False]
+
+        def widened_after_enumeration(fd):
+            info = original_fstat(fd)
+            if (final_enumerated[0] and stat.S_ISDIR(info.st_mode)):
+                changed = Mock(wraps=info)
+                changed.st_mode = (info.st_mode & ~0o777) | 0o755
+                return changed
+            return info
+
+        # Only simulate the permission change after the second enumeration.
+        enumerations = [0]
+        def counted_listdir(path):
+            result = original_listdir(path)
+            if isinstance(path, int):
+                enumerations[0] += 1
+                final_enumerated[0] = enumerations[0] >= 2
+            return result
+
+        with mock.patch.object(module.os, "listdir", side_effect=counted_listdir):
+            with mock.patch.object(module.os, "fstat", side_effect=widened_after_enumeration):
+                with self.assertRaisesRegex(JournalError, "末次枚举后"):
+                    journal.inspect()
+        self.assertEqual(enumerations[0], 2)
+
     def test_mismatched_result_tool_is_unknown_not_reported_success(self):
         journal = ToolJournal("mismatched-tool", root=self.root)
         call = journal.begin("shell")
