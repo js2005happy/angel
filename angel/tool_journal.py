@@ -309,7 +309,13 @@ class ToolJournal:
                     raise JournalError("日志读取目录句柄在枚举后发生变化")
             # Detect entries added, removed or renamed while reading. This
             # is a snapshot consistency check, not a cross-process lock.
-            if directory_fd is not None and set(os.listdir(directory_fd)) != set(names):
+            if directory_fd is not None:
+                final_names = os.listdir(directory_fd)
+            else:
+                # Path fallback needs a second enumeration as well:
+                # directory identity does not detect newly added entries.
+                final_names = [entry.name for entry in self.path.iterdir()]
+            if set(final_names) != set(names):
                 raise JournalError("日志目录在读取期间发生并发变化")
             return records
         finally:
