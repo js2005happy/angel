@@ -141,6 +141,15 @@ def save_skill_file(
         or any(character not in allowed for character in name)
     ):
         raise ValueError("Skill 名称只允许字母、数字、- 和 _")
+    # Frontmatter is one "key: value" line per field: a newline inside
+    # description/when/keywords would inject a new frontmatter line on
+    # the next load (e.g. a "name:" line smuggled into the description
+    # would rename the skill). Reject control characters outright.
+    for field in (description, when, *keywords):
+        if not isinstance(field, str) or any(
+            ch in field for ch in ("\n", "\r")
+        ):
+            raise ValueError("Skill 描述、触发条件与关键词不能包含换行")
 
     skills_dir.mkdir(parents=True, exist_ok=True)
     path = skills_dir / f"{name}.md"
