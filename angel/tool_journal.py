@@ -36,6 +36,15 @@ def _safe_directory(path: Path) -> None:
         # reported by is_symlink(). Reject them on runtimes exposing the
         # standard-library Path.is_junction() API (Python 3.12+).
         is_junction = getattr(current, "is_junction", None)
+        # Windows exposes reparse points in lstat even on Python 3.11,
+        # which does not provide Path.is_junction().
+        if os.name == "nt" and current.exists():
+            try:
+                attrs = current.lstat().st_file_attributes
+            except (AttributeError, OSError) as exc:
+                raise JournalError("无法核验 Windows 日志目录重解析点") from exc
+            if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise JournalError("日志目录不能包含 Windows 重解析点")
         if current.is_symlink() or (is_junction is not None and is_junction()):
             raise JournalError("日志目录不能是符号链接或目录联接")
         current = current.parent
