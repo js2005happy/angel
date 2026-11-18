@@ -19,7 +19,7 @@
 
 <p align="center">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 689 项" src="https://img.shields.io/badge/tests-689%20passing-0B0B0C">
+  <img alt="测试 693 项" src="https://img.shields.io/badge/tests-693%20passing-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -143,7 +143,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 689 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 693 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可

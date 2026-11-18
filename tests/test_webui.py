@@ -571,7 +571,7 @@ class UIv2Tests(WebUITestCase):
             self.assertFalse(by_name[name]["needs_approval"], name)
         self.assertEqual(
             {s["name"] for s in info["skills"]},
-            {"file-organizer", "verify-research", "web-research"},
+            {"file-organizer", "verify-research", "web-research", "deep-thinking"},
         )
 
     def test_page_uses_new_palette_and_no_mascot(self):
