@@ -1,3 +1,9 @@
+## 2026-11-19 — 读取入口权限拒绝语义及 Agent 反馈
+
+- **仓库事实 / 已实现但未验证**：_records() 曾在 _directory_identity() 前通过 Path.exists() 早退；在部分平台权限拒绝可能伪装为缺失。改为只根据 lstat 的真实 FileNotFoundError 判空，价值高／难度低／安全风险低／依赖现有 ToolJournal；测试源码未运行。
+- **外部反馈（2026-11-19 检索）**：[Codex #61184](https://github.com/openai/codex/issues/61184) 报告 Windows 沙箱初始化 Access is denied 并阻断开发（Issue 创建日期未核实）。这是其他产品的用户陈述，非 Angel 缺陷证据。
+- **工程推断与未完成候选排序（价值／难度／安全风险／依赖）**：① Windows 原生 ACL 与稳定目录句柄（高／高／高／Win32 安全 API 与实机验证）；② 跨进程日志事务（高／高／高／跨平台锁和崩溃协议）；③ 外部工具副作用凭证（高／高／高／可信工具适配器）；④ 人工审批安全续跑（高／中高／高／事务及审批）；⑤ 文件读取复用（中高／中／中／失效策略）。不自动合并 main。
+
 ## 2026-11-19 — 目录访问拒绝诊断（静态增量）
 
 - **仓库事实**：`_directory_identity` 旧实现使用 `Path.exists()` 判断缺失；在某些 Python/Windows 版本，权限错误可能被当作不存在。本轮将真正的 FileNotFoundError 与其他 OSError 分开，访问拒绝时保守报错（价值高／难度低／安全风险低／依赖标准库；测试源码已写、未运行）。
