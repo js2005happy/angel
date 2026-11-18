@@ -296,6 +296,12 @@ class ToolJournal:
                         stream.write(payload)
                         stream.flush()
                         os.fsync(stream.fileno())
+                        written = os.fstat(stream.fileno())
+                        if (not stat.S_ISREG(written.st_mode)
+                                or written.st_nlink != 1
+                                or written.st_size != len(payload)
+                                or stat.S_IMODE(written.st_mode) & 0o077):
+                            raise JournalError("写入事件文件元数据不安全")
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
@@ -310,6 +316,13 @@ class ToolJournal:
                     stream.write(payload)
                     stream.flush()
                     os.fsync(stream.fileno())
+                    written = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(written.st_mode)
+                            or written.st_nlink != 1
+                            or written.st_size != len(payload)
+                            or (os.name == "posix" and
+                                stat.S_IMODE(written.st_mode) & 0o077)):
+                        raise JournalError("写入事件文件元数据不安全")
             _verify_directory(self.path, identity)
         except OSError as exc:
             raise JournalError("写入事件失败；工具结果必须人工核查") from exc
