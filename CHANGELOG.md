@@ -1,3 +1,7 @@
+## 2026-11-18 — Windows 事件写后元数据复核（仅静态）
+
+- ToolJournal 的 Windows 回退写入路径在 fsync 后的目录项检查中增加硬链接数、mtime 与 ctime 校验，避免 inode 和大小未变时将部分就地修改误报为成功提交。新增模拟回归测试源码，未运行测试/CI；仍不能解决 Windows ACL、稳定目录句柄及 TOCTOU。
+
 ## 2026-11-18 — ToolJournal 全局歧义下隐藏部分成功统计
 
 - 当存在孤立结果、重复事件或工具名不匹配时，`inspect()` 不再把其他已配对事件计为可信 `reported_ok` / `reported_errors`；将所有调用计入待核查 `unknown_outcomes`。避免消费者误读局部成功计数。新增模拟回归测试源码，**未运行**。不改变日志文件格式或自动恢复策略。
