@@ -30,6 +30,10 @@
   }
   retry.addEventListener("click", function () {
     retry.disabled = true;
+    // Re-enable after a while: if the retry fails with the same guide
+    // state, the shell navigates to an identical URL, no reload happens,
+    // and the button would otherwise stay dead.
+    setTimeout(function () { retry.disabled = false; }, 5000);
     var t = window.__TAURI__ && window.__TAURI__.core;
     if (t) t.invoke("retry_start");
   });
