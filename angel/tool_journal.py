@@ -317,6 +317,10 @@ class ToolJournal:
                 final_names = [entry.name for entry in self.path.iterdir()]
             if set(final_names) != set(names):
                 raise JournalError("日志目录在读取期间发生并发变化")
+            # The path fallback enumerates by name; a directory replacement
+            # during that second walk must not be accepted as a stable read.
+            # This is detection only, not a Windows directory handle or lock.
+            _verify_directory(self.path, identity)
             return records
         finally:
             if directory_fd is not None:
