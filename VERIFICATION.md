@@ -1,3 +1,8 @@
+## 2026-11-18 ToolJournal 未结调用门禁（仅静态审阅）
+
+- 源码检查：`begin()` 在 `inspect()` 的未知结果计数非零时拒绝写入新 intent；`finish()` 仍可记录原调用结果。新增回归测试源码验证阻断及结果记录后的继续。
+- 未运行测试、CI 或 Windows 实机验证；多进程并发下 inspect 与写入之间仍有竞争窗口，不能据此自动恢复或证明外部副作用。
+
 ## 2026-11-18 歧义日志阻止新增 intent（仅静态审阅）
 
 - 静态核对 `begin()` 在生成调用 ID 和写入 intent 前读取 `inspect()`，`journal_ambiguous=true` 时抛出 `JournalError`；测试源码构造孤立结果并断言不会产生新 intent。
