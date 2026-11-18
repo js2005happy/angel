@@ -331,7 +331,12 @@ class ToolJournal:
         """Persist intent before a tool is called. Does not execute the tool."""
         if not isinstance(tool, str) or not _TOOL.fullmatch(tool):
             raise JournalError("工具名无效")
-        if len(self._records()) >= MAX_EVENTS:
+        # Never start another side-effecting call against an ambiguous journal.
+        # Orphan and mismatched results require human reconciliation.
+        status = self.inspect()
+        if status["journal_ambiguous"]:
+            raise JournalError("日志存在歧义；必须人工核查后才能开始新工具调用")
+        if status["event_count"] >= MAX_EVENTS:
             raise JournalError("事件数量超限")
         call_id = secrets.token_hex(16)
         self._write("intent", call_id, tool)
