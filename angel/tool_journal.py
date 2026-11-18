@@ -404,6 +404,14 @@ class ToolJournal:
                             or stat.S_IMODE(entry.st_mode) & 0o077):
                         raise JournalError("写入后的事件目录项已被替换或修改")
                     os.fsync(directory_fd)
+                    # A concurrent chmod or directory substitution during
+                    # commit must not be silently accepted. This is only a
+                    # final best-effort check, not a transaction lock.
+                    final_dir = os.fstat(directory_fd)
+                    if (not stat.S_ISDIR(final_dir.st_mode)
+                            or (final_dir.st_dev, final_dir.st_ino) != identity
+                            or stat.S_IMODE(final_dir.st_mode) & 0o077):
+                        raise JournalError("日志写入目录句柄在同步后发生变化")
                 finally:
                     os.close(directory_fd)
             else:
