@@ -1,3 +1,9 @@
+## 2026-11-18 — Windows 悬空重解析点检查（仅静态审阅）
+
+- 代码检查：Windows 路径祖先不再因 `exists()` 为 false 跳过 `lstat`；仅 `FileNotFoundError` 视为缺失，其他 OS 错误拒绝。
+- 新增测试源码：模拟悬空重解析点及缺少 `Path.is_junction()` 的运行时；未运行任何测试、安装、CI 或实机 Windows 检查。
+- 未覆盖：Windows ACL、祖先路径竞态、稳定句柄、外部副作用一致性。不能宣称安全边界已完全验证。
+
 ## 2026-11-18 Windows reparse point 静态核对
 
 - 代码检查：Windows 上读取 lstat().st_file_attributes 并拒绝 FILE_ATTRIBUTE_REPARSE_POINT；测试源码模拟缺少 is_junction 的运行时。
