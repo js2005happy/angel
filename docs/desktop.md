@@ -15,18 +15,18 @@ Nyra 桌面端是一个原生窗口：用系统自带的 WebView（macOS 的 WKW
 查找顺序：
 
 1. 环境变量 `NYRA_PYTHON` 指定的 Python（设了它就跳过第 2 步）；
-2. `PATH` 上的 `nyra` 命令（安装脚本放的启动器，或 Windows 单文件 `nyra.exe`）；
-3. Python 3.10+（Windows：`py -3`、`python`、`%LOCALAPPDATA%\Programs\Python\*`；macOS：`python3`、`python3.1x`，并补上 Homebrew、python.org 安装包、`~/.local/bin`、pyenv 的常见目录），能直接 `import nyra` 就用它；否则依次带上这些源码目录再试：`NYRA_SOURCE`、`~/.local/share/nyra`（macOS / Linux 安装脚本的位置）、`~/nyra`（Windows 安装脚本或在主目录 `git clone` 的位置）。
+2. `PATH` 上的 `nyra` 命令（安装脚本放的启动器，或 Windows 单文件 `nyra.exe`；Node 运行时单文件版暂不支持桌面端——它没有 `ui` 子命令，遇到会跳过、继续找 Python 版）；
+3. Python 3.10+（Windows：`py -3`、`python`、`python3`、`%LOCALAPPDATA%\Programs\Python\*`；macOS：`python3`、`python3.1x`，并补上 Homebrew、python.org 安装包、`~/.local/bin`、pyenv 的常见目录），能直接 `import nyra` 就用它；否则依次带上这些源码目录再试：`NYRA_SOURCE`、`~/.local/share/nyra`（macOS / Linux 安装脚本的位置）、`~/nyra`（Windows 安装脚本或在主目录 `git clone` 的位置）。整个 Python 候选逐个探测最多 90 秒，超时就按已找到的结果显示引导页，不会一直停在“正在启动”。
 
 工作目录默认是 `~/Nyra`（没有就新建），可用环境变量 `NYRA_DESKTOP_WORKDIR` 改。
 
-macOS 上从程序坞 / 访达打开的 App 拿不到终端里 `~/.zshrc` 设置的 `PATH` 与 API Key。外壳启动时会读一次登录 shell 的环境（`$SHELL -ilc env`，10 秒超时），补上缺的变量（不覆盖已有的），所以在 `~/.zshrc` 里 `export DEEPSEEK_API_KEY=...` 这类设置对桌面端同样有效。Windows 上用“系统属性 → 环境变量”设置的用户变量会直接生效。
+macOS 上从程序坞 / 访达打开的 App 拿不到终端里 `~/.zshrc` 设置的 `PATH` 与 API Key。外壳启动时会读一次登录 shell 的环境（`$SHELL -ilc env`，10 秒超时），补上缺的变量（不覆盖已有的），所以在 `~/.zshrc` 里 `export DEEPSEEK_API_KEY=...` 这类设置对桌面端同样有效；每个 App 只读一次，改了 `~/.zshrc` 要重启 App 才生效。Windows 上用“系统属性 → 环境变量”设置的用户变量会直接生效。
 
 ## 安装
 
 ### 先决条件：本机 Python 与 Nyra
 
-- **Python 3.10 或更高**。macOS 系统自带的 python3 是 3.9，不够，用 [python.org](https://www.python.org/downloads/macos/) 安装包或 `brew install python`；Windows 用 [python.org](https://www.python.org/downloads/windows/)（勾选 “Add python.exe to PATH”）或 `winget install Python.Python.3.12`。Windows 也可以不装 Python，直接把单文件 `nyra.exe` 放进 `PATH`（见 [windows-install.md](windows-install.md)）。
+- **Python 3.10 或更高**。macOS 系统自带的 python3 是 3.9，不够，用 [python.org](https://www.python.org/downloads/macos/) 安装包或 `brew install python`；Windows 用 [python.org](https://www.python.org/downloads/windows/)（勾选 “Add python.exe to PATH”）或 `winget install Python.Python.3.12`。桌面端目前只认 Python 版 Nyra：单文件 `nyra.exe` 是 Node 运行时预览版，没有 `ui` 子命令，单独装它带不动桌面端。
 - **Nyra 本体**：macOS 见 [macos-install.md](macos-install.md)（`bash scripts/install-macos.sh --source .`），Windows 见 [windows-install.md](windows-install.md)（`irm …/install.ps1 | iex`）。已经 `git clone` 在别处的，设 `NYRA_SOURCE=<仓库目录>` 即可。
 - 模型 Key 和命令行一样只从环境变量读（见 GUIDE“配置模型”）。
 
@@ -61,7 +61,7 @@ xattr -dr com.apple.quarantine /Applications/Nyra.app
 
 ## 安全
 
-- 网页界面的 CSP、token 鉴权、`Host` 头校验都**原样保留**，桌面端没有放宽任何一项；地址只绑 `127.0.0.1`，端口随机，token 每次启动随机生成，只经由子进程的标准输出管道交给外壳。
+- 网页界面的 CSP、token 鉴权、`Host` 头校验都**原样保留**，桌面端没有放宽任何一项；地址只绑 `127.0.0.1`，端口随机，token 每次启动随机生成，主要经由子进程的标准输出管道（JSON 行）交给外壳。注意：Nyra 在 `--print-url-json` 模式下仍会把带 token 的人类可读启动行写到标准错误，外壳在引导页显示失败详情前会把其中的 `token=…` 打码，token 不会出现在引导页上。
 - 窗口只允许显示内置引导页与这次启动的 `http://127.0.0.1:<端口>`；其他任何网址（包括别的本机端口）都不会在窗口里打开，`http(s)` / `mailto` 链接交给系统默认浏览器。
 - 网页界面拿不到任何 Tauri 原生接口（`capabilities` 里没有放行远程地址）；只有内置引导页能调用一个“重新检测”命令。
 - 桌面端不播入场动画（入场动画只在手机主屏幕 App 上播放）。
@@ -93,3 +93,4 @@ cd src-tauri && cargo test                      # 外壳的单元测试
 - **没有自动更新**：新版本需要重新下载安装。
 - **没有在真机上手动验证**：只在 CI 上构建通过、在 Linux 上编译并跑过外壳单元测试；macOS / Windows 上的实际启动、Python 查找、退出清理还没在真机上点过。
 - 没有菜单栏 / 托盘、没有多窗口；网页界面里 `target="_blank"` 的同源链接不会打开新窗口。
+- 没有单实例保护：同时开两个 Nyra 会各起一个本机服务，共用 `~/Nyra` 工作目录。
