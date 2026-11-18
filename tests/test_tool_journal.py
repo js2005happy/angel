@@ -32,6 +32,14 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "符号链接"):
                 module._safe_directory(self.root)
 
+    def test_anchor_check_runs_for_anchor_itself(self):
+        # The anchor is both the start and end of the ancestor walk.
+        from angel import tool_journal as module
+        anchor = Path(self.root.anchor)
+        with mock.patch.object(Path, "is_symlink", autospec=True, side_effect=lambda p: p == anchor):
+            with self.assertRaisesRegex(JournalError, "符号链接"):
+                module._safe_directory(anchor)
+
     def test_begin_rejects_pending_unknown_intent(self):
         # An unfinished side effect is not safe to silently run past.
         journal = ToolJournal("pending-before-begin", root=self.root)
