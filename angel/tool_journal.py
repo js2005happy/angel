@@ -53,6 +53,8 @@ def _safe_directory(path: Path) -> None:
                 raise JournalError("日志目录不能包含 Windows 重解析点")
         if current.is_symlink() or (is_junction is not None and is_junction()):
             raise JournalError("日志目录不能是符号链接或目录联接")
+        if current == current.parent:
+            break
         current = current.parent
     if path.exists() and not path.is_dir():
         raise JournalError("日志目录不是文件夹")
