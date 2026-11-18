@@ -463,6 +463,31 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "句柄"):
                 journal.inspect()
 
+    def test_posix_writer_rejects_replaced_entry_after_sync(self):
+        # Simulate a rename/swap between the opened file's fsync and
+        # directory fsync. The intent must not authorize tool execution.
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX dir_fd unavailable")
+        from angel import tool_journal as module
+        journal = ToolJournal("write-entry-swap", root=self.root)
+        original_stat = module.os.stat
+
+        def swapped(path, *args, **kwargs):
+            info = original_stat(path, *args, **kwargs)
+            if (str(path).startswith("intent-")
+                    and kwargs.get("dir_fd") is not None
+                    and kwargs.get("follow_symlinks") is False):
+                from unittest.mock import Mock
+                changed = Mock(wraps=info)
+                changed.st_ino = info.st_ino + 1
+                return changed
+            return info
+
+        with mock.patch.object(module.os, "stat", side_effect=swapped):
+            with self.assertRaisesRegex(JournalError, "目录项已被替换"):
+                journal.begin("shell")
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
     def test_posix_writer_creates_event_with_directory_descriptor(self):
         import os
         if os.name != "posix" or os.open not in os.supports_dir_fd:

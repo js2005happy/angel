@@ -357,6 +357,19 @@ class ToolJournal:
                                 or written.st_size != len(payload)
                                 or stat.S_IMODE(written.st_mode) & 0o077):
                             raise JournalError("写入事件文件元数据不安全")
+                    # Bind the committed event name to the file we actually
+                    # synced. O_EXCL alone does not detect a later rename/swap.
+                    entry = os.stat(filename, dir_fd=directory_fd,
+                                    follow_symlinks=False)
+                    if (not stat.S_ISREG(entry.st_mode)
+                            or (entry.st_dev, entry.st_ino)
+                            != (written.st_dev, written.st_ino)
+                            or entry.st_nlink != 1
+                            or entry.st_size != written.st_size
+                            or entry.st_mtime_ns != written.st_mtime_ns
+                            or entry.st_ctime_ns != written.st_ctime_ns
+                            or stat.S_IMODE(entry.st_mode) & 0o077):
+                        raise JournalError("写入后的事件目录项已被替换或修改")
                     os.fsync(directory_fd)
                 finally:
                     os.close(directory_fd)
