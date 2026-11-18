@@ -1,3 +1,8 @@
+## 2026-11-18 Windows reparse point 静态核对
+
+- 代码检查：Windows 上读取 lstat().st_file_attributes 并拒绝 FILE_ATTRIBUTE_REPARSE_POINT；测试源码模拟缺少 is_junction 的运行时。
+- 未运行测试、CI、Windows 实机验证。路径检查存在竞态，ACL 与稳定句柄未实现。
+
 ## 2026-11-18 ToolJournal 未结调用门禁（仅静态审阅）
 
 - 源码检查：`begin()` 在 `inspect()` 的未知结果计数非零时拒绝写入新 intent；`finish()` 仍可记录原调用结果。新增回归测试源码验证阻断及结果记录后的继续。
