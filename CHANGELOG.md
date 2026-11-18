@@ -11,6 +11,16 @@
 - 新增 `tests/test_webui_v2.py`（24 项：会话授权范围与隔离、两套 API 的 `always`、项目分组、计划模式生成/执行/只读拒绝/失败、字体鉴权、CSP 不变、页面控件与无假按钮）；`tests/test_webui.py` 的配色、视图、manifest 断言随新设计更新。用 Playwright + 本地桩模型实际点过：发消息、审批卡、允许一次 / 本会话始终允许 / 拒绝、看 diff 与终端、切模式、切会话、计划模式生成并执行，桌面 1440 / 手机 390 / 深色均截图检查，控制台零错误、零外部请求。
 - 测试 1011 → 1035 项，全部通过（skipped=10）。
 
+## 未发布（命令行交互界面重做）
+
+- 交互模式（`python3 -m nyra`）参照常见终端编程助手的布局重做，只借鉴布局与交互，文字、配色与标志都是 Nyra 自己的（黑白极简 + 少量强调色）。新增 `nyra/tui.py`（标准库 only）：启动头部（左侧 4 行半块字符的 Nyra 标志——实心圆里刻光标，单色；右侧 `Nyra v<版本>` / `<模型> · <provider> · <计费方式>` / 工作目录，窄于 60 列只留文字）；上下横线夹住的 `> ` 输入行（随终端宽度，左右键/Home/End/历史/Ctrl+U/K/W/L，超宽横向滚动，中文两列宽）；输入框下的状态栏（`[模型] │ 项目名`、`上下文 N%`——只用 provider 报告的最近输入 token 与已配置窗口计算，缺一个就不显示、不估算；审批模式行 `›› auto（shift+tab 切换）`，full 整行红色警告）。推理强度/计划模式状态内核不支持，不显示。
+- shift+tab 循环 readonly → auto → full → readonly；进 full 要连按两次（第一次只亮红色确认提示，按其他键取消）。切换走与 `/mode` 同一个函数（`cli.py` 里抽出 `switch_mode`：重启 MCP 子进程、清空逐项批准），安全约束不变。
+- 工作区信任确认：首次在某目录交互运行时先问“正在访问工作区：”，`1. 是，我信任这个文件夹` / `2. 否，退出`，上下键或数字选择，Enter 确认、Esc 取消（Esc / Ctrl+C 算否）。新增 `nyra/trust.py`：信任记录存 `~/.nyra/trusted_workspaces.json`（每个绝对路径一条、只认目录本身、0600 原子写入，文件损坏视为未信任）。新增 `--trust` 参数与配置项 `skip_workspace_trust`。非 TTY、`--json`、定时任务、worker、E2B 沙盒不弹，行为不变。未信任即退出（退出码 1），信任后按原审批规则，不自动放宽。
+- 退回路径：stdin/stdout 不是终端、`TERM=dumb`、Windows 不能开 VT 模式或 `NYRA_TUI=0` 时，交互模式保持原来的字标横幅 + `nyra[auto] ›` 纯文本界面；`NO_COLOR` 只去颜色不改布局；终端编码不支持方块字符时改用 ASCII。按键：macOS/Linux 用 `termios`，Windows 用 `msvcrt`（`\x00\x0f` 即 shift+tab）。界面文字默认中文，`language: "en"` 或 `NYRA_LANG=en` 切英文。零新增依赖。
+- 启动时间（本机中位数，改前 → 改后）：`--version` 110.6 → 110.6 ms，`import nyra.cli` 107.2 → 106.6 ms，伪终端里从启动到可输入 98.5 → 100.8 ms（`tui` 只在交互 TTY 路径里延迟导入）。
+- 新增 `tests/test_tui.py`（41 项：头部宽/窄/无色、状态栏宽/窄/NO_COLOR/ASCII/英文、上下文百分比、信任确认渲染、模式循环、POSIX 与 Windows 按键解析、TTY/dumb/NYRA_TUI/Windows VT 能力判断）与 `tests/test_trust.py`（14 项：信任存储、精确路径、损坏文件、权限、CLI 信任闸门在非 TTY/`--trust`/配置跳过/是/否下的行为）。另用伪终端实跑了 启动 → 信任确认 → 头部与状态栏 → shift+tab → 退出 全流程。如实说明：Windows 与 macOS 没在真机上手动跑过，Windows 路径靠 CI 单元测试与代码审查。
+- 测试 1035 → 1090 项，全部通过（skipped=10）。
+
 ## 未发布（电脑操作 + 视觉模型看屏 + 多模型调研 + 群聊多 Key）
 
 - 电脑操作：新增 `nyra/computer.py`（`ComputerControl`，标准库 only，三后端：Linux xdotool、Windows ctypes 直调 user32/gdi32、macOS osascript + screencapture；`screenshot` / `click` / `move` / `type_text` / `press` / `windows` / `screen_size`，坐标校验、按键归一化；DISPLAY 未设或 xdotool 缺失时报清错，不自启 X 服务、不装东西、不联网）与 `nyra/tools.py` 的 5 个新工具（`computer_screenshot` / `computer_click` / `computer_type` / `computer_key` / `computer_windows`，全部进 `MUTATING_TOOLS`，照 `browser_*` 规矩走 `_check_approval` + `wrap_untrusted` + 证据目录）。`nyra/webui.py` 的 `NEEDS_APPROVAL_TOOLS` 与 `/api/info` 工具数同步补到 24（`tests/test_webui.py` 断言 18→24）。新增 `tests/test_computer.py`（44 项，全 mock）。如实说明：本机无桌面，`sudo apt-get install -y xdotool` 一次尝试即失败（源里没有这个包），没跑成 Xvfb 真冒烟；Windows/macOS 后端只在 mock 上验过，没在真机上跑过；Nyra 本身不“看图找按钮”，坐标须来自用户、窗口几何，或视觉模型看了截屏后报的点。

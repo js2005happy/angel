@@ -445,7 +445,29 @@ python3 -m nyra.knowledge list
 
 继续上一次会话：`python3 -m nyra --resume <会话 id> "继续"`。
 
-交互模式启动时会显示横幅（版本、模型、审批模式、会话 id），提示符是 `nyra[auto] ›`（方括号里是当前审批模式）；每次工具调用按 `┌ 工具名 参数` / `└ ✓/✗ 结果摘要` 分组显示。颜色只在终端（TTY）里启用，设置 `NO_COLOR=1`、`TERM=dumb` 或输出被重定向时自动退回纯文本；一次性任务（`python3 -m nyra "任务"`）的输出保持不变。
+## 终端界面（交互模式）
+
+在终端里运行 `python3 -m nyra` 进入交互模式，界面分四块：
+
+1. **启动头部**：左边是 4 行的 Nyra 小标志（实心圆里刻着光标），右边三行依次是 `Nyra v<版本>`、`<模型> · <provider> · <计费方式>`（API 计费 / 本地模型 / CLI 登录）和当前工作目录。终端窄于 60 列时只显示右边三行。
+2. **工作区信任确认**：第一次在某个目录里运行时，先问“正在访问工作区：”这个目录是不是你自己创建或信任的项目——Nyra 可以在这里读取、修改和执行文件。用上下键或数字 `1` / `2` 选择，Enter 确认、Esc 取消：
+   - `1. 是，我信任这个文件夹`：记下这个目录（`~/.nyra/trusted_workspaces.json`，每个绝对路径一条，只认这个目录本身、不含子目录和上级目录），以后在这里不再问；
+   - `2. 否，退出`（Esc、Ctrl+C 同样算“否”）：Nyra 直接退出，什么都不记。
+   信任只决定 Nyra 能不能在这里启动，**不会放宽审批模式**：信任之后 readonly / auto / full 的规则照旧。想跳过确认：加 `--trust`（信任并记录当前目录），或在 `~/.nyra/config.json` 里设 `"skip_workspace_trust": true`。非交互运行（标准输入或输出不是终端、`--json`、定时任务、任务队列 worker）从不弹确认，行为和以前一样；E2B 沙盒里的目录是远端路径，也不问。
+3. **输入框**：上下两条随终端宽度的横线夹着 `> ` 输入行。左右键 / Home / End 移动光标，上下键翻历史，Ctrl+U 清到行首，Ctrl+K 清到行尾，Ctrl+W 删一个词，Ctrl+L 清屏；有内容时 Ctrl+C 清空输入，空行时 Ctrl+C 或 Ctrl+D 退出。超出宽度的输入横向滚动，中文按两列宽计算。
+4. **状态栏**（输入框下方）：
+   - `[模型] │ 项目名`（项目名取工作目录名；在家目录时显示用户名）；
+   - `上下文 N%`：最近一次请求的输入 token ÷ 已配置的上下文窗口（`--context-window` 或配置里的 `context_window_tokens`）。两个数有一个不知道就不显示，不估算；
+   - 当前审批模式，如 `›› auto 逐项确认（shift+tab 切换）`。**shift+tab** 按 readonly → auto → full → readonly 循环；从 auto 进 full 要连按两次：第一次只显示红色警告“再按 shift+tab 进入 full”，按其他任意键取消；处于 full 时整行红色提示“全权模式：写文件与执行命令不再逐项确认”。用 shift+tab 切换与 `/mode` 完全一致（同样重启 MCP 子进程、清空本次会话的逐项批准）。
+   推理强度、计划模式等状态目前交互内核不支持，所以不显示。
+
+界面文字默认中文；在 `~/.nyra/config.json` 设 `"language": "en"` 或环境变量 `NYRA_LANG=en` 改为英文。颜色只用黑白加少量强调色（模型青色、项目与标题金色、full 红色），设置 `NO_COLOR=1` 只去掉颜色、布局不变。
+
+**自动退回纯文本**：标准输入或输出不是终端、`TERM=dumb`、Windows 控制台不支持 ANSI（VT）序列，或设置了 `NYRA_TUI=0` 时，交互模式退回原来的纯文本界面：NYRA 字标横幅（版本、模型、审批模式、会话 id）加 `nyra[auto] ›` 提示符，用 `/mode` 切换模式。终端编码不能显示方块字符时（如旧代码页）自动改用 ASCII 线条和标志。
+
+**跨平台**：macOS / Linux 用标准库 `termios` 读按键，Windows（PowerShell、Windows Terminal、cmd）用 `msvcrt` 并打开控制台的 VT 模式；零第三方依赖。
+
+每次工具调用按 `┌ 工具名 参数` / `└ ✓/✗ 结果摘要` 分组显示。一次性任务（`python3 -m nyra "任务"`）的输出保持不变；在终端里第一次对某个目录跑一次性任务同样会先做信任确认。
 
 ## 自定义命令与 /init
 
@@ -595,6 +617,8 @@ nyra/
 │   ├── net.py         网络小工具（本机地址直连、不走代理）
 │   ├── evidence.py    会话内证据链
 │   ├── console.py     终端输出（编码降级、颜色、工具调用分组）
+│   ├── tui.py         交互终端界面：启动头部、工作区信任确认、输入框、状态栏、shift+tab 切换模式、按键解析（termios / msvcrt）
+│   ├── trust.py       工作区信任记录（~/.nyra/trusted_workspaces.json）
 │   ├── webui.py       本地网页界面服务器（python3 -m nyra ui）
 │   ├── webui_page.py  网页界面的内嵌单页（HTML/CSS/JS）
 │   └── webui_fonts.py 网页界面随包字体（Inter / JetBrains Mono 拉丁子集，OFL）
