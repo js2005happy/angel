@@ -336,6 +336,8 @@ class ToolJournal:
         status = self.inspect()
         if status["journal_ambiguous"]:
             raise JournalError("日志存在歧义；必须人工核查后才能开始新工具调用")
+        if status["unknown_outcomes"]:
+            raise JournalError("存在结果未知的工具调用；人工核查前禁止新增调用")
         if status["event_count"] >= MAX_EVENTS:
             raise JournalError("事件数量超限")
         call_id = secrets.token_hex(16)
