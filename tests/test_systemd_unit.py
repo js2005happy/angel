@@ -119,7 +119,9 @@ class SystemdUnitTests(unittest.TestCase):
             self.assertIn("共运行 1 轮", proc.stdout)
 
     @unittest.skipIf(
-        shutil.which("systemd-analyze") is None, "systemd-analyze not installed"
+        shutil.which("systemd-analyze") is None
+        or not os.path.isdir("/run/systemd/system"),
+        "systemd-analyze not installed or systemd not running (e.g. container)",
     )
     def test_systemd_analyze_verify(self):
         proc = subprocess.run(
