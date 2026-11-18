@@ -102,6 +102,15 @@ class ToolPrinter:
             failed = result.startswith(("错误：", "执行失败："))
             mark = self._s("✗", "red") if failed else self._s("✓", "green")
             line = f"{self._s('└', 'dim')} {mark} {self._s(one_line(result, 90), 'dim')}"
+        elif kind == "tool_stream":
+            # Live shell output line, shown as it arrives (Claude-style).
+            text = str(data.get("text", "")).rstrip("\n")
+            if len(text) > 200:
+                text = text[:199] + "…"
+            if data.get("stream") == "stderr":
+                line = f"{self._s('│', 'dim')} {self._s(text, 'red')}"
+            else:
+                line = f"{self._s('│', 'dim')} {self._s(text, 'dim')}"
         elif kind == "assistant":
             line = self._s("· " + one_line(data.get("content", ""), 100), "dim")
         else:

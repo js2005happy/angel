@@ -8,12 +8,15 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import threading
+import time
 from typing import Callable
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from .memory import append_memory
+from .approval_ui import ask_approval
 from .skills import save_skill_file
 from .evidence import EvidenceStore
 from .net import open_url
@@ -74,6 +77,13 @@ class ToolContext:
     # persistent connection to close: every action is a fresh
     # subprocess call or system call.
     computer: ComputerControl | None = None
+    # Stream shell output live to on_event ("tool_stream") while the command
+    # runs. Only the terminal REPL sets this: the web UI, JSON mode and
+    # worker protocol must not get a line event per output line.
+    stream_tool_output: bool = False
+    # Callback for live tool events (tool_stream). The agent passes its own
+    # _emit here; front ends that do not want live lines leave it unset.
+    on_event: Callable[[str, dict], None] | None = None
 
 
 POPPY_TOOL_SCHEMA = {
@@ -698,21 +708,25 @@ def _check_approval(
             return
 
         print(summary)
-        if file_scope is not None:
-            prompt = "允许执行吗？[y/N/a] (a=本次会话此工具对该文件始终允许) "
-        elif shell_scope is not None:
-            prompt = "允许执行吗？[y/N/a] (a=本次会话相同命令、目录、后端和超时始终允许) "
-        else:
-            prompt = "允许执行吗？[y/N] "
         _observe_approval(ctx, tool_name, None)
-        answer = input(prompt).strip().lower()
-        approved = answer in ("y", "yes") or (
-            answer in ("a", "always") and (file_scope is not None or shell_scope is not None)
-        )
-        _observe_approval(ctx, tool_name, approved)
-        if answer in ("y", "yes"):
+        if file_scope is not None:
+            choice = ask_approval(
+                "允许执行吗？",
+                allow_always=True,
+                always_label="始终允许：本次会话此工具对该文件",
+            )
+        elif shell_scope is not None:
+            choice = ask_approval(
+                "允许执行吗？",
+                allow_always=True,
+                always_label="始终允许：本次会话相同命令、目录、后端和超时",
+            )
+        else:
+            choice = ask_approval("允许执行吗？")
+        _observe_approval(ctx, tool_name, choice in ("yes", "always"))
+        if choice == "yes":
             return
-        if answer in ("a", "always"):
+        if choice == "always":
             if file_scope is not None:
                 ctx.approved_file_tools.add(file_scope)
                 return
@@ -899,6 +913,112 @@ def _tool_list_dir(ctx: ToolContext, path: str = ".") -> str:
     return "\n".join(lines) or "（空目录）"
 
 
+_STREAM_LINES_MAX = 200
+
+
+def _run_shell_streaming(
+    ctx: ToolContext, command: str, resolved_cwd, timeout: int
+) -> str:
+    """Run a shell command, streaming stdout/stderr live via on_event.
+
+    Each output line is emitted as ("tool_stream", {"name": "shell",
+    "stream": "stdout"|"stderr", "text": line}) as it arrives, so the
+    terminal shows the run in progress instead of silence until the end.
+    The returned text keeps the old shape (stderr under a header), so the
+    model sees the same result as the non-streaming path. Decoding never
+    crashes: errors="replace".
+    """
+    started = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=resolved_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as exc:
+        return f"错误：无法启动命令：{exc}"
+    out_lines: list[str] = []
+    err_lines: list[str] = []
+    shown = 0
+    omitted = 0
+
+    def _emit(text: str, stream: str) -> None:
+        nonlocal shown, omitted
+        if shown < _STREAM_LINES_MAX:
+            shown += 1
+            if ctx.on_event is not None:
+                try:
+                    ctx.on_event(
+                        "tool_stream",
+                        {"name": "shell", "stream": stream, "text": text},
+                    )
+                except Exception:
+                    pass
+        else:
+            omitted += 1
+
+    def _reader(pipe, lines: list[str], stream: str) -> None:
+        while True:
+            line = pipe.readline()
+            if not line:
+                break
+            lines.append(line)
+            _emit(line.rstrip("\n"), stream)
+
+    readers = [
+        threading.Thread(
+            target=_reader, args=(proc.stdout, out_lines, "stdout"), daemon=True
+        ),
+        threading.Thread(
+            target=_reader, args=(proc.stderr, err_lines, "stderr"), daemon=True
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        # Readers may stay blocked on a grandchild that outlives the shell
+        # (shell=True spawns sh, which spawns the real command). They are
+        # daemon threads: join briefly for the lines already in flight,
+        # then let stragglers die with the process instead of hanging the
+        # run for the grandchild's lifetime.
+        for reader in readers:
+            reader.join(timeout=1)
+        partial = "".join(out_lines)
+        if err_lines:
+            if partial and not partial.endswith("\n"):
+                partial += "\n"
+            partial += "标准错误：\n" + "".join(err_lines)
+        message = f"错误：命令超时（{timeout} 秒）"
+        if partial.strip():
+            message += "\n已输出：\n" + _truncate(partial)
+        return message
+    for reader in readers:
+        reader.join()
+    if omitted:
+        _emit(f"…（已省略 {omitted} 行实时显示，完整输出见结果）", "stdout")
+    elapsed = time.monotonic() - started
+    if elapsed >= 2:
+        _emit(f"（用时 {elapsed:.1f} 秒）", "stdout")
+    combined = "".join(out_lines)
+    if err_lines:
+        if combined and not combined.endswith("\n"):
+            combined += "\n"
+        combined += "标准错误：\n" + "".join(err_lines)
+    return _truncate(combined) or "（无输出）"
+
+
 def _tool_shell(
     ctx: ToolContext,
     command: str,
@@ -917,6 +1037,8 @@ def _tool_shell(
         return _truncate(
             ctx.backend.run_command(command, cwd=str(resolved_cwd), timeout=timeout)
         ) or "（无输出）"
+    if ctx.stream_tool_output and ctx.on_event is not None:
+        return _run_shell_streaming(ctx, command, resolved_cwd, timeout)
     try:
         result = subprocess.run(
             command,

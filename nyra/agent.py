@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import NYRA_HOME, load_config
+from .approval_ui import ask_approval
 from .providers import Provider, ProviderError
 from .tools import (
     TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
@@ -97,6 +98,7 @@ class Agent:
         auto_compact_threshold: float = DEFAULT_AUTO_COMPACT_THRESHOLD,
         checkpoint_store: CheckpointStore | None = None,
         poppy_enabled: bool = False,
+        stream_tool_output: bool = False,
     ) -> None:
         self.provider = provider
         self.poppy_enabled = bool(poppy_enabled)
@@ -151,6 +153,8 @@ class Agent:
             approve_fn=approve_fn,
             checkpoint=self.checkpoints,
             poppy_enabled=self.poppy_enabled,
+            stream_tool_output=stream_tool_output,
+            on_event=self._emit,
         )
 
     def _emit(self, kind: str, data: dict) -> None:
@@ -487,10 +491,10 @@ def build_mcp_manager(
                 "可能访问本机文件和网络。"
             )
             try:
-                answer = input("允许启动该 MCP 服务吗？[y/N] ")
+                choice = ask_approval("允许启动该 MCP 服务吗？")
             except (EOFError, KeyboardInterrupt):
-                answer = ""
-            if answer.strip().lower() in ("y", "yes"):
+                choice = "no"
+            if choice == "yes":
                 approved[name] = server
         servers = approved
         if not servers:
