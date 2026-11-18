@@ -144,10 +144,10 @@ class ToolJournal:
         _safe_directory(self.path)
 
     def _records(self) -> list[dict]:
-        _safe_directory(self.path)
-        if not self.path.exists():
-            return []
+        # Do not use exists(): access-denied must not masquerade as an empty log.
         identity = _directory_identity(self.path)
+        if identity is None:
+            return []
         # POSIX: enumerate and open relative to one stable directory fd.
         # Windows retains the checked-path fallback; no unsafe dir_fd emulation.
         use_dirfd = os.name == "posix" and os.open in os.supports_dir_fd
