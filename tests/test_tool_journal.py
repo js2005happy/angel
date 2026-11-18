@@ -54,6 +54,16 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal.inspect()["unknown_outcomes"], 0)
         self.assertTrue(journal.begin("http_post"))
 
+    def test_finish_rejects_unrelated_orphan_result(self):
+        journal = ToolJournal("orphan-before-finish", root=self.root)
+        pending_id = journal.begin("shell")
+        journal._write("result_error", "b" * 32, "http_post")
+        before = sorted(journal.path.iterdir())
+        with self.assertRaisesRegex(JournalError, "日志存在歧义"):
+            journal.finish(pending_id, "shell", success=True)
+        self.assertEqual(sorted(journal.path.iterdir()), before)
+        self.assertTrue(journal.inspect()["journal_ambiguous"])
+
     def test_begin_rejects_orphan_result_without_creating_intent(self):
         journal = ToolJournal("orphan-before-begin", root=self.root)
         journal._write("result_ok", "a" * 32, "shell")
