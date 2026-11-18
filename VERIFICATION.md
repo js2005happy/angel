@@ -1,3 +1,10 @@
+
+## 2026-11-18 — 空 ToolJournal 的 POSIX 目录句柄最终检查
+
+- 静态审查：此前 `_records()` 在零事件时跳过逐项目录句柄复核，仅检查路径身份。现在在返回前额外执行 `fstat(directory_fd)`，核对设备/inode、目录类型与私有权限。
+- 新增模拟第二次目录 `fstat` 返回宽松权限的回归测试源码；**未执行测试、未安装依赖、未运行 CI**。
+- 不能证明抵抗同用户恶意修改、祖先目录竞态或工具副作用的真实完成。
+
 ## 2026-11-18 ToolJournal 并发未决意图（静态检查）
 
 - 审阅 `angel/tool_journal.py` 的 `begin/finish/inspect`：`begin()` 检查后到持久化 intent 之间仍有跨进程竞争窗口；`finish()` 原先仅拒绝全局歧义，可能在另一个 intent 未决时记录成功。
