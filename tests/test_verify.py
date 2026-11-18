@@ -14,7 +14,7 @@ from nyra.runs import (
     SKIP_AGENTS_NONINTERACTIVE, SKIP_AGENTS_UNCONFIRMED,
     RunRecorder, RunStore, accept_verify_command, escape_untrusted_tags,
     format_run_report, resolve_verify_command, resolve_verify_origin,
-    tests_modified, wrap_untrusted_data,
+    tests_modified as changed_test_files, wrap_untrusted_data,
 )
 
 
@@ -30,7 +30,7 @@ class VerifyHelperTests(unittest.TestCase):
 
     def test_test_path_patterns(self):
         self.assertEqual(
-            tests_modified(["src/app.py", "tests/test_app.py", "foo_test.py", "README.md", "test_utils.py"]),
+            changed_test_files(["src/app.py", "tests/test_app.py", "foo_test.py", "README.md", "test_utils.py"]),
             ["tests/test_app.py", "foo_test.py", "test_utils.py"],
         )
 

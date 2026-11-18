@@ -475,7 +475,7 @@ class SchedulerTest(unittest.TestCase):
             "provider": None,
             "profile": None,
             "model": None,
-            "mode": "full",
+            "mode": "auto",
             "every_seconds": 3600,
             "at": None,
             "enabled": True,
@@ -497,6 +497,7 @@ class SchedulerTest(unittest.TestCase):
             {"name": "a", "prompt": "x", "every_seconds": 0},
             {"name": "a", "prompt": "x", "at": "25:00"},
             {"name": "a", "prompt": "x", "every_seconds": 10, "mode": "bad"},
+            {"name": "a", "prompt": "x", "every_seconds": 10, "mode": "full"},
         ):
             with self.assertRaises(ScheduleError, msg=str(bad)):
                 _validate_task(bad)

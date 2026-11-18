@@ -1573,4 +1573,8 @@ def execute_tool(name: str, arguments: dict, ctx: ToolContext) -> str:
     except TypeError as exc:
         return f"错误：工具参数不正确：{exc}"
     except Exception as exc:
+        # ApprovalRequired 必须冒泡给 worker，不能当成工具错误字符串继续跑。
+        from .runs import ApprovalRequired
+        if isinstance(exc, ApprovalRequired):
+            raise
         return f"执行失败：{type(exc).__name__}: {exc}"
