@@ -64,6 +64,36 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "元数据不安全"):
                     journal.begin("shell")
 
+    def test_windows_dangling_reparse_point_is_not_skipped(self):
+        # exists() can be false for dangling reparse entries. The Windows
+        # security check must use lstat independently of exists().
+        from angel import tool_journal as module
+        from unittest.mock import Mock
+        original_lstat = Path.lstat
+        original_exists = Path.exists
+
+        def fake_exists(path, *args, **kwargs):
+            if path == self.root:
+                return False
+            return original_exists(path, *args, **kwargs)
+
+        def fake_lstat(path, *args, **kwargs):
+            info = original_lstat(path, *args, **kwargs)
+            if path == self.root:
+                fake = Mock(wraps=info)
+                fake.st_file_attributes = stat.FILE_ATTRIBUTE_REPARSE_POINT
+                return fake
+            fake = Mock(wraps=info)
+            fake.st_file_attributes = 0
+            return fake
+
+        with mock.patch.object(module.os, "name", "nt"):
+            with mock.patch.object(Path, "exists", fake_exists):
+                with mock.patch.object(Path, "lstat", fake_lstat):
+                    with mock.patch.object(Path, "is_junction", None, create=True):
+                        with self.assertRaisesRegex(JournalError, "重解析点"):
+                            ToolJournal("dangling-reparse", root=self.root)
+
     def test_windows_reparse_point_without_is_junction(self):
         from angel import tool_journal as module
         from unittest.mock import Mock
