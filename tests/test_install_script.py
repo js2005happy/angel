@@ -36,6 +36,8 @@ def _write_stub(path, body):
 class InstallScriptStaticTests(unittest.TestCase):
     def test_script_exists_and_is_executable(self):
         self.assertTrue(SCRIPT.is_file(), "scripts/install.sh missing")
+        if os.name == "nt":
+            return  # Windows 没有可执行位
         self.assertTrue(
             bool(SCRIPT.stat().st_mode & stat.S_IXUSR),
             "scripts/install.sh should be executable",

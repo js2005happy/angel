@@ -48,6 +48,7 @@ class SystemdUnitTests(unittest.TestCase):
         # The checkout the unit points at is this repository.
         self.assertTrue((ROOT / "nyra" / "cli.py").is_file())
 
+    @unittest.skipIf(os.name == "nt", "systemd unit paths are POSIX-only")
     def test_exec_start_runs_the_scheduler_daemon(self):
         unit = _parse_unit()
         exec_start = unit["Service"].get("ExecStart", "")
@@ -96,6 +97,7 @@ class SystemdUnitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items() if not k.endswith("_API_KEY")}
             env["HOME"] = tmp
+            env["PYTHONIOENCODING"] = "utf-8"
             proc = subprocess.run(
                 [
                     sys.executable,
@@ -112,6 +114,7 @@ class SystemdUnitTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=60,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)

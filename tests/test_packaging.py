@@ -43,6 +43,8 @@ VERSION = _version()
 class PackagingStaticTests(unittest.TestCase):
     def test_script_exists_and_is_executable(self):
         self.assertTrue(SCRIPT.is_file(), "scripts/build_package.sh missing")
+        if os.name == "nt":
+            return  # Windows 没有可执行位
         self.assertTrue(bool(SCRIPT.stat().st_mode & stat.S_IXUSR),
                         "scripts/build_package.sh is not executable")
 
