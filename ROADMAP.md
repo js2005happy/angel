@@ -1,3 +1,9 @@
+## 2026-11-18 Windows 重解析点兼容与社区反馈
+
+- **源码事实**：此前 Windows junction 检查依赖 Python 3.12+ is_junction；本轮使用标准库 lstat 文件属性拒绝祖先目录 reparse point（价值高/难度低/风险低/依赖现有 ToolJournal；已提交、未运行）。仍非稳定句柄或 ACL 检查。
+- **外部反馈事实**：2026-11-18 查阅 [Codex #60973](https://github.com/openai/codex/issues/60973)（Windows junction 工作目录配置问题）及 [Codex #59843](https://github.com/openai/codex/issues/59843)（2026-11-06 Windows sandbox 文件访问拒绝）。这是其他产品的用户报告，不证明 Nyra 同类缺陷。
+- **工程推断与后续排序（价值/难度/风险/依赖）**：① Windows ACL 与稳定句柄（高/高/高/原生 API）；② 工具副作用证据（高/高/高/PR #24、#26）；③ 人工审批续跑（高/高/高/PR #25）；④ 任务完成核验（高/中高/中高/PR #26）；⑤ 后台通知（中高/中/中/PR #27）。main 已迁移 nyra/，本分支仍为 angel/，不合并。
+
 ## 2026-11-18 未结调用门禁与审批失败反馈
 
 - **源码事实**：此前 `begin()` 只阻止 `journal_ambiguous`，未阻止正常格式但尚无 result 的 intent，允许未知副作用未对账时继续发起新调用。本轮对 `unknown_outcomes > 0` 增加失败关闭门禁和测试源码（价值高/难度低/安全风险低/现有 ToolJournal；已提交，未运行测试）。`finish()` 保持可写入结果；多进程竞争窗口未解决。
