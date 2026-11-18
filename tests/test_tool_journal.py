@@ -11,6 +11,22 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_safe_directory_permission_denied_is_not_missing(self):
+        # No filesystem mutation: deny metadata lookup at the session path.
+        from angel import tool_journal as module
+        target = self.root / "denied-directory"
+        original = Path.lstat
+
+        def denied(path, *args, **kwargs):
+            if path == target:
+                raise PermissionError("access denied")
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "lstat", denied):
+            with self.assertRaisesRegex(JournalError, "无法核验日志目录类型"):
+                module._safe_directory(target)
+
+
     def test_path_fallback_rejects_concurrent_new_entry(self):
         # Force the path fallback on POSIX without running on Windows.
         from angel import tool_journal as module
