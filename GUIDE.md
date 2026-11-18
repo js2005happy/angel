@@ -482,8 +482,8 @@ python3 -m nyra ui --port 9000 --workdir ~/project --mode auto
 
 - **左栏**——品牌卡与六视图导航（对话 / 技能与工具 / 定时任务 / 群聊 / 品牌与外观 / 设置），会话列表在对话视图内，可新建会话，也可点开历史会话继续。
 - **中栏：对话**——用户/助手消息（基本 Markdown 渲染），执行中轮询显示进度；每次工具调用是一张可折叠卡片（工具名、参数、结果摘要）。auto 模式下需要审批时卡片里出现“批准 / 拒绝”按钮，走的是和终端相同的审批门（`tools.py` 的 `_check_approval`），readonly / full 行为不变；10 分钟无人处理按拒绝处理。
-- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 14 个 provider 预设 / 15 个内置工具更新。
-- **技能与工具视图**——3 个内置技能与 15 个内置工具一览（每个工具标明是否需要审批）。
+- **右栏：检查器**——当前 provider / 模型 / 凭据状态 / 工作目录、本会话的证据列表（来源链接）、最近一次 `plan` 的步骤；模型卡显示兜底链（如 `deepseek → xai → ollama`）与切换记录，聊天流里发生切换时出现一行“模型已切换”提示并刷新模型卡，Token 用量按 14 个 provider 预设 / 24 个内置工具更新。
+- **技能与工具视图**——3 个内置技能与 24 个内置工具一览（每个工具标明是否需要审批）。
 - **定时任务视图**——读 `~/.nyra/schedule.json`，可查看、启用/停用、删除定时任务（走 `/api/schedule`，只调 `scheduler.py` 的公开函数）；网页端新建定时任务暂缓开放（等任务队列合并 E 后恢复，`POST /api/schedule` 的 add 返回 409），请用 `nyra schedule add` 命令添加；行里显示任务的 provider / 模型与上次运行时间、状态、摘要。
 - **群聊视图**——群列表与“打开群聊页面”入口（带 `?room=<id>`，群聊页打开即选中该群，不存在时回退第一个）；群聊页本身是独立的 `/groups`（`group_ui.html` + `group-ui.js`），同款换肤，provider 下拉从 `/api/info` 取、失败时回退到 14 个预设。
 - **品牌与外观视图**——11 色板、字体示例与使用规则。
@@ -510,7 +510,7 @@ Nyra 会按任务关键词自动加载最相关的技能。你自己的技能存
 
 ## 工具
 
-Nyra 有 18 个工具：`read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`shell`（带危险命令黑名单）、`web_fetch`、`web_search`、`memory_append`、`save_skill`、`delegate`（子 agent）、`plan`（先写计划再执行）、`grep_search`、`git_status`、`http_post`，以及默认关闭、需显式开启的 3 个 Poppy opt-in 工具：`poppy_discover`、`poppy_identity_check`、`poppy_permission_check`（只做公开协议发现与本地权限意向核验，不登录、不发交易）。
+Nyra 有 24 个工具：`read_file`、`write_file`、`edit_file`、`apply_patch`、`list_dir`、`shell`（带危险命令黑名单）、`web_fetch`、`web_search`、`memory_append`、`save_skill`、`delegate`（子 agent）、`plan`（先写计划再执行）、`grep_search`、`git_status`、`http_post`、`browser_navigate` / `browser_click` / `browser_screenshot`（CDP 浏览器）、`computer_screenshot` / `computer_click` / `computer_type` / `computer_key` / `computer_windows`（电脑操作，均需审批）、`multi_model_research`（多模型并行调研），以及默认关闭、需显式开启的 3 个 Poppy opt-in 工具：`poppy_discover`、`poppy_identity_check`、`poppy_permission_check`（只做公开协议发现与本地权限意向核验，不登录、不发交易）。
 
 - **plan**：多步骤任务先写计划文件（默认 `plan.md`）再执行。
 - **delegate**：把子任务交给一个子 agent（轮数受限），拿回摘要再继续。
@@ -536,7 +536,7 @@ python3 -m nyra --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的工
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 727 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 964 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -550,9 +550,19 @@ nyra/
 │   ├── __main__.py    入口：python3 -m nyra
 │   ├── cli.py         参数解析 + 交互 REPL + schedule 子命令
 │   ├── agent.py       agent 主循环（plan → 工具调用 → 汇报）
-│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）+ 通用 provider 预设与 /models 发现
+│   ├── providers.py   OpenAI 兼容客户端（urllib）+ 模型自动兜底（FallbackProvider）+ 同模型多 Key 轮换（KeyRotatingProvider）+ 通用 provider 预设与 /models 发现
 │   ├── commands.py    自定义斜杠命令 + /init 的 AGENTS.md 模板
-│   ├── tools.py       18 个工具 + 审批 + shell 黑名单
+│   ├── tools.py       24 个工具 + 审批 + shell 黑名单
+│   ├── computer.py    电脑操作：三后端（Linux xdotool / Windows ctypes / macOS osascript+screencapture），截屏/点击/输入/按键/列窗口
+│   ├── vision.py      视觉模型看屏：image part 拼装 + 模型是否带视觉判断（agent.py 接线等 A–E 后）
+│   ├── multi_model.py 多模型调研：同一问题并行问多个模型，综合成共识/分歧/独特观点三节
+│   ├── server.py      独立 API 服务器（http.server + SSE 流式事件，默认 127.0.0.1:8766）
+│   ├── artifacts.py   Artifacts 富文本产物：存储、检测、Markdown 渲染
+│   ├── conversations.py  sqlite 对话记忆：FTS5 全文检索 + 检索注入 prompt
+│   ├── websocket.py   最小 WebSocket 客户端（标准库，供 CDP 用）
+│   ├── cdp_browser.py CDP 浏览器客户端：导航/求值/点击/截图（只连本机 Chrome）
+│   ├── banner.py      终端横幅：NYRA 四字母字标（11 行 × 42 列 `#`）
+│   ├── untrusted.py   提示词注入防御：外部内容打标记 + 指令句拦截
 │   ├── knowledge.py   本地 AI 知识库：收文本/文件/网页，分块存笔记，BM25 检索后交给模型回答
 │   ├── mcp_presets.py 内置 MCP 服务器预置（默认 memory、sequential-thinking、fetch、time）
 │   ├── pairing.py     配对码协作：两个 Nyra 用 6 位码配对，宿主只读跑任务
@@ -563,7 +573,7 @@ nyra/
 │   ├── checkpoints.py 写入前检查点：崩溃感知快照、/undo 与 /rewind
 │   ├── plan_mode.py   两阶段计划模式：先审计划（SHA-256 批准），后执行
 │   ├── json_mode.py   非交互 JSON Lines 输出协议（stdout 只出机器可读行）
-│   ├── groups.py      多机器人群聊：文件式房间、@mention 路由、串行轮流
+│   ├── groups.py      多机器人群聊：文件式房间、@mention 路由、串行轮流、每机器人独立多 API Key 轮换
 │   ├── poppy.py       Poppy 1.0 公开协议发现（默认关闭，只读校验）
 │   ├── poppy_identity.py  Poppy OAuth issuer 双向元数据核验（只读预检）
 │   ├── poppy_permissions.py  Poppy 站点权限意向账本（本地记录，非 OAuth 授权）
@@ -600,7 +610,7 @@ nyra/
 待开发项集中清单（详见 [DESIGN.md](DESIGN.md) 与 [ROADMAP.md](ROADMAP.md)；已实现的不再列）：
 
 - **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录——现在命令仍以运行 Nyra 的用户身份执行，full 模式只在信任的目录用。
-- **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium）；`web_fetch` 的纯文本抓取不能冒充浏览器。
+- **浏览器工具**：已实现（`nyra/cdp_browser.py` + `nyra/websocket.py`，标准库 WebSocket 直连本机 Chrome 的 CDP：BrowserNavigate / BrowserClick / BrowserScreenshot，不用 Playwright/Chromium 驱动）；`web_fetch` 的纯文本抓取仍保留作只读途径。
 - **可靠性队列**：长任务断点续跑 + 结果自证、费用上限及实时成本看板、多 Agent 真实状态板。
 - **Poppy**：P4（UCP 购物及商店 Agent 对话）、P5（Nyra 对外发布自身能力）；P3 的真实 Session、OAuth 登录、DPoP、HTTP MCP 也未实现。
 - **EigenFlux**：E2（经用户批准的安装与入网 onboarding）、E3（收件箱、feed、订阅与公开广播）、E4（多机器人协作匹配）。

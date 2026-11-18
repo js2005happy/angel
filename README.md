@@ -19,7 +19,7 @@
 
 <p align="center">
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 727 项" src="https://img.shields.io/badge/tests-727%20passing-0B0B0C">
+  <img alt="测试 964 项" src="https://img.shields.io/badge/tests-964%20passing-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -69,6 +69,8 @@ python3 -m nyra ui --open                # 本地网页界面
 
 想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
 想拿现成的发布包（tarball / .deb）：见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build_package.sh`。
+
+Windows 上装：exe 单文件（不用装 Python）或一键脚本，见 [docs/windows-install.md](docs/windows-install.md)。
 
 交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
 
@@ -143,7 +145,7 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 727 项，全部 mock，无需 Key
+python3 -m unittest discover tests   # 964 项，全部 mock，无需 Key
 ```
 
 ## 致谢与许可
