@@ -56,7 +56,15 @@ def _safe_directory(path: Path) -> None:
         if current == current.parent:
             break
         current = current.parent
-    if path.exists() and not path.is_dir():
+    # A permission-denied lstat must never be interpreted as a missing path.
+    # Do not rely on exists()/is_dir(), which can suppress OS errors.
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise JournalError("无法核验日志目录类型") from exc
+    if not stat.S_ISDIR(entry.st_mode):
         raise JournalError("日志目录不是文件夹")
 
 
