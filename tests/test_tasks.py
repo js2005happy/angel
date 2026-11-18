@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import threading
 import unittest
@@ -15,6 +16,10 @@ from nyra.tasks import (
     worker_once, run_one, WorkerLock, append_inbox, load_inbox, format_unread_inbox,
     mark_inbox_read, handle_task, TaskError,
 )
+
+# Portable verify command, see test_verify.py (Windows cmd has no
+# `python3` and does not strip single quotes).
+VERIFY_OK = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
 
 
 class TaskQueueTests(unittest.TestCase):
@@ -172,7 +177,7 @@ class TaskQueueTests(unittest.TestCase):
 
     def test_worker_does_not_auto_trust_agents_verify(self):
         (self.workdir / "AGENTS.md").write_text(
-            "verify: python3 -c 'import sys; sys.exit(0)'\n", encoding="utf-8",
+            f"verify: {VERIFY_OK}\n", encoding="utf-8",
         )
 
         class Provider:
@@ -190,7 +195,7 @@ class TaskQueueTests(unittest.TestCase):
         trusted = add_task(
             "再打一次招呼", workdir=self.workdir, store=self.store, trust_agents_verify=True,
         )
-        self.assertEqual(trusted["verify_cmd"], "python3 -c 'import sys; sys.exit(0)'")
+        self.assertEqual(trusted["verify_cmd"], VERIFY_OK)
         # worker 默认遇 shell 审批会停下；这里显式放行，确认已冻结的命令会被执行。
         claimed = self.store.claim(trusted["run_id"])
         final, output = run_one(
@@ -198,7 +203,7 @@ class TaskQueueTests(unittest.TestCase):
             approve_fn=lambda *args, **kwargs: True,
         )
         self.assertEqual(final["status"], "verified")
-        self.assertEqual(final["verify_cmd"], "python3 -c 'import sys; sys.exit(0)'")
+        self.assertEqual(final["verify_cmd"], VERIFY_OK)
         self.assertIn("已验证", output)
 
     def test_approve_uses_resume_and_asks_again(self):

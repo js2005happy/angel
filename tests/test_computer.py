@@ -8,6 +8,7 @@ objects; the macOS osascript calls are argv-checked, never executed.
 import ctypes
 import os
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -613,6 +614,7 @@ class TestWindowsBackend(unittest.TestCase):
             0, 90, 80, 70, 120, 110, 100,
         ]))
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "real windll exists on Windows")
     def test_no_real_windll_on_linux(self):
         ctl = ComputerControl(backend="windows")
         with self.assertRaises(ComputerError) as cm:
