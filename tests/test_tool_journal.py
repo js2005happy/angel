@@ -34,6 +34,21 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "并发变化"):
                     journal.inspect()
 
+    def test_directory_identity_permission_error_is_not_empty_journal(self):
+        from angel import tool_journal as module
+        journal = ToolJournal("permission-error", root=self.root)
+        journal.path.mkdir(mode=0o700)
+        original_lstat = Path.lstat
+
+        def denied(path, *args, **kwargs):
+            if path == journal.path:
+                raise PermissionError("access denied")
+            return original_lstat(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "lstat", denied):
+            with self.assertRaisesRegex(JournalError, "无法核验日志目录身份"):
+                module._directory_identity(journal.path)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
