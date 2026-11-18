@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import threading
@@ -163,6 +164,36 @@ class TokenAndHostTests(WebUITestCase):
         status, raw, _ = self.request("/", token=False)
         self.assertEqual(status, 403)
         self.assertNotIn(self.state.token, raw.decode("utf-8"))
+
+    def test_negative_content_length_is_400_and_server_survives(self):
+        self.start()
+        host, port = self.base.rsplit(":", 1)
+        host = host.split("://", 1)[1]
+        port = int(port)
+        sock = socket.create_connection((host, port), timeout=5)
+        try:
+            sock.sendall(
+                (
+                    "POST /api/sessions HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{port}\r\n"
+                    f"X-Nyra-Token: {self.state.token}\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: -5\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("utf-8")
+            )
+            sock.settimeout(5)
+            raw = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+        finally:
+            sock.close()
+        self.assertTrue(raw.startswith(b"HTTP/1.1 400"), raw[:100])
+        status, _ = self.get_json("/api/info")
+        self.assertEqual(status, 200)
         status, raw, headers = self.request(f"/?token={self.state.token}", token=False)
         self.assertEqual(status, 200)
         self.assertIn("Nyra", raw.decode("utf-8"))
@@ -576,7 +607,8 @@ class UIv2Tests(WebUITestCase):
             self.assertFalse(by_name[name]["needs_approval"], name)
         self.assertEqual(
             {s["name"] for s in info["skills"]},
-            {"file-organizer", "verify-research", "web-research", "deep-thinking"},
+            {"file-organizer", "verify-research", "web-research", "deep-thinking",
+             "debugging"},
         )
 
     def test_page_uses_new_palette_and_no_mascot(self):

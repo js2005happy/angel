@@ -1,5 +1,7 @@
 """Tests for live shell output streaming (tool_stream events)."""
 
+import contextlib
+import shutil
 import sys
 import tempfile
 import time
@@ -28,6 +30,32 @@ def _ctx(tmp: Path, stream: bool):
         on_event=on_event,
     )
     return ctx, events
+
+
+@contextlib.contextmanager
+def _robust_tempdir():
+    """TemporaryDirectory whose cleanup never fails the test.
+
+    On Windows a timeout-killed shell can leave a grandchild alive
+    with the temp dir as its cwd (shell=True spawns the shell, which
+    spawns the real command), so rmtree fails with PermissionError
+    (WinError 32, retrying as WinError 5) when the ``with`` block
+    exits. Retry briefly -- the direct child is already waited on by
+    the tool -- then give up quietly: the test asserts on the tool
+    result, not on the directory.
+    """
+    tmp = tempfile.TemporaryDirectory()
+    try:
+        yield tmp.name
+    finally:
+        for _ in range(10):
+            try:
+                tmp.cleanup()
+                break
+            except OSError:
+                time.sleep(0.2)
+        else:
+            shutil.rmtree(tmp.name, ignore_errors=True)
 
 
 class ShellStreamTests(unittest.TestCase):
@@ -66,7 +94,7 @@ class ShellStreamTests(unittest.TestCase):
             )
 
     def test_timeout_kills_process_and_reports_partial_output(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with _robust_tempdir() as tmp:
             ctx, events = _ctx(Path(tmp), stream=True)
             cmd = (
                 f'"{sys.executable}" -c '

@@ -236,6 +236,26 @@ class ConversationStoreTest(unittest.TestCase):
         hits = reopened.search("机器人调试", limit=5)
         self.assertGreaterEqual(len(hits), 2)
 
+    def test_corrupt_schema_version_does_not_break_reopen(self):
+        _seed(self.store)
+        self.store.close()
+        import sqlite3
+
+        db = Path(self._tmp.name) / "conversations.db"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "UPDATE meta SET value = 'not-a-version'"
+                " WHERE key = 'schema_version'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        reopened = ConversationStore(Path(self._tmp.name))
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.schema_version, 1)
+        self.assertEqual(len(reopened.history("s-robot")), 3)
+
     def test_force_fts5_off_still_persists(self):
         store = ConversationStore(Path(self._tmp.name) / "nofts",
                                   use_fts5=False)

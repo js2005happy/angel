@@ -139,6 +139,23 @@ class StatusBarTests(unittest.TestCase):
         self.assertIn("context 3%", lines[1])
         self.assertIn("shift+tab to switch", lines[2])
 
+    def test_long_cjk_model_does_not_duplicate_or_drop_chars(self):
+        # 旧实现按字符数切 rest：模型名被按宽度截断后，项目名会错位
+        # 重复/丢失。整行（去 ANSI 后）必须等于截断后的原文。
+        model = "超长中文模型名称超长中文模型名称超长中文"
+        project = "项目"
+        for width in (30, 40, 60):
+            lines = plain(tui.render_status(model, project, "auto", width))
+            room = max(10, width - 2 - 1)
+            expected = tui.truncate(f"[{model}] │ {project}", room)
+            self.assertEqual(lines[0].strip(), expected, width)
+
+    def test_bool_window_is_not_a_number(self):
+        self.assertIsNone(tui.context_percent(
+            {"context_window_tokens": True, "last_prompt_tokens": 1}))
+        self.assertIsNone(tui.context_percent(
+            {"context_window_tokens": 1000, "last_prompt_tokens": True}))
+
 
 class ContextPercentTests(unittest.TestCase):
     def test_needs_both_numbers(self):

@@ -1,12 +1,13 @@
 """Tests for the CDP browser client and the browser_* tools.
 
 No real Chrome, socket or network is used: the CDP transport is a fake
-that replays canned messages, ``urlopen`` is patched for /json discovery,
+that replays canned messages, ``open_url`` is patched for /json discovery,
 and the tools run against a stub browser injected into the ToolContext.
 """
 
 import base64
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -85,15 +86,38 @@ class ConnectTests(unittest.TestCase):
              "webSocketDebuggerUrl": PAGE_WS_URL},
         ]
         fake_ws = mock.Mock()
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("nyra.cdp_browser.open_url",
                         return_value=json_list_response(targets)), \
                 mock.patch("nyra.cdp_browser.WebSocketClient",
                            return_value=fake_ws):
             browser = CDPBrowser.connect_to_chrome()
         self.assertEqual(browser.ws_url, PAGE_WS_URL)
 
+    def test_connect_to_chrome_bypasses_proxy_for_loopback(self):
+        # /json discovery must not go through HTTP(S)_PROXY: on a
+        # proxied network a plain urlopen would forward 127.0.0.1 to
+        # the proxy and report "no Chrome".
+        targets = [{"type": "page", "webSocketDebuggerUrl": PAGE_WS_URL}]
+        fake_ws = mock.Mock()
+        with mock.patch.dict(os.environ, {
+            "HTTPS_PROXY": "http://127.0.0.1:1",
+            "https_proxy": "http://127.0.0.1:1",
+        }), mock.patch(
+            "nyra.cdp_browser.open_url",
+            return_value=json_list_response(targets),
+        ) as patched_open_url, mock.patch(
+            "nyra.cdp_browser.WebSocketClient", return_value=fake_ws
+        ), mock.patch(
+            "urllib.request.urlopen",
+            side_effect=AssertionError("must not use proxied urlopen"),
+        ):
+            browser = CDPBrowser.connect_to_chrome()
+        self.assertEqual(browser.ws_url, PAGE_WS_URL)
+        request = patched_open_url.call_args[0][0]
+        self.assertEqual(request.full_url, "http://127.0.0.1:9222/json")
+
     def test_connect_to_chrome_no_chrome_running(self):
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("nyra.cdp_browser.open_url",
                         side_effect=URLError("refused")):
             with self.assertRaises(CDPError) as ctx:
                 CDPBrowser.connect_to_chrome()
@@ -103,7 +127,7 @@ class ConnectTests(unittest.TestCase):
     def test_connect_to_chrome_no_page_target(self):
         targets = [{"type": "browser",
                     "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/X"}]
-        with mock.patch("urllib.request.urlopen",
+        with mock.patch("nyra.cdp_browser.open_url",
                         return_value=json_list_response(targets)):
             with self.assertRaises(CDPError) as ctx:
                 CDPBrowser.connect_to_chrome()
@@ -186,6 +210,14 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(browser.screenshot(), PNG_BYTES)
         self.assertEqual(transport.sent[0]["method"], "Page.captureScreenshot")
         self.assertEqual(transport.sent[0]["params"], {"format": "png"})
+
+    def test_screenshot_rejects_non_png_bytes(self):
+        data = base64.b64encode(b"not a png at all").decode("ascii")
+        replies = [{"id": 1, "result": {"data": data}}]
+        browser, _ = make_browser(replies)
+        with self.assertRaises(CDPError) as ctx:
+            browser.screenshot()
+        self.assertIn("PNG", str(ctx.exception))
 
     def test_title_and_current_url(self):
         replies = [

@@ -55,7 +55,8 @@ class TestDeepThinkingSkill(unittest.TestCase):
         skills = load_skills([ROOT / "skills"])
         self.assertEqual(
             {s.name for s in skills},
-            {"file-organizer", "verify-research", "web-research", "deep-thinking"},
+            {"file-organizer", "verify-research", "web-research", "deep-thinking",
+             "debugging"},
         )
 
 

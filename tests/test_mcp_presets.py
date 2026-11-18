@@ -108,6 +108,21 @@ class ResolvePresetTest(unittest.TestCase):
             ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
         )
 
+    def test_memory_preset_survives_broken_home(self):
+        # resolve_preset("memory") creates ~/.nyra; a HOME that is not
+        # a directory used to raise (NotADirectoryError) out of preset
+        # resolution and crash agent start-up. It must degrade instead.
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "not-a-dir"
+            blocker.write_text("x")
+            with mock.patch.object(Path, "home", return_value=blocker):
+                raw, reason = resolve_preset("memory", {})
+        self.assertIsNone(reason)
+        self.assertIn("MEMORY_FILE_PATH", raw["env"])
+
     def test_path_preset_rejects_bad_args(self):
         for bad in ({"filesystem": []}, {"filesystem": "x"}, {"filesystem": [1]}):
             raw, reason = resolve_preset("filesystem", bad)

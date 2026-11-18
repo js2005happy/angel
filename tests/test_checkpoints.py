@@ -268,5 +268,60 @@ class CheckpointAgentTests(unittest.TestCase):
         self.assertFalse((self.workdir / "child.txt").exists())
 
 
+class CheckpointRobustnessTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.workdir = self.home / "work"
+        self.workdir.mkdir()
+        self.store = CheckpointStore(self.home / "backups", "session-one", self.workdir)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_corrupt_metadata_is_quarantined_not_fatal(self):
+        self.store.write_text(self.workdir / "a.txt", "hello")
+        record = next(self.store.directory.glob("*.json"))
+        record.write_text("{broken", encoding="utf-8")
+        # 旧实现：_records 直接抛错，所有检查点操作全死。
+        # 新实现：损坏文件被隔离，历史为空，但后续写入仍能正常建检查点。
+        self.assertEqual(self.store.history(), [])
+        quarantined = list(self.store.directory.glob("*.corrupt-*"))
+        self.assertEqual(len(quarantined), 1)
+        self.assertEqual(quarantined[0].read_text(encoding="utf-8"), "{broken")
+        self.store.begin_turn()
+        self.store.write_text(self.workdir / "b.txt", "world")
+        self.assertEqual(len(self.store.history()), 1)
+        self.assertEqual((self.workdir / "b.txt").read_text(encoding="utf-8"), "world")
+
+    def test_wrong_workdir_record_is_quarantined(self):
+        self.store.write_text(self.workdir / "a.txt", "hello")
+        record = next(self.store.directory.glob("*.json"))
+        data = json.loads(record.read_text(encoding="utf-8"))
+        data["workdir"] = "/somewhere/else"
+        record.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(self.store.history(), [])
+        self.assertEqual(len(list(self.store.directory.glob("*.corrupt-*"))), 1)
+
+    def test_failed_file_write_rolls_back_metadata(self):
+        import nyra.checkpoints as cp_module
+
+        target = self.workdir / "x.txt"
+        real_atomic = cp_module._atomic_write
+
+        def flaky(path, payload):
+            if path == target:
+                raise OSError("disk full")
+            return real_atomic(path, payload)
+
+        with patch.object(cp_module, "_atomic_write", side_effect=flaky):
+            with self.assertRaises(OSError):
+                self.store.write_text(target, "new content")
+        # 元数据已回滚：没有留下声称写过 x.txt 的检查点。
+        self.assertEqual(self.store.history(), [])
+        self.assertFalse(target.exists())
+        self.assertEqual(list(self.store.directory.glob("*.json")), [])
+
+
 if __name__ == "__main__":
     unittest.main()

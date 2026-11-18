@@ -408,6 +408,45 @@ class CodexChatTests(unittest.TestCase):
         self.assertNotIn("DEEPSEEK_API_KEY", seen["env"])
         self.assertIn("PATH", seen["env"])
 
+    def test_child_env_drops_other_credential_vars(self):
+        # 只删 *_API_KEY 会把 GITHUB_TOKEN、密码箱密码等漏给子进程。
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "GITHUB_TOKEN": "ghp-test",
+                    "MY_SERVICE_SECRET": "s3cr3t",
+                    "SOME_PASSWORD": "hunter2",
+                    "NYRA_VAULT_PASSWORD": "vault-pw",
+                    "PATH": "/usr/bin",
+                },
+            ),
+            mock.patch(
+                "nyra.providers._find_codex_binary",
+                return_value="/fake/codex",
+            ),
+            mock.patch("nyra.providers._codex_available", return_value=True),
+        ):
+            seen = {}
+
+            class RecordingPopen(FakePopen):
+                def __init__(self, argv, **kwargs):
+                    super().__init__(argv, **kwargs)
+                    seen["env"] = kwargs.get("env", {})
+
+            with mock.patch(
+                "nyra.providers.subprocess.Popen", RecordingPopen
+            ):
+                self.provider.chat([{"role": "user", "content": "hi"}])
+        for name in (
+            "GITHUB_TOKEN",
+            "MY_SERVICE_SECRET",
+            "SOME_PASSWORD",
+            "NYRA_VAULT_PASSWORD",
+        ):
+            self.assertNotIn(name, seen["env"], name)
+        self.assertIn("PATH", seen["env"])
+
     def test_no_credential_file_is_opened(self):
         opened = []
         real_open = open

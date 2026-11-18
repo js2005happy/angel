@@ -460,6 +460,38 @@ class MalformedRequestTests(ApiTestCase):
         )
         self.assertEqual(status, 400)
 
+    def test_negative_content_length_is_400_and_server_survives(self):
+        # 负 Content-Length 会让旧代码 rfile.read(-5) 读到连接关闭
+        # （挂起）；现在必须立刻 400，且服务仍可用。
+        self.start()
+        host, port = self.base.rsplit(":", 1)
+        host = host.split("://", 1)[1]
+        port = int(port)
+        sock = socket.create_connection((host, port), timeout=5)
+        try:
+            sock.sendall(
+                (
+                    "POST /api/sessions HTTP/1.1\r\n"
+                    f"Host: 127.0.0.1:{port}\r\n"
+                    f"X-Nyra-Token: {self.state.token}\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: -5\r\n"
+                    "Connection: close\r\n\r\n"
+                ).encode("utf-8")
+            )
+            sock.settimeout(5)
+            raw = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+        finally:
+            sock.close()
+        self.assertTrue(raw.startswith(b"HTTP/1.1 400"), raw[:100])
+        status, data = self.get_json("/api/health", token=0)
+        self.assertEqual((status, data["ok"]), (200, True))
+
 
 class ConcurrencyTests(ApiTestCase):
     def test_concurrent_sessions_do_not_interfere(self):

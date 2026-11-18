@@ -235,6 +235,47 @@ class ToolsTest(unittest.TestCase):
             out = execute_tool("shell", {"command": cmd}, self.ctx)
             self.assertTrue(out.startswith("错误："), f"{cmd!r} was not blocked: {out}")
 
+    def test_shell_denylist_rm_flag_variants(self):
+        # 只认 "-rf" 会被拆开/长选项/组合标志写法绕过：这些都必须拦。
+        for cmd in (
+            "rm -r -f /",
+            "rm -f -r /",
+            "rm -R -f ~",
+            "rm --recursive --force /",
+            "rm -r --force /",
+            "rm -rfv /",
+            "rm -rf -- /",
+            "rm -rf $HOME/",
+            "rm -rf ${HOME}",
+            "rm -rf ~/x",
+            "rm -rf /*",
+            "rm -rf .",
+            "rm -rf ..",
+            "dd if=/dev/zero of =/dev/sda",
+            "chmod -R 777 /",
+            "chmod 777 -R /",
+        ):
+            out = execute_tool("shell", {"command": cmd}, self.ctx)
+            self.assertTrue(out.startswith("错误："), f"{cmd!r} was not blocked: {out}")
+
+    def test_shell_denylist_allows_scoped_rm(self):
+        # 有范围的删除仍放行：黑名单只拦根目录/家目录/通配目标。
+        (self.tmp / "build").mkdir()
+        for cmd in ("rm -rf build", "rm -r -f ./build", "rm --recursive --force build"):
+            out = execute_tool("shell", {"command": cmd}, self.ctx)
+            self.assertFalse(out.startswith("错误："), f"{cmd!r} was wrongly blocked: {out}")
+            (self.tmp / "build").mkdir(exist_ok=True)
+
+    def test_web_fetch_rejects_metadata_service(self):
+        out = execute_tool(
+            "web_fetch", {"url": "http://169.254.169.254/latest/meta-data/"}, self.ctx
+        )
+        self.assertIn("元数据", out)
+        out = execute_tool(
+            "web_fetch", {"url": "http://metadata.google.internal/"}, self.ctx
+        )
+        self.assertIn("元数据", out)
+
     def test_shell_runs(self):
         out = execute_tool("shell", {"command": "echo 42"}, self.ctx)
         self.assertIn("42", out)
@@ -565,7 +606,9 @@ class SchedulerTest(unittest.TestCase):
             calls = []
             rounds = run_daemon(
                 lambda task: calls.append(task["name"]) or "done",
-                interval=0,
+                # run_daemon 要求 interval 为正数（0 会 busy-loop）；用 0.01
+                # 仍能无等待跑完两轮。
+                interval=0.01,
                 path=path,
                 stop_after=2,
             )

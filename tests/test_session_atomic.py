@@ -88,6 +88,13 @@ class SessionAtomicTests(unittest.TestCase):
         memory.save_session(SID, [])
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def test_load_session_directory_entry_returns_none(self):
+        # A directory squatting on "<id>.jsonl" used to raise
+        # IsADirectoryError; load_session documents None for anything
+        # that is not a readable session file.
+        (self.sessions / f"{SID}.jsonl").mkdir(parents=True)
+        self.assertIsNone(memory.load_session(SID))
+
     def test_invalid_session_ids_rejected(self):
         for sid in ("", "..", "../escape", "a/b", "a\\b", "a..b",
                     "/tmp/escape", "C:\\escape", "bad\x00id"):

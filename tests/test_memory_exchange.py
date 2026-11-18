@@ -80,9 +80,47 @@ class ScrubTest(unittest.TestCase):
     def test_drops_bare_secret_tokens_and_private_key(self):
         text = "sk-proj-abcdefgh12345678\n-----BEGIN PRIVATE KEY-----\nabc\n"
         cleaned, removed = scrub_secrets(text)
-        self.assertEqual(removed, 2)
+        # 私钥体（BEGIN 后的 base64 行）整块删掉，只删头行会漏私钥本身。
+        self.assertEqual(removed, 3)
         self.assertNotIn("sk-proj", cleaned)
         self.assertNotIn("PRIVATE KEY", cleaned)
+        self.assertNotIn("abc", cleaned)
+
+    def test_drops_json_quoted_credential_keys(self):
+        # JSON 里键与赋值号之间隔着引号，旧模式认不出，会整行漏过去。
+        text = (
+            '{\n'
+            '  "api_key": "sk-abc1234567890",\n'
+            '  "password": "hunter2",\n'
+            '  "access_token": "tok-abcdefgh1234",\n'
+            '  "secret": "s3cr3t-value",\n'
+            '  "name": "Alice"\n'
+            '}\n'
+        )
+        cleaned, removed = scrub_secrets(text)
+        self.assertEqual(removed, 4)
+        self.assertNotIn("sk-abc", cleaned)
+        self.assertNotIn("hunter2", cleaned)
+        self.assertNotIn("tok-abcdefgh", cleaned)
+        self.assertNotIn("s3cr3t-value", cleaned)
+        self.assertIn("Alice", cleaned)
+
+    def test_drops_multiline_private_key_body(self):
+        text = (
+            "用户是学生。\n"
+            "-----BEGIN PRIVATE KEY-----\n"
+            "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+            "AbCdEfGhIjKlMnOpQrStUvWxYz012345\n"
+            "-----END PRIVATE KEY-----\n"
+            "喜欢喝茶。\n"
+        )
+        cleaned, removed = scrub_secrets(text)
+        self.assertEqual(removed, 4)
+        self.assertNotIn("MIIEvQ", cleaned)
+        self.assertNotIn("AbCdEf", cleaned)
+        self.assertNotIn("PRIVATE KEY", cleaned)
+        self.assertIn("用户是学生。", cleaned)
+        self.assertIn("喜欢喝茶。", cleaned)
 
     def test_keeps_prose_mentioning_token(self):
         text = "token 统计是真的，prompt token 比 completion 多。\n"

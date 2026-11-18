@@ -116,6 +116,26 @@ for line in sys.stdin:
             })
         else:
             err(rid, -32601, "Method not found")
+    elif MODE == "modern-endless-pages":
+        if method == "server/discover":
+            ok(rid, DISCOVER_RESULT)
+        elif method == "tools/list":
+            cursor = (req.get("params") or {}).get("cursor") or "0"
+            nxt = str(int(cursor) + 1)
+            ok(rid, {"resultType": "complete", "tools": TOOLS, "nextCursor": nxt})
+        elif method == "tools/call":
+            ok(rid, {"resultType": "complete", "content": [{"type": "text", "text": "modern-ok"}]})
+        else:
+            err(rid, -32601, "Method not found")
+    elif MODE == "modern-image-only":
+        if method == "server/discover":
+            ok(rid, DISCOVER_RESULT)
+        elif method == "tools/list":
+            ok(rid, {"resultType": "complete", "tools": TOOLS})
+        elif method == "tools/call":
+            ok(rid, {"resultType": "complete", "content": [{"type": "image", "data": "QUJD" * 5000, "mimeType": "image/png"}]})
+        else:
+            err(rid, -32601, "Method not found")
     elif MODE in ("legacy", "legacy-old", "legacy-empty-discover",
                   "legacy-unknown-version", "modern-32022-legacy-only",
                   "silent-discover"):
@@ -353,6 +373,31 @@ class MCPProtocol2026Test(unittest.TestCase):
                 client.call_tool("echo", {})
         finally:
             client.stop()
+
+    def test_tools_list_endless_pagination_is_capped(self):
+        from nyra.mcp import MAX_TOOL_LIST_PAGES
+
+        client = MCPClient(self.config("modern-endless-pages"), timeout=10.0)
+        try:
+            with self.assertRaises(MCPError):
+                client.start()
+        finally:
+            client.stop()
+        list_calls = [
+            req for req in self.requests()
+            if req.get("method") == "tools/list"
+        ]
+        self.assertEqual(len(list_calls), MAX_TOOL_LIST_PAGES)
+
+    def test_call_tool_image_only_does_not_dump_base64(self):
+        client = MCPClient(self.config("modern-image-only"), timeout=10.0)
+        try:
+            client.start()
+            out = client.call_tool("echo", {})
+        finally:
+            client.stop()
+        self.assertIn("非文本内容", out)
+        self.assertNotIn("QUJD", out)
 
     def test_pick_modern_version(self):
         self.assertEqual(

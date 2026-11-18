@@ -32,9 +32,43 @@ class KnowledgeBaseTest(unittest.TestCase):
         self.assertEqual(bases[0]["notes"], 0)
         with self.assertRaises(KnowledgeError):
             self.store.create("creator")
-        for bad in ("", "a b", "a/b", "中文名", "a:b"):
+        for bad in ("", "a b", "a/b", "中文名", "a:b", ".", ".."):
             with self.assertRaises(KnowledgeError, msg=bad):
                 self.store.create(bad)
+        # "." / ".." must not escape the knowledge directory: creating
+        # them used to write kb.json into the base dir / its parent.
+        # (Checked against a nested base so the parent dir is private
+        # to this test, not the shared system temp dir.)
+        nested = KnowledgeBase(Path(self._tmp.name) / "nested")
+        for bad in (".", ".."):
+            with self.assertRaises(KnowledgeError, msg=bad):
+                nested.create(bad)
+        self.assertFalse((Path(self._tmp.name) / "nested" / "kb.json").exists())
+        self.assertFalse((Path(self._tmp.name) / "kb.json").exists())
+
+    def test_add_url_rejects_oversize_page(self):
+        from nyra.knowledge import MAX_PAGE_BYTES
+
+        self.store.create("kb")
+
+        class BigResponse:
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, n=-1):
+                return b"x" * (MAX_PAGE_BYTES + 1)
+
+        with patch(
+            "nyra.knowledge.urllib.request.urlopen",
+            return_value=BigResponse(),
+        ):
+            with self.assertRaises(KnowledgeError):
+                self.store.add_url("kb", "https://example.com/big")
 
     def test_add_text_short_and_chunking(self):
         self.store.create("kb")
@@ -176,7 +210,7 @@ class KnowledgeBaseTest(unittest.TestCase):
             def __exit__(self, *exc):
                 return False
 
-            def read(self):
+            def read(self, n=-1):
                 return page_html.encode("utf-8")
 
         with patch(
@@ -209,7 +243,7 @@ class KnowledgeBaseTest(unittest.TestCase):
             def __exit__(self, *exc):
                 return False
 
-            def read(self):
+            def read(self, n=-1):
                 return b"%PDF-1.4"
 
         with patch(

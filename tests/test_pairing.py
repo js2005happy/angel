@@ -201,6 +201,39 @@ class DiscoveryPacketTest(PairingTestBase):
         )
         self.assertIsNone(reply)
 
+    def test_wrong_discovery_attempts_void_code(self):
+        # 发现接口是配对码预言机：错码必须计入失败次数，否则攻击者
+        # 可用 UDP 无限暴力破解 6 位码，绕过 /pair 的 5 次作废限制。
+        host = self.start_host()
+        for _ in range(5):
+            self.assertIsNone(
+                host._handle_discovery_packet(
+                    b"NYRA-PAIR-SEARCH 000000", ("127.0.0.1", 12345)
+                )
+            )
+        # 5 次错码后，即使是正确码也不再回包，/pair 也应拒绝。
+        self.assertIsNone(
+            host._handle_discovery_packet(
+                f"NYRA-PAIR-SEARCH {host.code}".encode(),
+                ("127.0.0.1", 12345),
+            )
+        )
+        ok, _reason = host.verify_code(host.code)
+        self.assertFalse(ok)
+
+    def test_discovery_and_pair_share_failure_budget(self):
+        # 发现错码 + /pair 错码共用同一个 5 次预算。
+        host = self.start_host()
+        for _ in range(3):
+            host._handle_discovery_packet(
+                b"NYRA-PAIR-SEARCH 000000", ("127.0.0.1", 12345)
+            )
+        for _ in range(2):
+            ok, _reason = host.verify_code("000000")
+            self.assertFalse(ok)
+        ok, _reason = host.verify_code(host.code)
+        self.assertFalse(ok)
+
 
 @unittest.skipUnless(
     UDP_AVAILABLE, "本环境禁止 UDP 发送，跳过真实 UDP 发现测试"

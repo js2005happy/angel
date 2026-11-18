@@ -660,10 +660,11 @@ class TestComputerTools(unittest.TestCase):
             self.assertIn(name, names)
             self.assertIn(name, MUTATING_TOOLS)
 
-    def test_screenshot_description_mentions_vision(self):
+    def test_screenshot_description_is_honest_about_vision(self):
         schemas = {s["function"]["name"]: s["function"] for s in TOOL_SCHEMAS}
         desc = schemas["computer_screenshot"]["description"]
-        self.assertIn("视觉模型", desc)
+        self.assertIn("暂不能直接看图", desc)
+        self.assertIn("视觉接线", desc)
         self.assertNotIn("看不见", desc)
 
     def test_screenshot_saves_png_to_evidence(self):
@@ -671,7 +672,7 @@ class TestComputerTools(unittest.TestCase):
         out = execute_tool("computer_screenshot", {}, ctx)
         self.assertEqual(self.fake.calls, [("screenshot",)])
         self.assertIn("已截屏并保存", out)
-        self.assertIn("视觉模型", out)
+        self.assertIn("暂不能直接看图", out)
         saved = list((self.tmp / "sess1").glob("computer_screenshot_*.png"))
         self.assertEqual(len(saved), 1)
         self.assertTrue(saved[0].read_bytes().startswith(PNG_MAGIC))

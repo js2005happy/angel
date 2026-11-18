@@ -115,6 +115,23 @@ class HandshakeTests(unittest.TestCase):
             client.connect()
         self.assertIn("200", str(ctx.exception))
 
+    def test_handshake_failure_closes_owned_socket(self):
+        # connect() creates its own socket here (patched
+        # create_connection): a failed handshake must close it and
+        # drop the reference instead of leaking it.
+        from unittest import mock
+
+        owned = FakeSocket(handshake_response(status=500))
+        with mock.patch(
+            "nyra.websocket.socket.create_connection", return_value=owned
+        ):
+            client = WebSocketClient("ws://127.0.0.1:9/x", key=SAMPLE_KEY)
+            with self.assertRaises(WebSocketError):
+                client.connect()
+        self.assertTrue(owned.closed)
+        self.assertIsNone(client._sock)
+        self.assertTrue(client.closed)
+
     def test_handshake_bad_accept_raises(self):
         sock = FakeSocket(handshake_response(accept="wrong"))
         client = WebSocketClient("ws://127.0.0.1:9222/x", sock=sock, key=SAMPLE_KEY)
@@ -155,6 +172,16 @@ class FrameTests(unittest.TestCase):
         client, _ = connect_client(extra)
         with self.assertRaises(WebSocketError) as ctx:
             client.recv_text()
+        self.assertIn("10MB", str(ctx.exception))
+
+    def test_oversize_frame_header_rejected_before_payload_read(self):
+        # A frame advertising 11 MB with no payload bytes behind it:
+        # the client must refuse from the header alone instead of
+        # trying to buffer the (never arriving) payload.
+        header = bytes([0x81, 0x7F]) + (11 * 1024 * 1024).to_bytes(8, "big")
+        client, sock = connect_client(header)
+        with self.assertRaises(WebSocketError) as ctx:
+            client.recv_text(timeout=2)
         self.assertIn("10MB", str(ctx.exception))
 
     def test_ping_is_answered_with_pong(self):

@@ -145,3 +145,112 @@ class RunTests(unittest.TestCase):
         self.assertEqual(state['changed_files'], ['real.txt'])
         events = [json.loads(x) for x in (self.store.base_dir / state['run_id'] / 'events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertTrue(any(x.get('from') == 'awaiting_approval' and x.get('to') == 'running' for x in events))
+
+
+class RunStoreRobustnessTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.store = RunStore(self.root / 'runs')
+        for target, value in [('nyra.agent.NYRA_HOME', self.root),
+                              ('nyra.memory.SESSIONS_DIR', self.root / 'sessions')]:
+            p = patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def create(self, **kw):
+        return self.store.create('任务', 'session', str(self.root), 'auto', 2, **kw)
+
+    def test_list_skips_corrupt_record_instead_of_failing(self):
+        import io
+        from contextlib import redirect_stderr
+
+        good = self.create()
+        bad = self.create()
+        bad_dir = self.store.base_dir / bad["run_id"]
+        (bad_dir / "state.json").write_text("{broken", encoding="utf-8")
+        orphan = self.store.base_dir / "20261119-000000-abcdef"
+        orphan.mkdir()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            listed = self.store.list()
+        self.assertEqual([s["run_id"] for s in listed], [good["run_id"]])
+        self.assertIn("跳过损坏的运行记录", err.getvalue())
+        # 损坏的记录留在原地供人工检查，没有被删掉。
+        self.assertTrue((bad_dir / "state.json").exists())
+
+    def test_tool_result_ok_counts_execution_failure(self):
+        from nyra.runs import RunRecorder
+
+        class StubProvider:
+            name = "mock"
+            model = "mock"
+
+            def chat(self, messages, tools=None, timeout=120):
+                return {"choices": [{"message": {"role": "assistant", "content": "done"}}]}
+
+        agent = Agent(StubProvider(), workdir=self.root, mode="readonly",
+                      interactive=False, skills_dirs=[])
+        recorder = RunRecorder(self.store, agent, "任务")
+        try:
+            recorder("tool_result", {"id": "1", "name": "shell",
+                                     "result": "执行失败：RuntimeError: boom"})
+            recorder("tool_result", {"id": "2", "name": "shell",
+                                     "result": "错误：拒绝"})
+            recorder("tool_result", {"id": "3", "name": "read_file",
+                                     "result": "文件内容"})
+        finally:
+            agent.on_event = recorder.previous
+        events = [json.loads(x) for x in
+                  (self.store.base_dir / recorder.run_id / "events.jsonl")
+                  .read_text(encoding="utf-8").splitlines()]
+        by_id = {e.get("id"): e for e in events if e.get("type") == "tool_result"}
+        self.assertIs(by_id["1"]["ok"], False)
+        self.assertIs(by_id["2"]["ok"], False)
+        self.assertIs(by_id["3"]["ok"], True)
+
+
+class RunVerifyCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.workdir = self.root / "work"
+        self.workdir.mkdir()
+
+    def _ctx(self, backend=None):
+        from nyra.tools import ToolContext
+
+        return ToolContext(
+            workdir=self.workdir, mode="full", interactive=False,
+            memory_path=self.root / "memory", skills_dir=self.root / "skills",
+            backend=backend,
+        )
+
+    def test_non_utf8_verify_output_does_not_crash(self):
+        import sys as _sys
+        from nyra.runs import run_verify_command
+
+        script = self.root / "emit_bytes.py"
+        script.write_text(
+            "import sys; sys.stdout.buffer.write(b'\\xff\\xfe bad\\n')\n",
+            encoding="utf-8",
+        )
+        result = run_verify_command(
+            self._ctx(), f'"{_sys.executable}" "{script}"', timeout=30)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["passed"])
+
+    def test_backend_output_without_marker_is_not_a_timeout(self):
+        from nyra.runs import run_verify_command
+
+        class FakeBackend:
+            def run_command(self, command, cwd=None, timeout=None):
+                return "命令输出里提到了超时二字，但没有退出码标记\n"
+
+        result = run_verify_command(self._ctx(backend=FakeBackend()),
+                                    "true", timeout=30)
+        self.assertIsNone(result["exit_code"])
+        self.assertFalse(result["passed"])
+        self.assertFalse(result.get("timeout"))

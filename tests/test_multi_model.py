@@ -196,6 +196,30 @@ class ResearchTests(unittest.TestCase):
         self.assertIn("c:m-c", synth_prompt)
         self.assertIn("调用失败", synth_prompt)
 
+    def test_synthesis_truncates_huge_answers(self):
+        from nyra.multi_model import MAX_SYNTHESIS_ANSWER_CHARS
+
+        synth = FakeProvider("s", "m-s", answer="merged")
+        long_answer = "x" * (MAX_SYNTHESIS_ANSWER_CHARS + 5000)
+        fakes = {
+            ("a", None): FakeProvider("a", "m-a", answer=long_answer),
+            ("s", None): synth,
+        }
+        factory, _ = make_factory(fakes)
+        result = research(
+            ["a"], "hi?", synthesizer="s", provider_factory=factory
+        )
+        self.assertEqual(result["synthesis"], "merged")
+        # The full answer is still returned to the caller; only the
+        # copy pasted into the synthesis prompt is bounded.
+        self.assertEqual(result["results"][0]["answer"], long_answer)
+        synth_prompt = synth.seen_messages[0][0]["content"]
+        self.assertIn("已截断", synth_prompt)
+        self.assertLess(
+            len(synth_prompt),
+            len(long_answer) + len("原问题：hi?") + 2000,
+        )
+
     def test_synthesizer_failure_recorded(self):
         fakes = {
             ("a", None): FakeProvider("a", "m-a", answer="A"),

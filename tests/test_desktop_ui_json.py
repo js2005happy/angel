@@ -115,7 +115,12 @@ class SubprocessTests(unittest.TestCase):
                 self.assertEqual(proc.wait(timeout=20), 0)
                 rest = proc.stdout.read().decode("utf-8")
                 self.assertNotIn("网页界面已启动", rest)
-                self.assertIn("网页界面已启动", proc.stderr.read().decode("utf-8"))
+                err = proc.stderr.read().decode("utf-8")
+                self.assertIn("网页界面已启动", err)
+                # stderr 的人类可读行不得带真实 token（桌面端会显示它）；
+                # token 只应出现在 stdout 的 JSON 行里。
+                self.assertNotIn(data["token"], err)
+                self.assertIn("<redacted>", err)
             finally:
                 if proc.poll() is None:
                     proc.kill()

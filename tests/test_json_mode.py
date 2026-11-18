@@ -363,5 +363,25 @@ class JsonModeTests(unittest.TestCase):
         self.assertEqual(events[0]["error"]["code"], "invalid_configuration")
 
 
+class ToolResultOkTests(unittest.TestCase):
+    def _events(self, kind, result):
+        stream = io.StringIO()
+        lines = json_mode.JsonLines(stream)
+        lines.agent_event(kind, {"id": "c1", "name": "shell", "result": result})
+        return [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    def test_execution_failure_prefix_is_not_ok(self):
+        events = self._events("tool_result", "执行失败：RuntimeError: boom")
+        self.assertIs(events[0]["ok"], False)
+
+    def test_error_prefix_is_not_ok(self):
+        events = self._events("tool_result", "错误：拒绝")
+        self.assertIs(events[0]["ok"], False)
+
+    def test_plain_output_is_ok(self):
+        events = self._events("tool_result", "文件内容")
+        self.assertIs(events[0]["ok"], True)
+
+
 if __name__ == "__main__":
     unittest.main()

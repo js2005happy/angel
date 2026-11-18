@@ -192,6 +192,28 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("approved", validate_approval_decision(
             {**base, "approved": "yes"}, pending)[1])
 
+    def test_encode_line_payload_cannot_override_protocol_fields(self):
+        event = json.loads(encode_line("pong", 7, type="run_completed",
+                                       protocol_version=2, id="req-1"))
+        self.assertEqual(event["type"], "pong")
+        self.assertEqual(event["seq"], 7)
+        self.assertEqual(event["protocol_version"], PROTOCOL_VERSION)
+        self.assertEqual(event["id"], "req-1")
+
+    def test_decode_rejects_unsupported_protocol_version(self):
+        obj, error = decode_line(json.dumps(
+            {"type": "ping", "id": "x", "protocol_version": 99}))
+        self.assertIsNone(obj)
+        self.assertIn("protocol version", error)
+
+    def test_decode_accepts_missing_or_current_version(self):
+        obj, error = decode_line(json.dumps({"type": "ping", "id": "x"}))
+        self.assertIsNone(error)
+        self.assertEqual(obj["type"], "ping")
+        obj, error = decode_line(json.dumps(
+            {"type": "ping", "id": "x", "protocol_version": PROTOCOL_VERSION}))
+        self.assertIsNone(error)
+
 
 class WorkerTestBase(unittest.TestCase):
     def setUp(self):

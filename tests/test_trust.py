@@ -152,5 +152,37 @@ class TrustFlagParserTests(unittest.TestCase):
         self.assertFalse(cli.build_parser().parse_args([]).trust)
 
 
+class RemoveTrustedTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name) / "home"
+        self.work = Path(self.tmp.name) / "project"
+        self.work.mkdir()
+        self.other = Path(self.tmp.name) / "other"
+        self.other.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_remove_keeps_other_entries_and_valid_json(self):
+        trust.add_trusted(self.work, home=self.home)
+        trust.add_trusted(self.other, home=self.home)
+        self.assertTrue(trust.remove_trusted(self.work, home=self.home))
+        self.assertFalse(trust.is_trusted(self.work, home=self.home))
+        self.assertTrue(trust.is_trusted(self.other, home=self.home))
+        data = json.loads(trust.trust_file(self.home).read_text(encoding="utf-8"))
+        self.assertEqual(len(data["folders"]), 1)
+        self.assertFalse(trust.remove_trusted(self.work, home=self.home))
+
+    def test_failed_remove_keeps_original_file(self):
+        trust.add_trusted(self.work, home=self.home)
+        before = trust.trust_file(self.home).read_bytes()
+        with mock.patch("os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                trust.remove_trusted(self.work, home=self.home)
+        self.assertEqual(trust.trust_file(self.home).read_bytes(), before)
+        self.assertTrue(trust.is_trusted(self.work, home=self.home))
+
+
 if __name__ == "__main__":
     unittest.main()

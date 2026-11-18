@@ -258,3 +258,38 @@ class TaskQueueTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        self.workdir = self.root / "work"
+        self.workdir.mkdir()
+        self.store = RunStore(self.home / "runs")
+        for target, value in [
+            ("nyra.tasks.NYRA_HOME", self.home),
+            ("nyra.runs.NYRA_HOME", self.home),
+            ("nyra.agent.NYRA_HOME", self.home),
+            ("nyra.memory.SESSIONS_DIR", self.home / "sessions"),
+        ]:
+            p = patch(target, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_add_task_rejects_bad_max_turns(self):
+        for bad in (0, -3, "20", 2.5, True, None):
+            with self.subTest(bad=bad), self.assertRaises(TaskError):
+                add_task("整理文件", workdir=self.workdir, max_turns=bad,
+                         store=self.store)
+
+    def test_worker_rejects_bad_interval(self):
+        for bad in ("-1", "nan", "inf"):
+            code = handle_task(["worker", "--once", "--interval", bad],
+                               self.workdir)
+            self.assertEqual(code, 2, bad)
+        # 合法 interval + 空队列：--once 直接返回 0，不会死循环。
+        self.assertEqual(
+            handle_task(["worker", "--once", "--interval", "0"], self.workdir), 0)
