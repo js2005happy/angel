@@ -58,6 +58,18 @@ def _safe_directory(path: Path) -> None:
         raise JournalError("日志目录不是文件夹")
 
 
+def _reject_windows_event_reparse(info: os.stat_result) -> None:
+    """Reject Windows event-file reparse points, including non-symlink tags."""
+    if os.name != "nt":
+        return
+    try:
+        attrs = info.st_file_attributes
+    except AttributeError as exc:
+        raise JournalError("无法核验 Windows 事件文件重解析点") from exc
+    if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise JournalError("事件文件不能是 Windows 重解析点")
+
+
 def _directory_identity(path: Path) -> tuple[int, int] | None:
     """Snapshot the directory identity; detect replacement during an operation.
 
@@ -179,6 +191,7 @@ class ToolJournal:
                             entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                         else:
                             entry = os.lstat(path)
+                        _reject_windows_event_reparse(entry)
                         if (not stat.S_ISREG(entry.st_mode)
                                 or (entry.st_dev, entry.st_ino) != (info.st_dev, info.st_ino)):
                             raise JournalError("事件文件在打开期间被替换")
@@ -199,6 +212,7 @@ class ToolJournal:
                         final_entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
                     else:
                         final_entry = os.lstat(path)
+                    _reject_windows_event_reparse(final_entry)
                     if (not stat.S_ISREG(final_entry.st_mode)
                             or (final_entry.st_dev, final_entry.st_ino)
                             != (info.st_dev, info.st_ino)):
