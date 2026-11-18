@@ -125,6 +125,22 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "符号链接"):
                 module._safe_directory(anchor)
 
+    def test_read_permission_denied_is_not_an_empty_journal(self):
+        # Simulate a platform where exists() would conceal access denied.
+        from angel import tool_journal as module
+        journal = ToolJournal("read-permission-denied", root=self.root)
+        journal.begin("shell")
+        original_identity = module._directory_identity
+
+        def deny(path):
+            if path == journal.path:
+                raise JournalError("无法核验日志目录身份")
+            return original_identity(path)
+
+        with mock.patch.object(module, "_directory_identity", side_effect=deny):
+            with self.assertRaisesRegex(JournalError, "无法核验"):
+                journal.inspect()
+
     def test_begin_rejects_pending_unknown_intent(self):
         # An unfinished side effect is not safe to silently run past.
         journal = ToolJournal("pending-before-begin", root=self.root)
