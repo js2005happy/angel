@@ -299,6 +299,14 @@ class ToolJournal:
                     if stat.S_IMODE(info.st_mode) & 0o077:
                         raise JournalError("日志读取目录句柄权限过宽")
             _verify_directory(self.path, identity)
+            # Also validate the held directory on an empty journal: the
+            # per-entry checks above never run when there are no events.
+            if directory_fd is not None:
+                final_dir = os.fstat(directory_fd)
+                if ((final_dir.st_dev, final_dir.st_ino) != identity
+                        or not stat.S_ISDIR(final_dir.st_mode)
+                        or stat.S_IMODE(final_dir.st_mode) & 0o077):
+                    raise JournalError("日志读取目录句柄在枚举后发生变化")
             return records
         finally:
             if directory_fd is not None:
