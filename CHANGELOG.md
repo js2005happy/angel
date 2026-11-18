@@ -1,3 +1,8 @@
+## 未发布：Windows 悬空重解析点失败关闭（2026-11-18）
+
+- ToolJournal Windows 祖先路径检查改为直接 `lstat()`，不再依赖可能对悬空 junction 返回 false 的 `exists()`；仅对真正不存在的路径跳过，其他元数据读取异常失败关闭。
+- 新增模拟 `exists() == False` 但 `lstat` 标记重解析点的回归测试源码；未执行测试/CI。尚未实现原生 Windows 目录句柄或 ACL 保护。
+
 ## 2026-11-18 Windows 重解析点路径防护（静态审阅）
 
 - ToolJournal 使用 Windows lstat 文件属性拒绝日志路径中的 reparse point，兼容缺少 is_junction 的 Python 3.11。新增模拟测试源码，未运行测试或 CI。
