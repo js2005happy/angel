@@ -13,6 +13,9 @@ Wi-Fi 或其他不可信网络上使用。
 用法：
     python3 -m nyra.pairing host        # 宿主：打印配对码，服务到 Ctrl-C
     python3 -m nyra.pairing join CODE   # 客人：发现、配对，逐行读任务
+
+配对成功后客人还能读宿主的记忆快照（GET /memory，须 Bearer token，
+返回宿主脱敏后的快照；读记忆也只读，绝不传凭据。见 memory_exchange.py）。
 """
 
 from __future__ import annotations
@@ -261,6 +264,29 @@ class _PairingRequestHandler(BaseHTTPRequestHandler):
         if self.path == "/ping":
             self._send_json(200, {"ok": True})
             return
+        if self.path == "/memory":
+            auth = self.headers.get("Authorization") or ""
+            if not auth.startswith("Bearer "):
+                self._send_json(401, {"error": "未授权"})
+                return
+            if not self._host.check_token(auth[len("Bearer "):].strip()):
+                self._send_json(401, {"error": "未授权"})
+                return
+            try:
+                from nyra.memory_exchange import SnapshotError, export_snapshot_report
+
+                report = export_snapshot_report()
+            except SnapshotError as exc:
+                self._send_json(404, {"error": str(exc)})
+                return
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+                return
+            self._send_json(
+                200,
+                {"snapshot": report["snapshot"], "scrubbed": report["scrubbed"]},
+            )
+            return
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:
@@ -411,6 +437,27 @@ class PairingClient:
         if status != 200:
             raise PairingError(data.get("error", f"任务失败（HTTP {status}）"))
         return data.get("result", "")
+
+    def read_peer_memory(self) -> str:
+        """读宿主的 /memory（只读，返回脱敏后的快照文本）。
+
+        未配对、token 无效、宿主暂无记忆时抛 PairingError。
+        """
+        if self.host is None or self.port is None:
+            raise PairingError("尚未配对")
+        status, data = self._request(
+            "GET", self.host, self.port, "/memory", auth=True
+        )
+        if status == 401:
+            raise PairingError("会话 token 无效或已失效")
+        if status == 404:
+            raise PairingError("宿主暂无记忆")
+        if status != 200:
+            raise PairingError(data.get("error", f"读记忆失败（HTTP {status}）"))
+        snapshot = data.get("snapshot")
+        if not isinstance(snapshot, str) or not snapshot:
+            raise PairingError("宿主未返回记忆快照")
+        return snapshot
 
 
 def main(argv: list[str] | None = None) -> int:

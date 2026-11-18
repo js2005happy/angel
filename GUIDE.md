@@ -193,6 +193,18 @@ Nyra 的 `MEMORY.md` 不属于会话 JSONL：每个新会话都可重新读取�
 
 接口通过原有 Web UI 随机 token 和本机 Host 检查保护；不在模型信息、会话列表等无关 API 中泄漏记忆内容。记忆仅支持 UTF-8，网页编辑器每文件上限 64 KiB，已有符号链接记忆文件不可被网页读写。修改后请手动保存，新的长期记忆在下一次 Agent 请求中生效；敏感记忆请不要复制到公开聊天或截图中。
 
+## 记忆模式：读别的 agent 的记忆
+
+Nyra 能读别的 agent 的记忆，照 Muse 的记忆导入模式做，分快照导入/导出和聊天导入两种，外加配对读记忆和本地读取——全部只读、只追加，导入前先脱敏。
+
+**快照导出/导入**：`python3 -m nyra.memory_exchange export` 把自己的记忆导出成固定五章（身份 / 事实 / 偏好 / 目标与承诺 / 关系）的 Markdown 快照，无可靠信息的章节省略；`export-prompt` 打印一段提示词，贴到别的 AI 聊天里，让对方按同样格式输出快照；`import [FILE]`（不给文件就读 stdin）把快照合并进 `~/.nyra/MEMORY.md`，只追加不覆盖，已存在的内容跳过。导出与导入两端都先脱敏：含密码、密钥、token 的行直接删掉并计数。
+
+**配对读记忆**：跟另一台 Nyra 配对成功后，`python3 -m nyra.memory_exchange peer <配对码> [HOST PORT]` 读对方的记忆快照并导入。宿主提供 GET /memory（须 Bearer token，返回脱敏后的快照）；客人侧再脱敏一次。只在可信网络用，配对规则见配对码协作一节。
+
+**本地读取**：`python3 -m nyra.memory_exchange local codex` 读本机 `~/.codex/memories_1.sqlite`（只读打开；本机 Codex 版本没有 memories 表，记忆在 stage1_outputs.raw_memory 里，两种结构都支持）；`local claude` 读 `~/.claude/CLAUDE.md` 与 `MEMORY.md`；`local dir <目录>` 读指定目录下的 MEMORY.md / AGENTS.md / CLAUDE.md。找不到文件或库里没有内容时报“未找到”，不编造。读到的内容转成快照文本，走同一条导入合并路径。
+
+**聊天导入**：`python3 -m nyra.memory_exchange import-zip FILE.zip` 支持 ChatGPT / Claude 的聊天导出（conversations.json）。只做清单与存档：解析出对话（标题、日期、消息数），原文存到 `~/.nyra/memory-imports/<日期>-<来源>/`，MEMORY.md 里只追加一行导入记录。不做自动事实提炼（那需要模型调用，会编造），提炼以后用知识库的 ask 做。
+
 ## 多机器人群聊（Python 核心 + JavaScript 界面）
 
 启动原有本地网页界面：
@@ -524,7 +536,7 @@ python3 -m nyra --sandbox e2b --sandbox-id <已有沙盒 id> "继续上次的工
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 693 个测试，全部使用 mock，无需 Key
+python3 -m unittest discover tests   # 727 个测试，全部使用 mock，无需 Key
 python3 tests/test_smoke.py
 ```
 
@@ -544,6 +556,7 @@ nyra/
 │   ├── knowledge.py   本地 AI 知识库：收文本/文件/网页，分块存笔记，BM25 检索后交给模型回答
 │   ├── mcp_presets.py 内置 MCP 服务器预置（默认 memory、sequential-thinking、fetch、time）
 │   ├── pairing.py     配对码协作：两个 Nyra 用 6 位码配对，宿主只读跑任务
+│   ├── memory_exchange.py  记忆模式：快照导入/导出、配对读记忆、本地读 Codex/Claude 记忆、聊天 .zip 导入
 │   ├── vault.py       本地加密密码箱：PBKDF2 + HMAC-CTR，存 provider API Key
 │   ├── worker.py      混合 Go 迁移第 1 批：Python worker 入口（python3 -m nyra.worker）
 │   ├── worker_protocol.py  worker 协议 v1：宿主与 worker 间的 stdio JSONL 契约
