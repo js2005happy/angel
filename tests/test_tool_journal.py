@@ -457,6 +457,38 @@ class JournalTests(unittest.TestCase):
                     journal.inspect()
         self.assertEqual(enumerations[0], 2)
 
+
+    @unittest.skipUnless(os.name == "posix" and os.open in os.supports_dir_fd, "POSIX dir_fd only")
+    def test_posix_writer_rechecks_directory_fd_after_sync(self):
+        # Simulate a concurrent chmod after the directory fsync, without
+        # changing permissions on the actual test host.
+        from angel import tool_journal as module
+        from unittest.mock import Mock
+        journal = ToolJournal("write-final-fd-check", root=self.root)
+        original_fsync = module.os.fsync
+        original_fstat = module.os.fstat
+        synced_directory = [False]
+
+        def tracked_fsync(fd):
+            info = original_fstat(fd)
+            if stat.S_ISDIR(info.st_mode):
+                synced_directory[0] = True
+            return original_fsync(fd)
+
+        def widened_after_sync(fd):
+            info = original_fstat(fd)
+            if synced_directory[0] and stat.S_ISDIR(info.st_mode):
+                fake = Mock(wraps=info)
+                fake.st_mode = (info.st_mode & ~0o777) | 0o755
+                return fake
+            return info
+
+        with mock.patch.object(module.os, "fsync", side_effect=tracked_fsync):
+            with mock.patch.object(module.os, "fstat", side_effect=widened_after_sync):
+                with self.assertRaisesRegex(JournalError, "同步后发生变化"):
+                    journal.begin("shell")
+        self.assertTrue(synced_directory[0])
+
     def test_mismatched_result_tool_is_unknown_not_reported_success(self):
         journal = ToolJournal("mismatched-tool", root=self.root)
         call = journal.begin("shell")
