@@ -133,7 +133,7 @@ class PairingHost:
                 return False, "配对码已过期"
             if self._failed_attempts >= self._max_attempts:
                 return False, "配对失败次数过多，配对码已作废"
-            if not hmac.compare_digest(code, self.code):
+            if not isinstance(code, str) or not hmac.compare_digest(code, self.code):
                 self._failed_attempts += 1
                 return False, "配对码错误"
             self._paired = True
@@ -198,7 +198,13 @@ class PairingHost:
 
     def _handle_discovery_packet(self, data: bytes, addr) -> bytes | None:
         """处理一条发现请求；码正确且可用时返回要回的包，否则返回 None
-       （错码、过期、已用过、失败次数超限、格式不对都不回包）。"""
+       （错码、过期、已用过、失败次数超限、格式不对都不回包）。
+
+        错码同样计入失败次数：发现接口本身就是配对码的预言机，
+        不计数的话攻击者可在局域网内用 UDP 无限暴力破解 6 位码，
+        绕过 /pair 的 5 次作废限制（先由发现接口试出正确码，
+        再一次通过 /pair）。
+        """
         try:
             text = data.decode("utf-8").strip()
         except UnicodeDecodeError:
@@ -212,10 +218,11 @@ class PairingHost:
                 and not self._code_expired()
                 and self._failed_attempts < self._max_attempts
             )
-        if not usable:
-            return None
-        if not hmac.compare_digest(parts[1], self.code):
-            return None
+            if not usable:
+                return None
+            if not hmac.compare_digest(parts[1], self.code):
+                self._failed_attempts += 1
+                return None
         return json.dumps(
             {"host": _local_ip_for(addr[0]), "port": self.port}
         ).encode("utf-8")
@@ -262,6 +269,8 @@ class _PairingRequestHandler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
+            return None
+        if length < 0 or length > 1024 * 1024:
             return None
         raw = self.rfile.read(length) if length > 0 else b""
         if not raw:

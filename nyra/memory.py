@@ -121,7 +121,9 @@ def load_session(session_id: str) -> list[dict] | None:
         return None
     try:
         handle = path.open("r", encoding="utf-8", errors="replace")
-    except FileNotFoundError:
+    except (FileNotFoundError, IsADirectoryError, OSError):
+        # A directory (or any other unreadable entry) squatting on the
+        # session path is treated like a missing session, as documented.
         return None
 
     messages: list[dict] = []

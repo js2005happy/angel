@@ -325,13 +325,24 @@ class Agent:
             self.usage.record(resp)
             if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
                 self._emit("usage", self.usage.snapshot())
-            choice = resp["choices"][0]
+            if not isinstance(resp, dict):
+                raise AgentError("模型返回了无法解析的响应（不是对象）")
+            choices = resp.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise AgentError("模型返回了无法解析的响应（缺少 choices）")
+            choice = choices[0]
+            if not isinstance(choice, dict):
+                raise AgentError("模型返回了无法解析的响应（choice 不是对象）")
             msg = choice.get("message") or {}
+            if not isinstance(msg, dict):
+                raise AgentError("模型返回了无法解析的响应（message 不是对象）")
             assistant_msg: dict = {
                 "role": "assistant",
                 "content": msg.get("content") or "",
             }
             tool_calls = msg.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                raise AgentError("模型返回了无法解析的响应（tool_calls 不是列表）")
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
@@ -356,6 +367,10 @@ class Agent:
                 return final
 
             for tc in tool_calls:
+                if not isinstance(tc, dict) or not isinstance(tc.get("function", {}), dict):
+                    # 损坏的调用已记入本轮 assistant 消息；继续循环会把
+                    # 无法配对的 tool_calls 发回模型，直接失败更安全。
+                    raise AgentError("模型返回了无法解析的响应（tool_calls 条目不是对象）")
                 fn_name = tc.get("function", {}).get("name", "")
                 args_raw = tc.get("function", {}).get("arguments") or "{}"
                 try:

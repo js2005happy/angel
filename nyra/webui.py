@@ -952,7 +952,14 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Content-Length 无效") from None
+        if length < 0:
+            # 负值会让 rfile.read(length) 读到连接关闭（挂起/耗尽），
+            # 必须当作无效请求拒绝。
+            raise ValueError("Content-Length 无效")
         if length > MAX_BODY:
             raise ValueError("请求体过大")
         raw = self.rfile.read(length) if length else b"{}"
@@ -1473,7 +1480,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_url_json:
         print(url_json(server), flush=True)
         human = sys.stderr
-    print(f"Nyra {__version__} 网页界面已启动：{url}", file=human)
+    display_url = url
+    if args.print_url_json:
+        # 该模式下人类可读行走 stderr，桌面端会把它显示在引导页上；
+        # 真实 token 只应走 stdout 的 JSON 行（父进程私有管道），
+        # stderr 里打码，避免活 token 明文出现在屏幕上。
+        display_url = re.sub(r"([?&]token=)[^&\s]*", r"\1<redacted>", url)
+    print(f"Nyra {__version__} 网页界面已启动：{display_url}", file=human)
     print("这个链接里含有本次启动的访问 token，请不要分享。按 Ctrl+C 停止。", file=human)
     if args.exit_on_stdin_close:
         watch_stdin_close(lambda: threading.Thread(target=server.shutdown, daemon=True).start())

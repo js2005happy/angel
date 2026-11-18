@@ -69,6 +69,17 @@ def _validate_task(raw: dict) -> dict:
     if not isinstance(enabled, bool):
         enabled = True
 
+    # workdir / verify 不参与触发判断，但 _run_scheduled_task 要用：
+    # 旧代码在清洗时丢掉它们，load 后再 save 还会把手写配置抹掉。
+    workdir = raw.get("workdir")
+    if workdir is not None and not isinstance(workdir, str):
+        raise ScheduleError(f"任务 {name} 的 workdir 必须是字符串")
+    verify = raw.get("verify", raw.get("verify_command"))
+    if verify is not None and not isinstance(verify, str):
+        raise ScheduleError(f"任务 {name} 的 verify 必须是字符串")
+    if isinstance(verify, str) and not verify.strip():
+        verify = None
+
     return {
         "name": name,
         "prompt": prompt,
@@ -79,6 +90,8 @@ def _validate_task(raw: dict) -> dict:
         "every_seconds": every_seconds,
         "at": at,
         "enabled": enabled,
+        "workdir": workdir,
+        "verify": verify.strip() if isinstance(verify, str) else None,
         "last_run": raw.get("last_run"),
         "last_status": raw.get("last_status"),
         "last_summary": raw.get("last_summary"),
@@ -269,6 +282,15 @@ def run_daemon(
     path: Path | None = None,
     stop_after: int | None = None,
 ) -> int:
+    import math
+
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not math.isfinite(interval)
+        or interval <= 0
+    ):
+        raise ValueError("定时任务检查间隔必须是正数")
     configure_stdio()
     rounds = 0
 
@@ -276,12 +298,17 @@ def run_daemon(
         while stop_after is None or rounds < stop_after:
             try:
                 data = load_schedule(path)
+                load_ok = True
             except (ScheduleError, OSError) as exc:
                 print(f"加载定时任务失败：{exc}", file=sys.stderr)
                 data = {"tasks": []}
+                load_ok = False
 
             results = run_due_tasks(data, agent_factory)
-            save_schedule(data, path)
+            if load_ok:
+                # 加载失败时绝不能把空任务表存回去：那会抹掉用户
+                # 原来的 schedule.json（损坏备份虽在，但任务已丢）。
+                save_schedule(data, path)
 
             for result in results:
                 name = result["name"]

@@ -128,17 +128,30 @@ class CheckpointStore:
                 raise CheckpointError("检查点元数据不能是符号链接")
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise CheckpointError("检查点元数据损坏") from exc
+            except (OSError, ValueError):
+                self._quarantine(path)
+                continue
             if (
                 not isinstance(record, dict)
                 or record.get("version") != 1
                 or record.get("workdir") != str(self.workdir)
                 or not isinstance(record.get("files"), dict)
             ):
-                raise CheckpointError("检查点元数据与当前工作目录不一致")
+                self._quarantine(path)
+                continue
             found.append((path, record))
         return found
+
+    def _quarantine(self, path: Path) -> None:
+        """One corrupt metadata file must not brick every checkpoint op:
+        move it aside (never delete) and keep working with the rest."""
+        target = path.with_name(
+            f"{path.stem}.corrupt-{time.time_ns()}{path.suffix}"
+        )
+        try:
+            os.replace(path, target)
+        except OSError as exc:
+            raise CheckpointError("检查点元数据损坏且无法隔离") from exc
 
     def write_text(self, path: Path, content: str) -> None:
         """Capture original bytes BEFORE a successful atomic built-in file write.
@@ -186,7 +199,14 @@ class CheckpointStore:
                 _atomic_write(safe_path, payload)
             except Exception:
                 # If the attempted write made no change, roll metadata back.
-                if _digest(self._content(safe_path)) == _digest(before):
+                # _content may itself fail here (e.g. the path became a
+                # symlink mid-write): that must not mask the original
+                # write error, so treat an unverifiable state as changed.
+                try:
+                    unchanged = _digest(self._content(safe_path)) == _digest(before)
+                except Exception:
+                    unchanged = False
+                if unchanged:
                     self._active = previous
                     if previous["files"]:
                         self._save(self._active_path, previous)
@@ -288,7 +308,9 @@ class CheckpointStore:
                 rel = target.relative_to(self.workdir).as_posix()
                 target = self._safe_path(rel)
                 if original is None:
-                    target.unlink()
+                    # 预检时文件存在且内容匹配；并发删除只会让目标
+                    # 回到"不存在"这一期望状态，不应让 undo 半途失败。
+                    target.unlink(missing_ok=True)
                 else:
                     _atomic_write(target, original)
             for path, record in selected:

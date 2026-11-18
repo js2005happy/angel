@@ -17,6 +17,63 @@ COMPACT_SYSTEM_INSTRUCTION = (
 )
 
 
+def _aligned_tail(messages: list[dict], keep_last: int) -> list[dict]:
+    """Return the last ``keep_last`` messages, aligned to a turn boundary.
+
+    A suffix that starts with a ``tool`` message (its assistant call was
+    cut off) or ends with an assistant ``tool_calls`` whose results are
+    not all retained is rejected by OpenAI-compatible APIs as orphaned
+    tool messages, so: back up to the assistant that issued leading
+    tool results, and drop a trailing incomplete tool exchange.
+    """
+    if keep_last <= 0 or not messages:
+        return []
+    start = max(0, len(messages) - keep_last)
+    tail = list(messages[start:])
+    while tail and tail[0].get("role") == "tool":
+        prev = messages[start - 1] if start > 0 else None
+        if (
+            isinstance(prev, dict)
+            and prev.get("role") == "assistant"
+            and prev.get("tool_calls")
+        ):
+            tail.insert(0, prev)
+            start -= 1
+        else:
+            tail.pop(0)
+            start += 1
+    while tail:
+        idx = next(
+            (
+                i
+                for i in range(len(tail) - 1, -1, -1)
+                if tail[i].get("role") == "assistant" and tail[i].get("tool_calls")
+            ),
+            None,
+        )
+        if idx is None:
+            break
+        if any(
+            m.get("role") == "assistant" and not m.get("tool_calls")
+            for m in tail[idx + 1:]
+        ):
+            break  # A later plain answer closes the exchange.
+        call_ids = {
+            c.get("id", "")
+            for c in tail[idx].get("tool_calls") or []
+            if isinstance(c, dict)
+        }
+        result_ids = {
+            m.get("tool_call_id")
+            for m in tail[idx + 1:]
+            if m.get("role") == "tool"
+        }
+        if call_ids and call_ids <= result_ids:
+            break
+        del tail[idx:]
+    return tail
+
+
 def build_compact_messages(
     messages: list[dict], summary: str, keep_last: int = 4
 ) -> list[dict]:
@@ -25,7 +82,7 @@ def build_compact_messages(
         {"role": "assistant", "content": "已压缩会话，继续。"},
     ]
     if keep_last > 0:
-        new_messages.extend(messages[-keep_last:])
+        new_messages.extend(_aligned_tail(messages, keep_last))
     return new_messages
 
 
@@ -40,7 +97,11 @@ def summarize_with_provider(
     response = provider.chat(request_messages, tools=None, timeout=120)
     if on_response is not None:
         on_response(response)
-    content = response["choices"][0]["message"]["content"]
+    choices = response.get("choices") if isinstance(response, dict) else None
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("模型返回了无法解析的响应（缺少 choices）")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
     summary = (content or "").strip()
     if not summary:
         raise ValueError("模型返回了空摘要")
@@ -74,17 +135,16 @@ def compact_messages(
                 "content": "[压缩失败：模型摘要不可用，仅保留首尾消息]",
             }
         ]
-        tail_start = max(0, before - keep_last) if keep_last > 0 else before
+        tail = _aligned_tail(messages, keep_last)
 
         # 首条用户消息若已包含在末尾消息中，就不重复添加。
-        for index, message in enumerate(messages):
+        for message in messages:
             if message.get("role") == "user":
-                if index < tail_start:
+                if not any(kept is message for kept in tail):
                     fallback_messages.append(message)
                 break
 
-        if keep_last > 0:
-            fallback_messages.extend(messages[tail_start:])
+        fallback_messages.extend(tail)
 
         return fallback_messages, {
             "method": "fallback",
@@ -132,9 +192,29 @@ def compact_session_file(
 
     new_messages, info = compact_messages(provider, messages, keep_last)
 
-    with path.open("w", encoding="utf-8") as session_file:
-        for message in new_messages:
-            session_file.write(json.dumps(message, ensure_ascii=False) + "\n")
+    # 原子替换：先写同目录临时文件再 os.replace，写一半崩溃也不会
+    # 截断原会话文件（旧代码 open("w") 会先截断，写失败即丢会话）。
+    import os
+    import tempfile
+
+    payload = "".join(
+        json.dumps(message, ensure_ascii=False) + "\n" for message in new_messages
+    )
+    fd, temp = tempfile.mkstemp(prefix=".nyra-compact-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as session_file:
+            session_file.write(payload)
+            session_file.flush()
+            os.fsync(session_file.fileno())
+        if os.name != "nt":
+            try:
+                os.chmod(temp, 0o600)
+            except OSError:
+                pass
+        os.replace(temp, path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
 
     info["session_id"] = session_id
     info["path"] = str(path)

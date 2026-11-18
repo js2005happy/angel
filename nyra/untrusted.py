@@ -51,6 +51,26 @@ _INJECTION_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
         ),
     ),
     (
+        "ignore/disregard ... above",
+        re.compile(
+            r"\b(ignore|disregard|forget|override|disobey)\b.{0,40}\b"
+            r"(above|previous|prior|earlier|preceding)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "do not follow instructions",
+        re.compile(
+            r"\b(do not|don't|dont|never)\s+(follow|obey|listen to)\b.{0,20}\b"
+            r"(instructions?|above|previous)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "fake system/developer role",
+        re.compile(r"(?m)^\s*(system|developer)\s*[:：]"),
+    ),
+    (
         "new instructions / system prompt",
         re.compile(
             r"\b(your new instructions?|new system prompt|developer instructions?|"
@@ -96,7 +116,7 @@ _INJECTION_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
     # ---- 中文指令句 ----
     (
         "中文：忽略/无视指令",
-        re.compile(r"(忽略|无视|忘记|推翻|不要遵守).{0,12}指令"),
+        re.compile(r"(忽略|无视|忘记|推翻|不要遵守|别遵守|别听).{0,12}(指令|以上|上述|前面|系统提示|规则|要求)"),
     ),
     (
         "中文：身份改写",
@@ -137,6 +157,8 @@ def sanitize_untrusted_text(text: str) -> tuple[str, int]:
     返回（处理后的文本，被拦截的句数）。被拦截的句不原样保留，
     连续的被拦截句合并成一行占位；正常内容原样保留。
     """
+    # 零宽字符常被用来拆开关键词（如 ign‌ore）绕过正则：先去掉。
+    text = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
     for marker in _SPOOFED_MARKERS:
         text = text.replace(marker, _SPOOF_REPLACEMENT)
     segments = _SEGMENT_SPLIT.split(text)

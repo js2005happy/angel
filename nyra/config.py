@@ -1,5 +1,6 @@
 """Load Nyra configuration and resolve provider settings without exposing credentials."""
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import os
@@ -260,6 +261,15 @@ def get_provider_presets(config: dict | None = None) -> dict:
         err = plaintext_http_error(name, base_url)
         if err is not None:
             raise ValueError(err)
+        for field in ("models", "allowed_hosts"):
+            values = entry.get(field)
+            if values is not None and (
+                not isinstance(values, list)
+                or not all(isinstance(item, str) for item in values)
+            ):
+                raise ValueError(
+                    f"Custom provider {name} 的 {field} 必须是字符串列表"
+                )
         merged = {
             "base_url": base_url,
             "default_model": default_model,
@@ -293,7 +303,9 @@ class ProviderConfig:
 def load_config() -> dict:
     """Load persisted settings over defaults, creating the default file if absent."""
     config_path = NYRA_HOME / "config.json"
-    config = DEFAULT_CONFIG.copy()
+    # 深拷贝：DEFAULT_CONFIG 里的 profiles / mcp_servers / fallback_providers
+    # 等嵌套容器绝不能与调用方共享，否则一次原地修改会污染后续所有加载。
+    config = deepcopy(DEFAULT_CONFIG)
 
     if not config_path.exists():
         try:
@@ -472,17 +484,17 @@ def resolve_fallback_chain(
 
     if enabled is None:
         env_flag = _env("FALLBACK")
-        if env_flag is not None:
-            enabled = env_flag.strip().lower() not in ("0", "false", "no", "off")
+        # 空字符串等于未设置：旧代码里 "" 不在 ("0","false",...) 中，
+        # 会被误判为开启兜底。
+        raw = (
+            env_flag
+            if env_flag is not None and env_flag.strip()
+            else cfg.get("fallback_enabled", False)
+        )
+        if isinstance(raw, str):
+            enabled = raw.strip().lower() not in ("0", "false", "no", "off", "")
         else:
-            enabled = cfg.get("fallback_enabled", False)
-            if isinstance(enabled, str):
-                enabled = enabled.strip().lower() not in (
-                    "0",
-                    "false",
-                    "no",
-                    "off",
-                )
+            enabled = bool(raw)
     if not enabled:
         return [primary_name]
 

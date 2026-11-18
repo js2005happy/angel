@@ -663,16 +663,32 @@ def _usage_from_jsonl(text: str) -> dict | None:
     return out or None
 
 
+_CODEX_CHILD_ENV_DROP_SUFFIXES = (
+    "_API_KEY",
+    "_TOKEN",
+    "_SECRET",
+    "_PASSWORD",
+    "_CREDENTIAL",
+    "_CREDENTIALS",
+)
+_CODEX_CHILD_ENV_DROP_EXACT = {"NYRA_VAULT_PASSWORD"}
+
+
 def _codex_child_env() -> dict:
     """Minimal environment for the Codex child process.
 
     Drops every *_API_KEY so Nyra's keys never leak into the CLI
     subprocess; the CLI authenticates from its own login (CODEX_HOME),
-    which Nyra never touches.
+    which Nyra never touches. Other credential-shaped variables
+    (*_TOKEN / *_SECRET / *_PASSWORD / *_CREDENTIAL[S] and the vault
+    password) are dropped too: the child has no use for them, and a
+    *_TOKEN such as GITHUB_TOKEN is a credential just like a key.
     """
     env = dict(os.environ)
     for key in list(env):
-        if key.endswith("_API_KEY"):
+        if key in _CODEX_CHILD_ENV_DROP_EXACT or key.endswith(
+            _CODEX_CHILD_ENV_DROP_SUFFIXES
+        ):
             del env[key]
     return env
 

@@ -145,25 +145,35 @@ class E2BBackend:
         sbx = self._require_sandbox()
         try:
             entries = sbx.files.list(path)
+
+            def entry_kind(entry) -> str:
+                raw = getattr(entry, "type", "")
+                return str(getattr(raw, "value", raw)).lower()
+
+            rows = []
+            for entry in sorted(
+                entries,
+                key=lambda e: (
+                    entry_kind(e) != "dir",
+                    getattr(e, "name", ""),
+                ),
+            ):
+                if entry_kind(entry) == "dir":
+                    rows.append(f"{entry.name}/")
+                else:
+                    # Directories (and some SDK versions) carry no size;
+                    # do not let a missing attribute escape as an exception.
+                    size = getattr(entry, "size", None)
+                    if size is None:
+                        rows.append(f"{entry.name}")
+                    else:
+                        rows.append(f"{entry.name} ({size} 字节)")
+            return "\n".join(rows) or "（空目录）"
         except Exception as exc:
             message = str(exc).lower()
             if "not found" in message or "not_found" in message:
                 return f"错误：目录不存在：{path}"
             return f"执行失败：{type(exc).__name__}: {exc}"
-        rows = []
-        for entry in sorted(
-            entries,
-            key=lambda e: (
-                str(getattr(e.type, "value", e.type)).lower() != "dir",
-                e.name,
-            ),
-        ):
-            kind = str(getattr(entry.type, "value", entry.type)).lower()
-            if kind == "dir":
-                rows.append(f"{entry.name}/")
-            else:
-                rows.append(f"{entry.name} ({entry.size} 字节)")
-        return "\n".join(rows) or "（空目录）"
 
     def close(self) -> None:
         """Drop the connection. The sandbox keeps running until its timeout."""

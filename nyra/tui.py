@@ -275,7 +275,10 @@ def context_percent(snapshot: dict | None):
         return None
     window = snapshot.get("context_window_tokens")
     used = snapshot.get("last_prompt_tokens")
-    if not isinstance(window, int) or window <= 0 or not isinstance(used, int) or used < 0:
+    if (
+        isinstance(window, bool) or not isinstance(window, int) or window <= 0
+        or isinstance(used, bool) or not isinstance(used, int) or used < 0
+    ):
         return None
     return min(100, (used * 100 + window // 2) // window)
 
@@ -299,8 +302,11 @@ def render_status(
     room = max(10, width - len(indent) - 1)
     first_plain = f"[{model}] {g['bar']} {project}" if project else f"[{model}]"
     first_plain = truncate(first_plain, room)
-    head = truncate(f"[{model}]", room)
-    rest = first_plain[len(head):]
+    head_full = f"[{model}]"
+    head = truncate(head_full, room)
+    # head 是按显示宽度截断的；被截断时按字符数切 rest 会错位
+    # （CJK 一个字符占两列），此时整行就是 head 本身。
+    rest = "" if head != head_full else first_plain[len(head_full):]
     first = style(head, "cyan", enabled=color)
     if rest:
         bar = f" {g['bar']} "

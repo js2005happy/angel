@@ -110,6 +110,8 @@ def add_task(task, *, workdir=".", mode="auto", verify_cmd=None, max_turns=20,
     """由 CLI / 调度器入队。模型工具不得调用本函数。"""
     if not isinstance(task, str) or not task.strip():
         raise TaskError("任务内容不能为空")
+    if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 1:
+        raise TaskError("--max-turns 必须为正整数")
     if mode not in ("readonly", "auto"):
         raise TaskError("任务队列只允许 --mode readonly 或 auto，需审批的操作会进入 awaiting_approval")
     root = Path(workdir).resolve()
@@ -411,6 +413,14 @@ def handle_task(argv, workdir: Path) -> int:
         parser.add_argument("--once", action="store_true", help="处理完当前队列后退出")
         parser.add_argument("--interval", type=float, default=2.0)
         args = parser.parse_args(argv[1:])
+        import math
+        if (
+            isinstance(args.interval, bool)
+            or not math.isfinite(args.interval)
+            or args.interval < 0
+        ):
+            print("错误：--interval 必须是非负数", file=sys.stderr)
+            return 2
         lock = WorkerLock(store.base_dir / WORKER_LOCK)
         if not lock.acquire():
             print("错误：已有 worker 在运行", file=sys.stderr)

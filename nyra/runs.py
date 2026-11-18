@@ -241,12 +241,14 @@ def run_verify_command(ctx, command, timeout):
                     exit_code = int(token)
                 break
         if exit_code is None:
-            return {"exit_code": None, "passed": False, "output": text[-4000:], "timeout": "超时" in text}
+            # 标记缺失不等于超时：命令可能崩溃、输出被截断或根本没跑完。
+            return {"exit_code": None, "passed": False, "output": text[-4000:], "timeout": False}
         return {"exit_code": exit_code, "passed": exit_code == 0, "output": text[-4000:]}
 
     try:
         completed = subprocess.run(
-            command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            command, shell=True, cwd=cwd, capture_output=True, text=True,
+            errors="replace", timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         return {"exit_code": None, "passed": False, "output": _combine(exc.stdout, exc.stderr), "timeout": True}
@@ -350,7 +352,6 @@ class RunStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             _private(temp, 0o600)
-            self._path(run_id, 'state.json')
             os.replace(temp, path)
         finally:
             if os.path.exists(temp):
@@ -393,8 +394,16 @@ class RunStore:
     def list(self):
         if not self.base_dir.exists():
             return []
-        states = [self.load(path.name) for path in self.base_dir.iterdir()
-                  if _RUN_ID.fullmatch(path.name)]
+        states = []
+        for path in self.base_dir.iterdir():
+            if not _RUN_ID.fullmatch(path.name):
+                continue
+            try:
+                states.append(self.load(path.name))
+            except (ValueError, OSError) as exc:
+                # 一条损坏的运行记录不得拖垮整个列表（任务列表、worker
+                # 取队首都依赖它）；损坏的记录留在原地供人工检查。
+                print(f"警告：跳过损坏的运行记录 {path.name}：{exc}", file=sys.stderr)
         return sorted(states, key=lambda state: state['created_at'], reverse=True)
 
     def update(self, run_id, **fields):
@@ -497,7 +506,7 @@ class RunRecorder:
         if kind in ('tool_start', 'tool_result', 'final', 'max_turns'):
             fields = dict(data)
             if kind == 'tool_result':
-                fields['ok'] = not str(data.get('result', '')).startswith('错误：')
+                fields['ok'] = not str(data.get('result', '')).startswith(('错误：', '执行失败：'))
             self.store.append_event(self.run_id, kind, **fields)
         if kind in ('tool_result', 'final', 'max_turns'):
             self.changed()

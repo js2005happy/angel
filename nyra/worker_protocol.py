@@ -97,7 +97,11 @@ def encode_line(event_type: str, seq: int, **payload) -> str:
         "seq": seq,
         "type": event_type,
     }
-    event.update(payload)
+    # 协议字段绝不能被调用方误传的同名 payload 覆盖（否则 host 会
+    # 把一行事件认成另一种类型，或把序号链弄断）。
+    for key, value in payload.items():
+        if key not in ("protocol_version", "seq", "type"):
+            event[key] = value
     return json.dumps(event, ensure_ascii=True, separators=(",", ":"))
 
 
@@ -119,6 +123,9 @@ def decode_line(line: str):
         return None, "not a JSON object"
     if not isinstance(obj.get("type"), str) or not obj["type"]:
         return None, "missing or invalid type"
+    version = obj.get("protocol_version")
+    if version is not None and version != PROTOCOL_VERSION:
+        return None, "unsupported protocol version"
     return obj, None
 
 

@@ -42,6 +42,10 @@ from pathlib import Path
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$\Z")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# Largest web page add_url will read: anything bigger is rejected
+# instead of being buffered unbounded into memory.
+MAX_PAGE_BYTES = 2 * 1024 * 1024
+
 # One note holds at most about this many characters; shorter pieces
 # are merged into the next note so the base is not full of fragments.
 MAX_NOTE_CHARS = 1500
@@ -87,6 +91,11 @@ def _now() -> str:
 def _check_name(name: str) -> str:
     if not isinstance(name, str) or not NAME_PATTERN.match(name):
         raise KnowledgeError("知识库名只允许字母、数字、下划线、点、横线")
+    if name in (".", ".."):
+        # "." / ".." pass the pattern but resolve to the base directory
+        # itself / its parent, so a base would be created outside the
+        # knowledge directory (kb.json written to the parent dir).
+        raise KnowledgeError("知识库名不能是 . 或 ..")
     return name
 
 
@@ -434,9 +443,22 @@ class KnowledgeBase:
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 content_type = response.headers.get("Content-Type") or ""
-                raw = response.read()
+                declared = response.headers.get("Content-Length")
+                if declared is not None:
+                    try:
+                        if int(declared) > MAX_PAGE_BYTES:
+                            raise KnowledgeError(
+                                f"页面超过 {MAX_PAGE_BYTES // (1024 * 1024)} MiB，无法收录：{url}"
+                            )
+                    except ValueError:
+                        pass
+                raw = response.read(MAX_PAGE_BYTES + 1)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise KnowledgeError(f"抓取失败：{url}") from exc
+        if len(raw) > MAX_PAGE_BYTES:
+            raise KnowledgeError(
+                f"页面超过 {MAX_PAGE_BYTES // (1024 * 1024)} MiB，无法收录：{url}"
+            )
         if content_type and "text/html" not in content_type.lower():
             raise KnowledgeError(f"不是网页，无法收录：{url}")
         charset = "utf-8"

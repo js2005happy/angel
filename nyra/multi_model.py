@@ -19,6 +19,11 @@ import time
 
 MAX_MODELS = 5
 
+# Bound on one model's answer inside the synthesis prompt: without it,
+# five unbounded answers (plus the synthesis call itself) can blow up
+# the synthesizer's context and its cost in one research() call.
+MAX_SYNTHESIS_ANSWER_CHARS = 8000
+
 SYNTHESIS_INSTRUCTIONS = (
     "以下是多个模型对同一问题的独立回答，每份都已注明来源模型，"
     "请综合成一份中文报告，只按以下三节写，不要编造没有出现的观点：\n"
@@ -94,7 +99,13 @@ def _build_synthesis_prompt(prompt: str, results: list[dict]) -> str:
     for r in results:
         if r["error"] is not None:
             continue
-        parts.append(f"\n--- {r['model']} 的回答 ---\n{r['answer']}\n")
+        answer = r["answer"] or ""
+        if len(answer) > MAX_SYNTHESIS_ANSWER_CHARS:
+            answer = (
+                answer[:MAX_SYNTHESIS_ANSWER_CHARS]
+                + f"\n（回答过长，已截断，只保留前 {MAX_SYNTHESIS_ANSWER_CHARS} 字符）"
+            )
+        parts.append(f"\n--- {r['model']} 的回答 ---\n{answer}\n")
     if failed:
         parts.append("\n以下模型调用失败，没有提供回答：\n")
         for r in failed:

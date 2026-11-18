@@ -180,6 +180,8 @@ class Worker:
 
     def approve_fn(self, tool_name: str, summary: str) -> bool:
         """Ask the host human and return their decision (never approve alone)."""
+        import time
+
         approval_id = new_id("appr")
         req_id = new_id("req")
         self._pending = {"id": req_id, "approval_id": approval_id}
@@ -191,10 +193,18 @@ class Worker:
             description=summary,
             timeout=self.approval_timeout,
         )
+        # 绝对截止时间：每条被忽略的消息（ping、未知类型）都会重新
+        # 等待，旧代码按每次 read 都算满超时，ping 洪水能把审批
+        # 无限拖下去；现在总等待绝不超过 approval_timeout。
+        deadline = time.monotonic() + self.approval_timeout
         try:
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._finish_approval(False, "timeout")
+                    return False
                 try:
-                    obj = self.io.read(timeout=self.approval_timeout)
+                    obj = self.io.read(timeout=remaining)
                 except queue.Empty:
                     self._finish_approval(False, "timeout")
                     return False
@@ -270,7 +280,7 @@ class Worker:
             )
         elif kind == "tool_result":
             result = data.get("result", "")
-            ok = not (isinstance(result, str) and result.startswith("错误："))
+            ok = not (isinstance(result, str) and result.startswith(("错误：", "执行失败：")))
             self.emitter.emit(
                 "tool_result",
                 id=self._run_id,
@@ -465,17 +475,23 @@ def main(argv=None) -> int:
         )
         worker.agent = agent
     except (ValueError, ProviderError) as exc:
-        emitter.emit(
-            "error", id=new_id("req"),
-            code="invalid_configuration", message=str(exc),
-        )
+        try:
+            emitter.emit(
+                "error", id=new_id("req"),
+                code="invalid_configuration", message=str(exc),
+            )
+        except _WorkerShutdown as shutdown:
+            return shutdown.exit_code
         return EXIT_ARGUMENT
     except Exception as exc:  # noqa: BLE001 - startup must not leak internals
         _log(f"worker: 启动异常 {type(exc).__name__}")
-        emitter.emit(
-            "error", id=new_id("req"),
-            code="startup_error", message="worker 启动失败，请查看 stderr",
-        )
+        try:
+            emitter.emit(
+                "error", id=new_id("req"),
+                code="startup_error", message="worker 启动失败，请查看 stderr",
+            )
+        except _WorkerShutdown as shutdown:
+            return shutdown.exit_code
         return EXIT_RUNTIME
     return worker.serve()
 

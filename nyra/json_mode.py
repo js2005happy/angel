@@ -81,9 +81,11 @@ class JsonLines:
         elif kind == "tool_result":
             result = data.get("result", "")
             # Raw tool output can contain API keys, private files or secrets.
+            # 工具失败有两种前缀（tools.py/e2b_backend.py），只认一种会
+            # 把 "执行失败：…" 误记为成功。
             self.emit(
                 "tool_result", id=data.get("id", ""), name=data.get("name", ""),
-                ok=not (isinstance(result, str) and result.startswith("错误：")),
+                ok=not (isinstance(result, str) and result.startswith(("错误：", "执行失败："))),
             )
         elif kind == "assistant":
             self.emit("assistant", content=data.get("content", ""))
@@ -321,8 +323,13 @@ def run_json(args) -> int:
             return out.failed("runtime_error", "执行失败，请查看 stderr", EXIT_RUNTIME)
         finally:
             if recorder is not None:
-                out.emit("run_state", run_id=recorder.run_id,
-                         status=recorder.store.load(recorder.run_id)["status"])
+                try:
+                    out.emit("run_state", run_id=recorder.run_id,
+                             status=recorder.store.load(recorder.run_id)["status"])
+                except (ValueError, OSError) as exc:
+                    # 收尾读状态失败不得掩盖本次运行本身的返回/异常：
+                    # run_completed/run_failed 已经发出，状态以 stderr 为准。
+                    print(f"读取运行状态失败：{exc}", file=sys.stderr)
             if mcp_manager is not None:
                 try:
                     mcp_manager.stop_all()

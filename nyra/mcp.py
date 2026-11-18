@@ -78,6 +78,12 @@ META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 PROBE_TIMEOUT = 60.0
 
 
+# tools/list pagination bounds: a server that keeps returning nextCursor
+# (or an unbounded tool list) must not hang start-up or exhaust memory.
+MAX_TOOL_LIST_PAGES = 100
+MAX_TOOLS_TOTAL = 1000
+
+
 # MCP servers run outside the agent's tool approval boundary while starting.
 # Avoid exposing unrelated provider credentials or tokens via os.environ.
 # These are ordinary process bootstrap variables, not an execution sandbox.
@@ -535,7 +541,14 @@ class MCPClient:
     def list_tools(self) -> list[dict]:
         tools: list[dict] = []
         cursor: str | None = None
+        pages = 0
         while True:
+            pages += 1
+            if pages > MAX_TOOL_LIST_PAGES:
+                raise MCPError(
+                    "MCP 工具列表分页过多（超过 "
+                    f"{MAX_TOOL_LIST_PAGES} 页），疑似服务器循环返回 nextCursor"
+                )
             params: dict = {}
             if cursor is not None:
                 params["cursor"] = cursor
@@ -543,6 +556,11 @@ class MCPClient:
             raw_tools = result.get("tools")
             if not isinstance(raw_tools, list):
                 raise MCPError("MCP 工具列表格式无效：tools 必须是列表")
+            if len(tools) + len(raw_tools) > MAX_TOOLS_TOTAL:
+                raise MCPError(
+                    "MCP 服务器声明的工具过多（超过 "
+                    f"{MAX_TOOLS_TOTAL} 个），拒绝全部加载"
+                )
 
             for tool in raw_tools:
                 if not isinstance(tool, dict):
@@ -599,11 +617,27 @@ class MCPClient:
                     raise MCPError("MCP 工具响应格式无效：text 必须是字符串")
                 texts.append(text)
 
-        output = (
-            "\n".join(texts)
-            if texts
-            else json.dumps(result, ensure_ascii=False)
-        )
+        output = None
+        if texts:
+            output = "\n".join(texts)
+        elif content:
+            # Non-text content only (e.g. an image with a base64 payload):
+            # dumping the whole result would inject the raw payload into
+            # the model context. Summarize the kinds instead.
+            kinds = sorted(
+                {
+                    str(item.get("type", "?"))
+                    for item in content
+                    if isinstance(item, dict)
+                }
+            )
+            output = (
+                "MCP 工具返回了非文本内容（"
+                + "、".join(kinds)
+                + "），未以文本展示"
+            )
+        else:
+            output = json.dumps(result, ensure_ascii=False)
         if result.get("isError"):
             output = "MCP 工具返回错误：\n" + output
         return output

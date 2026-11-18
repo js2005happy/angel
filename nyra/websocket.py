@@ -73,14 +73,42 @@ class WebSocketClient:
     def connect(self) -> None:
         """Perform the HTTP Upgrade handshake. Raises WebSocketError on failure."""
         key = self._key or base64.b64encode(os.urandom(16)).decode("ascii")
+        owned_sock = False
         if self._sock is None:
             sock = socket.create_connection((self._host, self._port), timeout=self._timeout)
-            if self._secure:
-                context = ssl.create_default_context()
-                sock = context.wrap_socket(sock, server_hostname=self._host)
             self._sock = sock
+            owned_sock = True
+            if self._secure:
+                try:
+                    context = ssl.create_default_context()
+                    sock = context.wrap_socket(sock, server_hostname=self._host)
+                except Exception as exc:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                    self._sock = None
+                    raise WebSocketError(f"WebSocket TLS 握手失败：{exc}") from exc
+                self._sock = sock
         else:
             sock = self._sock
+        try:
+            self._handshake(sock, key)
+        except WebSocketError:
+            # A failed handshake must not leak a socket this client
+            # created: close it and drop the reference so a retry does
+            # not reuse a dead socket. An injected (caller-owned) socket
+            # is left alone for its owner to close.
+            if owned_sock:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                self._sock = None
+            self._closed = True
+            raise
+
+    def _handshake(self, sock, key: str) -> None:
         request = (
             f"GET {self._path} HTTP/1.1\r\n"
             f"Host: {self._host}:{self._port}\r\n"
@@ -163,6 +191,12 @@ class WebSocketClient:
             length = int.from_bytes(self._read_exact(2), "big")
         elif length == 127:
             length = int.from_bytes(self._read_exact(8), "big")
+        # Reject an over-limit frame before reading its payload: without
+        # this, a peer advertising a multi-GB frame makes the client
+        # buffer it all in memory (recv_text only checks the total
+        # after the whole frame has been read).
+        if length > MAX_MESSAGE_BYTES:
+            raise WebSocketError("消息超过 10MB 上限")
         mask = self._read_exact(4) if masked else b""
         payload = self._read_exact(length) if length else b""
         if masked:
@@ -254,6 +288,10 @@ class WebSocketClient:
             self._sock.close()
         except Exception:
             pass
+        # Drop the references so a later connect() opens a fresh socket
+        # instead of reusing this closed one.
+        self._sock = None
+        self._fp = None
 
     def __enter__(self):
         return self

@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .net import open_url
 from .websocket import WebSocketClient, WebSocketError
 
 DEFAULT_PORT = 9222
@@ -68,9 +69,12 @@ class CDPBrowser:
                           timeout: float = CONNECT_TIMEOUT) -> "CDPBrowser":
         """Find the first page target on the local Chrome and connect to it."""
         try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/json", timeout=timeout
-            ) as response:
+            # Loopback must bypass any HTTP(S)_PROXY, exactly like the
+            # other local services (see nyra/net.py): a plain urlopen
+            # would forward http://127.0.0.1 to the proxy and report
+            # "no Chrome" on proxied networks.
+            request = urllib.request.Request(f"http://127.0.0.1:{port}/json")
+            with open_url(request, timeout=timeout) as response:
                 targets = json.loads(response.read().decode("utf-8", "replace"))
         except urllib.error.URLError as exc:
             raise CDPError(
@@ -206,9 +210,12 @@ class CDPBrowser:
         if not data:
             raise CDPError("截图失败：Chrome 未返回图片数据")
         try:
-            return base64.b64decode(data)
+            raw = base64.b64decode(data, validate=True)
         except Exception as exc:
             raise CDPError(f"截图数据无法解码：{exc}") from exc
+        if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise CDPError("截图失败：Chrome 返回的不是 PNG 数据")
+        return raw
 
     def title(self) -> str:
         return str(self.evaluate("document.title") or "")

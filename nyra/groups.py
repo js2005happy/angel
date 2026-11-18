@@ -79,6 +79,11 @@ def _stamp() -> str:
 def _write_json(path: Path, data: dict) -> None:
     """Replace the room's transcript atomically after each message."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # 群目录里存着各机器人的明文 API Key：目录只允许属主进出。
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
     fd, temp_path = tempfile.mkstemp(prefix=".room-", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:

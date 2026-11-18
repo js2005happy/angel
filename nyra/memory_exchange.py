@@ -64,19 +64,26 @@ _PLACEHOLDER_RES = (
 # 凭据行模式：含赋值号的凭据键、Bearer、已知的 token 前缀、私钥头。
 # 只认“键 + 赋值号”或明确的 token 格式， prose 里提到 token 一词
 # （如“token 统计”）不会被误删。
+# 键名前后允许 JSON 式引号：{"api_key": "sk-..."} 里键与赋值号之间
+# 隔着一个引号，旧模式认不出来，会把整行凭据漏过去。
 _SECRET_RES = (
-    re.compile(r"(api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret)\s*[:=：]", re.IGNORECASE),
-    re.compile(r"(password|passwd|pwd)\s*[:=：]", re.IGNORECASE),
+    re.compile(r"""["']?(api[_-]?key|apikey|access[_-]?key|secret[_-]?key|client[_-]?secret)["']?\s*[:=：]""", re.IGNORECASE),
+    re.compile(r"""["']?(password|passwd|pwd)["']?\s*[:=：]""", re.IGNORECASE),
     re.compile(r"\bbearer\s+[A-Za-z0-9._\-]{8,}", re.IGNORECASE),
-    re.compile(r"\btoken\s*[:=：]\s*\S", re.IGNORECASE),
-    re.compile(r"(authorization|auth[_-]?token)\s*[:=：]", re.IGNORECASE),
-    re.compile(r"(cookie|set-cookie)\s*[:=：]", re.IGNORECASE),
-    re.compile(r"(credential|credentials)\s*[:=：]", re.IGNORECASE),
-    re.compile(r"private[_-]?key\s*[:=：]", re.IGNORECASE),
+    re.compile(r"""\btoken\s*[:=：]\s*\S""", re.IGNORECASE),
+    re.compile(r"""["']?(?:access|refresh|id|session|auth)[_-]?token["']?\s*[:=：]""", re.IGNORECASE),
+    re.compile(r"""["']?secret["']?\s*[:=：]""", re.IGNORECASE),
+    re.compile(r"""["']?(authorization|auth[_-]?token)["']?\s*[:=：]""", re.IGNORECASE),
+    re.compile(r"""["']?(cookie|set-cookie)["']?\s*[:=：]""", re.IGNORECASE),
+    re.compile(r"""["']?(credential|credentials)["']?\s*[:=：]""", re.IGNORECASE),
+    re.compile(r"""["']?private[_-]?key["']?\s*[:=：]""", re.IGNORECASE),
     re.compile(r"-----begin (?:rsa |ec |openssh )?private key-----", re.IGNORECASE),
     re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
     re.compile(r"\bgh[opsu]_[A-Za-z0-9]{10,}"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
+)
+_PRIVATE_KEY_END = re.compile(
+    r"-----end (?:rsa |ec |openssh )?private key-----", re.IGNORECASE
 )
 
 
@@ -93,12 +100,24 @@ class ChatZipError(Exception):
 
 
 def scrub_secrets(text: str) -> tuple[str, int]:
-    """删掉含凭据的行，返回（清理后的文本，删掉的行数）。"""
+    """删掉含凭据的行，返回（清理后的文本，删掉的行数）。
+
+    多行 PEM 私钥整块删掉：只删 BEGIN 头行会把中间的 base64
+    私钥体原样留下来，凭据仍然完整。
+    """
     kept: list[str] = []
     removed = 0
+    in_private_key = False
     for line in text.splitlines():
+        if in_private_key:
+            removed += 1
+            if _PRIVATE_KEY_END.search(line):
+                in_private_key = False
+            continue
         if any(pattern.search(line) for pattern in _SECRET_RES):
             removed += 1
+            if "-----begin" in line.lower() and "private key" in line.lower():
+                in_private_key = True
             continue
         kept.append(line)
     return "\n".join(kept).strip(), removed
@@ -551,8 +570,10 @@ def main(argv: list[str] | None = None) -> int:
             result = read_local_agent_memory(
                 source, path=args[2] if len(args) > 2 else None
             )
-            print(f"来源：{result['source']}（{result['kind']}，{result['count']} 条/份）：")
-            print(result["text"])
+            # 本地记忆原文可能含凭据：先脱敏再打印，导入时还会再脱敏一次。
+            cleaned, removed = scrub_secrets(result["text"])
+            print(f"来源：{result['source']}（{result['kind']}，{result['count']} 条/份，脱敏删掉 {removed} 行）：")
+            print(cleaned)
             _print_import_report(import_snapshot(result["text"]))
             return 0
         if cmd == "import-zip":

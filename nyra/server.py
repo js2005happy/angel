@@ -165,7 +165,14 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ValueError("Content-Length 无效") from None
+        if length < 0:
+            # 负值会让 rfile.read(length) 读到连接关闭（挂起/耗尽），
+            # 必须当作无效请求拒绝。
+            raise ValueError("Content-Length 无效")
         if length > MAX_BODY:
             raise ValueError("请求体过大")
         raw = self.rfile.read(length) if length else b"{}"

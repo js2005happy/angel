@@ -99,8 +99,22 @@ def remove_trusted(path, home: Path | None = None) -> bool:
         return False
     del folders[key]
     target = trust_file(home)
-    target.write_text(
-        json.dumps({"version": 1, "folders": folders}, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    # 与 add_trusted 同样的原子写：直接 write_text 一旦中途崩溃会
+    # 留下截断的信任文件（load_trusted 会把它当成"全不信任"）。
+    payload = json.dumps({"version": 1, "folders": folders}, ensure_ascii=False, indent=2)
+    fd, tmp = tempfile.mkstemp(prefix=".trust-", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload + "\n")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return True

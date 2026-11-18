@@ -335,7 +335,12 @@ def to_svg(matrix: list[list[bool]], border: int = 4, dark: str = "#0B0B0C",
                 parts.append(f"M{start + border} {y + border}h{x - start}v1h-{x - start}z")
             else:
                 x += 1
-    esc = title.replace("&", "&amp;").replace("<", "&lt;")
+    esc = (
+        title.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {dim} {dim}" '
         f'shape-rendering="crispEdges" role="img" aria-label="{esc}">'

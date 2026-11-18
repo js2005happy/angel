@@ -139,7 +139,12 @@ class ConversationStore:
             row = cur.execute(
                 "SELECT value FROM meta WHERE key = 'schema_version'"
             ).fetchone()
-            version = int(row["value"]) if row is not None else 0
+            try:
+                version = int(row["value"]) if row is not None else 0
+            except (TypeError, ValueError):
+                # A tampered/corrupt version value must not make the
+                # whole store unopenable; treat it as "no migration yet".
+                version = 0
             if version < SCHEMA_VERSION:
                 # v1 is the base schema: creating the tables above is the
                 # whole migration. Future versions add ALTER steps here.

@@ -130,6 +130,18 @@ def repl_prompt(mode: str, color: bool = False, status: str | None = None) -> st
     return f"{style(status, 'dim', enabled=color)}\n{prompt}"
 
 
+def _validated_max_turns(value, default: int = 20) -> int:
+    """max_turns from config/args: None means the default; anything else
+    must be a positive int. A stray "20" string, 0 or -5 must not reach
+    Agent, where range() would silently run zero turns or raise TypeError.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("--max-turns 必须为正整数")
+    return value
+
+
 def _make_task_agent(task: dict, workdir: Path) -> Agent:
     """为一条定时任务创建一个 Agent。与任务队列一样拒绝 full 模式。"""
     config = load_config()
@@ -142,11 +154,15 @@ def _make_task_agent(task: dict, workdir: Path) -> Agent:
     provider = Provider(resolve_provider(provider_name, model))
     if not provider.has_credentials():
         raise AgentError(f"定时任务 {task['name']} 没有可用的模型凭证")
+    try:
+        max_turns = _validated_max_turns(config.get("max_turns"))
+    except ValueError as exc:
+        raise AgentError(str(exc)) from exc
     return Agent(
         provider=provider,
         workdir=workdir,
         mode=validate_mode(mode),
-        max_turns=config.get("max_turns") or 20,
+        max_turns=max_turns,
         interactive=False,
     )
 
@@ -218,6 +234,8 @@ def handle_schedule(argv: list[str], workdir: Path) -> int:
         parser.add_argument("--model", default=None)
         parser.add_argument("--mode", choices=("readonly", "auto"), default="auto",
                             help="审批模式：只允许 readonly 或 auto，与任务队列相同，拒绝 full")
+        parser.add_argument("--workdir", default=None, help="任务工作目录（默认当前目录）")
+        parser.add_argument("--verify", default=None, help="任务完成后运行的验证命令")
         parser.add_argument("--disable", action="store_true")
         args = parser.parse_args(argv[1:])
         task = {
@@ -230,6 +248,8 @@ def handle_schedule(argv: list[str], workdir: Path) -> int:
             "every_seconds": args.every,
             "at": args.at,
             "enabled": not args.disable,
+            "workdir": args.workdir,
+            "verify": args.verify,
         }
         try:
             data = load_schedule()
@@ -280,11 +300,15 @@ def handle_schedule(argv: list[str], workdir: Path) -> int:
         parser.add_argument("--rounds", type=int, default=None)
         args = parser.parse_args(argv[1:])
         print(f"定时任务守护进程已启动（每 {args.interval} 秒检查一次，Ctrl+C 停止）")
-        rounds = run_daemon(
-            lambda task: _run_scheduled_task(task, workdir),
-            interval=args.interval,
-            stop_after=args.rounds,
-        )
+        try:
+            rounds = run_daemon(
+                lambda task: _run_scheduled_task(task, workdir),
+                interval=args.interval,
+                stop_after=args.rounds,
+            )
+        except ValueError as exc:
+            print(f"错误：{exc}")
+            return 1
         print(f"守护进程共运行 {rounds} 轮")
         return 0
 
@@ -804,7 +828,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     mode = validate_mode(args.mode or profile["mode"] or "auto")
-    max_turns = args.max_turns or config.get("max_turns") or 20
+    try:
+        max_turns = _validated_max_turns(
+            args.max_turns if args.max_turns is not None else config.get("max_turns")
+        )
+    except ValueError as exc:
+        print(f"错误：{exc}")
+        return 1
     if args.context_window is not None and context_limit(args.context_window) is None:
         print("错误：--context-window 必须为正整数")
         return 1

@@ -180,7 +180,13 @@ def resolve_preset(name, preset_args=None, environ=None):
         # 知识图谱默认写进 npx 缓存目录，缓存一清就丢；改存到
         # ~/.nyra/memory.jsonl。用户在 env 里显式指定过则不动。
         graph_path = Path.home() / ".nyra" / "memory.jsonl"
-        graph_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            graph_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # A broken HOME must not crash preset resolution (and with
+            # it agent start-up): keep the env override and let the
+            # server fail later with its own clear error if it runs.
+            pass
         raw["env"].setdefault("MEMORY_FILE_PATH", str(graph_path))
     if preset["requires_env"]:
         raw["inherit_env"] = list(preset["requires_env"])

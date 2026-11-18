@@ -337,8 +337,8 @@ TOOL_SCHEMAS = [
             "name": "computer_screenshot",
             "description": (
                 "截取整个电脑屏幕，PNG 保存到证据目录并返回保存路径。"
-                "已配置视觉模型时，模型可直接看这张截屏定位元素、"
-                "再报坐标点；坐标也可来自用户或 computer_windows "
+                "模型暂不能直接看图（视觉接线待接）；"
+                "坐标可来自用户或 computer_windows "
                 "的窗口几何。"
             ),
             "parameters": {"type": "object", "properties": {}},
@@ -738,6 +738,24 @@ def _check_approval(
         return
 
 
+def _is_dangerous_rm_target(argument: str) -> bool:
+    """True when an rm argument names a root/home/wildcard target.
+
+    归一化后再判断：~/、$HOME/、${HOME}/ 开头的家目录子树、
+    /、/*、*、.、.. 都算危险目标；普通相对/绝对子目录不算。
+    """
+    arg = argument.rstrip("/")
+    if arg in ("/", "~", "$HOME", "${HOME}", "*", ".", "..", ""):
+        return True
+    if arg.startswith("~/") or arg.startswith("$HOME/") or arg.startswith("${HOME}/"):
+        return True
+    if arg.startswith("/*"):
+        return True
+    if arg.startswith("*"):
+        return True
+    return False
+
+
 def _check_shell_denied(command: str) -> str | None:
     # Tokenization here is deliberately lightweight, not a shell parser.
     tokens = re.findall(
@@ -750,37 +768,82 @@ def _check_shell_denied(command: str) -> str | None:
         else token
         for token in tokens
     ]
-    dangerous_targets = {"/", "~", "$HOME", "${HOME}", "*", ".", ".."}
     separators = {";", "&", "|", "<", ">", "(", ")"}
     for index, token in enumerate(tokens):
         if token != "rm" and not token.endswith("/rm"):
             continue
+        # 收集本条 rm 的参数（到下一个分隔符为止），并把标志归一化：
+        # -rf 与 -r -f、-fr、-Rf、--recursive --force 是同一回事，
+        # 只认 "-rf"/"-fr" 会被拆开写法轻易绕过。
         arguments: list[str] = []
         for argument in tokens[index + 1 :]:
             if argument in separators:
                 break
             arguments.append(argument)
-        if any(argument in ("-rf", "-fr") for argument in arguments):
-            if any(
-                argument in dangerous_targets or argument.startswith("/*")
-                for argument in arguments
-            ):
+        recursive = False
+        force = False
+        targets: list[str] = []
+        flags_done = False
+        for argument in arguments:
+            if not flags_done and argument == "--":
+                flags_done = True
+                continue
+            if not flags_done and argument.startswith("--"):
+                if argument == "--recursive":
+                    recursive = True
+                elif argument == "--force":
+                    force = True
+                elif argument in ("--recursive --force",):
+                    recursive = force = True
+                continue
+            if not flags_done and argument.startswith("-") and argument != "-":
+                flags = argument[1:]
+                if flags and all(ch.isalpha() for ch in flags):
+                    # 组合短标志逐位解析：-rfv、-fr、-Rf 都等同于 -r -f。
+                    if any(ch in "rR" for ch in flags):
+                        recursive = True
+                    if "f" in flags:
+                        force = True
+                    continue
+            flags_done = True
+            targets.append(argument)
+        if recursive and force:
+            if any(_is_dangerous_rm_target(t) for t in targets):
                 return "禁止 rm -rf 删除根目录、家目录或通配路径"
 
     rules = [
         (r"\bsudo\s+rm\b", "禁止 sudo rm"),
         (r"\bmkfs(\.\w+)?\b", "禁止 mkfs 格式化命令"),
-        (r"\bdd\b.*\bof=/dev/", "禁止 dd 写入设备"),
+        (r"\bdd\b.*\bof\s*=\s*/dev/", "禁止 dd 写入设备"),
         (r"\b(shutdown|reboot|poweroff|halt)\b", "禁止关机/重启命令"),
         (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;", "禁止 fork 炸弹"),
         (r">\s*/dev/(sd|hd|nvme|vd)[a-z0-9]*", "禁止重定向写入磁盘设备"),
-        (r"\bchmod\s+-R\s+777\s+/", "禁止 chmod -R 777 /"),
+        (r"\bchmod\s+(?:-[a-zA-Z]+\s+)*777\s+/", "禁止 chmod -R 777 /"),
+        (r"\bchmod\s+777\s+-[a-zA-Z]*R[a-zA-Z]*\s+/", "禁止 chmod 777 -R /"),
         (r"\bchown\s+-R\b.*\s/$", "禁止 chown -R 到根目录"),
     ]
     for pattern, reason in rules:
         if re.search(pattern, command):
             return reason
     return None
+
+
+_METADATA_HOSTS = {"metadata.google.internal", "metadata.goog"}
+_METADATA_IP = "169.254.169.254"
+
+
+def _is_metadata_url(url: str) -> bool:
+    """True when *url* points at a cloud instance-metadata service.
+
+    web_fetch / http_post 不带任何本地凭证，但模型可能被不可信页面
+    诱导去抓内网元数据地址；只拦元数据服务本身，不拦 localhost
+    （本地开发服务是合法的抓取目标）。
+    """
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return host in _METADATA_HOSTS or host == _METADATA_IP
 
 
 def _tool_read_file(ctx: ToolContext, path: str) -> str:
@@ -1059,6 +1122,8 @@ def _tool_shell(
 
 
 def _tool_web_fetch(ctx: ToolContext, url: str) -> str:
+    if _is_metadata_url(url):
+        return "错误：拒绝抓取云元数据服务地址"
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "Nyra/0.2"})
         with open_url(request, 30) as response:
@@ -1340,7 +1405,8 @@ def _tool_computer_screenshot(ctx: ToolContext) -> str:
     path = _save_computer_screenshot(ctx, png)
     return (
         f"已截屏并保存：{path}（PNG，{len(png)} 字节）。"
-        "已配置视觉模型时，模型可直接看这张截屏定位元素、再报坐标点。"
+        "模型暂不能直接看图（视觉接线待接），坐标请来自用户或 "
+        "computer_windows 的窗口几何。"
     )
 
 
@@ -1618,6 +1684,8 @@ def _tool_http_post(
     content_type: str = "application/json",
 ) -> str:
     _check_approval(ctx, "http_post", f"POST 请求：{url}")
+    if _is_metadata_url(url):
+        return "错误：拒绝向云元数据服务地址发送 POST 请求"
     try:
         request = urllib.request.Request(
             url,
