@@ -139,6 +139,10 @@ python3 -m nyra ui --open
 
 桌面端 v2 按定稿设计稿实现（黑白极简，浅色/深色跟随系统）：左侧按项目分组的会话列表；对话流里工具调用折叠成步骤行，写文件、跑命令前出现审批卡片（拒绝 / 本会话始终允许 / 允许一次，附真实 diff）；右侧审阅面板看改动 diff、计划、证据、终端输出与 Token 用量；输入框可切审批模式、选模型、开计划模式（先只读写出 `plan.md`，审核后按 SHA-256 执行）。Key 只从环境变量读，页面不输入也不保存。手机宽度可用，全键盘可操作。详见 [完整手册](GUIDE.md#网页界面)。
 
+### 桌面 App（预览，macOS / Windows）
+
+`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Python 3.10+ 或 Nyra 时显示安装引导。安装包（`.dmg`、`.msi` / NSIS `.exe`）由 Actions 的 “Build desktop app” 工作流手动构建，**未签名**、不内置 Python。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
+
 ## 安全边界
 
 - 默认逐项审批；`a`（本会话始终允许）只对同一文件、或完全相同的命令与目录生效。
@@ -153,6 +157,7 @@ python3 -m nyra ui --open
 - [ROADMAP.md](ROADMAP.md)：接下来要做什么
 - [VERIFICATION.md](VERIFICATION.md)：真实环境验证记录
 - [CHANGELOG.md](CHANGELOG.md)：版本变更
+- [docs/desktop.md](docs/desktop.md)：桌面 App（macOS / Windows，预览）
 
 ## 测试
 

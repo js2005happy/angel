@@ -1361,6 +1361,47 @@ def ui_url(server: UIServer) -> str:
     return f"http://{shown}:{port}/?token={server.state.token}"
 
 
+def url_json(server: UIServer) -> str:
+    """One machine-readable line for a parent process (the desktop app).
+
+    The desktop shell starts `nyra ui --port 0 --print-url-json` and reads
+    the first stdout line; everything human-readable goes to stderr in that
+    mode so the line is always first. It carries the same token the printed
+    link does, over a private pipe, so treat it like that link.
+    """
+    host, port = server.server_address[:2]
+    return json.dumps(
+        {
+            "nyra": "ui",
+            "version": __version__,
+            "url": ui_url(server),
+            "host": host,
+            "port": port,
+            "token": server.state.token,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def watch_stdin_close(on_close: Callable[[], None], stream=None) -> threading.Thread:
+    """Call on_close once stdin reaches EOF (the parent app went away)."""
+    source = stream if stream is not None else sys.stdin
+
+    def run() -> None:
+        try:
+            buffer = getattr(source, "buffer", source)
+            while buffer.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
+        on_close()
+
+    thread = threading.Thread(target=run, name="nyra-stdin-watch", daemon=True)
+    thread.start()
+    return thread
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nyra ui", description="启动 Nyra 本地网页界面")
     parser.add_argument("--host", default=DEFAULT_HOST, help="监听地址（默认 127.0.0.1，只允许本机访问）")
@@ -1376,6 +1417,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=None, help="模型 id")
     parser.add_argument("--profile", default=None, help="provider 档案")
     parser.add_argument("--verbose", action="store_true", help="打印请求日志（不含 token）")
+    parser.add_argument(
+        "--print-url-json", action="store_true",
+        help="供桌面端读取：标准输出第一行打印一行 JSON（含地址与 token），其余提示改写到标准错误",
+    )
+    parser.add_argument(
+        "--exit-on-stdin-close", action="store_true",
+        help="标准输入关闭时退出（桌面端退出后自动停止）",
+    )
     return parser
 
 
@@ -1420,10 +1469,16 @@ def main(argv: list[str] | None = None) -> int:
             mcp_manager.stop_all()
         return 1
     url = ui_url(server)
-    print(f"Nyra {__version__} 网页界面已启动：{url}")
-    print("这个链接里含有本次启动的访问 token，请不要分享。按 Ctrl+C 停止。")
+    human = sys.stdout
+    if args.print_url_json:
+        print(url_json(server), flush=True)
+        human = sys.stderr
+    print(f"Nyra {__version__} 网页界面已启动：{url}", file=human)
+    print("这个链接里含有本次启动的访问 token，请不要分享。按 Ctrl+C 停止。", file=human)
+    if args.exit_on_stdin_close:
+        watch_stdin_close(lambda: threading.Thread(target=server.shutdown, daemon=True).start())
     if args.pair:
-        print_pairing(state)
+        print_pairing(state, stream=human if args.print_url_json else None)
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:

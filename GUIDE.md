@@ -531,6 +531,20 @@ python3 -m nyra ui --pair     # 监听局域网，终端里显示配对二维码
 - 入场动画只在手机上从主屏幕以独立窗口启动时播放（每次冷启动一次、约 3 秒、点一下跳过、“减少动态效果”时只淡入标志）；桌面网页、手机浏览器标签页、官网都不播。系统启动屏与动画首帧同为 `#0B0B0C`，不闪白。
 - 如实说明：只用 Playwright 模拟 iPhone 14 / Pixel 7 跑通过，没有在真机上装过。安卓 Chrome 对 http 局域网地址可能只建快捷方式（以标签页打开、不播动画）；iPhone 主屏幕 App 的存储可能与 Safari 分开，需要在 App 里再输一次配对码。完整步骤见 [docs/mobile-pwa.md](docs/mobile-pwa.md)。
 
+### 桌面 App（Tauri 外壳，预览）
+
+`desktop/` 是 macOS / Windows 桌面 App 的源码：Tauri 2（Rust + 系统 WebView），不内置浏览器内核和 Python。打开后它在本机找能运行 Nyra 的程序（`NYRA_PYTHON` → `PATH` 上的 `nyra` / `nyra.exe` → Python 3.10+，必要时带上 `NYRA_SOURCE`、`~/.local/share/nyra`、`~/nyra` 源码目录），在后台运行：
+
+```bash
+nyra ui --host 127.0.0.1 --port 0 --print-url-json --exit-on-stdin-close --workdir ~/Nyra
+```
+
+- `--print-url-json`：标准输出第一行打印一行 JSON（`nyra`、`version`、`url`、`host`、`port`、`token`），其余提示改写到标准错误，供外壳读取地址；这行含 token，和打印的链接一样不要外传。
+- `--exit-on-stdin-close`：标准输入关闭时停止服务（外壳退出或崩溃后不留后台进程）。
+- 窗口只显示内置引导页和这次启动的 `http://127.0.0.1:<端口>`，其他链接交给系统浏览器；网页界面的 CSP 与 token 鉴权不变，网页拿不到 Tauri 原生接口；桌面端不播入场动画。
+- 找不到 Python 3.10+ 或 Nyra 时显示安装引导和“重新检测”按钮。工作目录默认 `~/Nyra`（`NYRA_DESKTOP_WORKDIR` 可改）；macOS 从程序坞打开时会读一次登录 shell 环境，补上 `~/.zshrc` 里的 `PATH` 与 API Key。
+- 安装包由 `.github/workflows/desktop.yml` 在 macos-latest（universal `.dmg`）和 windows-latest（`.msi` + NSIS `-setup.exe`）上构建，只在手动触发或推 `v*` tag 时运行，产物是 workflow artifacts，**未签名**：macOS 需右键“打开”或 `xattr -dr com.apple.quarantine /Applications/Nyra.app`，Windows SmartScreen 点“更多信息 → 仍要运行”。详见 [docs/desktop.md](docs/desktop.md)。
+
 ## 技能（Skills）
 
 技能是 `skills/*.md` 文件（自带四个示例：`web-research` 网上调研、`file-organizer` 文件整理、`verify-research` 核查式调研、`deep-thinking` 深度思考十问），格式：
@@ -659,4 +673,4 @@ nyra/
 - **第一梯队**：hooks（前后置钩子）、Telegram 网关。
 - **第二梯队**：流式输出、图片输入、会话全文搜索、并行子 Agent、Nyra MCP Server、HTTP MCP、编辑器集成。
 - **服务化第 2 步**：用户到沙盒的映射表 + 持久卷（第 1 步 E2B 单用户原型已做）。
-- **其他**：知识库接 agent 主循环（现在只能命令行用）、GEPA 式自动学习、桌面 UI（本地网页界面已可用，独立桌面应用未开始）、多会话并发。
+- **其他**：知识库接 agent 主循环（现在只能命令行用）、GEPA 式自动学习、桌面 App 的签名、自动更新与内置 Python（未签名的预览安装包已可由 CI 构建，见 docs/desktop.md）、多会话并发。

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Only the bundled guide/loading page (local assets) may call the shell. The Nyra web UI on 127.0.0.1 gets no IPC at all: no `remote` URLs are listed here on purpose.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

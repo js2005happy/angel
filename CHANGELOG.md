@@ -1,5 +1,13 @@
 # Nyra 变更记录
 
+## 未发布（桌面 App：macOS / Windows 预览）
+
+- 新增 `desktop/`：Tauri 2（Rust + 系统 WebView）桌面外壳。启动时在后台运行本机的 `nyra ui --host 127.0.0.1 --port 0 --print-url-json --exit-on-stdin-close`，读取子进程 stdout 的那行 JSON 后让窗口打开地址；退出时关闭子进程 stdin、3 秒未退则强制结束；子进程中途退出时显示“已停止”页和“重新启动”。查找顺序：`NYRA_PYTHON` → `PATH` 上的 `nyra`（含 `nyra.exe`）→ Python 3.10+（可带 `NYRA_SOURCE` / `~/.local/share/nyra` / `~/nyra` 源码目录）；都没有时显示安装引导（Python / Nyra 安装步骤、“重新检测”），不崩溃。macOS 读一次登录 shell 环境补上 `PATH` 与 API Key。窗口标题 Nyra，图标由 `docs/assets/nyra-mark.svg` 生成（icns / ico / png）。
+- 安全：网页界面的 CSP、token 与 `Host` 校验不变；窗口只允许内置引导页与本次子进程的 `http://127.0.0.1:<端口>`，其他 http(s) / mailto 链接交给系统浏览器；网页没有 Tauri IPC（capabilities 不放行远程地址）。桌面端不播入场动画。
+- `nyra ui` 新增 `--print-url-json`（stdout 第一行一行 JSON：`nyra` / `version` / `url` / `host` / `port` / `token`，人读提示改到 stderr）与 `--exit-on-stdin-close`；`nyra/webui.py` 新增 `url_json()`、`watch_stdin_close()`。新增 `tests/test_desktop_ui_json.py`（参数、JSON 内容、stdin 关闭回调、真实子进程：读 JSON → 带 token 访问 200 / 不带 403 → 关 stdin 后退出码 0）。外壳自带 Rust 单元测试（启动行校验、导航白名单）。
+- 新增 `.github/workflows/desktop.yml`：只在手动触发与 `v*` tag 时运行，macos-latest 构建 universal `.dmg`，windows-latest 构建 `.msi` 与 NSIS `-setup.exe`，作为 workflow artifacts 上传（保留 14 天）；不建 Release。安装包**未签名**（macOS 只有 ad-hoc 签名、未公证），打开方法见新文档 `docs/desktop.md`。
+- 待办：Apple Developer ID 签名与公证、Windows 代码签名、自动更新、内置 Python；macOS / Windows 真机手动验证。
+
 ## 未发布（手机版 PWA + 扫码配对 + 入场动画）
 
 - 手机页面：`python3 -m nyra ui` 新增 `/m`（`nyra/webui_mobile.py`），按手机设计稿做：会话列表（按项目分组，运行中 / 等待批准标记，“新会话”悬浮按钮）、对话流（用户气泡、回复、工具步骤行）、审批卡（“允许一次 / 本会话始终允许 / 拒绝”，按钮高 ≥ 50px，diff 可横向滚动）、底部输入框；浅色 / 深色跟随系统；安卓返回键回到列表。有待审批时页面标题 `(N) Nyra` + Badging API 角标 + 列表顶部横幅（新增 `GET /api/approvals` 列出所有会话的待审批项）；不做推送通知。独立 manifest（`/m/manifest.json`，`start_url` `/m`，`background_color` / `theme_color` `#0B0B0C`，PNG 图标 180/192/512 含 maskable）与 12 种 iPhone 尺寸的 `apple-touch-startup-image`（服务端生成的纯色 PNG，与动画首帧同色，不闪白）。`/m` 页面与静态资源不含秘密、无需 token；CSP 与桌面页面相同，未放宽。

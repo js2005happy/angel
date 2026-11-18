@@ -1,0 +1,16 @@
+{
+  "name": "nyra-desktop",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Nyra desktop app (Tauri shell around `python -m nyra ui`)",
+  "license": "SEE LICENSE IN ../LICENSE",
+  "scripts": {
+    "tauri": "tauri",
+    "icons": "tauri icon ../docs/assets/nyra-mark.svg --output src-tauri/icons",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.5"
+  }
+}
