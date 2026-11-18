@@ -1,3 +1,7 @@
+## 2026-11-18 Windows 重解析点路径防护（静态审阅）
+
+- ToolJournal 使用 Windows lstat 文件属性拒绝日志路径中的 reparse point，兼容缺少 is_junction 的 Python 3.11。新增模拟测试源码，未运行测试或 CI。
+
 ## 未发布：ToolJournal 未结调用执行门禁（2026-11-18）
 
 - `begin()` 在发现先前 intent 尚无结果（`unknown_outcomes > 0`）时拒绝新工具调用；不将未知副作用视作已完成。补充测试源码覆盖阻断与结果记录后的恢复。仅静态审阅，未运行测试/CI；并发检查写入仍非原子事务。
