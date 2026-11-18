@@ -75,8 +75,44 @@ class ReplTextTests(unittest.TestCase):
         self.assertEqual(cli.repl_prompt("auto"), "nyra[auto] › ")
         self.assertIn(ANSI, cli.repl_prompt("full", color=True))
 
+    def test_repl_status_line(self):
+        snapshot = {
+            "context_window_tokens": 100000,
+            "last_prompt_tokens": 25000,
+        }
+        status = cli.format_repl_status(
+            "deepseek-v4-pro", Path("/home/u/nyra"), snapshot, "auto"
+        )
+        self.assertEqual(
+            status, "[deepseek-v4-pro] | nyra · 上下文 25% · auto"
+        )
+
+    def test_repl_status_unknown_context(self):
+        status = cli.format_repl_status(
+            "m1", Path("/tmp"), {"context_window_tokens": None,
+                                 "last_prompt_tokens": None}, "full"
+        )
+        self.assertIn("上下文 --", status)
+
+    def test_repl_prompt_with_status(self):
+        prompt = cli.repl_prompt(
+            "auto", status="[m1] | nyra · 上下文 25% · auto"
+        )
+        self.assertEqual(
+            prompt, "[m1] | nyra · 上下文 25% · auto\nnyra[auto] › "
+        )
+
 
 class ToolPrinterTests(unittest.TestCase):
+    def test_stream_lines(self):
+        out = io.StringIO()
+        printer = ToolPrinter(stream=out, color=False)
+        printer("tool_stream", {"name": "shell", "stream": "stdout", "text": "hello"})
+        printer("tool_stream", {"name": "shell", "stream": "stderr", "text": "oops"})
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "│ hello")
+        self.assertEqual(lines[1], "│ oops")
+
     def test_groups_start_and_result(self):
         out = io.StringIO()
         printer = ToolPrinter(stream=out, color=False)
