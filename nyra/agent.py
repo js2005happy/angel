@@ -319,6 +319,9 @@ class Agent:
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
+            if tool_calls:
+                # 工具执行前先保存调用，便于中断后核实未完成的副作用。
+                save_session(self.session_id, messages[1:])
 
             if tool_calls and assistant_msg["content"]:
                 self._emit("assistant", {"content": assistant_msg["content"]})
@@ -377,7 +380,8 @@ class Agent:
                     }
                 )
 
-            save_session(self.session_id, messages[1:])
+                # 每个结果立即保存，避免后续工具中断丢失已知结果。
+                save_session(self.session_id, messages[1:])
 
         self.messages = messages[1:]
         save_session(self.session_id, self.messages)
