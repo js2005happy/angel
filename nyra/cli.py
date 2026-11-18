@@ -308,6 +308,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="审批模式：readonly 只读 / auto 每次确认 / full 全权",
     )
     parser.add_argument("--resume-run", help="从运行记录断点续跑")
+    parser.add_argument("--verify", help="任务完成后运行的验证命令（退出码 0 才算验证通过）")
+    parser.add_argument("--verify-timeout", type=int, default=None, help="验证命令超时秒数，默认 300")
+    parser.add_argument("--verify-retries", type=int, default=None, help="验证失败后最多重试次数，默认 2")
+    parser.add_argument(
+        "--trust-agents-verify",
+        action="store_true",
+        help="信任并冻结工作目录 AGENTS.md 中的 verify: 命令；非交互或 --json 时必须指定，否则该命令不会执行",
+    )
     parser.add_argument("--resume", help="继续指定会话 id")
     parser.add_argument("--list-skills", action="store_true", help="列出已加载的技能")
     parser.add_argument(
@@ -846,16 +854,41 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.prompt is not None or resume_state is not None:
             try:
-                from .runs import RunRecorder, RunStore
+                from .runs import (
+                    RunRecorder, RunStore, accept_verify_command,
+                    resolve_verify_origin, resolve_verify_settings,
+                )
                 task = resume_state['task'] if resume_state else args.prompt
-                recorder = RunRecorder(RunStore(NYRA_HOME / "runs"), agent, task,
-                                       state=resume_state, interrupted_tool_calls=interrupted_tool_calls)
+                config = load_config()
+                timeout, retries = resolve_verify_settings(
+                    args.verify_timeout, args.verify_retries, config)
+                # 续跑只用 state 里已确认并冻结的验证命令，不再读取 AGENTS.md。
+                skip_reason = None
+                if resume_state:
+                    verify_cmd = None
+                else:
+                    verify_cmd, source = resolve_verify_origin(
+                        args.verify, config, agent.workdir)
+                    verify_cmd, skip_reason = accept_verify_command(
+                        verify_cmd, source,
+                        trust_agents=args.trust_agents_verify,
+                        interactive=interactive,
+                    )
+                recorder = RunRecorder(
+                    RunStore(NYRA_HOME / "runs"), agent, task,
+                    state=resume_state, interrupted_tool_calls=interrupted_tool_calls,
+                    verify_cmd=verify_cmd, verify_skip_reason=skip_reason,
+                    verify_timeout=timeout, verify_retries=retries,
+                )
                 if resume_state:
                     print(f"续跑运行记录：{recorder.run_id}（中断的工具调用 {interrupted_tool_calls} 个，未自动重试）", file=sys.stderr)
                 else:
                     print(f"运行记录：{recorder.run_id}", file=sys.stderr)
                 result = recorder.run(task)
                 print(result)
+                status = recorder.store.load(recorder.run_id)["status"]
+                if status == "verify_failed":
+                    return 4
                 return 0
             except AgentError as exc:
                 print(f"错误：{exc}")

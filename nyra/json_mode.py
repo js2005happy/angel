@@ -9,6 +9,7 @@ Exit codes:
   1 runtime/provider/tool failure
   2 invalid configuration or command arguments
   3 model reached max_turns without a final answer
+  4 verification command failed (verify_failed)
   130 interrupted by the user
 """
 
@@ -27,13 +28,17 @@ from .e2b_backend import DEFAULT_SANDBOX_WORKDIR, E2BError, connect_backend
 from .memory import load_session
 from .providers import Provider, build_provider_chain
 from .usage import context_limit
-from .runs import RunRecorder, RunStore, prepare_resume, RunNotResumable
+from .runs import (
+    RunRecorder, RunStore, prepare_resume, RunNotResumable,
+    accept_verify_command, resolve_verify_origin, resolve_verify_settings, tests_modified,
+)
 
 SCHEMA_VERSION = 1
 EXIT_SUCCESS = 0
 EXIT_RUNTIME = 1
 EXIT_ARGUMENT = 2
 EXIT_INCOMPLETE = 3
+EXIT_VERIFY = 4
 EXIT_INTERRUPTED = 130
 
 
@@ -60,6 +65,17 @@ class JsonLines:
         """Expose useful events, but never dump raw tool arguments or results."""
         if kind in ("usage", "auto_compact", "auto_compact_failed", "auto_compact_skipped"):
             self.emit(kind, **data)
+        elif kind == "verify_started":
+            self.emit("verify_started", command=data.get("command", ""))
+        elif kind == "verify_result":
+            self.emit(
+                "verify_result",
+                command=data.get("command", ""),
+                exit_code=data.get("exit_code"),
+                passed=bool(data.get("passed")),
+                attempt=data.get("attempt"),
+                tests_modified=bool(data.get("tests_modified")),
+            )
         elif kind == "tool_start":
             self.emit("tool_start", id=data.get("id", ""), name=data.get("name", ""))
         elif kind == "tool_result":
@@ -225,8 +241,29 @@ def run_json(args) -> int:
                 poppy_enabled=args.poppy,
             )
             task = resume_state['task'] if resume_state else args.prompt
-            recorder = RunRecorder(RunStore(), agent, task, state=resume_state,
-                                   interrupted_tool_calls=interrupted_tool_calls)
+            timeout, retries = resolve_verify_settings(
+                getattr(args, 'verify_timeout', None),
+                getattr(args, 'verify_retries', None),
+                config,
+            )
+            skip_reason = None
+            if resume_state:
+                verify_cmd = None
+            else:
+                verify_cmd, source = resolve_verify_origin(
+                    getattr(args, 'verify', None), config, workdir)
+                # --json 非交互：AGENTS.md 来源必须显式 --trust-agents-verify。
+                verify_cmd, skip_reason = accept_verify_command(
+                    verify_cmd, source,
+                    trust_agents=getattr(args, 'trust_agents_verify', False),
+                    interactive=False,
+                )
+            recorder = RunRecorder(
+                RunStore(), agent, task, state=resume_state,
+                interrupted_tool_calls=interrupted_tool_calls,
+                verify_cmd=verify_cmd, verify_skip_reason=skip_reason,
+                verify_timeout=timeout, verify_retries=retries,
+            )
             if resume_state:
                 out.emit('run_resumed', run_id=recorder.run_id, session_id=agent.session_id,
                          turn=resume_state['turn'], interrupted_tool_calls=interrupted_tool_calls)
@@ -243,19 +280,35 @@ def run_json(args) -> int:
             final_provider = provider.name
             final_model = provider.model
             switches = list(getattr(provider, "switches", []))
+            state = recorder.store.load(recorder.run_id)
+            status = state["status"]
+            modified = bool(tests_modified(state.get("changed_files") or []))
             if out.incomplete:
                 out.emit(
                     "run_incomplete", exit_code=EXIT_INCOMPLETE,
                     output=answer, usage=usage,
                     provider=final_provider, model=final_model,
-                    model_switches=switches,
+                    model_switches=switches, verified=False,
+                    tests_modified=modified, status=status,
                 )
                 return EXIT_INCOMPLETE
+            if status == "verify_failed":
+                out.emit(
+                    "run_failed",
+                    error={"code": "verify_failed", "message": "验证未通过"},
+                    exit_code=EXIT_VERIFY, output=answer, usage=usage,
+                    provider=final_provider, model=final_model,
+                    model_switches=switches,
+                    verified=False, tests_modified=modified, status=status,
+                )
+                return EXIT_VERIFY
             out.emit(
                 "run_completed", exit_code=EXIT_SUCCESS,
                 output=answer, usage=usage,
                 provider=final_provider, model=final_model,
                 model_switches=switches,
+                verified=(status == "verified"),
+                tests_modified=modified, status=status,
             )
             return EXIT_SUCCESS
         except KeyboardInterrupt:

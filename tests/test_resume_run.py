@@ -57,7 +57,7 @@ class ResumeTests(unittest.TestCase):
             self.assertFalse(agent.ctx.approved_shell_commands)
             resumed = RunRecorder(self.store, agent, state['task'], state=state, interrupted_tool_calls=count)
             with patch.object(agent, 'build_system_prompt', return_value='系统') as system, patch('nyra.agent.execute_tool') as execute:
-                self.assertEqual(resumed.run(state['task']), '完成')
+                self.assertIn('完成', resumed.run(state['task']))
                 execute.assert_not_called()
                 system.assert_called_once_with('原任务')
             self.assertEqual(sum(m['role'] == 'user' for m in seen), 1)
@@ -199,7 +199,8 @@ class ResumeCLITests(unittest.TestCase):
                 self.assertEqual(events[-1]['status'], 'completed_unverified')
                 self.assertNotIn('run_started', [e['type'] for e in events])
             else:
-                self.assertEqual(out.strip(), '完成')
+                self.assertTrue(out.startswith('完成'))
+                self.assertIn('未验证', out)
                 self.assertIn('续跑运行记录：' + rid, err)
         rid = self.create()
         code, out, err = self.invoke(['--json', '--resume-run', rid, '--mode', 'full', '--max-turns', '7'])

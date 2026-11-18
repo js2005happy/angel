@@ -114,6 +114,8 @@ class Agent:
         # Optional observer for front ends (REPL grouping, web UI). It only
         # sees events; it never changes how the loop runs.
         self.on_event = on_event
+        # 最终回答后的可选钩子：返回消息列表则继续循环（用于验证重试）。
+        self.on_final = None
         self.workdir = Path(workdir)
         self.mode = mode
         self.max_turns = max_turns
@@ -338,9 +340,15 @@ class Agent:
 
             if not tool_calls:
                 final = msg.get("content") or ""
-                self._emit("final", {"content": final})
                 self.messages = messages[1:]
                 save_session(self.session_id, self.messages)
+                followup = self.on_final(final, messages) if self.on_final is not None else None
+                if followup:
+                    messages.extend(followup)
+                    self.messages = messages[1:]
+                    save_session(self.session_id, self.messages)
+                    continue
+                self._emit("final", {"content": final})
                 return final
 
             for tc in tool_calls:
