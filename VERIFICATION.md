@@ -1,3 +1,8 @@
+## 2026-11-19 — ToolJournal 读取入口拒绝语义（仅静态）
+
+- 核对 _records() 原先使用 Path.exists() 作为空日志早退条件，与 _directory_identity() 已有的 lstat 错误区分不一致；现在先核验目录身份，仅 None 代表缺失。新增 mock JournalError 测试源码，未执行。
+- 未运行测试、CI、安装或 Windows 实机验证；跨进程竞态、ACL 与稳定句柄仍待处理。
+
 ## 2026-11-19 — 日志目录权限错误与缺失区分（仅静态）
 
 - 静态核对 `_directory_identity`：旧 `Path.exists()` 的平台/版本差异可能把访问错误当作不存在；现仅对 `FileNotFoundError` 返回 None，其余 `OSError` 触发 `JournalError`。新增 mock PermissionError 测试源码。
