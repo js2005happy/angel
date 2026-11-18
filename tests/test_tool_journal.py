@@ -738,6 +738,37 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(JournalError):
             journal.inspect()
 
+    def test_empty_journal_rechecks_directory_fd_after_enumeration(self):
+        # POSIX only: an empty journal has no per-entry validation pass.
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("directory fd unavailable")
+        from angel import tool_journal as module
+        journal = ToolJournal("empty-fd-check", root=self.root)
+        journal.path.mkdir(mode=0o700)
+        original = module.os.fstat
+        directory_checks = [0]
+
+        class ChangedDirectoryStat:
+            def __init__(self, value):
+                self._value = value
+
+            def __getattr__(self, name):
+                if name == "st_mode":
+                    return self._value.st_mode | 0o077
+                return getattr(self._value, name)
+
+        def changed(fd):
+            value = original(fd)
+            if __import__("stat").S_ISDIR(value.st_mode):
+                directory_checks[0] += 1
+                if directory_checks[0] >= 2:
+                    return ChangedDirectoryStat(value)
+            return value
+
+        with mock.patch.object(module.os, "fstat", side_effect=changed):
+            with self.assertRaisesRegex(JournalError, "枚举后发生变化"):
+                journal.inspect()
+
     def test_no_files_without_explicit_begin(self):
         journal = ToolJournal("session1", root=self.root)
         self.assertFalse(journal.path.exists())
