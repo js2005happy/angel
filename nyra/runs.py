@@ -13,6 +13,7 @@ from .config import NYRA_HOME
 RUN_STATUSES = frozenset('queued running awaiting_approval interrupted failed incomplete completed_unverified verified verify_failed'.split())
 _RUN_ID = re.compile(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}\Z')
 _EVENT_FIELDS = {
+    'resumed': ('interrupted_tool_calls', 'turn'), 'mode_override': ('from', 'to'),
     'run_started': (), 'turn': ('turn',), 'tool_start': ('id', 'name'),
     'tool_result': ('id', 'name', 'ok'), 'approval_wait': ('tool',),
     'approval_done': ('tool', 'approved'), 'final': (), 'max_turns': (),
@@ -158,6 +159,11 @@ class RunStore:
         with self._path(run_id, 'state.json').open(encoding='utf-8') as handle:
             return self._validate(json.load(handle), run_id)
 
+    def claim(self, run_id):
+        """当前前台进程接管运行，不继承任何审批。"""
+        return self.set_status(run_id, 'running', pid=os.getpid(),
+                               host=socket.gethostname(), error=None)
+
     def list(self):
         if not self.base_dir.exists():
             return []
@@ -215,19 +221,28 @@ class RunStore:
 
 class RunRecorder:
     """链接已有观察器；异常由顶层调用包装捕获，不改变 Agent/审批行为。"""
-    def __init__(self, store, agent, task):
+    def __init__(self, store, agent, task, *, state=None, interrupted_tool_calls=0):
         self.store, self.agent = store, agent
         self.previous = agent.on_event
         self.previous_approval = agent.ctx.approval_observer
-        self.turn = 0
+        self.turn = state['turn'] if state else 0
+        self.continuing = state is not None
+        self.previous_files = list(state['changed_files']) if state else []
+        agent.turn = self.turn
         self.position = agent.checkpoints.record_position() if agent.checkpoints else 0
-        self.run_id = store.create(task, agent.session_id, agent.workdir, agent.mode, agent.max_turns)['run_id']
+        if state is None:
+            self.run_id = store.create(task, agent.session_id, agent.workdir, agent.mode, agent.max_turns)['run_id']
+        else:
+            self.run_id = state['run_id']
+            store.claim(self.run_id)
+            store.update(self.run_id, max_turns=agent.max_turns)
+            store.append_event(self.run_id, 'resumed', interrupted_tool_calls=interrupted_tool_calls, turn=self.turn)
         agent.on_event = self
         agent.ctx.approval_observer = self.approval
 
     def changed(self):
         files = self.agent.checkpoints.files_changed_since(self.position) if self.agent.checkpoints else []
-        self.store.update(self.run_id, changed_files=files)
+        self.store.update(self.run_id, changed_files=sorted(set(self.previous_files) | set(files)))
 
     def __call__(self, kind, data):
         turn = getattr(self.agent, 'turn', 0)
@@ -261,7 +276,7 @@ class RunRecorder:
 
     def run(self, task):
         try:
-            result = self.agent.run(task)
+            result = self.agent.resume(task) if self.continuing else self.agent.run(task)
             self.changed()
             return result
         except KeyboardInterrupt:
@@ -277,3 +292,59 @@ class RunRecorder:
         finally:
             self.agent.on_event = self.previous
             self.agent.ctx.approval_observer = self.previous_approval
+
+
+class RunNotResumable(ValueError):
+    """运行已结束或仍有进程持有。"""
+
+
+def prepare_resume(store, run_id, *, workdir=None, mode=None, max_turns=None):
+    """校验并修复最后一轮未知结果；从不重放旧工具调用。"""
+    from . import memory
+    state = store.mark_stale(run_id)
+    if state['status'] not in ('interrupted', 'failed', 'incomplete', 'awaiting_approval', 'verify_failed'):
+        raise RunNotResumable(f"运行 {run_id} 当前状态为 {state['status']}，不能续跑")
+    root = Path(state['workdir']).resolve()
+    if not root.is_dir():
+        raise ValueError('原工作目录不存在')
+    if workdir is not None and Path(workdir).resolve() != root:
+        raise ValueError('续跑不能更换工作目录')
+    if state['mode'] not in ('readonly', 'auto', 'full'):
+        raise ValueError('原运行模式无效')
+    if mode is not None and mode not in ('readonly', 'auto', 'full'):
+        raise ValueError('运行模式无效')
+    budget = max_turns if max_turns is not None else state['max_turns']
+    if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+        raise ValueError('--max-turns 必须为正整数')
+    messages = memory.load_session(state['session_id'])
+    if messages is None:
+        raise ValueError('指定运行的会话不存在')
+    count = 0
+    # 逐个调用轮次匹配结果，避免跨轮重复 ID 掩盖未知调用。
+    # 先保留本轮已有工具结果，再把未知结果追加在本轮末尾，避免打乱顺序。
+    repaired = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        repaired.append(message)
+        calls = message.get('tool_calls') if message.get('role') == 'assistant' else None
+        if not calls:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(messages) and messages[end].get('role') == 'tool':
+            repaired.append(messages[end])
+            end += 1
+        results = {m.get('tool_call_id') for m in messages[index + 1:end]}
+        for call in calls:
+            if call.get('id', '') not in results:
+                count += 1
+                repaired.append({'role': 'tool', 'tool_call_id': call.get('id', ''),
+                                 'content': '中断：该调用结果未知（可能已部分执行）。请先核实当前状态再决定是否重做。'})
+        index = end
+    memory.save_session(state['session_id'], repaired)
+    if mode is not None and mode != state['mode']:
+        store.append_event(run_id, 'mode_override', **{'from': state['mode'], 'to': mode})
+        state = store.update(run_id, mode=mode)
+    state = dict(state, max_turns=budget)
+    return state, repaired, count

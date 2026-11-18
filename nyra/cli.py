@@ -307,6 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=VALID_MODES,
         help="审批模式：readonly 只读 / auto 每次确认 / full 全权",
     )
+    parser.add_argument("--resume-run", help="从运行记录断点续跑")
     parser.add_argument("--resume", help="继续指定会话 id")
     parser.add_argument("--list-skills", action="store_true", help="列出已加载的技能")
     parser.add_argument(
@@ -471,6 +472,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         args = parser.parse_args(raw)
 
+    args.workdir_explicit = any(item == '--workdir' or item.startswith('--workdir=') for item in raw)
+    if args.resume_run and any((args.prompt is not None, args.resume, args.plan_mode,
+                               args.execute_plan, args.approve_plan, args.compact,
+                               args.list_mcp, args.list_profiles, args.list_sessions, args.list_skills,
+                               args.inspect_poppy_identity is not None, args.discover_poppy is not None)):
+        message = '--resume-run 不能与任务文本、--resume、计划、压缩或列表命令组合使用'
+        if args.json_mode:
+            from .json_mode import invalid_arguments
+            return invalid_arguments(sys.stdout, message)
+        print('错误：' + message, file=sys.stderr)
+        return 2
+
     if args.inspect_poppy_identity is not None:
         if args.json_mode:
             from .json_mode import invalid_arguments
@@ -601,6 +614,24 @@ def main(argv: list[str] | None = None) -> int:
             args.mode = args.mode or "auto"
             # Do not inherit a saved e2b setting when the approval is local.
             args.sandbox = "local"
+
+    resume_state = None
+    interrupted_tool_calls = 0
+    if args.resume_run:
+        from .runs import RunStore, prepare_resume
+        try:
+            resume_store = RunStore(NYRA_HOME / 'runs')
+            resume_state, resume_messages, interrupted_tool_calls = prepare_resume(
+                resume_store, args.resume_run,
+                workdir=args.workdir if args.workdir_explicit else None,
+                mode=args.mode, max_turns=args.max_turns)
+        except (ValueError, OSError) as exc:
+            print(f'错误：{exc}', file=sys.stderr)
+            return 2
+        args.workdir = resume_state['workdir']
+        args.mode = resume_state['mode']
+        args.max_turns = resume_state['max_turns']
+        args.sandbox = 'local'
 
     try:
         sandbox_settings = resolve_sandbox(
@@ -779,6 +810,10 @@ def main(argv: list[str] | None = None) -> int:
         messages = loaded
         session_id = args.resume
 
+    if resume_state is not None:
+        messages = resume_messages
+        session_id = resume_state['session_id']
+
     backend = None
     if sandbox_settings.backend == "e2b":
         try:
@@ -809,12 +844,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        if args.prompt is not None:
+        if args.prompt is not None or resume_state is not None:
             try:
                 from .runs import RunRecorder, RunStore
-                recorder = RunRecorder(RunStore(NYRA_HOME / "runs"), agent, args.prompt)
-                print(f"运行记录：{recorder.run_id}", file=sys.stderr)
-                result = recorder.run(args.prompt)
+                task = resume_state['task'] if resume_state else args.prompt
+                recorder = RunRecorder(RunStore(NYRA_HOME / "runs"), agent, task,
+                                       state=resume_state, interrupted_tool_calls=interrupted_tool_calls)
+                if resume_state:
+                    print(f"续跑运行记录：{recorder.run_id}（中断的工具调用 {interrupted_tool_calls} 个，未自动重试）", file=sys.stderr)
+                else:
+                    print(f"运行记录：{recorder.run_id}", file=sys.stderr)
+                result = recorder.run(task)
                 print(result)
                 return 0
             except AgentError as exc:

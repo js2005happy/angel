@@ -283,17 +283,24 @@ class Agent:
         return "\n\n".join(sections)
 
     def run(self, task: str) -> str:
+        return self._run_loop(task, resume=False)
+
+    def resume(self, task: str) -> str:
+        """沿用历史和原任务，重新构建系统提示，不重新发送任务。"""
+        return self._run_loop(task, resume=True)
+
+    def _run_loop(self, task: str, resume: bool) -> str:
         if self.delegate_depth == 0:
-            # Each top-level user request starts a fresh child-agent allowance.
             self._delegate_budget.reset()
             if self.checkpoints is not None:
                 self.checkpoints.begin_turn()
         system = self.build_system_prompt(task)
-        messages: list[dict] = (
-            [{"role": "system", "content": system}]
-            + self.messages
-            + [{"role": "user", "content": task}]
-        )
+        messages = [{"role": "system", "content": system}] + self.messages
+        if not resume:
+            messages.append({"role": "user", "content": task})
+        elif self.messages and self.messages[-1].get("role") == "assistant" and not self.messages[-1].get("tool_calls"):
+            messages.append({"role": "user", "content": "（续跑）请继续完成原任务；先核实当前状态。"})
+        turn_offset = self.turn if resume else 0
 
         attempted_auto_compact = False
         for _ in range(self.max_turns):
@@ -308,7 +315,7 @@ class Agent:
                 raise AgentError(str(exc)) from exc
 
             # 运行记录读取的模型轮次计数；不新增对外事件，前端观察器不受影响。
-            self.turn = _ + 1
+            self.turn = turn_offset + _ + 1
             self.usage.record(resp)
             if isinstance(resp, dict) and isinstance(resp.get("usage"), dict):
                 self._emit("usage", self.usage.snapshot())
