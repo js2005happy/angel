@@ -1,3 +1,8 @@
+## 2026-11-19 — ToolJournal 目录类型检查拒绝语义（仅静态）
+
+- 静态核对 `_safe_directory()` 末次 `exists()/is_dir()` 在部分 Python/Windows 版本可能吞掉访问拒绝；改用 `lstat()` 并仅捕获 `FileNotFoundError`。新增模拟 `PermissionError` 的测试源码，未运行。
+- 未执行测试、安装、CI 或 Windows 实机验证；不能据此证明原生 ACL、稳定句柄或竞态消除。
+
 ## 2026-11-19 — ToolJournal 读取入口拒绝语义（仅静态）
 
 - 核对 _records() 原先使用 Path.exists() 作为空日志早退条件，与 _directory_identity() 已有的 lstat 错误区分不一致；现在先核验目录身份，仅 None 代表缺失。新增 mock JournalError 测试源码，未执行。
