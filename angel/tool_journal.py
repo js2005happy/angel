@@ -468,14 +468,18 @@ class ToolJournal:
             1 for events in groups.values()
             if not any(e["event"] == "intent" for e in events)
         )
-        pending = sum(x["outcome"] == "unknown" for x in calls.values()) + orphan_results
+        # A globally ambiguous journal cannot certify even otherwise paired
+        # results: callers must not interpret partial success counts as safe.
+        pending = (len(calls) + orphan_results) if invalid else (
+            sum(x["outcome"] == "unknown" for x in calls.values()) + orphan_results
+        )
         return {
             "session_id": self.session_id,
             "event_count": len(records),
             "tool_intents": len(calls),
             "unknown_outcomes": pending,
-            "reported_ok": sum(x["outcome"] == "result_ok" for x in calls.values()),
-            "reported_errors": sum(x["outcome"] == "result_error" for x in calls.values()),
+            "reported_ok": 0 if invalid else sum(x["outcome"] == "result_ok" for x in calls.values()),
+            "reported_errors": 0 if invalid else sum(x["outcome"] == "result_error" for x in calls.values()),
             "journal_ambiguous": invalid,
             "execution_verified": False,
             "safe_to_auto_resume": False,
