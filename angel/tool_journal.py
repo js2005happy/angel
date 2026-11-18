@@ -379,6 +379,12 @@ class ToolJournal:
         """Persist a reported result, without asserting verified side effects."""
         if not isinstance(success, bool):
             raise JournalError("结果状态必须为布尔值")
+        # A valid target intent does not make unrelated corrupt or orphaned
+        # events trustworthy. Refuse to certify any result in an ambiguous
+        # journal; reconciliation must happen outside the tool runner.
+        status = self.inspect()
+        if status["journal_ambiguous"]:
+            raise JournalError("日志存在歧义；禁止记录新的工具结果")
         records = self._records()
         matches = [r for r in records if r["call_id"] == call_id]
         if len(matches) != 1 or matches[0]["event"] != "intent" or matches[0]["tool"] != tool:
