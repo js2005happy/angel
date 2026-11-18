@@ -1,3 +1,7 @@
+## 未发布：Windows 事件文件重解析点失败关闭（2026-11-18）
+
+- `ToolJournal._records()` 对事件文件目录项在读取前后检查 Windows `FILE_ATTRIBUTE_REPARSE_POINT`，拒绝普通文件模式伪装下的重解析点；元数据缺失时失败关闭。新增标准库模拟回归测试源码；仅静态审阅，未运行测试/CI。Windows ACL、祖先目录竞态与稳定句柄仍未实现。
+
 ## 未发布：Windows 悬空重解析点失败关闭（2026-11-18）
 
 - ToolJournal Windows 祖先路径检查改为直接 `lstat()`，不再依赖可能对悬空 junction 返回 false 的 `exists()`；仅对真正不存在的路径跳过，其他元数据读取异常失败关闭。
