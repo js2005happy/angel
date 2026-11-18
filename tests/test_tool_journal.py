@@ -16,6 +16,22 @@ class JournalTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
 
+    def test_directory_anchor_is_checked_for_symlinks(self):
+        # Even the filesystem anchor must be inspected, rather than skipped
+        # by the ancestor walk. Use a mock to avoid touching the real root.
+        from angel import tool_journal as module
+        anchor = Path(self.root.anchor)
+        original = Path.is_symlink
+
+        def fake_symlink(path):
+            if path == anchor:
+                return True
+            return original(path)
+
+        with mock.patch.object(Path, "is_symlink", fake_symlink):
+            with self.assertRaisesRegex(JournalError, "符号链接"):
+                module._safe_directory(self.root)
+
     def test_begin_rejects_pending_unknown_intent(self):
         # An unfinished side effect is not safe to silently run past.
         journal = ToolJournal("pending-before-begin", root=self.root)
