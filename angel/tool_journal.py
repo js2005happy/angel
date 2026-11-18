@@ -426,6 +426,10 @@ class ToolJournal:
         status = self.inspect()
         if status["journal_ambiguous"]:
             raise JournalError("日志存在歧义；禁止记录新的工具结果")
+        # A concurrent writer may have persisted another intent after this
+        # call began. Refuse to certify one result while another is unknown.
+        if status["unknown_outcomes"] != 1:
+            raise JournalError("存在其他结果未知的工具调用；禁止记录结果")
         records = self._records()
         matches = [r for r in records if r["call_id"] == call_id]
         if len(matches) != 1 or matches[0]["event"] != "intent" or matches[0]["tool"] != tool:

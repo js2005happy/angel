@@ -101,6 +101,18 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal.inspect()["unknown_outcomes"], 0)
         self.assertTrue(journal.begin("http_post"))
 
+    def test_finish_rejects_second_unresolved_intent(self):
+        # Simulate another process recording an intent between begin and finish.
+        journal = ToolJournal("concurrent-pending-finish", root=self.root)
+        first = journal.begin("shell")
+        journal._write("intent", "a" * 32, "http_post")
+        before = sorted(journal.path.iterdir())
+        with self.assertRaisesRegex(JournalError, "其他结果未知"):
+            journal.finish(first, "shell", success=True)
+        self.assertEqual(sorted(journal.path.iterdir()), before)
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 2)
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
     def test_finish_rejects_unrelated_orphan_result(self):
         journal = ToolJournal("orphan-before-finish", root=self.root)
         pending_id = journal.begin("shell")

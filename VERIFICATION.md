@@ -1,3 +1,9 @@
+## 2026-11-18 ToolJournal 并发未决意图（静态检查）
+
+- 审阅 `angel/tool_journal.py` 的 `begin/finish/inspect`：`begin()` 检查后到持久化 intent 之间仍有跨进程竞争窗口；`finish()` 原先仅拒绝全局歧义，可能在另一个 intent 未决时记录成功。
+- 本次在 `finish()` 增加 `unknown_outcomes == 1` 的保守门槛；新增模拟第二个未决 intent 的测试源码。**没有运行任何测试或安装软件**，不宣称通过 CI。
+- 局限：仍无跨进程原子事务；`inspect()` 与 `_write()` 之间仍可竞争；已发生的外部副作用无法由日志证明或撤销。
+
 ## 2026-11-18 Windows 事件写后元数据（仅静态审阅）
 
 - 核对 `_verify_written_windows_entry`：Windows 事件目录项现在同时检查类型、设备/inode、硬链接数、大小、mtime_ns 和 ctime_ns；新增模拟原位修改及硬链接变化的测试源码，未执行。
