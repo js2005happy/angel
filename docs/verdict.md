@@ -43,3 +43,31 @@ nyra verdict "重构 auth 模块"  # 顺手查这个任务有没有历史可复�
 ## 退出码
 
 `red` → 非 0（可以拿来做 CI 门禁）；其余 → 0。
+
+## 单次运行打分：`nyra verdict --run <id>`
+
+配置级 verdict 问「这套设置值不值」；运行级问「**这一次跑成了没有、代价多大**」。
+
+```bash
+nyra verdict --run abc123
+```
+
+只看三样东西：**验证结果**（有没有证据）、**运行状态**（跑完没跑完）、**花费**（代价多大）。
+
+| # | 条件 | 等级 | 依据 |
+|---|---|---|---|
+| 1 | `verify_failed` | red | 有证据表明改坏了；下一步给出具体命令让人去复现 |
+| 2 | `failed` | red | 没跑完，谈不上值 |
+| 3 | `verified` 且退出码 0 | green | 有验证证据 |
+| 4 | `completed_unverified` | yellow | 跑完了但没证据 |
+| 5 | 状态说 verified 但没退出码 | yellow + unknown | **状态不能替代证据** |
+| 6 | `passed=false` | red | 即便状态是 verified |
+
+补充规则：
+
+- 花费未知 → 进 `unknowns`，不当 0
+- 总花费 = 主 agent + 子任务（`delegate_spent_usd`）
+- **失败且烧了钱** → 明确劝阻「重跑碰运气」：先修根因
+- 没有文件改动但有验证 → 说明可能是查询型任务，不误判成"啥也没干"
+
+退出码：`red` → 非 0。
