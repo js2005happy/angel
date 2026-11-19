@@ -316,6 +316,25 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "无法核验"):
                 journal.inspect()
 
+    def test_review_reason_distinguishes_unknown_and_ambiguous(self):
+        # Metadata-only reason never authorizes tool replay or execution.
+        journal = ToolJournal("review-reason", root=self.root)
+        clean = journal.inspect()
+        self.assertEqual(clean["review_reason"], "none")
+        self.assertFalse(clean["safe_to_auto_resume"])
+        call_id = journal.begin("shell")
+        pending = journal.inspect()
+        self.assertEqual(pending["review_reason"], "unknown_outcomes")
+        self.assertTrue(pending["manual_review_required"])
+        journal.finish(call_id, "shell", success=True)
+        self.assertEqual(journal.inspect()["review_reason"], "none")
+        journal._write("result_error", "a" * 32, "http_post")
+        ambiguous = journal.inspect()
+        self.assertEqual(ambiguous["review_reason"], "journal_ambiguous")
+        self.assertTrue(ambiguous["manual_review_required"])
+        self.assertFalse(ambiguous["execution_verified"])
+        self.assertFalse(ambiguous["safe_to_auto_resume"])
+
     def test_begin_reserves_capacity_for_result_event(self):
         # Pure metadata stub: do not create thousands of event files.
         journal = ToolJournal("capacity-reservation", root=self.root)
