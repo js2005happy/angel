@@ -590,8 +590,14 @@ class ToolJournal:
         # pre-commit checks. Do not report this result as clean in that case.
         # Our own result_error is expected when success is False.
         expected_errors = 0 if success else 1
-        if committed["reported_errors"] > expected_errors:
-            raise JournalError("结果写入后发现其他工具报告失败；必须人工核查")
+        if committed["reported_errors"] != expected_errors:
+            raise JournalError("结果写入后工具错误计数不一致；必须人工核查")
+        # A clean-looking aggregate can still hide a deleted or replaced
+        # event. Require the expected append-only count and outcome delta.
+        expected_ok = status["reported_ok"] + (1 if success else 0)
+        if (committed["event_count"] != status["event_count"] + 1
+                or committed["reported_ok"] != expected_ok):
+            raise JournalError("结果写入后事件数量或成功计数不一致；必须人工核查")
 
     def inspect(self) -> dict:
         """Only counts; never expose a transcript, argument, result or call id."""
