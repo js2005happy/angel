@@ -196,8 +196,13 @@ class ToolJournal:
                         or name in (".", "..")):
                     raise JournalError("日志目录存在不受支持的文件")
                 path = self.path / name
-                if directory_fd is None and path.is_symlink():
-                    raise JournalError("日志目录存在不受支持的文件")
+                if directory_fd is None:
+                    try:
+                        is_link = path.is_symlink()
+                    except OSError as exc:
+                        raise JournalError("无法核验事件文件是否为符号链接") from exc
+                    if is_link:
+                        raise JournalError("日志目录存在不受支持的文件")
                 flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
                 # A hostile .json FIFO must not block before fstat rejects it.
                 # POSIX O_NONBLOCK is harmless for regular event files.
