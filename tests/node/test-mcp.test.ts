@@ -260,12 +260,6 @@ test("McpSandbox.test_find_on_path", () => {
 });
 
 test("McpSandbox.test_manager_start_all_refuses_unavailable_backend", async () => {
-  // seatbelt 在 macOS 上是可用的，这条用例的前提（后端不可用）在 mac 上不成立。
-  // 语义由非 mac 平台覆盖；这里只跳过，不改任何断言。
-  if (process.platform === "darwin") {
-    console.log("跳过：macOS 上 seatbelt 可用，构造不出后端不可用场景");
-    return;
-  }
   await withCleanSandboxEnv(async () => {
     const server = fakeServerPath();
     // 后端用 e2b：它在所有平台上都解析失败（0.5.1 暂不支持），是唯一全平台
