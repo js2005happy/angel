@@ -317,21 +317,8 @@ class JournalTests(unittest.TestCase):
                 journal.inspect()
 
     def test_begin_rechecks_error_added_after_initial_inspect(self):
-        # Simulate a concurrent result_error appearing after the first read.
         journal = ToolJournal("concurrent-error-after-inspect", root=self.root)
-        previous = journal.begin("http_post")
-        original_inspect = journal.inspect
-        calls = 0
-
-        def racing_inspect():
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                journal._write("result_error", previous, "http_post")
-            return original_inspect()
-
-        # Existing pending calls would normally block begin; model the
-        # initial clean snapshot without allowing any tool dispatch.
+        # A competing process reports a failure between the two inspections.
         with mock.patch.object(journal, "inspect", side_effect=[
             {"journal_ambiguous": False, "unknown_outcomes": 0,
              "reported_errors": 0, "event_count": 0},
@@ -347,24 +334,26 @@ class JournalTests(unittest.TestCase):
         previous = journal.begin("http_post")
         journal.finish(previous, "http_post", success=True)
         original_records = journal._records
-        calls = 0
 
         def racing_records():
-            nonlocal calls
-            calls += 1
             records = original_records()
-            if calls == 1:
-                # Only the final snapshot sees an error from another call.
-                records.append({"call_id": "f" * 32, "tool": "http_post",
-                                "event": "intent"})
-                records.append({"call_id": "f" * 32, "tool": "http_post",
-                                "event": "result_error"})
+            # Model another process completing an error result between
+            # the post-intent inspect and the final snapshot.
+            records.append({"call_id": "f" * 32, "tool": "http_post",
+                            "event": "intent"})
+            records.append({"call_id": "f" * 32, "tool": "http_post",
+                            "event": "result_error"})
             return records
 
-        # First _records() call in begin is the final snapshot.
-        with mock.patch.object(journal, "_records", side_effect=racing_records):
-            with self.assertRaisesRegex(JournalError, "工具报告失败"):
-                journal.begin("shell")
+        with mock.patch.object(journal, "inspect", side_effect=[
+            {"journal_ambiguous": False, "unknown_outcomes": 0,
+             "reported_errors": 0, "event_count": 2},
+            {"journal_ambiguous": False, "unknown_outcomes": 1,
+             "reported_errors": 0, "event_count": 3},
+        ]):
+            with mock.patch.object(journal, "_records", side_effect=racing_records):
+                with self.assertRaisesRegex(JournalError, "工具报告失败"):
+                    journal.begin("shell")
         self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
     def test_begin_rejects_reported_error_until_manual_reconciliation(self):
