@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，Windows 事件打开句柄重解析点复核）
+
+- ToolJournal 读取事件文件时，在路径目录项核验之外，对已打开文件句柄的 `fstat` 元数据再次执行 Windows reparse-point 拒绝检查，减少打开前路径检查与真实句柄不一致时的误信任。新增模拟元数据回归测试源码；未运行测试或 Windows 实机验证，不代表原生 ACL 或稳定目录句柄已完成。
+
 ## 未发布（2026-11-19，ToolJournal 祖先链接探测权限拒绝）
 
 - `_safe_directory()` 遍历祖先时将 `is_symlink()` / `is_junction()` 的 `OSError` 统一转为保留异常链的 `JournalError`，拒绝在无法核验链接状态时继续使用日志路径。新增模拟祖先访问拒绝的回归测试源码，未运行；不代表 Windows ACL 或稳定句柄已实现。
