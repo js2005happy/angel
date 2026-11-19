@@ -11,6 +11,23 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_begin_requires_own_intent_still_pending(self):
+        # A competing process can finish our intent while leaving exactly
+        # one different intent unresolved; the global count alone is unsafe.
+        journal = ToolJournal("own-intent-pending", root=self.root)
+        original_write = journal._write
+
+        def race(event, call_id, tool):
+            original_write(event, call_id, tool)
+            if event == "intent":
+                original_write("result_ok", call_id, tool)
+                original_write("intent", "b" * 32, "http_post")
+
+        with mock.patch.object(journal, "_write", side_effect=race):
+            with self.assertRaisesRegex(JournalError, "本次调用意图已变化"):
+                journal.begin("shell")
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 1)
+
     def test_begin_rechecks_concurrent_intent_before_dispatch(self):
         # A competing intent appearing immediately after our event is
         # persisted must stop begin() before it returns a dispatchable ID.
