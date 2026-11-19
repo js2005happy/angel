@@ -11,6 +11,21 @@ from angel.tool_journal import JournalError, ToolJournal, MAX_EVENTS
 
 
 class JournalTests(unittest.TestCase):
+    def test_manual_review_signal_is_read_only_and_conservative(self):
+        journal = ToolJournal("review-signal", root=self.root)
+        empty = journal.inspect()
+        self.assertFalse(empty["manual_review_required"])
+        self.assertFalse(empty["safe_to_auto_resume"])
+        cid = journal.begin("shell")
+        pending = journal.inspect()
+        self.assertTrue(pending["manual_review_required"])
+        self.assertEqual(pending["unknown_outcomes"], 1)
+        journal.finish(cid, "shell", success=True)
+        completed = journal.inspect()
+        self.assertFalse(completed["manual_review_required"])
+        self.assertFalse(completed["execution_verified"])
+        self.assertFalse(completed["safe_to_auto_resume"])
+
     def test_orphan_result_suppresses_other_reported_successes(self):
         journal = ToolJournal("orphan-global-ambiguity", root=self.root)
         completed = journal.begin("shell")
