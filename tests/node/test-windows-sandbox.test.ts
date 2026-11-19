@@ -45,11 +45,28 @@ test("WindowsSandbox.script_command_base64_no_quoting_hole", () => {
 
 test("WindowsSandbox.script_memory_limit_opt_in", () => {
   const withMem = buildJobObjectScript("echo hi", { mode: "workspace-write", workdir: "C:\\w", maxMemoryMB: 512 });
-  expect(withMem).toContain("$limits.LimitFlags = $limits.LimitFlags -bor 0x200");
+  expect(withMem).toContain("$limits.BasicLimit.LimitFlags = $limits.BasicLimit.LimitFlags -bor 0x200");
   expect(withMem).toContain(`JobMemoryLimit = ${512 * 1024 * 1024}`);
   const withoutMem = buildJobObjectScript("echo hi", { mode: "workspace-write", workdir: "C:\\w" });
   expect(withoutMem).not.toContain("-bor 0x200");
   expect(withoutMem).not.toContain("JobMemoryLimit =");
+});
+
+test("WindowsSandbox.script_memory_limit_uses_extended_limits", () => {
+  // 语义修复：BasicLimits（class 2）里第二个 long 字段的真实含义是
+  // PerJobUserTimeLimit，不是 JobMemoryLimit——旧代码把它当内存槽位写，
+  // 512MB 会被当成约 54 秒 CPU 时间。内存上限必须走扩展结构 class 9。
+  const script = buildJobObjectScript("echo hi", { mode: "workspace-write", workdir: "C:\\w", maxMemoryMB: 512 });
+  expect(script).toContain("public struct ExtendedLimits");
+  expect(script).toContain("public long PerJobUserTimeLimit;");
+  expect(script).toContain("public UIntPtr JobMemoryLimit;");
+  expect(script).not.toContain("public long JobMemoryLimit;");
+  expect(script).toContain("[NyraJobObject+ExtendedLimits]::new()");
+  expect(script).toContain("SetInformationJobObject($job, 9,");
+  expect(script).not.toContain("SetInformationJobObject($job, 2,");
+  // 限制标志与进程数上限仍挂在嵌套的 BasicLimit 上。
+  expect(script).toContain("$limits.BasicLimit.LimitFlags = 0x2000");
+  expect(script).toContain("$limits.BasicLimit.ActiveProcessLimit = 64");
 });
 
 test("WindowsSandbox.script_danger_rejected", () => {

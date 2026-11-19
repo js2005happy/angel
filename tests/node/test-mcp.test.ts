@@ -2,12 +2,13 @@
 // 假 MCP 服务器（stdio JSON-RPC）：现代版 discover、旧版 initialize 回退、
 // tools/list 分页、tools/call、多轮往返报错；预置清单；成本上限停手。
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { writeFakeMcpServer as fakeServerPath } from "./fake-mcp-server.ts";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   MCPClient, MCPServerConfig, MCPToolManager, loadMcpServers,
+  MCPError, sandboxedMcpSpawnArgs, mcpServerRoBinds, findOnPath,
 } from "../../src/mcp.ts";
 import { MCP_PRESETS, DEFAULT_MCP_PRESETS, getPreset, listPresets, resolvePreset } from "../../src/mcpPresets.ts";
 import { McpCostTracker, estimateToolCost, costLimitUsd } from "../../src/mcpCost.ts";
@@ -148,4 +149,149 @@ test("McpServersTest.test_load_servers_presets_then_user_wins", () => {
   expect(Object.keys(defaults).sort()).toEqual(["fetch", "memory", "sequential-thinking", "time"]);
   const none = loadMcpServers({ mcp_presets: [] });
   expect(Object.keys(none)).toEqual([]);
+});
+
+// ---- MCP 沙箱（0.5.2 缺口收尾） ----------------------------------------
+
+const SANDBOX_ENV_KEYS = [
+  "NYRA_SANDBOX", "ANGEL_SANDBOX", "NYRA_SANDBOX_MODE", "ANGEL_SANDBOX_MODE",
+  "NYRA_SANDBOX_ALLOW_NET", "ANGEL_SANDBOX_ALLOW_NET",
+] as const;
+
+/** 沙箱环境变量临时清空，用完原样恢复（resolveSandboxBackend 优先读 env）。 */
+async function withCleanSandboxEnv(fn: () => Promise<void> | void): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of SANDBOX_ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+  try { await fn(); } finally {
+    for (const k of SANDBOX_ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+    }
+  }
+}
+
+test("McpSandbox.test_local_passthrough", () => {
+  const server = fakeServerPath();
+  const [cmd, args] = sandboxedMcpSpawnArgs(
+    new MCPServerConfig("fake", "node", [server]),
+    { backend: "local", mode: "workspace-write", allowNet: false },
+    "/tmp/wd",
+  );
+  expect(cmd).toBe("node");
+  expect(args).toEqual([server]);
+});
+
+test("McpSandbox.test_bwrap_argv_binds_server_dir_ro", () => {
+  const server = fakeServerPath();
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-mcp-wd-"));
+  const [cmd, args] = sandboxedMcpSpawnArgs(
+    new MCPServerConfig("fake", "node", [server, "--flag"]),
+    { backend: "bwrap", mode: "workspace-write", allowNet: false },
+    workdir,
+  );
+  expect(cmd).toBe("bwrap");
+  expect(args).toContain("--unshare-net");
+  expect(args).toContain("--die-with-parent");
+  // 服务器文件所在目录只读追加绑定（工作区外，不绑就读不到）。
+  expect(args).toContain(dirname(server));
+  expect(args).toContain("--bind");
+  expect(args).toContain(workdir);
+  // 末尾是原命令，不经过 /bin/sh -c（长驻 stdio 进程）。
+  const tail = args.slice(args.indexOf("--") + 1);
+  expect(tail).toEqual(["node", server, "--flag"]);
+  expect(args).not.toContain("-c");
+});
+
+test("McpSandbox.test_seatbelt_argv", () => {
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-mcp-wd-"));
+  const [cmd, args] = sandboxedMcpSpawnArgs(
+    new MCPServerConfig("fake", "node", ["/tmp/fake.mjs"]),
+    { backend: "seatbelt", mode: "workspace-write", allowNet: false },
+    workdir,
+  );
+  expect(cmd).toBe("sandbox-exec");
+  expect(args[0]).toBe("-p");
+  expect(args[1]).toContain(workdir);
+  expect(args.slice(2)).toEqual(["node", "/tmp/fake.mjs"]);
+});
+
+test("McpSandbox.test_jobobject_e2b_unknown_refused", () => {
+  const cfg = new MCPServerConfig("fake", "node", ["/tmp/fake.mjs"]);
+  const wd = "/tmp/wd";
+  expect(() => sandboxedMcpSpawnArgs(cfg, { backend: "jobobject", mode: "workspace-write", allowNet: false }, wd)).toThrow(MCPError);
+  expect(() => sandboxedMcpSpawnArgs(cfg, { backend: "e2b", mode: "workspace-write", allowNet: false }, wd)).toThrow(MCPError);
+  expect(() => sandboxedMcpSpawnArgs(cfg, { backend: "nope", mode: "workspace-write", allowNet: false }, wd)).toThrow(MCPError);
+});
+
+test("McpSandbox.test_bwrap_danger_mode_refused", () => {
+  const cfg = new MCPServerConfig("fake", "node", ["/tmp/fake.mjs"]);
+  expect(() => sandboxedMcpSpawnArgs(cfg, { backend: "bwrap", mode: "danger-full-access", allowNet: false }, "/tmp/wd")).toThrow("danger-full-access");
+});
+
+test("McpSandbox.test_ro_binds_skip_workdir_and_system_dirs", () => {
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-mcp-wd-"));
+  const server = fakeServerPath();
+  const binds = mcpServerRoBinds(
+    new MCPServerConfig("fake", "node", [server, join(workdir, "data.json")]),
+    workdir,
+  );
+  // 服务器文件目录在内；工作区内参数不在内；系统目录不重复加。
+  expect(binds).toContain(dirname(server));
+  expect(binds).not.toContain(workdir);
+  expect(mcpServerRoBinds(new MCPServerConfig("fake", "node", []), workdir)).not.toContain("/usr/bin");
+});
+
+test("McpSandbox.test_find_on_path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nyra-mcp-path-"));
+  const fakeBin = join(dir, "mycmd");
+  writeFileSync(fakeBin, "#!/bin/sh\nexit 0\n", "utf-8");
+  expect(findOnPath("mycmd", dir)).toBe(fakeBin);
+  expect(findOnPath("mycmd", "/nonexistent")).toBeNull();
+  expect(findOnPath("node")).not.toBeNull();
+  expect(findOnPath("/bin/sh")).toBe("/bin/sh");
+});
+
+test("McpSandbox.test_manager_start_all_refuses_unavailable_backend", async () => {
+  await withCleanSandboxEnv(async () => {
+    const server = fakeServerPath();
+    const manager = new MCPToolManager(
+      { fake: new MCPServerConfig("fake", "node", [server]) },
+      10,
+      { sandbox: { backend: "seatbelt", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
+    );
+    let caught: unknown = null;
+    try { await manager.startAll(); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(MCPError);
+    // 一个服务器都没启动，不存在裸奔的进程。
+    expect(manager.clients).toEqual({});
+    expect(manager.toolSchemas).toEqual([]);
+  });
+});
+
+test("McpSandbox.test_manager_start_all_local_runs_fake_server", async () => {
+  await withCleanSandboxEnv(async () => {
+    const server = fakeServerPath();
+    const manager = new MCPToolManager(
+      { fake: new MCPServerConfig("fake", "node", [server]) },
+      10,
+      { sandbox: { backend: "local", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
+    );
+    try {
+      await manager.startAll();
+      expect(manager.hasTools()).toBe(true);
+      expect(manager.toolSchemas.map((s) => s.function.name)).toContain("mcp_fake_echo");
+    } finally {
+      manager.stopAll();
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  });
+});
+
+test("McpSandbox.test_client_start_refuses_jobobject", () => {
+  const server = fakeServerPath();
+  const client = new MCPClient(
+    new MCPServerConfig("fake", "node", [server]), 10,
+    { backend: "jobobject", mode: "workspace-write", allowNet: false, workdir: "/tmp" },
+  );
+  expect(() => client.start()).toThrow(MCPError);
+  expect(client.process).toBeNull();
 });

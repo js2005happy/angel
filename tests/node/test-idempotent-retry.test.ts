@@ -2,7 +2,7 @@
 // 覆盖：provider 瞬时错误重试后成功、重试次数上限、用量上限文本不重试、
 // 写操作重试前先查状态、只读工具直接重试。
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,7 +12,7 @@ import {
   type ProviderLike,
 } from "../../src/providers.ts";
 import {
-  executeToolIdempotent, verifyWriteApplied, READONLY_TOOLS,
+  executeTool, executeToolIdempotent, verifyWriteApplied, READONLY_TOOLS,
   newToolContext,
 } from "../../src/tools.ts";
 
@@ -270,6 +270,89 @@ test("IdempotentRetry.test_unverifiable_write_is_not_retried", async () => {
   expect(result).toContain("错误：");
   // apply_patch 无法通用核查：不盲目重试。
   expect(calls).toBe(1);
+});
+
+test("IdempotentRetry.test_retry_calls_carry_idempotent_retry_flag", async () => {
+  const { ctx } = testCtx();
+  const seen: (boolean | undefined)[] = [];
+  const result = await executeToolIdempotent("read_file", { path: "missing.txt" }, ctx, {
+    delaysMs: [0, 0],
+    executor: async (_name, _args, c) => {
+      seen.push(c.idempotentRetry);
+      return "错误：文件不存在";
+    },
+  });
+  expect(result).toContain("错误：");
+  // 首次调用不带标记，两次重试带标记；结束后标记恢复，不泄漏到下次调用。
+  expect(seen).toEqual([undefined, true, true]);
+  expect(ctx.idempotentRetry).toBeUndefined();
+});
+
+test("IdempotentRetry.test_retry_skips_approval", async () => {
+  const { workdir } = testCtx();
+  let approvals = 0;
+  const ctx = newToolContext({
+    workdir,
+    mode: "auto",
+    interactive: true,
+    memoryPath: join(workdir, "MEMORY.md"),
+    skillsDir: join(workdir, "skills"),
+    approveFn: async () => { approvals += 1; return true; },
+    backend: { runCommand: () => "ok" },
+  });
+  const first = await executeTool("shell", { command: "echo hi" }, ctx);
+  expect(first).toContain("ok");
+  expect(approvals).toBe(1);
+  // 幂等重试：同一已批操作不再弹审批。
+  ctx.idempotentRetry = true;
+  try {
+    const retried = await executeTool("shell", { command: "echo hi" }, ctx);
+    expect(retried).toContain("ok");
+    expect(approvals).toBe(1);
+  } finally {
+    delete ctx.idempotentRetry;
+  }
+});
+
+test("IdempotentRetry.test_retry_skips_hooks", async () => {
+  const savedHooksEnv = process.env.NYRA_HOOKS;
+  delete process.env.NYRA_HOOKS;
+  const home = mkdtempSync(join(tmpdir(), "nyra-retry-hooks-home-"));
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-retry-hooks-work-"));
+  try {
+    const preMarker = join(workdir, "pre.marker");
+    const postMarker = join(workdir, "post.marker");
+    for (const [event, marker] of [["PreToolUse", preMarker], ["PostToolUse", postMarker]] as const) {
+      const dir = join(home, "hooks", `${event}.d`);
+      mkdirSync(dir, { recursive: true });
+      const path = join(dir, "mark.sh");
+      writeFileSync(path, `#!/bin/sh\ntouch "${marker}"\n`, "utf-8");
+      chmodSync(path, 0o755);
+    }
+    const ctx = newToolContext({
+      workdir, mode: "full", interactive: false, home,
+      memoryPath: join(workdir, "MEMORY.md"),
+      skillsDir: join(workdir, "skills"),
+      backend: { runCommand: () => "ok" },
+    });
+    const first = await executeTool("shell", { command: "echo hi" }, ctx);
+    expect(first).toContain("ok");
+    expect(existsSync(preMarker)).toBe(true);
+    expect(existsSync(postMarker)).toBe(true);
+    // 幂等重试：钩子不重跑，标记删掉后仍不存在。
+    rmSync(preMarker, { force: true });
+    rmSync(postMarker, { force: true });
+    ctx.idempotentRetry = true;
+    const retried = await executeTool("shell", { command: "echo hi" }, ctx);
+    expect(retried).toContain("ok");
+    expect(existsSync(preMarker)).toBe(false);
+    expect(existsSync(postMarker)).toBe(false);
+  } finally {
+    if (savedHooksEnv === undefined) delete process.env.NYRA_HOOKS;
+    else process.env.NYRA_HOOKS = savedHooksEnv;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("IdempotentRetry.test_verify_write_applied", async () => {

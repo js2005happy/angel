@@ -329,6 +329,68 @@ test("ProvidersTest.test_key_rotation_success_on_second_key", async () => {
   expect(rot.switches.length).toBe(1);
 });
 
+test("ProvidersTest.test_key_rotation_same_key_retry_on_transient_then_success", async () => {
+  let calls = 0;
+  const flaky = fakeProvider("rot", async () => {
+    calls += 1;
+    if (calls <= 2) throw new ProviderError("server boom", { kind: "server" });
+    return { choices: [{ message: { content: "ok", tool_calls: [] } }] };
+  });
+  const rot = new KeyRotatingProvider([flaky], null, { retryDelaysMs: [0, 0] });
+  const out = await rot.chat([{ role: "user", content: "hi" }]);
+  expect((out.choices as Record<string, unknown>[])[0].message).toBeDefined();
+  expect(calls).toBe(3);
+  expect(rot.switches.length).toBe(0);
+  expect(rot.retries.length).toBe(2);
+  expect(rot.retries[0].provider).toContain("key 1");
+});
+
+test("ProvidersTest.test_key_rotation_auth_does_not_retry_same_key", async () => {
+  let calls1 = 0;
+  const bad = fakeProvider("rot", async () => {
+    calls1 += 1;
+    throw new ProviderError("401 Unauthorized", { kind: "auth" });
+  });
+  const good = fakeProvider("rot", async () => ({ choices: [{ message: { content: "ok", tool_calls: [] } }] }));
+  const rot = new KeyRotatingProvider([bad, good], null, { retryDelaysMs: [0, 0] });
+  const out = await rot.chat([{ role: "user", content: "hi" }]);
+  expect((out.choices as Record<string, unknown>[])[0].message).toBeDefined();
+  expect(calls1).toBe(1);
+  expect(rot.switches.length).toBe(1);
+  expect(rot.retries.length).toBe(0);
+});
+
+test("ProvidersTest.test_key_rotation_quota_does_not_retry_same_key", async () => {
+  let calls1 = 0;
+  const bad = fakeProvider("rot", async () => {
+    calls1 += 1;
+    throw new ProviderError("API quota exceeded for this key", { kind: "quota" });
+  });
+  const good = fakeProvider("rot", async () => ({ choices: [{ message: { content: "ok", tool_calls: [] } }] }));
+  const rot = new KeyRotatingProvider([bad, good], null, { retryDelaysMs: [0, 0] });
+  const out = await rot.chat([{ role: "user", content: "hi" }]);
+  expect((out.choices as Record<string, unknown>[])[0].message).toBeDefined();
+  expect(calls1).toBe(1);
+  expect(rot.switches.length).toBe(1);
+  expect(rot.retries.length).toBe(0);
+});
+
+test("ProvidersTest.test_key_rotation_all_keys_fail_after_same_key_retries", async () => {
+  const calls = [0, 0];
+  const fail = (i: number): ProviderLike => fakeProvider("rot", async () => {
+    calls[i] += 1;
+    throw new ProviderError(`server boom key ${i + 1}`, { kind: "server" });
+  });
+  const rot = new KeyRotatingProvider([fail(0), fail(1)], null, { retryDelaysMs: [0, 0] });
+  let caught: unknown = null;
+  try { await rot.chat([{ role: "user", content: "hi" }]); } catch (e) { caught = e; }
+  expect(String((caught as Error).message)).toContain("key 1");
+  expect(String((caught as Error).message)).toContain("key 2");
+  expect(calls).toEqual([3, 3]);
+  expect(rot.switches.length).toBe(1);
+  expect(rot.retries.length).toBe(4);
+});
+
 test("ProvidersTest.test_build_provider_chain_skips_keyless", () => {
   const resolver = (name: string) => {
     if (name === "xai") return cfg({ name: "xai", baseUrl: "https://api.x.ai/v1", model: "grok-4.3", apiKey: "xai-test" });

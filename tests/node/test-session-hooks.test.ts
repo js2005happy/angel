@@ -156,6 +156,85 @@ function runReplCli(home: string, workdir: string, input: string, timeoutMs = 60
   });
 }
 
+test("网关会话钩子：逐会话关闭触发 SessionEnd，关停时不再重复触发", async () => {
+  const home = tmpDir("nyra-gw-hooks-home-");
+  const workdir = tmpDir("nyra-gw-hooks-wd-");
+  const marker = join(workdir, "hooks.log");
+  writeHook(home, "SessionStart", "log.sh", `#!/bin/sh\necho start >> "${marker}"\nexit 0\n`);
+  writeHook(home, "SessionEnd", "log.sh", `#!/bin/sh\necho end >> "${marker}"\nexit 0\n`);
+  const gw = makeGateway(home, workdir);
+  const id = gw.newSession();
+  await waitFor(() => markerLines(marker).includes("start"));
+  expect(await gw.closeSession(id)).toBe("closed");
+  expect(markerLines(marker)).toEqual(["start", "end"]);
+  // 已关闭的 live 会话从表里删掉；该会话从未落盘，再关就是“不存在”。
+  expect(await gw.closeSession(id)).toBe("unknown");
+  // 关停时不再为它重复触发 SessionEnd。
+  await gw.stop();
+  expect(markerLines(marker)).toEqual(["start", "end"]);
+});
+
+test("网关会话钩子：关闭不存在的会话返回 unknown，关闭运行中的会话返回 running", async () => {
+  const home = tmpDir("nyra-gw-hooks-home-");
+  const workdir = tmpDir("nyra-gw-hooks-wd-");
+  const gw = makeGateway(home, workdir);
+  expect(await gw.closeSession("doesnotexist123")).toBe("unknown");
+  // 慢 provider：chat 睡 2 秒，让 send 处于 running 时去关。
+  const slow = {
+    name: "slow", model: "slow-1", baseUrl: "https://slow.example.com/v1",
+    hasCredentials: () => true,
+    async chat(): Promise<Record<string, unknown>> {
+      await new Promise((r) => setTimeout(r, 2000));
+      return { choices: [{ message: { role: "assistant", content: "好了" } }] };
+    },
+    async listModels(): Promise<string[]> { return ["slow-1"]; },
+    redact: (t: string) => t,
+  };
+  const gw2 = new Gateway({
+    home, workdir, mode: "full",
+    providerFactory: () => slow,
+    config: { mcp_enabled: false, fallback_enabled: false },
+  });
+  const id = gw2.newSession();
+  const run = gw2.send(id, "你好");
+  expect(run.status).toBe("running");
+  expect(await gw2.closeSession(id)).toBe("running");
+  await waitRunDone(run);
+  expect(run.status).toBe("done");
+  expect(await gw2.closeSession(id)).toBe("closed");
+  await gw.stop();
+  await gw2.stop();
+});
+
+/** 以子进程跑一次 CLI 一次性任务：ollama provider 不需要真实凭证、不联网。 */
+function runOneShotCli(home: string, workdir: string, task: string, timeoutMs = 60000) {
+  const env: Record<string, string | undefined> = { ...process.env, HOME: home, NYRA_HOME: join(home, ".nyra") };
+  delete env.NYRA_HOOKS;
+  // 沙箱环境变量可能被外层带进来：一次性钩子测试不关心沙箱，清掉避免 fail-closed 干扰。
+  for (const k of ["NYRA_SANDBOX", "ANGEL_SANDBOX", "NYRA_SANDBOX_MODE", "ANGEL_SANDBOX_MODE"]) delete env[k];
+  return spawnSync("bun", ["run", join(process.cwd(), "src/cli.ts"), "--provider", "ollama", "--workdir", workdir, task], {
+    cwd: process.cwd(),
+    env: env as Record<string, string>,
+    input: "",
+    encoding: "utf-8",
+    timeout: timeoutMs,
+  });
+}
+
+test("CLI 一次性任务会话钩子：任务开始触发 SessionStart，结束触发 SessionEnd", () => {
+  const home = tmpDir("nyra-oneshot-hooks-home-");
+  const nyraHome = join(home, ".nyra");
+  const workdir = tmpDir("nyra-oneshot-hooks-wd-");
+  const marker = join(workdir, "hooks.log");
+  writeHook(nyraHome, "SessionStart", "log.sh", `#!/bin/sh\necho start >> "${marker}"\nexit 0\n`);
+  writeHook(nyraHome, "SessionEnd", "log.sh", `#!/bin/sh\necho end >> "${marker}"\nexit 0\n`);
+  // 本机无 ollama 服务，模型调用会失败，但会话钩子与任务成败无关：
+  // 开始/结束各触发一次，退出码只反映任务本身的失败。
+  const r = runOneShotCli(home, workdir, "说你好");
+  expect(typeof r.status).toBe("number");
+  expect(markerLines(marker)).toEqual(["start", "end"]);
+}, 60000);
+
 test("CLI REPL 会话钩子：启动触发 SessionStart，/exit 触发 SessionEnd", () => {
   const home = tmpDir("nyra-repl-hooks-home-");
   const nyraHome = join(home, ".nyra");

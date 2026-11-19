@@ -662,3 +662,94 @@ test("Groups041Test.test_undecryptable_keys_report_clear_error", () => {
     cleanup(root);
   }
 });
+
+// ---- 群聊沙箱（0.5.2 缺口收尾）：defaultBotRunner 透传沙箱配置 -----------
+
+/** 第一次返回 shell 工具调用、第二次返回文本的 provider（驱动 defaultBotRunner 跑一次 shell）。 */
+function shellCallingProvider(marker: string, seenMessages: unknown[][]): ProviderLike {
+  let calls = 0;
+  return {
+    name: "shell-caller",
+    model: "shell-caller-model",
+    baseUrl: "https://shell-caller.example.com/v1",
+    hasCredentials: () => true,
+    async chat(messages: unknown[]): Promise<Record<string, unknown>> {
+      calls += 1;
+      seenMessages.push(messages as unknown[]);
+      if (calls === 1) {
+        return {
+          choices: [{
+            message: {
+              role: "assistant",
+              content: "",
+              tool_calls: [{
+                id: "call-1",
+                type: "function",
+                function: { name: "shell", arguments: JSON.stringify({ command: `touch "${marker}"` }) },
+              }],
+            },
+          }],
+        };
+      }
+      return { choices: [{ message: { role: "assistant", content: "做完了" } }] };
+    },
+    async listModels(): Promise<string[]> { return ["shell-caller-model"]; },
+    redact: (t: string) => t,
+  };
+}
+
+/**
+ * 生产上 create() 只允许 readonly 机器人，执行型需单独授权——目前没有代码
+ * 路径能改 mode。本测试直接改 room.json 模拟“已单独授权”的机器人，
+ * 只验沙箱透传本身，不验授权流程。
+ */
+function authorizeExecution(root: string, botId: string): void {
+  const file = join(root, "groups", "dev", "room.json");
+  const room = JSON.parse(readFileSync(file, "utf-8")) as { bots: { id: string; mode: string }[] };
+  for (const b of room.bots) if (b.id === botId) b.mode = "full";
+  writeFileSync(file, JSON.stringify(room, null, 2) + "\n", "utf-8");
+}
+
+test("群聊沙箱：显式后端不可用时 fail-closed，命令不执行", async () => {
+  const root = tmpRoot();
+  try {
+    const marker = join(root, "marker-bogus");
+    const seen: unknown[][] = [];
+    const factory: ProviderFactory = () => shellCallingProvider(marker, seen);
+    const store = new GroupStore(join(root, "groups"), {
+      home: root,
+      providerFactory: factory,
+      sandbox: { backend: "nonexistent-backend-xyz", mode: "workspace-write", allowNet: false },
+    });
+    store.create("dev", "开发群");
+    authorizeExecution(root, "lead");
+    const result = await store.send("dev", "@lead 跑个命令");
+    expect(result.messages.length).toBeGreaterThan(0);
+    // 沙箱配置透传到了机器人工具层：命令被拒绝执行，标记文件不存在；
+    // 拒绝原因（后端名）回到了模型上下文，而不是静默成功。
+    expect(existsSync(marker)).toBe(false);
+    expect(JSON.stringify(seen)).toContain("nonexistent-backend-xyz");
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("群聊沙箱：local 后端正常执行命令", async () => {
+  const root = tmpRoot();
+  try {
+    const marker = join(root, "marker-local");
+    const seen: unknown[][] = [];
+    const factory: ProviderFactory = () => shellCallingProvider(marker, seen);
+    const store = new GroupStore(join(root, "groups"), {
+      home: root,
+      providerFactory: factory,
+      sandbox: { backend: "local", mode: "workspace-write", allowNet: false },
+    });
+    store.create("dev", "开发群");
+    authorizeExecution(root, "lead");
+    await store.send("dev", "@lead 跑个命令");
+    expect(existsSync(marker)).toBe(true);
+  } finally {
+    cleanup(root);
+  }
+});
