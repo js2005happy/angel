@@ -9,12 +9,12 @@
 
 ## 前置条件
 
-- 已按 README 的快速开始 `git clone` 好仓库，`python3 -m nyra` 能跑；
+- 已按 README 的快速开始 `git clone` 好仓库，`nyra` 能跑；
 - `systemctl --user` 可用（带 systemd 的桌面版 / 服务器版 Linux 均可）；
 - 仓库默认放在 `~/nyra`。如果你的检出位置不同，先改 unit 里的
   `WorkingDirectory=%h/nyra`（`%h` 就是你的 home 目录）。
-- 懒得手动装：`scripts/install.sh --source . --with-systemd` 会把 unit
-  装好并启动，见 [docs/linux-install.md](linux-install.md)。
+- 懒得手动装：`scripts/install-node.sh --from-file dist/nyra-linux-x64 --with-systemd` 会把 unit
+  装好，见 [docs/linux-install.md](linux-install.md)。
 
 ## 安装与启动
 
@@ -78,7 +78,7 @@ systemctl --user edit nyra-scheduler.service
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/bin/python3 -m nyra schedule daemon --interval 30
+ExecStart=/usr/bin/nyra schedule daemon --interval 30
 ```
 
 （第一行空的 `ExecStart=` 是清空原值，systemd 要求必须先清空再重设。）
@@ -98,7 +98,7 @@ loginctl disable-linger $USER   # 之前开过 linger 才需要
 - `status` 显示 `exit code` 且反复重启：先看 `journalctl --user -u nyra-scheduler.service` 的报错；
   常见原因是 `WorkingDirectory` 里的检出路径不对，或 `python3` 不在 `/usr/bin/python3`
   （用 `which python3` 查实际路径，改 unit 里的 `ExecStart`）。
-- 任务没按时跑：`python3 -m nyra schedule list` 看任务是否在、是否启用；
+- 任务没按时跑：`nyra schedule list` 看任务是否在、是否启用；
   注意调度器用的是本机 naive 本地时间，不处理时区（见 VERIFICATION.md 的已知限制）。
 - 定时任务跑起来会按任务自己的配置调模型、产生费用；跑之前先用
   `nyra schedule run` 手动跑一次确认无误。

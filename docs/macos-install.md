@@ -1,6 +1,6 @@
 # 在 macOS 上安装 Nyra（一键脚本）
 
-> 状态：Node 版与 Python 版脚本都是在 Linux 上写好、只做了语法与占位替换检查，
+> 状态：Node 版脚本是在 Linux 上写好、只做了语法与占位替换检查，
 > **尚未在真 Mac 上跑通过**。在 Mac 上第一次跑时若有报错，请把报错贴
 > 回来，脚本会跟着修。Linux 安装见
 > [docs/linux-install.md](linux-install.md)，Windows 见
@@ -14,23 +14,17 @@
 
 ```bash
 bash scripts/install-node-macos.sh
-bash scripts/install-node-macos.sh --version v0.3.0 --with-launchd
+bash scripts/install-node-macos.sh --version v0.4.0 --with-launchd
 ```
 
 注意：二进制未签名、未公证，macOS Gatekeeper 首次运行会拦，需右键点
 二进制选“打开”放行一次。`.dmg` / `.pkg` 安装包本机做不了，是待办
 （见下），不要假装已提供。
 
-> 第 1 阶段说明：二进制是预览版，只含安装、doctor、向导与本地示例任务；
-> 模型任务在第 2 阶段移植，现阶段请用下面的 Python 方式。`--with-launchd`
-> 在第 1 阶段只装 plist 文件、不 `launchctl load`（`schedule daemon` 要到
-> 第 2–3 阶段才有，现在启动只会反复失败）；带 schedule 的版本发布后，再跑
-> `launchctl load ~/Library/LaunchAgents/ai.nyra.scheduler.plist`。
-
-## 方式二：Python 版（功能完整）
-
-`scripts/install-macos.sh` 把 Nyra 装到你的 home 目录里，**不需要 root**，
-也不往系统目录写东西。装完直接在终端跑 `nyra` 就行。
+> 0.4.0 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
+> 都在内）。`--with-launchd` 只装 plist 文件、不 `launchctl load`；
+> 确认无误后自己跑 `launchctl load ~/Library/LaunchAgents/ai.nyra.scheduler.plist`
+> 再启用（见“调度器”一节）。
 
 ### .dmg / .pkg（待办，未做）
 
@@ -41,45 +35,38 @@ bash scripts/install-node-macos.sh --version v0.3.0 --with-launchd
 
 ## 它会做什么
 
-- 把 Nyra 复制到 `~/.local/share/nyra`（`--prefix` 可改）；
-- 在 `~/.local/bin/nyra` 放一个启动器（其实就是 `python3 -m nyra`）；
+- 把二进制装到 `~/.local/share/nyra/nyra`（`--prefix` 可改）；
+- 在 `~/.local/bin/nyra` 放符号链接；
 - 建 `~/.nyra`（权限 0700，配置与数据目录）；
 - 装完跑 `nyra --version` 自检，通不过就报错；
-- 加 `--with-launchd` 时，再把调度器装成 launchd 用户 agent 并启动
-  （开机自启，崩了自动重启；见下文“调度器”一节）。
+- 加 `--with-launchd` 时，再把调度器 plist 装到
+  `~/Library/LaunchAgents/ai.nyra.scheduler.plist`（只装文件、不加载，
+  见“调度器”一节）。
 
 重复跑就是升级：旧安装整个被替换，`~/.nyra` 里的数据不动。
 
 ## 前置条件
 
 - macOS（本脚本会在非 macOS 系统上直接拒绝，不装一半）；
-- Python 3.10 或更高版本（`python3 --version` 看一下）。注意：macOS
-  系统自带的 python3 是 3.9，版本不够，须用 Homebrew 装一个：
-
-  ```bash
-  brew install python
-  ```
-
-  装好后 `python3 --version` 应为 3.10 或更高；
+- `curl`（下载用）；
 - 从 GitHub 装时需要 `git`（macOS 上跑 `xcode-select --install` 装
-  命令行工具就有）；从本地目录装时不需要；
+  命令行工具就有）；从本地文件装时不需要；
 - 可选：`launchctl`（只要 `--with-launchd` 时用到；macOS 自带）。
 
-Nyra 是零 pip 依赖，脚本不联网装任何东西（除了 `git clone` 那一步）。
+脚本不联网装任何东西（除了下载二进制那一步）。
 
 ## 安装
 
 ```bash
 # 方式一：还没 clone 仓库，让脚本自己从 GitHub 拉
-bash scripts/install-macos.sh
+bash scripts/install-node-macos.sh
 
-# 方式二：已经 clone 好了，从当前检出安装（不用再下一遍）
-git clone https://github.com/js2005happy/nyra.git
-cd nyra
-bash scripts/install-macos.sh --source .
+# 方式二：已经 clone 好了，从本地已编好的二进制安装（不用再下一遍）
+bash scripts/build-binaries.sh --only macos-arm64   # 或 macos-x64
+bash scripts/install-node-macos.sh --from-file dist/nyra-macos-arm64
 
-# 方式三：顺手把调度器装成 launchd 用户 agent，开机自启、崩了自动重启
-bash scripts/install-macos.sh --source . --with-launchd
+# 方式三：顺手把调度器 plist 装好（只装文件、不加载，见“调度器”一节）
+bash scripts/install-node-macos.sh --from-file dist/nyra-macos-arm64 --with-launchd
 ```
 
 装完如果提示 `~/.local/bin 不在 PATH 里`，按提示加一行。macOS 默认
@@ -89,7 +76,7 @@ shell 是 zsh，永久生效这样加到 `~/.zshrc`：
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ```
 
-然后新开一个终端，跑 `nyra --version`，看到 `Nyra 0.3.0` 就装好了。
+然后新开一个终端，跑 `nyra --version`，看到 `nyra 0.4.0 (node runtime)` 就装好了。
 第一次用先配 Key（以 DeepSeek 为例）：
 
 ```bash
@@ -101,10 +88,11 @@ nyra "解释一下这个项目的结构"
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--source DIR\|URL` | GitHub 仓库地址 | 本地目录直接复制；URL 则 `git clone --depth 1` |
+| `--version TAG` | latest | 从 GitHub Releases 下载的版本（带 `v` 前缀，如 `v0.4.0`；不带 `v` 也行，脚本会补上） |
+| `--from-file PATH` | — | 从本地已编好的二进制安装（不联网下载） |
 | `--prefix DIR` | `~/.local/share/nyra` | 安装位置（不能是 `/`、不能就是 `$HOME`、不能含空格） |
 | `--bin-dir DIR` | `~/.local/bin` | 启动器位置 |
-| `--with-launchd` | 关 | 再装 launchd 用户 agent 并 `launchctl load` |
+| `--with-launchd` | 关 | 再装 launchd 用户 agent 文件（只装、不加载） |
 | `--uninstall` | — | 卸载（见下） |
 | `--help` | — | 显示帮助 |
 
@@ -113,13 +101,13 @@ nyra "解释一下这个项目的结构"
 再跑一遍安装命令就行，例如：
 
 ```bash
-bash scripts/install-macos.sh --source .
+bash scripts/install-node-macos.sh --from-file dist/nyra-macos-arm64
 ```
 
 ## 卸载
 
 ```bash
-bash scripts/install-macos.sh --uninstall
+bash scripts/install-node-macos.sh --uninstall
 ```
 
 这会停掉并删掉 launchd agent、删掉安装目录与启动器。**`~/.nyra` 会保留**，
@@ -128,17 +116,16 @@ bash scripts/install-macos.sh --uninstall
 ## 调度器（launchd 用户 agent）
 
 `--with-launchd` 会把 `launchd/ai.nyra.scheduler.plist` 装到
-`~/Library/LaunchAgents/ai.nyra.scheduler.plist`，并 `launchctl load`
-启动它。它是 Linux 上 `systemd/nyra-scheduler.service` 的 macOS 等价物：
+`~/Library/LaunchAgents/ai.nyra.scheduler.plist`，**只装文件、不加载**。
+确认无误后自己加载启用。它是 Linux 上 `systemd/nyra-scheduler.service` 的 macOS 等价物：
 
 | systemd（Linux） | launchd（macOS） |
 | --- | --- |
 | `WantedBy=default.target`（登录时启动） | `RunAtLoad=true` |
 | `Restart=on-failure`（崩了重启） | `KeepAlive` + `SuccessfulExit=false`（非 0 退出才重启） |
-| `Environment=PYTHONUNBUFFERED=1` | `EnvironmentVariables` 里 `PYTHONUNBUFFERED=1` |
-| `WorkingDirectory=%h/nyra` | `WorkingDirectory` = 安装目录 |
+| `WorkingDirectory=%h` | `WorkingDirectory` = 安装目录的家目录 |
 
-它只负责让 `python3 -m nyra schedule daemon` 一直跑着；daemon 自己
+它只负责让 `nyra schedule daemon` 一直跑着；daemon 自己
 每 60 秒查一次日程，到点的任务才执行（见 `nyra schedule list` /
 `nyra schedule add`）。日志在 `~/.nyra/logs/scheduler.out.log` 与
 `scheduler.err.log`。
@@ -154,20 +141,16 @@ launchctl load ~/Library/LaunchAgents/ai.nyra.scheduler.plist    # 重新启用
 tail -f ~/.nyra/logs/scheduler.err.log  # 看 daemon 的报错
 ```
 
-注意：plist 模板里的 `__NYRA_PYTHON__` / `__NYRA_PREFIX__` /
-`__NYRA_HOME__` 是占位符，安装脚本会按本次安装的实际路径替换；不要
-手改已安装的 plist，重装会被覆盖。
+注意：plist 模板里的 `__NYRA_BIN__` / `__NYRA_HOME__` 是占位符，
+安装脚本会按本次安装的实际路径替换；不要手改已安装的 plist，
+重装会被覆盖。
 
 ## 排错
 
 - `这个脚本只在 macOS 上运行`：你在 Linux/Windows 上跑了它；Linux 用
-  `scripts/install.sh`，Windows 用 `scripts/install.ps1`。
-- `python3 版本太低`：macOS 系统自带的 python3 是 3.9，不够；跑
-  `brew install python` 再装，`python3 --version` 确认 >= 3.10。
-- `找不到 python3`：系统没装 Python，或它叫 `python` 不叫 `python3`；
-  同上用 Homebrew 装。
+  `scripts/install-node.sh`，Windows 用 `scripts/install-node.ps1`。
 - `git clone 失败`：检查网络与仓库地址；已 clone 好仓库时改用
-  `--source .`，不走网络。macOS 上没装过 git 时先跑
+  `--from-file`，不走网络。macOS 上没装过 git 时先跑
   `xcode-select --install`。
 - `--with-launchd` 后提示“load 失败”：安装本身已成功，只是 agent
   没启动；按上文“调度器”一节手动跑 `launchctl load` 与 `list` 检查，

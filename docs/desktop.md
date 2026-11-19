@@ -80,7 +80,7 @@ npx tauri build --bundles msi,nsis              # Windows
 cd src-tauri && cargo test                      # 外壳的单元测试
 ```
 
-图标全部由正式标志 `docs/assets/nyra-mark.svg` 生成：`python3 desktop/scripts/make_icons.py [预览图.png]`（需要 `rsvg-convert` 与 Pillow）。
+图标全部由正式标志 `docs/assets/nyra-mark.svg` 生成。生成脚本 `desktop/scripts/make_icons.py` 已在 0.4.0 随 Python 删除（图标文件本身已提交在 `desktop/src-tauri/icons/`，只是再生工具没了）；需要重新生成时，先补一个等价的 Node 脚本（仍需要 `rsvg-convert`），或按标志 SVG 手工导出各尺寸。
 
 - 48 px 及以上直接用正式标志；16 / 24 / 32 px 用同一标志的加粗版 `desktop/icon-src/nyra-mark-small.svg`（光标更粗、圆更满），标题栏、任务栏、资源管理器列表里也看得清。
 - App 图标里光标填成白色（正式标志的光标是镂空的，在深色程序坞 / 任务栏上会“消失”）；浅色背景上与正式标志看起来一样。

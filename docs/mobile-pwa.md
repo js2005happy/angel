@@ -1,6 +1,6 @@
 # 手机上用 Nyra（PWA + 扫码配对）
 
-Nyra 的手机版是电脑上 `python3 -m nyra ui` 顺带提供的一个手机页面
+Nyra 的手机版是电脑上 `nyra ui` 顺带提供的一个手机页面
 （`/m`），可以像 App 一样装到主屏幕：安卓用 Chrome，iPhone 用 Safari。
 不用应用商店，没有 APK / IPA，也不经过任何外部服务——手机直接连你
 电脑上跑着的 Nyra，Nyra 的工具仍在电脑上执行。
@@ -23,7 +23,7 @@ Nyra 的手机版是电脑上 `python3 -m nyra ui` 顺带提供的一个手机�
 ## 第 1 步：在电脑上开启配对
 
 ```bash
-python3 -m nyra ui --pair
+nyra ui --pair
 ```
 
 `--pair` 会让网页界面监听局域网（`0.0.0.0`，终端会打印一行风险警告），
@@ -96,19 +96,14 @@ python3 -m nyra ui --pair
 - 电脑上网页界面 **设置 → 手机** 列出所有已配对设备（名称、配对时间、
   最近使用时间），每台都可以 **撤销**，撤销后该手机立即无法再连接
   （手机端会回到配对页）。
-- 命令行也可以：
-
-  ```bash
-  python3 -m nyra.pairing devices          # 列出
-  python3 -m nyra.pairing revoke <设备 ID>  # 撤销，运行中的网页界面立即生效
-  ```
+- 也可以调 API：`GET /api/devices` 列出、`POST /api/devices/<设备 ID>/revoke` 撤销（只认电脑端启动 token，运行中的网页界面立即生效）。
 
 - 登记表在 `~/.nyra/devices.json`（POSIX 下权限 0600），里面**只有 token
   的 SHA-256 哈希**，没有 token 本身；最多 20 台设备。
 
 ## 安全说明（重要）
 
-- 默认 `python3 -m nyra ui` 仍只绑 `127.0.0.1`，手机连不上。只有带 `--pair`
+- 默认 `nyra ui` 仍只绑 `127.0.0.1`，手机连不上。只有带 `--pair`
   或 `--host` 时才监听局域网，并打印警告。
 - 配对码：6 位数字，5 分钟有效，一次性，错 5 次作废（之后连正确的码也
   无效，需重新生成）；重新生成会让旧码立即失效。

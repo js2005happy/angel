@@ -9,7 +9,7 @@
 bash scripts/install-node.sh
 
 # 指定版本 / 顺手装 systemd 用户服务
-bash scripts/install-node.sh --version v0.3.0 --with-systemd
+bash scripts/install-node.sh --version v0.4.0 --with-systemd
 
 # 已编好二进制时从本地安装（不联网下载）
 bash scripts/build-binaries.sh --only linux-x64
@@ -20,45 +20,47 @@ bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 
 前置条件：`curl` 或 `wget`（二选一）；`--with-systemd` 时还要 `systemctl --user`。
 
-> 第 1 阶段说明：二进制是预览版，只含安装、doctor、向导与本地示例任务；模型任务在第 2 阶段移植，现阶段请用下面的 Python 方式。`--with-systemd` 在第 1 阶段只装服务文件、不启动（`schedule daemon` 要到第 2–3 阶段才有，现在启动只会反复失败）；带 schedule 的版本发布后，再跑 `systemctl --user enable --now nyra-scheduler.service`。
+> 0.4.0 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
+> 都在内）。`--with-systemd` 只装服务文件、不启动（`schedule daemon`
+> 已存在）；确认无误后自己跑 `systemctl --user enable --now nyra-scheduler.service`
+> 再启用，见 [docs/linux-systemd.md](linux-systemd.md)。
 
-## 方式二：Python 版（功能完整）
-
-`scripts/install.sh` 把 Nyra 装到你的 home 目录里，**不需要 root**，
-也不往系统目录写东西。装完直接在终端跑 `nyra` 就行。
+> 旧 Python 版安装脚本 `scripts/install.sh` 已在 0.4.0 随 Python 一起删除；
+> 下面只剩 Node 二进制一种装法。
 
 ## 它会做什么
 
-- 把 Nyra 复制到 `~/.local/share/nyra`（`--prefix` 可改）；
-- 在 `~/.local/bin/nyra` 放一个启动器（其实就是 `python3 -m nyra`）；
+- 把二进制装到 `~/.local/share/nyra/nyra`（`--prefix` 可改）；
+- 在 `~/.local/bin/nyra` 放符号链接；
 - 建 `~/.nyra`（权限 0700，配置与数据目录）；
 - 装完跑 `nyra --version` 自检，通不过就报错；
-- 加 `--with-systemd` 时，再把调度器服务装成 systemd 用户服务并启动
-  （见 [docs/linux-systemd.md](linux-systemd.md)）。
+- 加 `--with-systemd` 时，再把调度器服务文件装到
+  `~/.config/systemd/user/nyra-scheduler.service`（只装文件、不启动，
+  见 [docs/linux-systemd.md](linux-systemd.md)）。
 
 重复跑就是升级：旧安装整个被替换，`~/.nyra` 里的数据不动。
 
 ## 前置条件
 
-- Python 3.10 或更高版本（`python3 --version` 看一下）；
-- 从 GitHub 装时需要 `git`；从本地目录装时不需要；
+- `curl` 或 `wget`（二选一，下载用）；
+- 从 GitHub 装时需要 `git`；从本地文件装时不需要；
 - 可选：`systemctl --user`（只要 `--with-systemd` 时用到）。
 
-Nyra 是零 pip 依赖，脚本不联网装任何东西（除了 `git clone` 那一步）。
+脚本不联网装任何东西（除了下载二进制那一步）。
 
 ## 安装
 
 ```bash
 # 方式一：还没 clone 仓库，让脚本自己从 GitHub 拉
-bash scripts/install.sh
+bash scripts/install-node.sh
 
 # 方式二：已经 clone 好了，从当前检出安装（不用再下一遍）
 git clone https://github.com/js2005happy/nyra.git
 cd nyra
-bash scripts/install.sh --source .
+bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 
 # 方式三：顺手把调度器装成 systemd 用户服务，开机自启、崩了自动重启
-bash scripts/install.sh --source . --with-systemd
+bash scripts/install-node.sh --from-file dist/nyra-linux-x64 --with-systemd
 ```
 
 装完如果提示 `~/.local/bin 不在 PATH 里`，按提示加一行到你的
@@ -68,7 +70,7 @@ bash scripts/install.sh --source . --with-systemd
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-然后新开一个终端，跑 `nyra --version`，看到 `Nyra 0.3.0` 就装好了。
+然后新开一个终端，跑 `nyra --version`，看到 `nyra 0.4.0 (node runtime)` 就装好了。
 第一次用先配 Key（以 DeepSeek 为例）：
 
 ```bash
@@ -80,10 +82,11 @@ nyra "解释一下这个项目的结构"
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--source DIR\|URL` | GitHub 仓库地址 | 本地目录直接复制；URL 则 `git clone --depth 1` |
+| `--version TAG` | latest | 从 GitHub Releases 下载的版本（带 `v` 前缀，如 `v0.4.0`；不带 `v` 也行，脚本会补上） |
+| `--from-file PATH` | — | 从本地已编好的二进制安装（不联网下载） |
 | `--prefix DIR` | `~/.local/share/nyra` | 安装位置（不能是 `/`、不能就是 `$HOME`、不能含空格） |
 | `--bin-dir DIR` | `~/.local/bin` | 启动器位置 |
-| `--with-systemd` | 关 | 再装 systemd 用户服务并 `enable --now` |
+| `--with-systemd` | 关 | 再装 systemd 用户服务文件（只装、不启动） |
 | `--uninstall` | — | 卸载（见下） |
 | `--help` | — | 显示帮助 |
 
@@ -92,13 +95,13 @@ nyra "解释一下这个项目的结构"
 再跑一遍安装命令就行，例如：
 
 ```bash
-bash scripts/install.sh --source .
+bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 ```
 
 ## 卸载
 
 ```bash
-bash scripts/install.sh --uninstall
+bash scripts/install-node.sh --uninstall
 ```
 
 这会停掉并删掉 systemd 服务、删掉安装目录与启动器。**`~/.nyra` 会保留**，
@@ -106,11 +109,8 @@ bash scripts/install.sh --uninstall
 
 ## 排错
 
-- `python3 版本太低`：装 Python 3.10+ 再跑；`python3 --version` 确认。
-- `找不到 python3`：系统没装 Python，或它叫 `python` 不叫 `python3`；
-  装好后确认 `command -v python3` 有输出。
-- `git clone 失败`：检查网络与仓库地址；已 clone 好仓库时改用
-  `--source .`，不走网络。
+- `下载失败`：检查网络与仓库地址；已编好二进制时改用
+  `--from-file dist/nyra-linux-x64`，不走网络。
 - `--with-systemd` 后提示“enable 失败”：安装本身已成功，只是这台机器
   没有用户 systemd 总线（比如容器、WSL 默认配置）；按
   [docs/linux-systemd.md](linux-systemd.md) 手动跑 `daemon-reload` 与
