@@ -498,6 +498,13 @@ class ToolJournal:
             raise JournalError("事件数量超限")
         call_id = secrets.token_hex(16)
         self._write("intent", call_id, tool)
+        # Another process may have inserted an intent since our first inspect.
+        # Recheck before handing the ID to the tool runner. A conflict leaves
+        # our intent unresolved for manual review, never automatic replay.
+        # This narrows a race; it is NOT a cross-process transaction lock.
+        after = self.inspect()
+        if after["journal_ambiguous"] or after["unknown_outcomes"] != 1:
+            raise JournalError("写入意图后发现并发或歧义日志；禁止执行工具")
         return call_id
 
     def finish(self, call_id: str, tool: str, *, success: bool) -> None:
