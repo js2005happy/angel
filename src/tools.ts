@@ -203,6 +203,39 @@ export function resolveBackendPath(ctx: ToolContext, path: string): string {
   return posix.normalize(posix.join(base, target));
 }
 
+// ---- 受保护路径 ----
+// agent 能改自己的规则文件，等于所有权限设计都失效：AGENTS.md / commands/*.md /
+// skills/*.md 都是它的指令来源，.git 是回滚与审计的底线。这些路径在任何 sandbox
+// 模式下默认拒写（含 workspace-write 与 danger-full-access），与 Codex 对
+// .git/.agents/.codex 的处理一致。
+//
+// 确实需要 agent 自己维护规则文件时，用 NYRA_ALLOW_PROTECTED_WRITES=1 显式放开；
+// 不做静默放行，也不把拒绝伪装成"文件不存在"。
+const PROTECTED_WRITE_DIRS: readonly string[] = [".git", ".nyra", "commands", "skills"];
+const PROTECTED_WRITE_FILES: readonly string[] = ["AGENTS.md", "CLAUDE.md", "nyra.json", ".nyra.json"];
+
+export function isProtectedWritePath(relPath: string): boolean {
+  const rel = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!rel || rel === "." || rel.startsWith("../")) return false;
+  const segments = rel.split("/").filter(Boolean);
+  const head = segments[0]?.toLowerCase() ?? "";
+  if (PROTECTED_WRITE_DIRS.includes(head)) return true;
+  const base = segments[segments.length - 1]?.toLowerCase() ?? "";
+  return segments.length === 1 && PROTECTED_WRITE_FILES.some((f) => f.toLowerCase() === base);
+}
+
+function assertWritableProtected(relPath: string): void {
+  if (!isProtectedWritePath(relPath)) return;
+  const allow = (process.env.NYRA_ALLOW_PROTECTED_WRITES ?? "").trim().toLowerCase();
+  if (allow === "1" || allow === "true" || allow === "yes") return;
+  throw new ToolError(
+    `拒绝写入受保护路径：${relPath}\n` +
+      "AGENTS.md / commands/ / skills/ 是 agent 的指令来源，.git/ 与 .nyra/ 是回滚与状态底线；" +
+      "允许 agent 改它们等于让它给自己放权。\n" +
+      "确需修改请由人类直接编辑，或临时用 NYRA_ALLOW_PROTECTED_WRITES=1 显式放开。",
+  );
+}
+
 export function workspaceWritePath(ctx: ToolContext, path: string): string {
   if (typeof path !== "string" || !path || path.includes("\x00")) {
     throw new ToolError("写入文件路径无效");
@@ -213,6 +246,7 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
     if (!base.startsWith("/") || target === base || !(target === base || target.startsWith(base.replace(/\/$/, "") + "/"))) {
       throw new ToolError("禁止写入工作目录之外的路径");
     }
+    assertWritableProtected(posix.relative(base, target));
     return target;
   }
   const root = resolve(ctx.workdir);
@@ -220,6 +254,7 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
   if (target === root || !(target === root || target.startsWith(root + sep))) {
     throw new ToolError("禁止写入工作目录之外的路径");
   }
+  assertWritableProtected(relative(root, target));
   return target;
 }
 
