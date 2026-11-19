@@ -27,6 +27,7 @@ import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
+import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
@@ -190,6 +191,9 @@ export interface CliArgs {
   maxCost: number | null;
   /** 本次运行禁用的工具（可重复 --disable-tool）。 */
   disableTools: string[];
+  /** 功能开关的 CLI 覆盖（--enable-feature / --disable-feature，可重复）。 */
+  enableFeatures: string[];
+  disableFeatures: string[];
   trustAgentsVerify: boolean;
   jsonMode: boolean; autoCompact: boolean; autoCompactThreshold: number | null;
   poppy: boolean; fallback: boolean; noFallback: boolean;
@@ -212,7 +216,7 @@ export function parseArgs(argv: string[]): CliArgs {
     listSkills: false, listSessions: false, listMcp: false,
     compact: null, resume: null, resumeRun: null,
     planMode: false, executePlan: false, approvePlan: null,
-    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, disableTools: [],
+    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [],
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
@@ -228,7 +232,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["features", "tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -280,6 +284,8 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--verify": args.verify = value; break;
         case "--max-cost": args.maxCost = parseFloat(value); break;
         case "--disable-tool": args.disableTools.push(value); break;
+        case "--enable-feature": args.enableFeatures.push(value); break;
+        case "--disable-feature": args.disableFeatures.push(value); break;
         case "--verify-timeout": args.verifyTimeout = parseInt(value, 10); break;
         case "--verify-retries": args.verifyRetries = parseInt(value, 10); break;
         case "--auto-compact-threshold": args.autoCompactThreshold = parseFloat(value); break;
@@ -483,7 +489,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       if (!ts || typeof ts !== "object") return { enabled: false };
       const o = ts as Record<string, unknown>;
       return {
-        enabled: o.enabled === true,
+        // 两条路都算数：显式 config.tool_search.enabled，或 features.tool_search 开关。
+        enabled: o.enabled === true || featureOn(resolveFeatures(config, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
         topK: typeof o.top_k === "number" ? o.top_k : undefined,
         always: Array.isArray(o.always) ? o.always.filter((x): x is string => typeof x === "string") : undefined,
       };
@@ -1992,7 +1999,11 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
-  if (args.subcommand === "tools") {
+  if (args.subcommand === "features") {
+    const res = resolveFeatures(loadConfig(home), { enable: args.enableFeatures, disable: args.disableFeatures });
+    process.stdout.write(formatFeatures(res) + "\n");
+    return EXIT_SUCCESS;
+  }  if (args.subcommand === "tools") {
     // 工具集成本体检：每轮发多少 token、谁最贵、裁掉能省多少。
     const cfgTools = loadConfig(home);
     const disabled = [
