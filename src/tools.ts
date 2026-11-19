@@ -168,6 +168,12 @@ export interface ToolContext {
   sandbox?: { backend?: string | null; mode?: SandboxMode; allowNet?: boolean } | null;
   /** auto 回落到工具级时的提示是否已给过（每个 ToolContext 只给一次）。 */
   sandboxFallbackWarned?: boolean;
+  /**
+   * 缺口 19：prompt/agent hook handler 的运行回调（由 Agent 注入，见 agent.ts）。
+   * 不传时 prompt/agent 条目按"未接线"处理（阻塞型事件上 fail-closed 拦截）。
+   */
+  hookPromptRunner?: ((input: { prompt: string; model?: string; payload: Record<string, unknown> }) => Promise<string>) | null;
+  hookAgentRunner?: ((input: { prompt: string; model?: string; maxTurns?: number; payload: Record<string, unknown> }) => Promise<string>) | null;
 }
 
 export function newToolContext(partial: Partial<ToolContext> & { workdir: string }): ToolContext {
@@ -570,6 +576,9 @@ export async function checkApproval(
     if (!ctx.interactive) {
       throw new ToolError("非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行");
     }
+    // 缺口 19：PermissionRequest 钩子——在"记住的允许规则"与人工弹窗之前跑。
+    // 钩子 deny/失败 → 直接拒绝（fail-closed）；allow → 视同已批准；ask → 照常问人。
+    if (await runPermissionRequestHook(ctx, toolName, summary, opts)) return;
     // 已记下的“允许并不再询问”规则：匹配时会重新做简单命令检查，
     // `; && | $() 反引号 换行` 一律匹配不上（见 approvalRules.prefixMatches）。
     const ruleHit = findApprovalRule(ctx, toolName, opts?.command);
@@ -1892,24 +1901,86 @@ export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "
  *
  * P0-4：返回钩子的 updatedInput（可能为 null）。调用方把它合并进 args 再执行，
  * 这就是"改写参数后放行"——比只能 allow/deny 强一档。
+ *
+ * 缺口 19：拦截进证据链（ctx.onEvent 发 hook_blocked，RunRecorder 记 events.jsonl）；
+ * prompt/agent handler 的回调经 ctx 透传（Agent 注入）。
  */
 async function runPreToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   if (!ctx.home) return null;
-  const result = await runHooks("PreToolUse", { tool, args, home: ctx.home, workdir: ctx.workdir });
+  const result = await runHooks("PreToolUse", {
+    tool,
+    args,
+    home: ctx.home,
+    workdir: ctx.workdir,
+    hookRunners: {
+      ...(ctx.hookPromptRunner ? { prompt: ctx.hookPromptRunner } : {}),
+      ...(ctx.hookAgentRunner ? { agent: ctx.hookAgentRunner } : {}),
+    },
+  });
   if (result.blocked) {
+    try {
+      ctx.onEvent?.("hook_blocked", { event: "PreToolUse", tool, hook: result.hook ?? "", reason: result.reason ?? "" });
+    } catch { /* 观察器故障不破坏拦截 */ }
     throw new ToolError(`钩子拦截了 ${tool}：${result.hook ?? "未知钩子"}${result.reason ? `：${result.reason}` : ""}`);
   }
   return result.updatedInput ?? null;
 }
 
-/** PostToolUse：只通知、不拦截；runHooks 内部对钩子出错/超时已 fail-open，这里再兜一层。 */
+/** PostToolUse：只通知、不拦截（只通知事件上钩子出错只警告）；这里再兜一层。 */
 async function runPostToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {
   if (!ctx.home) return;
   try {
-    await runHooks("PostToolUse", { tool, args, home: ctx.home, workdir: ctx.workdir });
+    await runHooks("PostToolUse", {
+      tool,
+      args,
+      home: ctx.home,
+      workdir: ctx.workdir,
+      hookRunners: {
+        ...(ctx.hookPromptRunner ? { prompt: ctx.hookPromptRunner } : {}),
+        ...(ctx.hookAgentRunner ? { agent: ctx.hookAgentRunner } : {}),
+      },
+    });
   } catch {
     // 钩子通知失败绝不能破坏已成功的工具结果。
   }
+}
+
+/**
+ * 缺口 19：PermissionRequest 钩子——在人工审批之前跑（只在 auto/creator 模式、
+ * 真要问人的时候跑；规则已 allow/deny、full 模式、只读拒绝时不跑，因为那时
+ * 根本没有"权限请求"发生）。
+ * 决策语义：deny → 拒绝（fail-closed：钩子失败同样拒绝）；allow → 视同已批准，
+ * 跳过人工弹窗；ask / 无决策 → 照常走人工审批。返回 true = 已批准、调用方直接返回。
+ */
+async function runPermissionRequestHook(
+  ctx: ToolContext,
+  toolName: string,
+  summary: string,
+  opts?: { command?: string; cwd?: string; fileTarget?: string; timeout?: number },
+): Promise<boolean> {
+  if (!ctx.home) return false;
+  const result = await runHooks("PermissionRequest", {
+    tool: toolName,
+    args: { summary, ...(opts?.command !== undefined ? { command: opts.command } : {}), ...(opts?.fileTarget !== undefined ? { path: opts.fileTarget } : {}) },
+    home: ctx.home,
+    workdir: ctx.workdir,
+    hookRunners: {
+      ...(ctx.hookPromptRunner ? { prompt: ctx.hookPromptRunner } : {}),
+      ...(ctx.hookAgentRunner ? { agent: ctx.hookAgentRunner } : {}),
+    },
+  });
+  if (result.blocked) {
+    observeApproval(ctx, toolName, false);
+    try {
+      ctx.onEvent?.("hook_blocked", { event: "PermissionRequest", tool: toolName, hook: result.hook ?? "", reason: result.reason ?? "" });
+    } catch { /* ignore */ }
+    throw new ToolError(`已被权限钩子拒绝：${result.hook ?? "未知钩子"}${result.reason ? `：${result.reason}` : ""}`);
+  }
+  if (result.decision?.decision === "allow") {
+    observeApproval(ctx, toolName, true);
+    return true;
+  }
+  return false;
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
@@ -1980,7 +2051,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     }
     })();
     // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
-    // 工具执行成功后跑 PostToolUse：只通知、不拦截，失败只警告（runHooks 内部已 fail-open）。
+    // 工具执行成功后跑 PostToolUse：只通知、不拦截，失败只警告（PostToolUse 是只通知事件）。
     // 幂等重试不重跑 PostToolUse（同 PreToolUse 的理由：首次调用已通知过）。
     if (HOOKED_TOOLS.has(name) && ctx.idempotentRetry !== true) await runPostToolHook(ctx, name, args);
     return result;

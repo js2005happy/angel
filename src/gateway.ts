@@ -769,7 +769,8 @@ export class Gateway {
    * send 建 Agent 成功后触发；SessionEnd 在逐会话关闭（DELETE /api/sessions/:id，
    * 见 closeSession）或网关关停（stop）时为每个已开始的会话触发。
    * 约定与 CLI 侧一致：超时走 config.json hooks.timeout_ms（runHooks 内
-   * clamp 到 1–120 秒，默认 10 秒）、fail-open、退出码 2 只通知不拦截；
+   * clamp 到 1–120 秒，默认 10 秒）；SessionStart/End 是只通知事件，钩子
+   * 故障只警告、不影响会话，退出码 2 只通知不拦截；
    * 无钩子时 runHooks 直接返回、不 spawn。SessionStart 不阻塞 HTTP 响应，
    * 以 fire-and-forget 方式触发；SessionEnd 在 stop 里 await，等钩子跑完
    * （有超时封顶）再关停，避免进程退出把钩子杀在半路。
@@ -778,7 +779,7 @@ export class Gateway {
     if (run.hooksStarted) return;
     run.hooksStarted = true;
     void runHooks("SessionStart", { home: this.home, workdir: this.workdir }).catch(() => {
-      // runHooks 本身已 fail-open；这里再兜一层，钩子故障绝不影响会话。
+      // SessionStart 是只通知事件，钩子故障只警告；这里再兜一层，绝不影响会话。
     });
   }
 

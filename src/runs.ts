@@ -50,6 +50,9 @@ review_enqueued: ["item_id", "source", "spent_usd"],
 review_decision: ["item_id", "decision", "decided_by", "spent_usd"],
 review_verified: ["item_id", "status", "method"],
 review_applied: ["item_id", "files"],
+// 缺口 19：钩子拦截进证据链——审查 fail-closed 要留痕：哪个事件、哪个工具、
+// 哪个钩子、为什么拦。只记拦截（blocked），放行不记（钩子默认不装，记了全是噪音）。
+hook_blocked: ["event", "tool", "hook", "reason"],
 final: [],
 max_turns: [],
 error: ["error_type"],
@@ -700,7 +703,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

@@ -51,6 +51,32 @@ export interface PermissionContext {
 
 const RULE_RE = /^\s*([A-Za-z][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*\*?)\s*(?:\((.*)\))?\s*$/;
 
+/**
+ * 缺口 19：工具名归一化——规则按 Claude Code 的写法（`Bash` / `Edit` /
+ * `Write` / `Read`），但 checkApproval 传进来的是 Nyra 自己的工具名
+ * （`shell` / `edit_file` / `write_file` / `read_file`）。不归一化，
+ * 按文档写的规则永远匹配不上、静默失效——这就是 /status 要报的"被忽略
+ * 的权限设置"头号来源。归一化是双向的：规则侧与调用侧都归一，旧测试
+ * （ctx.tool 直接写 "Bash"）的行为不变。
+ */
+export function normalizeToolName(name: string): string {
+  switch (name) {
+  case "Bash":
+  case "sh":
+  case "zsh":
+  case "powershell":
+    return "shell";
+  case "Edit":
+    return "edit_file";
+  case "Write":
+    return "write_file";
+  case "Read":
+    return "read_file";
+  default:
+    return name;
+  }
+}
+
 /** 解析单条规则；格式不对返回 null。 */
 export function parseRule(raw: string): PermissionRule | null {
   if (typeof raw !== "string") return null;
@@ -147,8 +173,11 @@ function normalizeTarget(ctx: PermissionContext): string {
 
 /** 单条规则是否命中。 */
 export function ruleMatches(rule: PermissionRule, ctx: PermissionContext): boolean {
+  // 缺口 19：双向归一化（见 normalizeToolName），否则 Bash/Edit 规则永不命中。
+  const ruleTool = normalizeToolName(rule.tool);
+  const ctxTool = normalizeToolName(ctx.tool);
   // 裸工具名（无 specifier）命中该工具的全部调用。
-  if (rule.tool !== ctx.tool) {
+  if (ruleTool !== ctxTool) {
     // MCP 通配：mcp__server__* 命中该 server 的所有工具。
     if (!rule.tool.endsWith("__*")) return false;
     const prefix = rule.tool.slice(0, -1); // "mcp__server__"

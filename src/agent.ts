@@ -41,6 +41,7 @@ import { t } from "./i18n.ts";
 import type { AuxTask } from "./modelRouting.ts";
 import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
+import { runHooks, type RunHooksContext } from "./hooks.ts";
 import {
   runParallelDelegate, formatParallelResults, parallelConvergenceNote,
   resolveParallelOptions,
@@ -407,9 +408,68 @@ export class Agent {
       streamToolOutput: opts.streamToolOutput ?? false,
       onEvent: (kind, data) => this.emit(kind, data),
       multiModelFactory: opts.multiModelFactory,
+      // 缺口 19：prompt/agent hook handler 的回调——prompt 走一次便宜模型核验
+      // （有 delegate_model 时用它，否则主模型）；agent 派一个子 agent 核验。
+      // 回调只返回核验者的原始文本，决策解析由 hooks.ts 做；回调抛错 = handler
+      // 失败，阻塞型事件上 fail-closed。
+      hookPromptRunner: (input) => this.runHookPrompt(input),
+      hookAgentRunner: (input) => this.runHookAgent(input),
       // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——沙箱配置透传给工具层。
       sandbox: opts.sandbox ?? null,
     });
+  }
+
+  /**
+   * 缺口 19：供 runHooks 用的上下文（Agent 内直接触发的事件：Stop、
+   * SubagentStart/Stop、PreCompact/PostCompact）。
+   */
+  private hooksContext(extra?: Record<string, unknown>): RunHooksContext {
+    return {
+      home: this.home,
+      workdir: this.workdir,
+      hookRunners: {
+        prompt: (input) => this.runHookPrompt(input),
+        agent: (input) => this.runHookAgent(input),
+      },
+      ...(extra ? { extra } : {}),
+    };
+  }
+
+  /** 缺口 19：prompt handler——一次无工具的模型调用，只输出 JSON 决策。 */
+  private async runHookPrompt(input: { prompt: string; model?: string; payload: Record<string, unknown> }): Promise<string> {
+    const provider = this.hookModelProvider(input.model);
+    const messages = [
+      {
+        role: "system",
+        content: "你是 Nyra 的钩子核验器。只根据给定的事件载荷做核验，不执行任何操作。输出必须是且仅是一个 JSON 对象：{\"permissionDecision\":\"allow|deny|ask\",\"permissionDecisionReason\":\"一句话原因\"}。合规放行时输出 allow；违规输出 deny；拿不准需要人看时输出 ask。不要输出 JSON 之外的任何文字。",
+      },
+      { role: "user", content: `${input.prompt}\n\n事件载荷：\n${JSON.stringify(input.payload)}` },
+    ];
+    const resp = await provider.chat(messages as never, [] as never);
+    const msg = ((resp.choices as Record<string, unknown>[])?.[0]?.message ?? {}) as Record<string, unknown>;
+    return typeof msg.content === "string" ? msg.content : "";
+  }
+
+  /** 缺口 19：agent handler——派一个子 agent 做复杂核验，返回它的最终文本。 */
+  private async runHookAgent(input: { prompt: string; model?: string; maxTurns?: number; payload: Record<string, unknown> }): Promise<string> {
+    return await this.delegate(
+      `${input.prompt}\n\n事件载荷：\n${JSON.stringify(input.payload)}\n\n收尾时只输出一个 JSON 对象作为最终结论：{"permissionDecision":"allow|deny|ask","permissionDecisionReason":"一句话原因"}，不要输出 JSON 之外的收尾文字。`,
+      input.maxTurns ?? 3,
+      { ...(input.model ? { model: input.model } : {}) },
+    );
+  }
+
+  /**
+   * 缺口 19：hook 核验用的模型——条目指定了 model 且有多模型工厂时按指定
+   * 的造；否则用便宜的 delegate 模型（配了 delegate_model 时）；都没有时
+   * 用主模型。不假装切换成功：造不出来就抛错，调用方按 fail-closed 处理。
+   */
+  private hookModelProvider(model?: string): ProviderLike {
+    const factory = this.ctx.multiModelFactory;
+    if (model && factory) return factory("hook", model);
+    const cheap = this.auxProvider("delegate");
+    if (cheap) return cheap;
+    return this.provider;
   }
 
   /** 调研报告第 2 项：技能渐进披露——常驻技能索引（描述常驻、全文按需）；技能集合变化时才重算。 */
@@ -688,6 +748,22 @@ export class Agent {
   // 见 buildCompactMessages）；focus 为空时行为与原来完全一致。压缩成功后自动
   // 重读记忆与规则（见 postCompactReReadNote）；压缩失败走 fallback 时不重读。
   async compact(keepLast = 4, focus?: string): Promise<{ method: string; summary_chars: number; before: number; after: number }> {
+    // 缺口 19：PreCompact 钩子——压缩前跑。被拦（deny 或钩子失败 fail-closed）
+    // 时不压缩、抛错（调用方 /compact 会把原因打印出来）；消息原样不动。
+    {
+      let preResult;
+      try {
+        preResult = await runHooks("PreCompact", this.hooksContext({ messages: this.messages.length, keep_last: keepLast }));
+      } catch {
+        preResult = null;
+      }
+      if (preResult?.blocked) {
+        try {
+          this.emit("hook_blocked", { event: "PreCompact", tool: "", hook: preResult.hook ?? "", reason: preResult.reason ?? "" });
+        } catch { /* ignore */ }
+        throw new AgentError(`压缩被钩子阻止：${preResult.hook ?? "未知钩子"}${preResult.reason ? `：${preResult.reason}` : ""}`);
+      }
+    }
     // 压缩走便宜模型（如果配了 compact_model）；没配就用主模型，行为不变。
     const compactProvider = this.auxProvider("compact") ?? this.provider;
     const [newMessages, info] = await compactMessages(compactProvider, this.messages as never, keepLast, {
@@ -696,12 +772,33 @@ export class Agent {
     });
     this.messages = newMessages as Record<string, unknown>[];
     saveSession(this.sessionId, this.messages, this.home);
+    // 缺口 19：PostCompact 只通知——压缩成功后跑，失败只警告。
+    try {
+      await runHooks("PostCompact", this.hooksContext({ before: info.before, after: info.after, method: info.method }));
+    } catch { /* ignore */ }
     return info;
   }
 
   private async maybeAutoCompact(messages: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
     const before = messages.slice(1);
     if (!shouldAutoCompact(this.usage.snapshot(), before.length, this.autoCompactThreshold)) return messages;
+    // 缺口 19：自动压缩同样先问 PreCompact 钩子。被拦时不压缩、只发一次
+    // auto_compact_skipped（不抛错、不破坏本轮运行）。
+    {
+      let preResult;
+      try {
+        preResult = await runHooks("PreCompact", this.hooksContext({ messages: before.length, keep_last: 0, auto: true }));
+      } catch {
+        preResult = null;
+      }
+      if (preResult?.blocked) {
+        try {
+          this.emit("hook_blocked", { event: "PreCompact", tool: "", hook: preResult.hook ?? "", reason: preResult.reason ?? "" });
+        } catch { /* ignore */ }
+        this.emit("auto_compact_skipped", { reason: "hook_blocked" });
+        return messages;
+      }
+    }
     // 只压缩已完成轮次：当前用户请求及其工具往返一律不动。
     const { older: completed, active } = splitCompletedVsActive(before as never);
     if (completed.length < 3) {
@@ -734,6 +831,10 @@ export class Agent {
       this.messages = reduced;
       this.autoCompactCount += 1;
       this.emit("auto_compact", { before: info.before, after: info.after, method: info.method, count: this.autoCompactCount });
+      // 缺口 19：自动压缩成功后同样跑 PostCompact（只通知）。
+      try {
+        await runHooks("PostCompact", this.hooksContext({ before: info.before, after: info.after, method: info.method, auto: true }));
+      } catch { /* ignore */ }
       return [messages[0], ...reduced];
     } catch {
       this.emit("auto_compact_failed", { reason: "summarization_failed" });
@@ -888,6 +989,27 @@ export class Agent {
           this.messages = messages.slice(1);
           saveSession(this.sessionId, this.messages, this.home);
           continue;
+        }
+        // 缺口 19：Stop 钩子——模型想结束时先问钩子。被拦（deny 或钩子失败
+        // fail-closed）时不结束：把原因以用户消息写回、继续跑；最大轮数是
+        // 兜底，不会被钩子无限续命。拦截进证据链（hook_blocked）。
+        if (this.home) {
+          let stopResult;
+          try {
+            stopResult = await runHooks("Stop", this.hooksContext({ final_chars: final.length }));
+          } catch {
+            stopResult = null;
+          }
+          if (stopResult?.blocked) {
+            try {
+              this.emit("hook_blocked", { event: "Stop", tool: "", hook: stopResult.hook ?? "", reason: stopResult.reason ?? "" });
+            } catch { /* ignore */ }
+            const note = `（停止被钩子阻止：${stopResult.reason ?? "钩子未说明原因"}；请继续完成任务，或说明还需要做什么才能结束。）`;
+            messages.push({ role: "user", content: note });
+            this.messages = messages.slice(1);
+            saveSession(this.sessionId, this.messages, this.home);
+            continue;
+          }
         }
         this.emit("final", { content: final });
         return final;
@@ -1115,6 +1237,24 @@ export class Agent {
       }
     }
 
+    // 缺口 19：SubagentStart 钩子——子 agent 启动前跑。被拦（deny 或钩子失败
+    // fail-closed）时不启动子 agent，直接返回失败（worktree 还没建，无需清理）。
+    // 拦截进证据链（hook_blocked）。
+    {
+      let startResult;
+      try {
+        startResult = await runHooks("SubagentStart", this.hooksContext({ task_id: taskId, task, model: provider.model ?? null }));
+      } catch {
+        startResult = null;
+      }
+      if (startResult?.blocked) {
+        try {
+          this.emit("hook_blocked", { event: "SubagentStart", tool: "delegate", hook: startResult.hook ?? "", reason: startResult.reason ?? "" });
+        } catch { /* ignore */ }
+        return delegateFailed(`错误：子任务启动被钩子阻止：${startResult.hook ?? "未知钩子"}${startResult.reason ? `：${startResult.reason}` : ""}`);
+      }
+    }
+
     // S4-3：worktree 隔离。子 Agent 在独立工作树里干活，主工作区一个字节都不动；
     // 干完把 diff 摘要交回父级，由人决定要不要合并。
     let childWorkdir = this.workdir;
@@ -1219,6 +1359,8 @@ export class Agent {
     try {
       const summary = await child.run(task);
       recordChildUsage();
+      // 缺口 19：SubagentStop 钩子——只通知，不拦截；失败只警告。
+      await this.runSubagentStopHook(taskId, task, true);
       const head = notes.length ? `[子任务 ${taskId} 已完成]\n（${notes.join("；")}）\n` : `[子任务 ${taskId} 已完成]\n`;
       if (!worktreePath) return detail(head + summary);
 
@@ -1241,11 +1383,22 @@ export class Agent {
       );
     } catch (err: unknown) {
       recordChildUsage();
+      // 缺口 19：子任务失败时 SubagentStop 同样触发（只通知）。
+      await this.runSubagentStopHook(taskId, task, false);
       if (worktreePath) spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
       const text = err instanceof AgentError
         ? `子任务失败：${err.message}`
         : `子任务异常：${(err as Error)?.name ?? "Error"}: ${err instanceof Error ? err.message : String(err)}`;
       return { ...delegateFailed(text), spentUsd: childSpentUsd, model: child.provider.model ?? null };
+    }
+  }
+
+  /** 缺口 19：SubagentStop 只通知——钩子失败只警告，绝不改写子任务结果。 */
+  private async runSubagentStopHook(taskId: string, task: string, ok: boolean): Promise<void> {
+    try {
+      await runHooks("SubagentStop", this.hooksContext({ task_id: taskId, task, ok }));
+    } catch {
+      // 只通知事件的钩子失败不破坏主流程。
     }
   }
 

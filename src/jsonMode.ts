@@ -74,6 +74,14 @@ export class JsonLines {
         name: data.name ?? "",
         ok: !(typeof result === "string" && result.startsWith("错误：")),
       });
+    } else if (kind === "hook_blocked") {
+      // 缺口 19：钩子拦截进 JSON 事件流（只记拦截本身，不含工具参数原文）。
+      this.emit("hook_blocked", {
+        event: data.event ?? "",
+        tool: data.tool ?? "",
+        hook: data.hook ?? "",
+        reason: typeof data.reason === "string" && data.reason.length > 120 ? data.reason.slice(0, 117) + "…" : (data.reason ?? ""),
+      });
     } else if (kind === "assistant") {
       this.emit("assistant", { content: data.content ?? "" });
     } else if (kind === "max_turns") {

@@ -77,7 +77,8 @@ import { ensureNyraHome } from "./migration.ts";
 import { ApprovalRequired, TOOL_SCHEMAS } from "./tools.ts";
 import { Vault, vaultUsage, VaultError } from "./vault.ts";
 import { runCreator, verifyStagedPlugin, installStagedPlugin, describePlannedChanges, CreatorError } from "./creator.ts";
-import { listHooks, runHooks, HOOK_EVENTS } from "./hooks.ts";
+import { listHookEntries, runHooks, HOOK_EVENTS } from "./hooks.ts";
+import { runStatusChecks, formatStatusReport } from "./status.ts";
 import { Gateway } from "./gateway.ts";
 import { GatewayClient } from "./gatewayClient.ts";
 import { ConversationStore } from "./conversations.ts";
@@ -126,6 +127,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
+  nyra status                    诊断清单：损坏的配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher（只读，详见 docs/status.md）
   nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
   nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
   nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
@@ -177,6 +179,7 @@ Usage:
   nyra kb <create|list|add|search|ask|remove>  local knowledge base
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
+  nyra status                    diagnose broken configs, unavailable sandbox, ignored permission rules, never-matching hook matchers (read-only, see docs/status.md)
   nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
   nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
   nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
@@ -264,7 +267,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang", "--channel",
   ]);
-  const subcommands = new Set(["verdict", "savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats"]);
+  const subcommands = new Set(["verdict", "savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats", "status"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -1379,6 +1382,7 @@ async function handleStyle(argv: string[], home: string): Promise<number> {
 }
 
 // ---- 子命令：hooks（调研报告第 1 项：Hooks 确定性钩子层，学 Claude Code） ----
+// 缺口 19：除 shell 脚本外也列出 config 里的 prompt/agent 条目（含 matcher）。
 async function handleHooks(argv: string[], home: string): Promise<number> {
   const HOOKS_USAGE = "用法：\n  nyra hooks list   列出已安装的钩子";
   const cmd = argv[0];
@@ -1386,20 +1390,34 @@ async function handleHooks(argv: string[], home: string): Promise<number> {
     process.stderr.write(`未知钩子子命令：${cmd}\n${HOOKS_USAGE}\n`);
     return 2;
   }
-  const hooks = listHooks(home);
-  if (!hooks.length) {
+  const entries = listHookEntries(home);
+  if (!entries.length) {
     process.stdout.write("未安装任何钩子。\n");
     process.stdout.write(`放脚本的位置：${join(home, "hooks", "<事件>.d")}/，例如 ${join(home, "hooks", "PreToolUse.d", "lint.sh")}\n`);
-    process.stdout.write("事件：PreToolUse、PostToolUse、SessionStart、SessionEnd；用法与例子见 docs/hooks.md。\n");
+    process.stdout.write("事件：PreToolUse、PostToolUse、SessionStart、SessionEnd、PermissionRequest、SubagentStart、SubagentStop、Stop、PreCompact、PostCompact；用法与例子见 docs/hooks.md。\n");
     return 0;
   }
   for (const event of HOOK_EVENTS) {
-    const items = hooks.filter((h) => h.event === event);
+    const items = entries.filter((h) => h.event === event);
     if (!items.length) continue;
     process.stdout.write(`${event}：\n`);
-    for (const h of items) process.stdout.write(`- ${h.path}\n`);
+    for (const h of items) {
+      const matcher = h.tools ? `（仅 ${h.tools.join("、")}）` : "";
+      if (h.kind === "command") process.stdout.write(`- [command] ${h.path ?? h.label}${matcher}\n`);
+      else if (h.kind === "prompt") process.stdout.write(`- [prompt] ${h.label}${h.model ? `（模型 ${h.model}）` : ""}${matcher}\n`);
+      else if (h.kind === "agent") process.stdout.write(`- [agent] ${h.label}${h.model ? `（模型 ${h.model}）` : ""}${matcher}\n`);
+      else process.stdout.write(`- [无效] ${h.label}：${h.invalidReason ?? "格式错误"}（用 /status 查看）\n`);
+    }
   }
   return 0;
+}
+
+// ---- 子命令：status（缺口 19：/status 诊断清单，学 Claude Code 2.1.327） ----
+// 只读：只检查、不改任何状态；有错误配置时返回 1（供脚本把关），警告不影响返回码。
+async function handleStatus(home: string, workdir: string): Promise<number> {
+  const report = runStatusChecks({ home, workdir });
+  process.stdout.write(formatStatusReport(report) + "\n");
+  return report.errors > 0 ? 1 : 0;
 }
 
 // ---- 子命令：evidence（P1-2：证据链独立复核） ----
@@ -1667,15 +1685,15 @@ export async function handleVault(argv: string[], home: string, input?: VaultInp
  * 一次性任务的会话钩子外包：SessionStart 在任务开始前触发，SessionEnd 在
  * 任务结束（成功、失败或异常退出）后于 finally 里触发——与 REPL（runRepl）
  * /网关（newSession/stop/closeSession）行为一致：一次任务一个会话，
- * 开始与结束各触发一次。钩子 fail-open（超时、退出码非零都不阻塞、不改
- * 退出码）；钩子只写 stderr、不碰 stdout，--json 模式的结构化输出不受影响。
+ * 开始与结束各触发一次。会话钩子是只通知事件（超时、退出码非零都只警告、
+ * 不阻塞、不改退出码）；钩子只写 stderr、不碰 stdout，--json 模式的结构化输出不受影响。
  * 注意：包在 main() 分发层，参数错误等极早退出也会触发一次开始/结束——
  * 与 REPL“启动即触发 SessionStart”的口径一致。
  */
 async function withOneShotSession(args: CliArgs, fn: () => Promise<number>): Promise<number> {
   const home = resolveHome();
   const workdir = resolve(args.workdir);
-  try { await runHooks("SessionStart", { home, workdir }); } catch { /* fail-open：钩子故障不破坏任务 */ }
+  try { await runHooks("SessionStart", { home, workdir }); } catch { /* 只通知事件：钩子故障不破坏任务 */ }
   try {
     return await fn();
   } finally {
@@ -1994,7 +2012,7 @@ async function runRepl(args: CliArgs): Promise<number> {
   }
   const { agent } = built;
   // 调研报告第 1 项：Hooks —— REPL 会话开始/结束触发 SessionStart/SessionEnd。
-  // SessionStart 在会话建立后、首个提示前等一次（fail-open：钩子故障/超时只
+  // SessionStart 在会话建立后、首个提示前等一次（只通知事件：钩子故障/超时只
   // 警告、不阻止会话开始；无钩子时 runHooks 直接返回、零 spawn）。
   // SessionEnd 由下面的 try/finally 保证（/exit、EOF 与循环内异常都走 finally）；
   // Ctrl+C 走 onReplSigint：尽力触发一次 SessionEnd，3 秒宽限后退出（130），
@@ -2012,7 +2030,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     })();
   };
   process.once("SIGINT", onReplSigint);
-  try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：fail-open */ }
+  try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：只通知事件 */ }
   let providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
   // 终端外观 v2：TTY 且宽度够时是品牌化欢迎屏（渐变块字 + 信息卡 + Tips）、横线输入区、
   // 彩色状态栏、spinner 与右侧小伙伴；非 TTY / TERM=dumb / 太窄时退回纯文本状态行 + "> "
@@ -2252,6 +2270,12 @@ async function runRepl(args: CliArgs): Promise<number> {
       } else {
         process.stderr.write("用法：/stats；/stats heatmap [周数]\n");
       }
+      continue;
+    }
+    // 缺口 19：/status 诊断清单（只读：坏配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher）。
+    if (text === "/status") {
+      const report = runStatusChecks({ home, workdir });
+      process.stdout.write(formatStatusReport(report) + "\n");
       continue;
     }
     if (text === "/compact" || text.startsWith("/compact ")) {
@@ -2769,7 +2793,9 @@ export async function main(argv: string[]): Promise<number> {
     const verdict = buildVerdict({ redlines, savings, modelSavings, recallAvailable, runStatusCounts, turns });
     process.stdout.write(formatVerdict(verdict) + "\n");
     return verdict.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
-  }  if (args.subcommand === "savings") {
+  }
+  if (args.subcommand === "status") return handleStatus(home, resolve(args.workdir));
+  if (args.subcommand === "savings") {
     // 把散落的省钱机制汇成一张单页：一份运行到底开了哪些、能确定省多少。
     const cfgSav = loadConfig(home);
     const feats = resolveFeatures(cfgSav, { enable: args.enableFeatures, disable: args.disableFeatures });
