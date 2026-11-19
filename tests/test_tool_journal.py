@@ -1251,5 +1251,22 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaises(JournalError):
                     journal._records()
 
+    def test_begin_final_snapshot_rejects_new_competing_intent(self):
+        from angel import tool_journal as module
+        journal = ToolJournal("late-competitor", root=self.root)
+        original = journal._records
+        calls = [0]
+
+        def late_snapshot():
+            calls[0] += 1
+            if calls[0] == 3:
+                journal._write("intent", "a" * 32, "shell")
+            return original()
+
+        with mock.patch.object(journal, "_records", side_effect=late_snapshot):
+            with self.assertRaisesRegex(JournalError, "最终日志快照"):
+                journal.begin("shell")
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 2)
+
 if __name__ == "__main__":
     unittest.main()
