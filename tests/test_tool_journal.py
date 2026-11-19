@@ -316,6 +316,16 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "无法核验"):
                 journal.inspect()
 
+    def test_begin_rejects_reported_error_until_manual_reconciliation(self):
+        journal = ToolJournal("reported-error-blocks-next", root=self.root)
+        cid = journal.begin("http_post")
+        journal.finish(cid, "http_post", success=False)
+        before = journal.inspect()["event_count"]
+        with self.assertRaisesRegex(JournalError, "工具报告失败"):
+            journal.begin("shell")
+        self.assertEqual(journal.inspect()["event_count"], before)
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
     def test_reported_tool_error_requires_manual_review(self):
         # An error result may follow a partially completed external effect.
         journal = ToolJournal("reported-error-review", root=self.root)
