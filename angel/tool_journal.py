@@ -494,8 +494,10 @@ class ToolJournal:
             raise JournalError("日志存在歧义；必须人工核查后才能开始新工具调用")
         if status["unknown_outcomes"]:
             raise JournalError("存在结果未知的工具调用；人工核查前禁止新增调用")
-        if status["event_count"] >= MAX_EVENTS:
-            raise JournalError("事件数量超限")
+        if status["event_count"] >= MAX_EVENTS - 1:
+            # Reserve a result slot before persisting an intent. Otherwise
+            # the final allowed intent cannot be finished at MAX_EVENTS.
+            raise JournalError("事件容量不足以同时记录意图和结果")
         call_id = secrets.token_hex(16)
         self._write("intent", call_id, tool)
         # Another process may have inserted an intent since our first inspect.
