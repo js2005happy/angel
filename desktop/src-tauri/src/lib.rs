@@ -611,6 +611,15 @@ fn allowed_in_window(url: &Url, origin: &Option<String>) -> bool {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // 单实例（审查报告第 11 项）：第二次启动不另起服务，直接聚焦已有窗口——
+        // 桌面软件的常规行为。插件内部用系统级锁保证只有一个实例。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(Backend::default())
         .invoke_handler(tauri::generate_handler![retry_start])
         .setup(|app| {
