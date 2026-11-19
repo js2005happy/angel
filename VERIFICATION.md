@@ -1,3 +1,9 @@
+## 2026-11-19 — POSIX 末次目录句柄 fstat 异常（仅静态）
+
+- 静态审阅 `ToolJournal._records()`：第二次枚举后最终 `os.fstat(directory_fd)` 原先可能传播未分类 `OSError`；现转为保留原异常链的 `JournalError`，拒绝信任日志快照。
+- 新增 `test_posix_final_directory_fstat_denied_fails_closed`：模拟空目录读取时第三次目录 `fstat` 返回 `PermissionError`；测试源码未运行，尚不保证模拟在所有 POSIX 实现上行为一致。
+- 未运行测试、CI、安装或 Windows 实机检查；Windows ACL、稳定目录句柄、跨进程事务、外部副作用证明均未完成。
+
 ## 2026-11-19 — POSIX 末次枚举异常分类（仅静态）
 
 - 源码静态确认 POSIX 读取的第二次 `os.listdir(directory_fd)` 原先未分类 `OSError`；现在明确失败关闭为 `JournalError` 并保留异常链。新增 `test_posix_final_dirfd_enumeration_denied_fails_closed`，仅编写未执行。
