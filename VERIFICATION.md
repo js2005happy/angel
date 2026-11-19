@@ -1,3 +1,8 @@
+## 2026-11-20 — ToolJournal 人工对账原因分类（仅静态）
+
+- 本轮复核 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal、相关测试、主分支近期提交、开放 Issues/PR 和提交状态。现有 `manual_review_required` 仅表示需核查，不说明是未知结果还是日志歧义；本轮只增加派生枚举字段和模拟回归测试，不改变工具执行或日志写入流程。
+- 静态核对：`journal_ambiguous` 优先于 `unknown_outcomes`，干净元数据为 `none`；所有状态下 `execution_verified` 和 `safe_to_auto_resume` 仍为 false。**未执行 Python、测试、安装、CI 或 Windows 实机验证**；字段不是外部副作用证明，也不是跨进程锁。
+
 ## 2026-11-20 — ToolJournal 人工对账状态信号（仅静态）
 
 - 读取 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 与相关测试；核对近期主分支提交、开放 Issue/PR。新增 `manual_review_required` 仅由已有未知结果计数与歧义状态推导，不改变写入或执行路径。
