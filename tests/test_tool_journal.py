@@ -11,6 +11,24 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_begin_rechecks_concurrent_intent_before_dispatch(self):
+        # A competing intent appearing immediately after our event is
+        # persisted must stop begin() before it returns a dispatchable ID.
+        journal = ToolJournal("concurrent-pending-begin", root=self.root)
+        original_write = journal._write
+
+        def concurrent_write(event, call_id, tool):
+            original_write(event, call_id, tool)
+            if event == "intent":
+                original_write("intent", "a" * 32, "http_post")
+
+        with mock.patch.object(journal, "_write", side_effect=concurrent_write):
+            with self.assertRaisesRegex(JournalError, "禁止执行工具"):
+                journal.begin("shell")
+        status = journal.inspect()
+        self.assertEqual(status["unknown_outcomes"], 2)
+        self.assertFalse(status["journal_ambiguous"])
+
     def test_posix_final_directory_fstat_denied_fails_closed(self):
         # Mock the final directory-handle probe on an empty journal.
         # No tests are executed as part of this change.
