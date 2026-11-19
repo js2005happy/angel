@@ -11,6 +11,7 @@ import { join, resolve, relative, dirname, sep, posix } from "node:path";
 import { appendMemory } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
+import { evaluate, parseRules, type RuleSet } from "./permissionRules.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untrusted.ts";
 import { CheckpointStore, CheckpointError } from "./checkpoints.ts";
@@ -341,6 +342,32 @@ function observeApproval(ctx: ToolContext, tool: string, approved: boolean | nul
  *   授权分开记（approve_fn_grants vs approved_file_tools/approved_shell_commands），
  *   缓存的终端答案绝不绕过网页审批门。
  */
+// P0-5：权限规则缓存。规则来自 <home>/config.json 的 permissions 一节；
+// 解析失败的行进 warnings（由 doctor / CLI 展示），不参与求值、不抛错。
+const permissionRulesCache = new Map<string, RuleSet>();
+
+function permissionRulesFor(home: string | undefined): RuleSet {
+  const empty: RuleSet = { allow: [], ask: [], deny: [], warnings: [] };
+  if (!home) return empty;
+  const cached = permissionRulesCache.get(home);
+  if (cached) return cached;
+  let section: unknown = null;
+  try {
+    const raw = JSON.parse(readFileSync(join(home, "config.json"), "utf-8")) as Record<string, unknown>;
+    section = raw.permissions ?? null;
+  } catch {
+    section = null;
+  }
+  const rules = parseRules(section as { allow?: unknown; ask?: unknown; deny?: unknown } | null);
+  permissionRulesCache.set(home, rules);
+  return rules;
+}
+
+/** 测试与 doctor 用：清空规则缓存（改配置后不必重启进程）。 */
+export function resetPermissionRulesCache(): void {
+  permissionRulesCache.clear();
+}
+
 export async function checkApproval(
   ctx: ToolContext,
   toolName: string,
@@ -351,6 +378,25 @@ export async function checkApproval(
   if (ctx.mode === "readonly") {
     throw new ToolError(`只读模式下不允许执行 ${toolName}，请用 --mode auto 或 --mode full`);
   }
+
+  // P0-5：权限规则语言。deny > ask > allow，空规则集时行为与之前完全一致。
+  // 注意 readonly 的拒绝在上面已经发生——规则**不能**放开只读模式，这是刻意的硬约束。
+  const decision = evaluate(permissionRulesFor(ctx.home), {
+    tool: toolName,
+    target: opts?.command ?? opts?.fileTarget ?? opts?.cwd ?? "",
+    workdir: ctx.workdir,
+  });
+  if (decision?.action === "deny") {
+    observeApproval(ctx, toolName, false);
+    throw new ToolError(`已被权限规则拒绝：${decision.rule.raw}`);
+  }
+  const preApproved = decision?.action === "allow";
+  if (preApproved) {
+    // 规则显式 allow：跳过弹窗，但仍然记录一次审批事件，便于审计。
+    observeApproval(ctx, toolName, true);
+    return;
+  }
+
   if (ctx.mode === "auto" || ctx.mode === "creator") {
     if (!ctx.interactive) {
       throw new ToolError("非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行");

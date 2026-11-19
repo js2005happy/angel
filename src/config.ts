@@ -48,6 +48,9 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   profiles: {},
   mcp_servers: {},
   mcp_enabled: false,
+  // P0-5：权限规则语言（学 Claude Code 的 Tool(specifier)）。空 = 走默认交互式审批。
+  // 例：deny: ["Bash(rm -rf *)"], allow: ["Bash(git *)", "Edit(src/**)"].
+  permissions: { allow: [], ask: [], deny: [] },
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},
   fallback_enabled: false, // 默认关闭：模型自动兜底只由用户自己开启（用户定的安全事项）。
