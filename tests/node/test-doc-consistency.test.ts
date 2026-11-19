@@ -18,12 +18,11 @@ import { checkDocs, extractNyaCommands, formatDocCheck } from "../../src/docChec
 const ROOT = join(import.meta.dir, "..", "..");
 const DOCS_DIR = join(ROOT, "docs");
 
-/** 从 cli.ts 源码里抽出真实 subcommands 集合（单一事实源）。 */
+import { SUBCOMMANDS } from "../../src/subcommands.ts";
+
+/** 单一事实源：src/subcommands.ts（cli / docCheck / 文档索引 / 本测试共用一份）。 */
 function realSubcommands(): string[] {
-  const src = readFileSync(join(ROOT, "src", "cli.ts"), "utf-8");
-  const m = /const subcommands = new Set\(\[(.*?)\]\)/s.exec(src);
-  if (!m) throw new Error("cli.ts 里找不到 subcommands 定义");
-  return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+  return [...SUBCOMMANDS];
 }
 
 function allDocs(): { name: string; text: string }[] {

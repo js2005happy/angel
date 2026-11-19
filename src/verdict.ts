@@ -28,6 +28,8 @@ export interface VerdictInput {
   runStatusCounts?: Record<string, number> | null;
   /** 本次运行的预计轮次（用于把"每轮省"折算成"整轮省"）。 */
   turns?: number | null;
+  /** 文档一致性检查结果（不传 = 没查，按未知处理）。 */
+  docs?: { ok: boolean; findings: readonly { code: string; command: string; doc: string }[]; mentioned: readonly string[] } | null;
 }
 
 export interface Verdict {
@@ -144,6 +146,19 @@ export function buildVerdict(input: VerdictInput): Verdict {
     }
   }
 
+  // ---- 文档侧（一致性）----
+  if (!input.docs) {
+    unknowns.push("文档一致性没查（无法判断命令索引是否过期）");
+  } else if (input.docs.ok) {
+    reasons.push(`文档一致性：通过（${input.docs.mentioned.length} 个子命令均有记录）`);
+  } else {
+    const stale = input.docs.findings.filter((f) => f.code === "stale-command");
+    reasons.push(`文档一致性：${input.docs.findings.length} 处不一致（过期引用 ${stale.length}）`);
+    nextSteps.push(stale.length
+      ? `先修过期引用：文档里写了 nyra ${stale[0].command}，但代码里没有`
+      : `补文档：nyra ${input.docs.findings[0].command} 没有任何说明`);
+  }
+
   // ---- 汇总 ----
   let grade: VerdictGrade;
   if (evidenceOk === false) grade = "red";
@@ -152,13 +167,16 @@ export function buildVerdict(input: VerdictInput): Verdict {
   // 红线未设（warn）也是"能跑但不齐"：不能算 green。
   else if (warnCount > 0) grade = "yellow";
   else if (!costOk) grade = "yellow";
+  // 文档不一致算质量问题，降到 yellow：它不像红线 fail 那样直接推翻证据。
+  else if (input.docs && !input.docs.ok) grade = "yellow";
   else if (blockers.length) grade = "yellow";
   else grade = "green";
 
+  const docDrift = Boolean(input.docs && !input.docs.ok);
   const headline = grade === "red"
     ? "不值：证据不过关，先修红线"
     : grade === "yellow"
-      ? `勉强：能跑，但${blockers.length ? `有 ${blockers.length} 个阻断项` : "两侧数据不全"}`
+      ? `勉强：能跑，但${blockers.length ? `有 ${blockers.length} 个阻断项` : docDrift ? "文档与代码不一致" : "两侧数据不全"}`
       : "值：证据与成本两侧都成立";
 
   return {

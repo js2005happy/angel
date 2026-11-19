@@ -142,3 +142,16 @@ nyra verdict --recent 10 --json         # 趋势
 | `reasons` / `blockers` / `next_steps` / `unknowns` | 人看的解释，看板可提取数字 |
 
 配套：`exit code` 与 `grade` 一致（`red` → 非 0），所以 CI 里可以只看退出码，或解析 `grade`。
+
+## 配置级现在也查文档一致性
+
+`nyra verdict` 的配置级结论多了一侧：**文档里的命令索引与代码是否对齐**。
+
+| 情况 | 影响 |
+|---|---|
+| 文档一致 | 依据里写明「通过（N 个子命令均有记录）」 |
+| 有过期引用 / 未记录命令 | 等级降到 **yellow**（不是 red——文档问题不推翻证据），并在下一步点名要修哪条 |
+| 没查到（docs 目录不可读） | 进 `unknowns`，不当作通过 |
+
+子命令清单的**单一事实源**是 `src/subcommands.ts`：`cli` 判断参数、`docCheck` 校验文档、
+`docs/COMMANDS.md` 索引、测试——四处读同一份数组，加命令时不可能漏改。

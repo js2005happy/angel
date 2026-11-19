@@ -337,3 +337,36 @@ test("G5 单次运行结论也能守门（同源，不另写判断）", () => {
   const runRed = buildRunVerdict({ run_id: "r", status: "verify_failed", verify_result: { exit_code: 1 } });
   expect(guardExitCode(runRed.grade)).toBe(2);
 });
+
+// ---- 文档一致性并入配置级 verdict ----
+const DOCS_OK = { ok: true, findings: [], mentioned: ["verdict", "guard"] } as const;
+const DOCS_DRIFT = { ok: false, findings: [{ code: "stale-command", command: "ghost", doc: "a.md" }], mentioned: [] } as const;
+
+test("H1 文档一致 → 仍 green，且依据里写明通过", () => {
+  const v = buildVerdict({ redlines: redlines(), savings: savings(), recallAvailable: 1, docs: DOCS_OK as never });
+  expect(v.grade).toBe("green");
+  expect(v.reasons.some((r) => r.includes("文档一致性：通过"))).toBe(true);
+});
+
+test("H2 文档不一致 → 降 yellow（不是 red：文档问题不推翻证据）", () => {
+  const v = buildVerdict({ redlines: redlines(), savings: savings(), recallAvailable: 1, docs: DOCS_DRIFT as never });
+  expect(v.grade).toBe("yellow");
+  expect(v.nextSteps.some((s) => s.includes("ghost"))).toBe(true);
+  expect(v.headline).toContain("文档与代码不一致");
+});
+
+test("H3 没查文档 → 进 unknowns（不当作通过），但等级不受影响", () => {
+  const v = buildVerdict({ redlines: redlines(), savings: savings(), recallAvailable: 1 });
+  expect(v.grade).toBe("green");
+  expect(v.unknowns.some((u) => u.includes("文档一致性"))).toBe(true);
+});
+
+test("H4 红线 fail 时文档再齐也是 red（证据优先）", () => {
+  const v = buildVerdict({ redlines: redlines(1), savings: savings(), docs: DOCS_OK as never });
+  expect(v.grade).toBe("red");
+});
+
+test("H5 未记录命令 → 提示补文档而不是修引用", () => {
+  const v = buildVerdict({ redlines: redlines(), savings: savings(), docs: { ok: false, findings: [{ code: "undocumented-command", command: "recall", doc: "(none)" }], mentioned: [] } as never });
+  expect(v.nextSteps.some((s) => s.includes("补文档"))).toBe(true);
+});
