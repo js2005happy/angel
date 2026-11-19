@@ -41,6 +41,15 @@ model_switch: ["from", "to", "reason", "trigger", "kind", "status", "spent_usd"]
 // 缺口 3a：并行委派进证据链——成功/失败各几个、已计价花费合计（超时线程事后
 // 花的钱不进合计，见 docs/parallel-delegate.md）、并发上限。
 parallel_delegate: ["succeeded", "failed", "total_spent_usd", "max_concurrency"],
+// 缺口 3b：审阅队列进证据链——入队（哪项、什么来源、花了多少）、批复（哪项、
+// 批准还是拒绝、谁批的、花了多少）、验证（哪项、结论、方法）、应用（哪项、
+// 拷回了哪些文件，逗号分隔）。决定本身落盘在 ~/.nyra/review-queue.json，
+// 事件是审计副本；runId 对不上任何运行目录时改写 evidence/review/ 下的
+// 证据文件（见 recordReviewEvent），不静默丢审计。
+review_enqueued: ["item_id", "source", "spent_usd"],
+review_decision: ["item_id", "decision", "decided_by", "spent_usd"],
+review_verified: ["item_id", "status", "method"],
+review_applied: ["item_id", "files"],
 final: [],
 max_turns: [],
 error: ["error_type"],

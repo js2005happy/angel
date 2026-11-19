@@ -28,13 +28,13 @@ import { runHooks } from "./hooks.ts";
   // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
-import { resolveAuxRouting } from "./modelRouting.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome, MemoryDeleteError } from "./memory.ts";
 import { ConversationStore } from "./conversations.ts";
 import { trimOldToolResults, GATEWAY_COMPACT_THRESHOLD, DEFAULT_AUTO_COMPACT_THRESHOLD, validateAutoCompactThreshold } from "./compact.ts";
 import { loadSchedule, saveSchedule, schedulePath, listScheduleTasks, removeScheduleTask, runDueTasks, type ScheduleTask } from "./scheduler.ts";
+import { enqueueAutomationResults, listReviewItems, getReviewItem, decideReviewItem, applyReviewItem, verifyReviewItem, ReviewQueueError, REVIEW_ID_RE, type ReviewStatus } from "./reviewQueue.ts";
 import { appendInbox } from "./tasks.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
@@ -819,8 +819,6 @@ export class Gateway {
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
           home: this.home,
-          // 辅助模型路由（与 CLI 同口径）：压缩/子任务/工具续跑轮走便宜模型。
-          auxModels: (() => { const r = resolveAuxRouting(this.config, this.provider().model ?? null); return { compact: r.compact, delegate: r.delegate, tool: r.tool }; })(),
           // 单技能启停：网关起的 agent 与 CLI 同口径（config.skills.disabled）。
           skillsDisabled: (() => {
             const sk = (this.config as Record<string, unknown>).skills;
@@ -1042,7 +1040,7 @@ export class Gateway {
       let data;
       try { data = loadSchedule(schedulePath(this.home)); } catch { return; }
       try {
-        await runDueTasks(data, async (task) => {
+        const results = await runDueTasks(data, async (task) => {
           const agent = new Agent(this.primaryProvider(), {
             workdir: this.workdir, mode: this.mode, maxTurns: this.maxTurns ?? 20,
             sessionId: `schedule-${task.name}`, interactive: false, home: this.home,
@@ -1058,6 +1056,14 @@ export class Gateway {
           return out;
         });
         saveSchedule(data, schedulePath(this.home));
+        // 缺口 3b：跑成功的定时任务结果进审阅队列（Automations → review queue），
+        // 手机 PWA 的“审阅”标签页就是批复面；入队失败不破坏 tick（只记日志），
+        // 队列本身 fail-closed：不批就不放行。
+        try {
+          enqueueAutomationResults(this.home, results);
+        } catch (err) {
+          process.stderr.write(`审阅队列入队失败：${err instanceof Error ? err.message : String(err)}\n`);
+        }
       } catch (err) {
         process.stderr.write(`定时任务执行失败：${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -1350,6 +1356,36 @@ export class Gateway {
 
     if (method === "GET" && path === "/api/approvals") {
       this.sendJson(res, 200, { approvals: this.pendingApprovals() });
+      return;
+    }
+    // 缺口 3b：审阅队列（供手机 PWA 的“审阅”标签页消费）。fail-closed：队列只
+    // 展示与批复，批复本身不合并代码；合并是单独的 apply 动作（worktree 文件
+    // 拷回工作目录），且只接受 approved 的项。
+    if (method === "GET" && path === "/api/review") {
+      const status = query.get("status") as ReviewStatus | null;
+      if (status && !["pending", "approved", "rejected", "applied"].includes(status)) {
+        this.sendError(res, 400, "status 只允许 pending|approved|rejected|applied");
+        return;
+      }
+      try {
+        this.sendJson(res, 200, { items: listReviewItems(this.home, status ?? undefined) });
+      } catch (err) {
+        this.sendError(res, 500, err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+    const reviewGetMatch = /^\/api\/review\/([0-9a-f]{16})$/.exec(path);
+    if (method === "GET" && reviewGetMatch) {
+      try {
+        this.sendJson(res, 200, getReviewItem(this.home, reviewGetMatch[1]));
+      } catch (err) {
+        if (err instanceof ReviewQueueError && err.message.includes("不存在")) this.sendError(res, 404, err.message);
+        else this.sendError(res, 400, err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+    if (method === "GET" && path.startsWith("/api/review/")) {
+      this.sendError(res, 400, "审阅项 id 无效");
       return;
     }
     if (method === "GET" && (path === "/api/devices" || path === "/api/pair/status")) {
@@ -1680,6 +1716,36 @@ export class Gateway {
           if (!ok) { this.sendError(res, 404, "审批已失效"); return; }
           this.sendJson(res, 200, { ok: true });
         } catch (err) { this.sendError(res, 400, err instanceof Error ? err.message : String(err)); }
+        return;
+      }
+      // 缺口 3b：审阅队列批复/验证/应用。批复人记 token 持有人：本机 owner 或
+      // 已配对设备名；每一次批复都进证据链（decideReviewItem 内记
+      // review_decision 事件或 evidence/review/ 证据文件）。fail-closed：
+      // 非 pending 的项批复会回 400，状态原样不动。
+      const reviewActionMatch = /^\/api\/review\/([0-9a-f]{16})\/(decide|apply|verify)$/.exec(path);
+      if (reviewActionMatch) {
+        const [, reviewId, action] = reviewActionMatch;
+        const by = isOwner
+          ? "owner（本机）"
+          : `device:${String((who as Record<string, unknown>).name ?? (who as Record<string, unknown>).id ?? "unknown")}`;
+        try {
+          if (action === "decide") {
+            if (typeof body.approve !== "boolean") { this.sendError(res, 400, "decide 需要 approve（true/false）"); return; }
+            const { item } = decideReviewItem(this.home, reviewId, body.approve ? "approved" : "rejected", {
+              by, note: typeof body.note === "string" ? body.note : null,
+            });
+            this.sendJson(res, 200, { ok: true, item });
+          } else if (action === "apply") {
+            const { item, appliedFiles } = applyReviewItem(this.home, reviewId, { by });
+            this.sendJson(res, 200, { ok: true, item, applied_files: appliedFiles });
+          } else {
+            const { item } = verifyReviewItem(this.home, reviewId);
+            this.sendJson(res, 200, { ok: true, item });
+          }
+        } catch (err) {
+          if (err instanceof ReviewQueueError && err.message.includes("不存在")) this.sendError(res, 404, err.message);
+          else this.sendError(res, 400, err instanceof Error ? err.message : String(err));
+        }
         return;
       }
       this.sendError(res, 404, "未找到");

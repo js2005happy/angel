@@ -259,6 +259,7 @@ const I18N_JSON = JSON.stringify(mobileMessages()).replace(/</g, "\\u003c");
 const SVG = (body: string, cls = "i", vb = "0 0 24 24") => `<svg class="${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
 const IC = {
   threads: SVG('<path d="M8 0C9 5 11 7 16 8C11 9 9 11 8 16C7 11 5 9 0 8C5 7 7 5 8 0Z"/>', "i f", "-1 -1 18 18"),
+  review: SVG('<circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>'),
   automations: SVG('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
   skills: SVG('<path d="M8 .6l2.7 2.7L8 6 5.3 3.3z M3.3 5.3 6 8 3.3 10.7.6 8z M12.7 5.3 15.4 8l-2.7 2.7L10 8z M8 10l2.7 2.7L8 15.4l-2.7-2.7z"/>', "i f", "-1 -1 18 18"),
   settings: SVG('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
@@ -270,7 +271,7 @@ const IC = {
   up: SVG('<path d="M12 19V5"/><path d="M6 11l6-6 6 6"/>'),
   mark: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C9 5 11 7 16 8C11 9 9 11 8 16C7 11 5 9 0 8C5 7 7 5 8 0Z"/></svg>',
 };
-const NAV = (["threads", "automations", "skills", "settings"] as const)
+const NAV = (["threads", "review", "automations", "skills", "settings"] as const)
   .map((k) => `<button data-tab="${k}"><i>${IC[k]}</i><span data-i="m.tab.${k}"></span></button>`).join("");
 
 export const MOBILE_V2_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -313,6 +314,10 @@ export const MOBILE_V2_HTML = `<!doctype html><html lang="en"><head><meta charse
 <div class="composer"><p id="chat-status" class="cstatus"></p><div class="pill"><textarea id="input" rows="1" data-ip="m.followUp"></textarea><button id="send-btn" class="go" data-ia="m.send">${IC.up}</button></div></div>
 <div id="dim" class="dim hidden"></div>
 <div id="sheet" class="sheet hidden" role="dialog" aria-modal="true"></div>
+</section>
+<section id="review-view" class="view tabview hidden">
+<div class="lt"><h1 data-i="m.tab.review"></h1></div>
+<div id="reviews"></div>
 </section>
 <section id="automations-view" class="view tabview hidden">
 <div class="lt"><h1 data-i="m.tab.automations"></h1><button id="auto-add" class="ib" data-ia="m.auto.addHint">${IC.plus}</button></div>

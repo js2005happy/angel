@@ -78,6 +78,10 @@ maxConcurrency: number;
 timeoutMs: number;
 /** 并发上限被硬顶夹住时为 true（调用方给了 >5）。 */
 maxConcurrencyClamped: boolean;
+/** 3b：已进审阅队列的项 id（只在调用方 opt-in 入队时有内容，否则为空）。 */
+reviewEnqueued: string[];
+/** 3b：opt-in 入队失败时的原因；未要求入队或入队成功时为 null。 */
+reviewEnqueueError: string | null;
 }
 
 export interface ParallelDelegateOptions {
@@ -253,6 +257,8 @@ totalDurationMs: Date.now() - startedAt,
 maxConcurrency,
 timeoutMs,
 maxConcurrencyClamped,
+reviewEnqueued: [],
+reviewEnqueueError: null,
 };
 }
 
@@ -340,5 +346,11 @@ lines.push(
 }
 }
 lines.push("验证结论：本批不做自动验证（见各线程证据的 verification 字段），需 3b 的 review queue 验收后再合并。");
+if (result.reviewEnqueued?.length) {
+lines.push(`已进审阅队列 ${result.reviewEnqueued.length} 项（nyra review list 查看）：${result.reviewEnqueued.join("、")}`);
+}
+if (result.reviewEnqueueError) {
+lines.push(`入队失败（结果本身不受影响）：${result.reviewEnqueueError}`);
+}
 return lines.join("\n\n");
 }
