@@ -162,10 +162,9 @@ export function resolveSandboxBackend(
   if (process.platform === "linux" && bwrapAvailable) {
     return { backend: "bwrap", requested, mode, level: "bwrap", allowNet, bwrapAvailable };
   }
-  // P0-6：macOS 上 auto 优先用 Seatbelt（系统自带，不需要额外安装）。
-  if (process.platform === "darwin" && seatbeltAvailable()) {
-    return { backend: "seatbelt", requested, mode, level: "seatbelt", allowNet, bwrapAvailable, seatbeltAvailable: true };
-  }
+  // 注意：auto **不**自动选 Seatbelt。SBPL 不是 Apple 的稳定 API，且避免在没有 mac
+  // 实测的情况下悄悄改变既有行为（auto 无 bwrap → 工具级 是已有契约）。
+  // 需要 macOS OS 级沙箱请显式 --sandbox seatbelt。
   return { backend: "local", requested, mode, level: "tool-level", allowNet, bwrapAvailable };
 }
 

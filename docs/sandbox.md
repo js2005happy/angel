@@ -163,7 +163,7 @@ Linux 用 bwrap，macOS 用系统自带的 `sandbox-exec`（SBPL profile）。�
 
 ```bash
 nyra --sandbox seatbelt "<task>"     # 显式要求（非 macOS 会报错，不静默降级）
-nyra --sandbox auto "<task>"         # macOS 上自动选 Seatbelt（系统自带，无需安装）
+nyra --sandbox auto "<task>"         # 注意：auto 不会自动选 Seatbelt（见下）
 ```
 
 ### profile 的形状
