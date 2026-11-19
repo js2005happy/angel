@@ -64,7 +64,7 @@
 | 钩子 `updatedInput` | Codex | ✅ #36 | — |
 | 记忆系统开关与检索参数 | Alma | 部分（memory） | 观察 |
 | MCP 服务器配置 + 预设 | 三家 | ✅ | — |
-| MCP 工具延迟加载 | Codex `tool_search` | ⬜ | 做（省常驻 token） |
+| MCP 工具延迟加载 | Codex `tool_search` | ✅ 自动开启（MCP > 8；显式开 `tool_search` 时阈值降到 `top_k`，`NYRA_LAZY_TOOLS=0` 一票否决） | — |
 
 ### 界面 / 运维
 
@@ -100,7 +100,7 @@
 
 ## 工具延迟加载：什么时候该开（判断标准）
 
-MCP 工具超过 8 个时**自动开启**（只发最相关的前 8 个，其余靠 `search_tools` 拉回；`NYRA_LAZY_TOOLS=0` 可关掉切回全量发送）。`features.tool_search` / `config.tool_search.enabled` 目前**不控制**延迟加载（已知遗留：开关接线另批再做），不要拿它判断延迟加载开没开。
+MCP 工具超过 8 个时**自动开启**（只发最相关的前 8 个，其余靠 `search_tools` 拉回）。显式开启（`config.tool_search.enabled: true` 或 `features.tool_search: true`）时阈值降到 `top_k`（默认 8），即使 MCP 工具不多也会进入延迟加载；`NYRA_LAZY_TOOLS=0` 仍一票否决、切回全量发送。
 
 **工具集臃肿的信号**（任一命中就该注意）：
 
