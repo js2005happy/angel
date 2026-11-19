@@ -62,8 +62,13 @@ export class WindowsSandboxUnavailableError extends Error {
 export function findPowerShell(pathEnv?: string, platform: string = process.platform): string | null {
   if (platform !== "win32") return null;
   const pathValue = pathEnv ?? process.env.PATH ?? "";
+  // 分隔符必须按 platform 选，不能用 `/[;:]/`——Windows 路径 `C:\...` 里的 `:` 是盘符，
+  // 按 `:` 切会把 `C:\Users\...\Temp\nyra-ps-xxx` 截成 `C` 和 `\Users\...\Temp\nyra-ps-xxx`，
+  // 后者是无盘符的根相对路径，解析到当前驱动器（CI 里是 D:）上就永远找不到文件
+  // （CI #88 的失败根因；也不能用本机 path.delimiter，platform 可能是模拟的 win32）。
+  const delimiter = platform === "win32" ? ";" : ":";
   for (const name of ["pwsh.exe", "powershell.exe"]) {
-    for (const dir of pathValue.split(/[;:]/)) {
+    for (const dir of pathValue.split(delimiter)) {
       if (!dir) continue;
       const candidate = join(dir, name);
       try {
