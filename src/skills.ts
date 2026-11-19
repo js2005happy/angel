@@ -145,7 +145,13 @@ export function canonicalSkillOrder(skills: Skill[]): Skill[] {
   return out;
 }
 
-export function loadSkills(dirs: string[]): Skill[] {
+/**
+ * config.skills.disabled：按名字关掉某些 skill（对齐 Codex 的 `[[skills.config]] enabled=false`）。
+ * 名字大小写不敏感；被关掉的 skill 仍会被解析（文件坏了照样报错），只是不进结果集——
+ * 「关掉」不等于「假装文件不存在」，否则配置写错了永远不会被发现。
+ */
+export function loadSkills(dirs: string[], opts: { disabled?: readonly string[] } = {}): Skill[] {
+  const disabled = new Set((opts.disabled ?? []).map((n) => n.trim().toLowerCase()).filter(Boolean));
   const skills: Skill[] = [];
   const seen = new Set<string>();
   for (const directory of dirs) {
@@ -164,6 +170,7 @@ export function loadSkills(dirs: string[]): Skill[] {
         console.error(`跳过无效 skill 文件 ${path}: ${err instanceof Error ? err.message : String(err)}`);
         continue;
       }
+      if (disabled.has(skill.name.toLowerCase())) continue;
       if (!seen.has(skill.name)) {
         seen.add(skill.name);
         skills.push(skill);
