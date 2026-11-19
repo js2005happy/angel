@@ -3,11 +3,11 @@
 // cli.ts 接线由总协调做）。
 // 全部用临时目录做账本：不碰真实 ~/.nyra、不调真实 eigenflux 二进制、不联网。
 import { test, expect, afterEach } from "bun:test";
-import { expectPerms } from "./fsPerms.ts";
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";

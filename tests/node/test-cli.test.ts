@@ -2,6 +2,7 @@
 // 外加 vault 子命令、信任、自定义命令与 --json/--plan 冒烟。
 import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -10,7 +11,6 @@ import {
   parseCompactCommand, formatContextUsage, contextSuggestion,
 } from "../../src/cli.ts";
 import { VERSION } from "../../src/config.ts";
-import { expectPerms } from "./fsPerms.ts";
 
 test("CliTest.test_version_string", () => {
   expect(VERSION).toBe("0.5.1");

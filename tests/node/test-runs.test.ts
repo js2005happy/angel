@@ -1,8 +1,8 @@
 // tests/node/test-runs.test.ts — 对应 tests/test_runs.py（7 个唯一测试）+ test_resume_run.py（12）。
 // 运行记录：state.json 原子写 0600、事件只记小型字段、验证命令冻结。
 import { test, expect } from "bun:test";
-import { expectPerms } from "./fsPerms.ts";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RunStore, RunRecorder, prepareResume, RunNotResumable, formatRunReport, redact } from "../../src/runs.ts";

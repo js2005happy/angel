@@ -10,11 +10,11 @@ import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-import { expectPerms } from "./fsPerms.ts";
   acquirePolicyLock, doctor, doctorExitCode, EigenFluxError, findEigenfluxCli,
   homeForAgent, minimalEnvironment, onboardingSteps, parseEigenfluxVersion,
   policyLockPath, readPolicyLockHolder, releasePolicyLock, defaultRunProbe,

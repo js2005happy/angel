@@ -1,7 +1,7 @@
 // tests/node/test-migration.test.ts — spec 07 行为项（方案第 5 节）在 Node 版一次做完。
 import { test, expect } from "bun:test";
-import { expectPerms } from "./fsPerms.ts";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {

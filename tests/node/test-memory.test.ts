@@ -1,10 +1,10 @@
 // tests/node/test-memory.test.ts — 对应 tests/test_session_atomic.py（4 唯一）+ 记忆/会话行为。
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-import { expectPerms } from "./fsPerms.ts";
   resolveNyraHome, loadMemorySummary, appendMemory, loadAgentsMd,
   newSessionId, sessionPath, saveSession, loadSession, listSessions,
 } from "../../src/memory.ts";

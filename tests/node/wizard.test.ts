@@ -1,6 +1,7 @@
 // tests/node/wizard.test.ts — 向导的提问队列（管道输入不丢行）与 Key 绝不落盘。
 import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,7 +9,6 @@ import { createInterface } from "node:readline";
 import { createAsker, runWizard, detectShellRc, maskKey, findRcKey, removeRcKey, readSecret } from "../../src/wizard.ts";
 import { loadConfig, resolveProvider } from "../../src/config.ts";
 import { Vault, getCredential } from "../../src/vault.ts";
-import { expectPerms } from "./fsPerms.ts";
 
 test("createAsker：管道式一次性到齐的行不丢，按序回答", async () => {
   const input = new PassThrough();

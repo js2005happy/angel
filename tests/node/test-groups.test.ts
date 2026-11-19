@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -27,7 +28,6 @@ import {
   type ProviderLike,
 } from "../../src/providers.ts";
 import { Vault } from "../../src/vault.ts";
-import { expectPerms } from "./fsPerms.ts";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "nyra-groups-"));

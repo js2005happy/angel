@@ -2,6 +2,7 @@
 // 密码箱字节级兼容已在验收里双向验证（见 docs/node-migration-phase2.md）。
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +20,6 @@ import {
   VAULT_VERSION,
 } from "../../src/vault.ts";
 import { handleVault } from "../../src/cli.ts";
-import { expectPerms } from "./fsPerms.ts";
 
 function tmpHome(): string {
   return mkdtempSync(join(tmpdir(), "nyra-vault-test-"));
