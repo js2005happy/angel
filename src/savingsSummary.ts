@@ -180,7 +180,7 @@ export function summarizeSavings(input: SavingsInput): SavingsSummary {
     ? `每轮可确定省下 ${tokensPerTurnTotal} token${turns ? `，${turns} 轮共 ${tokensPerTurnTotal * turns}` : ""}；另有 ${unknownCount} 项无法静态量化`
     : enabledCount === 0
       ? "所有省钱机制都没开：按默认方式运行"
-      : `已开 ${enabledCount} 项机制，但没有可静态相加的 token 数字（${unknownCount} 项需运行时才知道）`;
+      : `已开 ${enabledCount} 项机制，但没有可静态相加的 token 数字（其中 ${unknownCount} 项无法静态量化，需运行时才知道）`;
 
   return { lines, tokensPerTurnTotal, unknownCount, verdict };
 }
