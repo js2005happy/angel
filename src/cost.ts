@@ -216,3 +216,76 @@ export function estimateRunCost(input: EstimateRunInput): RunCostEstimate {
     ],
   };
 }
+
+// ---- 回忆感知的成本估算（让"省了多少"变成数字）----
+// 前面的省钱手段都有实测数字，只有跨会话回忆没有。这里给一个**保守且明说假设**的投影：
+// 有可复用历史时，探索轮次会减少——但减少多少取决于历史有多贴合，无法精确预测。
+//
+// 假设（写死在下面，也写进 note）：
+//   - 每条可复用历史平均省 2 轮探索
+//   - 但最多只省总轮次的 40%（避免"有 10 条历史就说几乎不用跑"这种不实宣传）
+export const TURNS_SAVED_PER_RECALL = 2;
+export const MAX_RECALL_TURN_SAVING_RATIO = 0.4;
+
+export interface RecallAdjustedEstimate {
+  /** 预计省下的轮次。 */
+  savedTurns: number;
+  /** 调整后的三档（金额）。 */
+  optimisticUsd: number;
+  typicalUsd: number;
+  pessimisticUsd: number;
+  /** 省下的比例（相对原悲观档）。 */
+  savingRatio: number;
+  /** 明说假设的一句话。 */
+  note: string;
+}
+
+/**
+ * 把「有 N 条历史可复用」折算进成本估算。
+ * 没有历史时原样返回（savedTurns = 0，note 说明没有可复用的历史）。
+ */
+export function adjustEstimateForRecall(
+  base: RunCostEstimate,
+  recalledCount: number,
+  opts: { turns: number; pricing: Pricing },
+): RecallAdjustedEstimate {
+  const turns = Math.max(1, Math.floor(opts.turns));
+  const perTurn = (n: number) => {
+    // 复用 estimateRunCost 同一套口径：按调整后的轮次重算
+    return estimateRunCost({
+      taskChars: 0,
+      systemChars: 0,
+      turns: n,
+      pricing: opts.pricing,
+    });
+  };
+  // NaN / Infinity / 负数 都按"没有历史"处理——否则 Math.min 会传播 NaN，
+  // 算出 savedTurns = NaN、金额 = NaN，比不估算更糟。
+  const count = Number.isFinite(recalledCount) ? Math.max(0, Math.floor(recalledCount)) : 0;
+  if (count <= 0) {
+    return {
+      savedTurns: 0,
+      optimisticUsd: base.optimisticUsd,
+      typicalUsd: base.typicalUsd,
+      pessimisticUsd: base.pessimisticUsd,
+      savingRatio: 0,
+      note: "没有可复用的历史：估算按从零探索计算",
+    };
+  }
+  const rawSaving = count * TURNS_SAVED_PER_RECALL;
+  const cap = Math.floor(turns * MAX_RECALL_TURN_SAVING_RATIO);
+  const savedTurns = Math.max(0, Math.min(rawSaving, cap, turns - 1));
+  const adjustedTurns = Math.max(1, turns - savedTurns);
+  const adj = perTurn(adjustedTurns);
+  const savingRatio = base.pessimisticUsd > 0
+    ? Math.max(0, (base.pessimisticUsd - adj.pessimisticUsd) / base.pessimisticUsd)
+    : 0;
+  return {
+    savedTurns,
+    optimisticUsd: adj.optimisticUsd,
+    typicalUsd: adj.typicalUsd,
+    pessimisticUsd: adj.pessimisticUsd,
+    savingRatio,
+    note: `有 ${count} 条历史可复用：按每条省 ${TURNS_SAVED_PER_RECALL} 轮、最多省 ${(MAX_RECALL_TURN_SAVING_RATIO * 100).toFixed(0)}% 轮次估算，预计省 ${savedTurns} 轮（${(savingRatio * 100).toFixed(1)}%）`,
+  };
+}

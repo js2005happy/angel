@@ -4,7 +4,7 @@
 //   nyra cost --show                    当前定价配置
 //
 // 输出原则：给区间 + 明写假设。不打印"精确预估"这种骗人的数字。
-import { estimateRunCost, resolvePricing, formatCost, estimateCost, type Pricing } from "./cost.ts";
+import { estimateRunCost, resolvePricing, formatCost, estimateCost, adjustEstimateForRecall, type Pricing } from "./cost.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { t } from "./i18n.ts";
 
@@ -44,7 +44,7 @@ function printPricingTable(config: Record<string, unknown>): void {
   process.stdout.write(t("cost.limitLine", { limit: limit === null ? t("cost.limitUnset") : "$" + limit.toFixed(2) }) + "\n");
 }
 
-export function handleCost(argv: string[], config: Record<string, unknown>, model: string | null): number {
+export function handleCost(argv: string[], config: Record<string, unknown>, model: string | null, opts?: { recalledCount?: number }): number {
   const flags = parseFlags(argv);
   if (flags.show || (!flags.estimate && !flags.show)) {
     printPricingTable(config);
@@ -81,6 +81,17 @@ export function handleCost(argv: string[], config: Record<string, unknown>, mode
   process.stdout.write(t("cost.tokens", { prompt: est.tokens.prompt.toLocaleString(), completion: est.tokens.completion.toLocaleString() }) + "\n");
   process.stdout.write("\n" + t("cost.assumptions") + "\n");
   for (const a of est.assumptions) process.stdout.write(`  - ${a}\n`);
+  // 回忆感知：有历史可复用时给出下调后的投影（假设写死在 adjustEstimateForRecall 里）
+  if (typeof opts?.recalledCount === "number") {
+    const adj = adjustEstimateForRecall(est, opts.recalledCount, { turns: flags.turns, pricing });
+    process.stdout.write("\n" + adj.note + "\n");
+    if (adj.savedTurns > 0) {
+      process.stdout.write(t("cost.recallAdjusted", {
+        before: est.pessimisticUsd.toFixed(4),
+        after: adj.pessimisticUsd.toFixed(4),
+      }) + "\n");
+    }
+  }
   process.stdout.write("\n" + t("cost.suggest", { usd: est.pessimisticUsd.toFixed(2) }) + "\n");
   return 0;
 }
