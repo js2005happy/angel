@@ -2079,7 +2079,23 @@ export async function main(argv: string[]): Promise<number> {
   const home = resolveHome();
 
   // 子命令优先。
-  if (args.subcommand === "cost") { const cfgCost = loadConfig(home); return handleCost(args.subArgs ?? [], cfgCost, (cfgCost.model as string) ?? null); }
+  if (args.subcommand === "cost") {
+    const cfgCost = loadConfig(home);
+    // 回忆感知：估算前先看有没有可复用的历史（与运行时的注入同源）
+    let recalledCount: number | undefined;
+    const sub = args.subArgs ?? [];
+    const taskIdx = sub.findIndex((a) => a === "--estimate" || !a.startsWith("-"));
+    const taskText = taskIdx >= 0 ? (sub[taskIdx] === "--estimate" ? sub[taskIdx + 1] ?? "" : sub[taskIdx]) : "";
+    if (taskText) {
+      try {
+        const store = new RunStore(join(home, "runs"));
+        recalledCount = selectRecalledRuns(store.list(), taskText, { workdir: resolve(args.workdir), limit: 3 }).length;
+      } catch {
+        recalledCount = undefined;
+      }
+    }
+    return handleCost(sub, cfgCost, (cfgCost.model as string) ?? null, { recalledCount });
+  }
   if (args.subcommand === "models") return handleModels(args.subArgs ?? [], home);
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
