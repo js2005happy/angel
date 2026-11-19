@@ -2169,6 +2169,19 @@ export async function main(argv: string[]): Promise<number> {
       sandbox: { level: sandboxStatus.level, backend: String(sandboxStatus.backend) },
       permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
       hasCostLimit: typeof cfgRed.max_cost_usd === "number",
+      // 阈值与忽略项：config.redlines（不同项目合理值不同）
+      thresholds: (() => {
+        const rl = cfgRed.redlines;
+        if (!rl || typeof rl !== "object") return null;
+        const t = (rl as Record<string, unknown>).thresholds;
+        return t && typeof t === "object" ? (t as Record<string, number>) : null;
+      })(),
+      ignore: (() => {
+        const rl = cfgRed.redlines;
+        if (!rl || typeof rl !== "object") return null;
+        const ig = (rl as Record<string, unknown>).ignore;
+        return Array.isArray(ig) ? ig.filter((x): x is string => typeof x === "string") : null;
+      })(),
       // 跨会话回忆：开着但没有新鲜历史 = 看起来在省，其实一点没省。
       recall: (() => {
         const feats2 = resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures });
