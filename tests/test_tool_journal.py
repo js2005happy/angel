@@ -271,6 +271,19 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "元数据不安全"):
                     journal.begin("shell")
 
+    def test_opened_windows_event_handle_reparse_is_rejected(self):
+        # Simulate a Windows handle whose fstat reports a reparse point,
+        # even when path-based checks appeared ordinary before open.
+        from angel import tool_journal as module
+        from types import SimpleNamespace
+        opened = SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o600, st_size=10, st_nlink=1,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+        with mock.patch.object(module.os, "name", "nt"):
+            with self.assertRaisesRegex(JournalError, "重解析点"):
+                module._reject_windows_event_reparse(opened)
+
     def test_windows_event_reparse_point_rejected(self):
         # A reparse point can appear to be a regular file; reject its
         # Windows attribute independently of the POSIX mode bits.
