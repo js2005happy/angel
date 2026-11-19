@@ -755,3 +755,32 @@ return [nextState, repaired, count];
 }
 
 export { checkApproval};
+
+// ---- P1-1：完成即自证 ----
+// 模型的自述不可信：没通过验证命令的运行，无论模型怎么说，输出里都不能出现
+// "已完成"这种断言。这里做的是"降级"而不是删除——保留模型原文，但在最前面加一条
+// 显式的未验证声明，让任何读输出的人（人、CI、下游 agent）第一眼看到的是状态。
+export const COMPLETION_CLAIM_RE =
+  /(已完成|已经完成|完成了|搞定了|做好了|全部通过|已修复|已解决|\bdone\b|\bcompleted\b|\bfinished\b|\ball tests pass(ed)?\b)/i;
+
+export interface DowngradeResult {
+  text: string;
+  downgraded: boolean;
+  /** 触发降级的原始声明片段，便于测试与审计。 */
+  claim?: string;
+}
+
+/**
+ * 未验证通过的运行，如果回复里出现"完成"类断言，就在最前面插入未验证声明。
+ * status 为 verified 时原样返回（不自作主张改动已验证的输出）。
+ */
+export function downgradeCompletionClaim(text: string, status: string, verifyNote: string): DowngradeResult {
+  if (status === "verified") return { text, downgraded: false };
+  const body = text ?? "";
+  const m = COMPLETION_CLAIM_RE.exec(body);
+  if (!m) return { text: body, downgraded: false };
+  const banner =
+    `【未验证】这条回复声称"${m[0]}"，但${verifyNote}。\n` +
+    `以下内容按「未验证」对待，不要当作已完成；补验证：nyra --verify "<命令>" "<同一任务>"。\n\n`;
+  return { text: banner + body, downgraded: true, claim: m[0] };
+}
