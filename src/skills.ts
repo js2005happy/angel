@@ -17,7 +17,9 @@ export function parseSkillFile(path: string): Skill {
 
 /** 从文本解析技能（与 parseSkillFile 同格式；创造模式的内置技能由此加载）。 */
 export function parseSkillText(text: string, path: string): Skill {
-  const lines = text.split("\n");
+  // 先归一化换行：Windows 用户用记事本等工具写的技能文件常是 CRLF，
+  // 不归一化时首行会变成 "---\r"，frontmatter 判定直接抛错。
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   const formatError = `Skill 文件格式错误（缺少 frontmatter）: ${path}`;
   if (!lines.length || lines[0] !== "---") throw new Error(formatError);
   const closingIndex = lines.indexOf("---", 1);
