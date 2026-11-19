@@ -304,3 +304,122 @@ export function buildRunVerdict(input: RunVerdictInput): Verdict {
 
   return { grade, headline, reasons, blockers, nextSteps: nextSteps.slice(0, 3), unknowns };
 }
+
+// ---- 批量趋势（nyra verdict --recent N）----
+// 单次结论回答"这一次"，趋势回答"该修什么"。规则：
+//   - 通过率 ≥ 70% → green；>0 但 <70% → yellow；一次都没通过 → red
+//   - 失败集中度：某一类**严格过半**才点名（50/50 平分时点名是误导）
+//   - 单位成本：每个通过运行平均花多少（衡量"值不值"最直白的数）
+
+export interface TrendVerdictInput {
+  runs: readonly RunVerdictInput[];
+  /** 失败分类计数（CLI 侧用 classifyFailure 算好后传入）。 */
+  failureCounts?: Record<string, number> | null;
+}
+
+export interface TrendSummary {
+  total: number;
+  verified: number;
+  verifiedRate: number;
+  failed: number;
+  unverified: number;
+  other: number;
+  /** 平均每个**通过**运行的花费；没有通过运行或花费全未知时为 null。 */
+  costPerVerifiedUsd: number | null;
+  /** 失败最多的类（**严格过半**才给出；两类各占一半时不给，避免误导）。 */
+  dominantFailure: { cls: string; count: number; share: number } | null;
+}
+
+/** 只做统计，不给结论（便于单测与复用）。 */
+export function summarizeTrend(input: TrendVerdictInput): TrendSummary {
+  const runs = input.runs ?? [];
+  let verified = 0, failed = 0, unverified = 0, other = 0;
+  let spendAll = 0;
+  let spendKnown = false;
+  for (const r of runs) {
+    const st = String(r.status ?? "");
+    if (st === "verified") verified += 1;
+    else if (st === "failed" || st === "verify_failed") failed += 1;
+    else if (st === "completed_unverified") unverified += 1;
+    else other += 1;
+    const total = runTotal(r);
+    if (total !== null) { spendAll += total; spendKnown = true; }
+  }
+  const total = runs.length;
+  const counts = input.failureCounts ?? {};
+  let dominant: TrendSummary["dominantFailure"] = null;
+  const failedCount = Object.values(counts).reduce((a, b) => a + b, 0);
+  if (failedCount > 0) {
+    for (const [cls, n] of Object.entries(counts)) {
+      const share = n / failedCount;
+      // 严格过半才点名：两类各占一半时说"集中在某一类"是误导。
+      if (share > 0.5 && (!dominant || n > dominant.count)) dominant = { cls, count: n, share };
+    }
+  }
+  return {
+    total,
+    verified,
+    verifiedRate: total ? verified / total : 0,
+    failed,
+    unverified,
+    other,
+    costPerVerifiedUsd: spendKnown && verified > 0 ? spendAll / verified : null,
+    dominantFailure: dominant,
+  };
+}
+
+/** 批量趋势结论。 */
+export function buildTrendVerdict(input: TrendVerdictInput): Verdict {
+  const s = summarizeTrend(input);
+  const reasons: string[] = [];
+  const blockers: string[] = [];
+  const nextSteps: string[] = [];
+
+  if (!s.total) {
+    return {
+      grade: "yellow",
+      headline: "没有运行记录：无从判断趋势",
+      reasons: [],
+      blockers: [],
+      nextSteps: ["先跑一次任务，积累记录后 `nyra verdict --recent 10` 才有意义"],
+      unknowns: ["没有任何运行记录"],
+    };
+  }
+
+  reasons.push(`最近 ${s.total} 次：验证通过 ${s.verified}、失败 ${s.failed}、未验证 ${s.unverified}${s.other ? `、其它 ${s.other}` : ""}`);
+  reasons.push(`通过率 ${(s.verifiedRate * 100).toFixed(0)}%`);
+
+  if (s.costPerVerifiedUsd !== null) {
+    reasons.push(`每个通过运行平均花 $${s.costPerVerifiedUsd.toFixed(4)}`);
+  } else if (s.verified === 0) {
+    // 没有通过运行时不谈单位成本——分母是 0，谈它没意义
+  } else {
+    reasons.push("单位成本未知（花费记录不全）");
+  }
+
+  if (s.dominantFailure) {
+    const pct = (s.dominantFailure.share * 100).toFixed(0);
+    reasons.push(`失败集中在 ${s.dominantFailure.cls}（${s.dominantFailure.count} 次，占 ${pct}%）`);
+    nextSteps.push(`先修 ${s.dominantFailure.cls}：它占失败的 ${pct}%，修掉这一类收益最大`);
+  }
+
+  let grade: VerdictGrade;
+  if (s.verified === 0) {
+    grade = "red";
+    blockers.push(`${s.total} 次运行没有一次通过验证：当前做法拿不到可用结果`);
+    nextSteps.push("看失败分类后改策略，别继续用同一种方式重跑");
+  } else if (s.verifiedRate >= 0.7) {
+    grade = "green";
+  } else {
+    grade = "yellow";
+    nextSteps.push("通过率不到 70%：优先处理失败那几次的共性原因");
+  }
+
+  const headline = grade === "green"
+    ? `值：最近 ${s.total} 次里 ${s.verified} 次通过（${(s.verifiedRate * 100).toFixed(0)}%）`
+    : grade === "red"
+      ? `不值：最近 ${s.total} 次全都失败`
+      : `勉强：最近 ${s.total} 次里只通过 ${s.verified} 次`;
+
+  return { grade, headline, reasons, blockers, nextSteps: nextSteps.slice(0, 3), unknowns: [] };
+}

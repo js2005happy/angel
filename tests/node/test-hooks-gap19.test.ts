@@ -96,7 +96,10 @@ test("Gap19.test_spawn_failure_blocks_fail_closed", async () => {
   writeConfig({ hooks: { PreToolUse: [join(workdir, "missing.sh")] } });
   const result = await runHooks("PreToolUse", { tool: "shell", args: { command: "echo hi" }, home, workdir });
   expect(result.blocked).toBe(true);
-  expect(result.reason).toContain("无法启动");
+    // 失败路径有两条，取决于平台与 shell：
+    //   spawn 直接失败 → 「无法启动」；能起 shell 但脚本不存在 → 退出码 127 →「钩子自身出错」
+    // 断言真正的不变量（blocked），再接受这两条已知文案之一，而不是锁死某一种。
+    expect(String(result.reason)).toMatch(/无法启动|钩子自身出错/);
 });
 
 test("Gap19.test_existing_script_exit_127_keeps_exit_code_reason", async () => {
