@@ -28,6 +28,7 @@ import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
+import { resolveExtraDirs } from "./extraDirs.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
@@ -194,6 +195,8 @@ export interface CliArgs {
   /** 功能开关的 CLI 覆盖（--enable-feature / --disable-feature，可重复）。 */
   enableFeatures: string[];
   disableFeatures: string[];
+  /** --add-dir：额外可写根（可重复）。 */
+  addDirs: string[];
   trustAgentsVerify: boolean;
   jsonMode: boolean; autoCompact: boolean; autoCompactThreshold: number | null;
   poppy: boolean; fallback: boolean; noFallback: boolean;
@@ -216,7 +219,7 @@ export function parseArgs(argv: string[]): CliArgs {
     listSkills: false, listSessions: false, listMcp: false,
     compact: null, resume: null, resumeRun: null,
     planMode: false, executePlan: false, approvePlan: null,
-    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [],
+    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [], addDirs: [],
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
@@ -285,6 +288,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--max-cost": args.maxCost = parseFloat(value); break;
         case "--disable-tool": args.disableTools.push(value); break;
         case "--enable-feature": args.enableFeatures.push(value); break;
+        case "--add-dir": args.addDirs.push(value); break;
         case "--disable-feature": args.disableFeatures.push(value); break;
         case "--verify-timeout": args.verifyTimeout = parseInt(value, 10); break;
         case "--verify-retries": args.verifyRetries = parseInt(value, 10); break;
@@ -484,6 +488,15 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
     disabledTools: [...(Array.isArray(config.disabled_tools) ? config.disabled_tools.filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
     // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
+    // --add-dir / config.extra_writable_dirs：显式放开工作目录之外的可写根。
+    extraDirs: (() => {
+      const cfgDirs = Array.isArray(config.extra_writable_dirs)
+        ? config.extra_writable_dirs.filter((x): x is string => typeof x === "string")
+        : [];
+      const { ok, rejected } = resolveExtraDirs([...cfgDirs, ...args.addDirs], { workdir: resolve(args.workdir) });
+      for (const r of rejected) process.stderr.write(`忽略 --add-dir ${r.input}：${r.reason}\n`);
+      return ok;
+    })(),
     toolSearch: (() => {
       const ts = config.tool_search;
       if (!ts || typeof ts !== "object") return { enabled: false };

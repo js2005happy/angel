@@ -122,6 +122,8 @@ export interface ToolContext {
   searchableTools?: (() => { type?: string; function?: { name?: string; description?: string; parameters?: unknown } }[]) | null;
   /** 工具检索：把命中的工具加入"下一轮要发送"的集合。 */
   revealTools?: ((names: string[]) => void) | null;
+  /** 额外可写根（--add-dir / config.extra_writable_dirs）：这些目录下的写入同样放行。 */
+  extraWriteDirs?: string[] | null;
   /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
   home?: string;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
@@ -356,7 +358,14 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
   const root = resolve(ctx.workdir);
   const target = resolve(join(root, path));
   if (target === root || !(target === root || target.startsWith(root + sep))) {
-    throw new ToolError("禁止写入工作目录之外的路径");
+    // --add-dir：显式加进来的额外可写根同样允许；其余工作目录外的路径一律拒绝。
+    const extra = ctx.extraWriteDirs ?? [];
+    const under = extra.find((dir) => {
+      const r = resolve(dir);
+      return target === r || target.startsWith(r + sep);
+    });
+    if (!under) throw new ToolError("禁止写入工作目录之外的路径（如需写入其他目录，用 --add-dir 显式放开）");
+    return target;
   }
   assertWritableProtected(relative(root, target));
   return target;
