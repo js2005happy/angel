@@ -16,58 +16,34 @@
     <p class="muted en">Starting Nyra on this computer…</p>
   </section>
 
-  <section data-state="no-python" hidden>
-    <h1>需要 Python 3.10 或更高版本</h1>
-    <p>Nyra 桌面端使用本机的 Python 运行 Nyra，但没有找到 Python 3.10+。</p>
-    <p class="muted en">Nyra needs Python 3.10+ on this computer.</p>
-    <div class="os mac">
-      <h2>macOS</h2>
-      <p>系统自带的 python3 是 3.9，版本不够。任选一种：</p>
-      <ul>
-        <li>从 <a href="https://www.python.org/downloads/macos/">python.org</a> 下载安装包；</li>
-        <li>或用 Homebrew：<code>brew install python</code></li>
-      </ul>
-    </div>
-    <div class="os win">
-      <h2>Windows</h2>
-      <ul>
-        <li>从 <a href="https://www.python.org/downloads/windows/">python.org</a> 下载安装，安装时勾选 “Add python.exe to PATH”；</li>
-        <li>或在终端运行：<code>winget install Python.Python.3.12</code></li>
-      </ul>
-    </div>
-    <pre class="detail" hidden></pre>
-    <p>装好后再安装 Nyra（见下一步），然后点 “重新检测”。</p>
-  </section>
-
   <section data-state="no-nyra" hidden>
     <h1>还没有安装 Nyra</h1>
-    <p>找到了 Python：<code class="python"></code>，但它还不能运行 Nyra。</p>
-    <p class="muted en">Python was found, but Nyra is not installed for it.</p>
+    <p>没有找到 Nyra 单文件二进制（Node 运行时）。</p>
+    <p class="muted en">No Nyra binary was found on this computer.</p>
     <div class="os mac">
       <h2>macOS</h2>
-      <pre>git clone https://github.com/js2005happy/nyra.git
-cd nyra
-bash scripts/install-macos.sh --source .</pre>
+      <p>到 <a href="https://github.com/js2005happy/nyra/releases">GitHub Releases</a> 下最新版，按架构拿一个文件（Apple Silicon：nyra-macos-arm64，Intel：nyra-macos-x64），放到 <code>~/.local/bin/nyra</code>；或用安装脚本：</p>
+      <pre>bash scripts/install-node-macos.sh</pre>
     </div>
     <div class="os win">
       <h2>Windows（PowerShell）</h2>
-      <pre>irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install.ps1 | iex</pre>
-      <p class="muted">单文件 nyra.exe（Node 运行时）暂不支持桌面端，仍需上面装好的 Python 版 Nyra。</p>
+      <pre>irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 | iex</pre>
     </div>
-    <p class="muted">已经 clone 在别处？设置环境变量 <code>NYRA_SOURCE</code> 指向仓库目录；或用 <code>NYRA_PYTHON</code> 指定 Python。</p>
+    <p class="muted">已经下载在别处？设置环境变量 <code>NYRA_BIN</code> 指向二进制的完整路径，然后点 “重新检测”。</p>
+    <pre class="detail" hidden></pre>
   </section>
 
   <section data-state="nyra-too-old" hidden>
     <h1>Nyra 版本太旧</h1>
-    <p>找到的 Nyra（<code class="python"></code>）不支持桌面端需要的启动方式，请更新：</p>
-    <pre>cd nyra &amp;&amp; git pull</pre>
+    <p>找到的 Nyra（<code class="binary"></code>）不支持桌面端需要的启动方式，请更新：</p>
+    <pre>重新运行一次安装脚本即可升级（或到 GitHub Releases 下最新版）。</pre>
     <p class="muted">用安装脚本装的，重新运行一次安装脚本即可升级。</p>
     <pre class="detail" hidden></pre>
   </section>
 
   <section data-state="failed" hidden>
     <h1>Nyra 没能启动</h1>
-    <p>使用：<code class="python"></code></p>
+    <p>使用：<code class="binary"></code></p>
     <pre class="detail" hidden></pre>
   </section>
 

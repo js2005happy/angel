@@ -1,6 +1,6 @@
 (function () {
   window.addEventListener("hashchange", function () { location.reload(); });
-  var info = { state: "starting", detail: "", python: "" };
+  var info = { state: "starting", detail: "", binary: "" };
   try {
     var raw = decodeURIComponent((location.hash || "").slice(1).replace(/\+/g, " "));
     if (raw) info = Object.assign(info, JSON.parse(raw));
@@ -18,7 +18,7 @@
     shown = document.querySelector('section[data-state="failed"]');
     shown.hidden = false;
   }
-  shown.querySelectorAll(".python").forEach(function (c) { c.textContent = info.python || "—"; });
+  shown.querySelectorAll(".binary").forEach(function (c) { c.textContent = info.binary || "—"; });
   var d = shown.querySelector(".detail");
   if (d && info.detail) { d.textContent = info.detail; d.hidden = false; }
 
