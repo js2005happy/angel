@@ -505,6 +505,13 @@ class ToolJournal:
         after = self.inspect()
         if after["journal_ambiguous"] or after["unknown_outcomes"] != 1:
             raise JournalError("写入意图后发现并发或歧义日志；禁止执行工具")
+        # A global count of one is insufficient: another process could have
+        # finished this intent and left a different intent pending. Never
+        # return a dispatchable ID unless *our* intent remains unresolved.
+        own = [r for r in self._records() if r["call_id"] == call_id]
+        if (len(own) != 1 or own[0]["event"] != "intent"
+                or own[0]["tool"] != tool):
+            raise JournalError("本次调用意图已变化；禁止执行工具")
         return call_id
 
     def finish(self, call_id: str, tool: str, *, success: bool) -> None:
