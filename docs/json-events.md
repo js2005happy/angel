@@ -11,6 +11,7 @@
 | `tool_call` / `tool_result` | 每次工具调用 | `name`, `args` / `result` |
 | `usage` | 每次收到 provider 用量 | `prompt_tokens`, `completion_tokens`, … |
 | `cost` | 成本可计算时（P2-2） | `spent_usd`, `limit_usd`, `remaining_usd` |
+| `cost_update` | 每轮一次（P2-3） | `turn`, `max_turns`, `status`, `spent_usd`, `remaining_usd`, `limit_usd`, `prompt_tokens`, `completion_tokens`, `calls`, `missing_calls`, `reason` |
 | `verify_started` / `verify_result` | 验证命令执行 | `command` / `exit_code`, `passed`, `attempt` |
 | `run_completed` | 运行结束 | `run_id`, `status` |
 | `completion_downgraded` | 未验证却宣称完成（P1-1） | `status`, `claim` |
@@ -88,3 +89,5 @@ esac
 1. **失败必有 `class`**：`run_failed.error.class` 一定在四分类里。
 2. **`verified` 才有资格说"已验证"**：未验证运行若模型宣称完成，会先发 `completion_downgraded`，`final.content` 里带 `【未验证】` 横幅。
 3. **金额算不出就写不出数**：`cost` 事件只在 `priced` 状态发；`unpriced`/`missing` 不发假数字。
+   `cost_update` 例外：它每轮都发，算不出金额时 `status` 为 `unpriced`/`missing`、
+   金额字段为 `null` 并带 `reason`——消费者据此显示"未知"，而不是收不到事件就当成 0 花费。

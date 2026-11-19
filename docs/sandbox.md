@@ -30,16 +30,18 @@
 > 包括删除、格式化、联网外发等。只在你完全信任当前任务、且已看过命令原文时
 > 才用，用完立即改回。Nyra 不会替你悄悄开这个模式。
 
-## 后端：auto / local / bwrap / e2b
+## 后端：auto / local / bwrap / seatbelt / jobobject / e2b
 
 `config.json` 的 `sandbox`（或 `NYRA_SANDBOX` 环境变量，或 `--sandbox`），
 默认 `auto`。优先级：CLI flag > 环境变量 > `config.json`。
 
 | 后端 | 行为 | 怎么选 |
 |---|---|---|
-| `auto`（默认） | Linux 且本机装了 bwrap → 用 bwrap（OS 沙箱）；否则回落到工具级隔离（现有工作区 containment + shell 黑名单），并在 doctor 与首次 shell 执行时给一次提示，说明这是工具级隔离、不是 OS 沙箱。 | 默认就用它。对普通用户无感。 |
+| `auto`（默认） | Linux 且本机装了 bwrap → 用 bwrap（OS 沙箱）；否则回落到工具级隔离（现有工作区 containment + shell 黑名单），并在 doctor 与首次 shell 执行时给一次提示，说明这是工具级隔离、不是 OS 沙箱。**auto 不会自动选 Seatbelt 或 Job Object**（见下）。 | 默认就用它。对普通用户无感。 |
 | `local` | 显式只要工具级，即使用户机器上有 bwrap 也不用。 | 想退出 OS 沙箱的开关（例如 bwrap 与某个工具不兼容时）。 |
 | `bwrap` | 强制要求 bwrap：找不到 bwrap、或非 Linux 平台、或启动失败 → 直接报错退出（fail-closed），绝不静默降级裸奔。 | 想确保“没有 OS 沙箱就宁可不跑”时用。 |
+| `seatbelt` | macOS `sandbox-exec`（SBPL profile）：强制要求 macOS 与 sandbox-exec，缺失即 fail-closed。 | macOS 上想用 OS 级沙箱时用（见“macOS：Seatbelt 后端”一节）。 |
+| `jobobject` | Windows Job Object（PowerShell + kernel32）：强制要求 Windows 与 PowerShell，缺失即 fail-closed。进程级沙箱：随作业死、进程数上限；**不管文件与网络**（见“Windows：Job Object 后端”一节）。 | Windows 上想用进程级沙箱时用。 |
 | `e2b` | 0.5.1 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植），会直接报错。 | 现在别用。 |
 
 默认行为对普通用户无感：工作目录内读写、跑命令都不受影响。
@@ -63,8 +65,8 @@ bwrap 沙箱默认断网（`--unshare-net`）：沙箱内的命令连不上外�
 |---|---|
 | Linux + 已装 bwrap | OS 级沙箱：bubblewrap（`--bind` 工作目录可写，`/usr`、`/lib`、`/lib64`、`/bin`、`/etc` 只读挂载，`--proc`、`/dev`、默认断网、`--die-with-parent`）。 |
 | Linux，未装 bwrap | 工具级隔离：工作区 containment + shell 黑名单 + 审批。不是 OS 沙箱，命令在宿主机上跑。 |
-| Windows | 无 bwrap：受限执行 + 工具级限制（工作区 containment + shell 黑名单 + 审批）。不是 OS 沙箱。 |
-| macOS | 无 bwrap：同 Windows，工具级限制。OS 级 Seatbelt 后端后续再接，目前没有，不要当成已有。 |
+| Windows | auto 下仍是工具级隔离（不是 OS 沙箱）。显式 `--sandbox jobobject` 可用进程级沙箱（Job Object，见下节）。 |
+| macOS | auto 下仍是工具级隔离（不是 OS 沙箱）。显式 `--sandbox seatbelt` 可用 OS 级沙箱（见下节）。 |
 
 用 `nyra doctor` 看当前生效的隔离级别（“隔离级别”一项恒为通过，
 bwrap 缺失是预期内的降级，不算故障）。
@@ -189,3 +191,59 @@ nyra --sandbox auto "<task>"         # 注意：auto 不会自动选 Seatbelt（
 
 - profile 生成是纯函数，在任何平台都能单测（`tests/node/test-seatbelt.test.ts`）
 - **真机执行尚未在 macOS 上跑过**——CI 只有 ubuntu / windows / macos-latest 三档，mac 档会走 Seatbelt 分支，但本机（Windows）无法本地复现；首次 mac 运行时请重点看 `docs/sandbox.md` 这节
+
+## Windows：Job Object 后端（P0-6）
+
+Linux 用 bwrap，macOS 用 Seatbelt，Windows 用系统自带的 **Job Object**
+（kernel32 API，通过 PowerShell + Add-Type P/Invoke 调用，不依赖原生模块）。
+
+```bash
+nyra --sandbox jobobject "<task>"   # 显式要求（非 Windows 会报错，不静默降级）
+nyra --sandbox auto "<task>"         # 注意：auto 不会自动选 Job Object（见下）
+```
+
+### 为什么是 Job Object，不是 AppContainer
+
+| 方案 | 能不能落地 | 结论 |
+|---|---|---|
+| Job Object | 能：纯 PowerShell 就能建作业、设限制、把子进程接进去 | ✅ 选它 |
+| AppContainer | 难：要建容器档案、配 capability SID、走 STARTUPINFOEX；且默认拿不到用户文件（agent 要读写工作区），不适合做默认后端 | ❌ 不做 |
+
+### 它到底管什么（不夸大）
+
+Job Object 只管**进程生命周期与资源**，不管文件与网络：
+
+| 限制 | 怎么做 | 默认值 |
+|---|---|---|
+| 随作业死 | `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`（0x2000）：作业句柄一关，作业内全部进程一起死，孤儿进程不留 | 恒开 |
+| 进程数上限 | `JOB_OBJECT_LIMIT_ACTIVE_PROCESS`（0x8）+ `ActiveProcessLimit`：同时存活进程数 | 64 |
+| 作业总内存上限 | `JOB_OBJECT_LIMIT_JOB_MEMORY`（0x200）+ `JobMemoryLimit` | 默认不设（只在需要时配） |
+
+文件写与联网仍由工具级规则兜底（工作区 containment + shell 黑名单 + 审批），
+和 auto 回落到工具级时同一套。**不要把 Job Object 当成 bwrap/Seatbelt 那样的
+内核级文件网络拦截**——它不是。
+
+### 实现形状
+
+- 脚本生成是纯函数（`src/windowsSandbox.ts` 的 `buildJobObjectScript`），任何平台可单测。
+- 子进程是 `cmd.exe /c (<命令>)`，与非沙箱的 Windows 路径同一台 shell（`ComSpec`，
+  默认 `cmd.exe`）。
+- 命令与工作目录走 Base64 进脚本：任意引号、`$`、反引号都不会破坏脚本结构；
+  CreateProcess 命令行约 32KB 上限，超长命令会启动失败并报错。
+- 输出不是流式：子进程输出先落临时文件（防管道死锁），命令结束时一次性返回；
+  `onStream` 不适用，`tools.ts` 的 jobobject 分支不传它。
+- 子进程先启动、再接进作业，中间有毫秒级窗口：启动瞬间 fork 出的子进程理论上
+  可能逃出作业；作业关柄时只杀作业内的进程。
+
+### 三个边界（别高估它）
+
+1. **拦不住文件与网络**：工作目录外的写与联网靠工具级规则拦，不靠 Job Object。
+2. PowerShell 启动失败、建作业失败、接不进作业时一律 fail-closed：报错说
+   "命令未执行"并**不会退化成裸奔**；要裸奔必须显式 `--sandbox local`。
+3. `danger-full-access` 与 Job Object 互斥（与 bwrap/Seatbelt 同款规则）。
+
+### 验证状态
+
+- 脚本生成与探测是纯函数，在任何平台都能单测（`tests/node/test-windows-sandbox.test.ts`）
+- **真机执行尚未在 Windows 上跑过**——本机是 Linux，靠 CI 的 Windows 任务验证
+  （`run echo` 与 `exit 3` 两例只在 win32 上跑）；首次 Windows 运行时请重点看这节
