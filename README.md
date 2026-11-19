@@ -287,3 +287,7 @@ bun test tests/node                    # Node 测试（全部 mock，无需 Key�
 ## 致谢与许可
 
 代码全部原创，借鉴了 Codex、OpenCode、Goose、OpenHands 等开源 agent 的设计思想（来源见 [DESIGN.md](DESIGN.md)），没有复制源码。以 [MIT](LICENSE) 许可发布。
+
+## 命令索引
+
+全部子命令见 [docs/COMMANDS.md](./docs/COMMANDS.md)（由测试机械校验与代码一致）。
