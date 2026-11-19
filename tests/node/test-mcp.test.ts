@@ -262,10 +262,13 @@ test("McpSandbox.test_find_on_path", () => {
 test("McpSandbox.test_manager_start_all_refuses_unavailable_backend", async () => {
   await withCleanSandboxEnv(async () => {
     const server = fakeServerPath();
+    // 后端用 e2b：它在所有平台上都解析失败（0.5.1 暂不支持），是唯一全平台
+    // 都不可用的后端。不能用 seatbelt 充当“不可用后端”——macOS 上 sandbox-exec
+    // 真实存在，解析会成功，startAll 就不会拒绝（Node CI #119 macOS 失败根因）。
     const manager = new MCPToolManager(
       { fake: new MCPServerConfig("fake", "node", [server]) },
       10,
-      { sandbox: { backend: "seatbelt", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
+      { sandbox: { backend: "e2b", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
     );
     let caught: unknown = null;
     try { await manager.startAll(); } catch (e) { caught = e; }
