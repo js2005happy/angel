@@ -63,6 +63,8 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   verbosity: null,
   // 工具集裁剪：每轮少发 schema 就等于每轮省钱；支持前缀通配（如 "comp*"）。
   disabled_tools: [],
+  // 工具检索（延迟加载）：默认关；开启后只发核心工具 + search_tools 命中的。
+  tool_search: { enabled: false, top_k: 12 },
   pricing: {},
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},

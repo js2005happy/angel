@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { ProviderError, type ProviderLike } from "./providers.ts";
 import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
-  TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
+  TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA, SEARCH_TOOLS_SCHEMA,
   newToolContext, executeTool, executeToolIdempotent, resumeWriteAlreadyDone, ToolError, checkApproval,
   type ToolContext, type DelegateOptions, type ApproveResult,
 } from "./tools.ts";
@@ -34,6 +34,7 @@ import { UsageTracker } from "./usage.ts";
 import type { WindowSource } from "./modelCatalog.ts";
 import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
 import type { AuxTask } from "./modelRouting.ts";
+import { selectTools } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { randomBytes } from "node:crypto";
@@ -131,6 +132,8 @@ export interface AgentOptions {
   maxCostUsd?: number | null;
   /** P2-2：该模型的单价；null = 未配置，金额未知（不编造）。 */
   pricing?: Pricing | null;
+  /** 工具检索（延迟加载）：只发核心工具 + 命中工具，其余靠 search_tools 拉回。 */
+  toolSearch?: { enabled?: boolean; topK?: number; always?: string[] } | null;
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
   auxModels?: { compact?: string; delegate?: string };
   /** 父级禁用的工具名；委派时子级工具集 = 父级减禁用。 */
@@ -180,6 +183,9 @@ export class Agent {
   private pricing: Pricing | null;
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
+  private toolSearchCfg: { enabled: boolean; topK: number; always: string[] };
+  /** 模型通过 search_tools 拉回来的工具；这些工具在后续轮次必须继续发送。 */
+  private revealedTools = new Set<string>();
   /** 最近一次成本估算；超支时由 checkCost 抛错前写入，供 CLI 汇报。 */
   lastCost: CostEstimate | null = null;
   onEvent: AgentEventHandler | null;
@@ -217,6 +223,11 @@ export class Agent {
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
     this.pricing = opts.pricing ?? null;
     this.auxModels = opts.auxModels ?? {};
+    this.toolSearchCfg = {
+      enabled: opts.toolSearch?.enabled === true,
+      topK: typeof opts.toolSearch?.topK === "number" ? opts.toolSearch.topK : 12,
+      always: Array.isArray(opts.toolSearch?.always) ? opts.toolSearch.always : ["read_file", "write_file", "edit_file", "shell", "list_dir", "search_tools"],
+    };
     this.onEvent = opts.onEvent ?? null;
     this.workdir = opts.workdir ?? ".";
     this.mode = opts.mode ?? "auto";
@@ -312,17 +323,43 @@ export class Agent {
     try { this.onEvent(kind, data); } catch { /* 观察器故障绝不破坏主循环 */ }
   }
 
-  /** 内置工具（减去禁用）+ Poppy + 已启动的 MCP 服务器工具。 */
-  toolSchemas(): Record<string, unknown>[] {
+  /** 全部可用工具（减去禁用），不做检索筛选——search_tools 要在这份全集里查。 */
+  allToolSchemas(): Record<string, unknown>[] {
     const schemas = TOOL_SCHEMAS.filter((s) => {
       const name = (s.function as Record<string, unknown>).name as string;
       if (this.disabledTools.has(name)) return false;
       if (this.backend !== null && name === "apply_patch") return false;
       return true;
     });
+    // search_tools 只在延迟加载开启时注册：不改变默认工具契约，也不白占 schema 体积。
+    if (this.toolSearchCfg.enabled) schemas.push(SEARCH_TOOLS_SCHEMA);
     if (this.poppyEnabled) schemas.push(POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA);
     if (this.mcpManager?.hasTools()) schemas.push(...this.mcpManager.toolSchemas);
     return schemas;
+  }
+
+  /** 最近一条用户消息，用作工具检索的 query（没有就用空串 → 全量回退）。 */
+  private lastUserText(): string {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i] as Record<string, unknown>;
+      if (m?.role === "user" && typeof m.content === "string") return m.content;
+    }
+    return "";
+  }
+
+  /** 发给 provider 的工具集：默认全量；开了 tool_search 就只发核心 + 已揭示的。 */
+  toolSchemas(): Record<string, unknown>[] {
+    const all = this.allToolSchemas();
+    if (!this.toolSearchCfg.enabled) return all;
+
+    const selection = selectTools(all as never, this.lastUserText(), {
+      topK: this.toolSearchCfg.topK,
+      always: this.toolSearchCfg.always,
+    });
+    const keep = new Set<string>([...selection.kept, ...this.revealedTools, ...this.toolSearchCfg.always]);
+    const filtered = all.filter((s) => keep.has((s.function as Record<string, unknown>).name as string));
+    // 兜底：筛选后一个工具都不剩就全量（绝不让模型手里没有工具）
+    return filtered.length ? filtered : all;
   }
 
   // 调研报告第 3 项：上下文补齐（学 Claude Code）——压缩后重读的备注正文：

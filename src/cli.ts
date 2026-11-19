@@ -477,6 +477,17 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
     // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
     disabledTools: [...(Array.isArray(config.disabled_tools) ? config.disabled_tools.filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
+    // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
+    toolSearch: (() => {
+      const ts = config.tool_search;
+      if (!ts || typeof ts !== "object") return { enabled: false };
+      const o = ts as Record<string, unknown>;
+      return {
+        enabled: o.enabled === true,
+        topK: typeof o.top_k === "number" ? o.top_k : undefined,
+        always: Array.isArray(o.always) ? o.always.filter((x): x is string => typeof x === "string") : undefined,
+      };
+    })(),
     sandbox: {
       backend: sandboxSettings.backend,
       mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",
