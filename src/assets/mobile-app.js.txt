@@ -1,0 +1,601 @@
+'use strict';
+// 手机 PWA（/m）前端：按设计稿的四个标签（对话 / 自动化 / 技能 / 设置）+ 对话页 + 审批底部弹层。
+// 页面不含任何秘密：设备 token 只在 localStorage，每次 API 调用带 X-Nyra-Token 头。
+// 文案来自 src/i18n.ts 的 m.* 键（中英），语言跟随 navigator.language，认不出回落 en。
+const $ = (id) => document.getElementById(id);
+const LANG = (() => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return l.startsWith('zh') ? 'zh' : 'en'; })();
+const MSG = (window.NYRA_I18N && (window.NYRA_I18N[LANG] || window.NYRA_I18N.en)) || {};
+function t(key, vars){ let s = MSG[key] != null ? MSG[key] : key; if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)); return s; }
+const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+document.documentElement.classList.add(IS_IOS ? 'ios' : 'android');
+document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+const EDIT_TOOLS = ['write_file', 'edit_file', 'apply_patch'];
+let currentSession = null, currentTab = 'threads', poll = null, lastFeedKey = '', sheetKey = '', cardState = {};
+let pendingText = '', lastInfo = null, fullStep = 0, lastApprovals = [], lastSessions = null, searchQ = '';
+
+function token(){
+  const q = new URLSearchParams(location.search).get('token');
+  if (q) { try { localStorage.setItem('nyra-token', q); } catch(e){} return q; }
+  try { return localStorage.getItem('nyra-device-token') || localStorage.getItem('nyra-token') || ''; } catch(e){ return ''; }
+}
+async function api(path, opts){
+  opts = opts || {};
+  const res = await fetch(path, { ...opts, headers: { 'X-Nyra-Token': token(), 'Content-Type': 'application/json' } });
+  let data = null; try { data = await res.json(); } catch(e){}
+  if (res.status === 403) { lostDevice(); throw new Error((data && data.error) || t('m.unauthorized')); }
+  if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
+  return data;
+}
+function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+function icon(name){ const tpl = $('ic-' + name); return tpl ? tpl.content.firstElementChild.cloneNode(true) : el('span'); }
+function toast(text){ const x = el('div', 'toast', text); document.body.appendChild(x); setTimeout(() => x.remove(), 2200); }
+function applyI18n(root){
+  (root || document).querySelectorAll('[data-i]').forEach(n => { n.textContent = t(n.dataset.i); });
+  (root || document).querySelectorAll('[data-ip]').forEach(n => { n.placeholder = t(n.dataset.ip); });
+  (root || document).querySelectorAll('[data-ia]').forEach(n => { n.setAttribute('aria-label', t(n.dataset.ia)); });
+}
+const VIEWS = ['pair-view', 'threads-view', 'chat-view', 'automations-view', 'skills-view', 'settings-view'];
+function show(view){
+  VIEWS.forEach(v => $(v).classList.toggle('hidden', v !== view));
+  const tabbed = view !== 'pair-view' && view !== 'chat-view';
+  $('nav').classList.toggle('hidden', !tabbed);
+  $('fab').classList.toggle('hidden', view !== 'threads-view');
+  if (view !== 'chat-view') { closeSheet(); $('menu').classList.add('hidden'); }
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.tab + '-view' === view));
+  window.scrollTo(0, 0);
+}
+function lostDevice(){
+  try { localStorage.removeItem('nyra-device-token'); } catch(e){}
+  clearInterval(poll); poll = null;
+  $('pair-error').textContent = t('m.pair.lost');
+  show('pair-view');
+}
+function deviceName(){
+  const ua = navigator.userAgent || '';
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua)) return 'iPad';
+  const m = /Android[^;]*;\s*([^;)]+?)(?:\sBuild|\))/.exec(ua);
+  if (m) return m[1].trim().slice(0, 40);
+  if (/Android/.test(ua)) return 'Android';
+  return 'Phone';
+}
+async function pair(){
+  const code = $('pair-code').value.replace(/\D/g, '');
+  $('pair-error').textContent = '';
+  if (code.length !== 6) { $('pair-error').textContent = t('m.pair.need6'); return; }
+  $('pair-btn').disabled = true;
+  try {
+    const res = await fetch('/api/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, name: deviceName() }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.token) { $('pair-error').textContent = data.error || t('m.pair.failed'); return; }
+    try { localStorage.setItem('nyra-device-token', data.token); } catch(e){}
+    history.replaceState(null, '', '/m');
+    $('pair-code').value = '';
+    toast(t('m.pair.connected'));
+    await boot();
+  } catch (e) { $('pair-error').textContent = t('m.pair.cantReach', { msg: e.message }); }
+  finally { $('pair-btn').disabled = false; }
+}
+async function loadInfo(){ lastInfo = await api('/api/info'); return lastInfo; }
+
+// ---------------------------------------------------------------- 对话列表 ---
+function seenMap(){ try { return JSON.parse(localStorage.getItem('nyra-seen') || '{}') || {}; } catch(e){ return {}; } }
+function markSeen(id, count){ const m = seenMap(); m[id] = count; try { localStorage.setItem('nyra-seen', JSON.stringify(m)); } catch(e){} }
+function relTime(iso){
+  if (!iso) return '';
+  const d = new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z');
+  const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  if (!isFinite(s) || s < 60) return t('m.time.now');
+  if (s < 3600) return t('m.time.m', { n: Math.floor(s / 60) });
+  if (s < 86400) return t('m.time.h', { n: Math.floor(s / 3600) });
+  return t('m.time.d', { n: Math.floor(s / 86400) });
+}
+function threadState(s){
+  if (lastApprovals.some(a => a.session === s.id)) return ['wait', t('m.st.approval')];
+  if (s.status === 'running') return ['run', t('m.st.running')];
+  if (s.status === 'error') return ['err', t('m.st.error')];
+  const seen = seenMap()[s.id];
+  if (seen !== undefined && (s.count || 0) > seen) return ['review', t('m.st.review')];
+  return ['', t('m.st.idle', { n: s.count || 0 })];
+}
+function titleOf(s){ return (s && (s.title || s.preview)) || t('m.untitled'); }
+async function loadSessions(){ lastSessions = await api('/api/sessions'); renderThreads(); }
+function renderThreads(){
+  const box = $('threads'); box.innerHTML = '';
+  if (!lastSessions) return;
+  let list = lastSessions.sessions || [];
+  if (searchQ) { const q = searchQ.toLowerCase(); list = list.filter(s => (titleOf(s) + ' ' + (s.project || '')).toLowerCase().includes(q)); }
+  if (!list.length) { const e = el('div', 'empty'); e.appendChild(el('span', '', searchQ ? t('m.noMatch') : t('m.noThreads'))); box.appendChild(e); return; }
+  // 按项目分组（设计稿：app / nyra），组的顺序按组内最新一条。
+  const groups = new Map();
+  list.forEach(s => { const g = s.project || ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); });
+  groups.forEach((items, g) => {
+    box.appendChild(el('div', 'lh', g || '—'));
+    items.forEach(s => {
+      const [cls, sub] = threadState(s);
+      const row = el('button', 'it thread'); row.dataset.id = s.id;
+      const sd = el('span', 'sd'); sd.appendChild(el('i', cls)); row.appendChild(sd);
+      const tx = el('div', 'tx'); tx.appendChild(el('b', '', titleOf(s))); tx.appendChild(el('small', '', sub)); row.appendChild(tx);
+      row.appendChild(el('span', 't', relTime(s.mtime)));
+      row.onclick = () => openSession(s.id);
+      box.appendChild(row);
+    });
+  });
+}
+function toggleSearch(){
+  const r = $('search-row'); r.classList.toggle('hidden');
+  if (!r.classList.contains('hidden')) $('search').focus(); else { searchQ = ''; $('search').value = ''; renderThreads(); }
+}
+async function newSession(){
+  const data = await api('/api/sessions', { method: 'POST', body: '{}' });
+  await openSession(data.id, true);
+}
+
+// ---------------------------------------------------------------- 对话页 ---
+async function openSession(id, fresh){
+  currentSession = id; lastFeedKey = ''; sheetKey = '';
+  const s = lastSessions && (lastSessions.sessions || []).find(x => x.id === id);
+  $('chat-title').textContent = fresh ? t('m.untitled') : titleOf(s);
+  const project = (s && s.project) || (lastSessions && lastSessions.project && lastSessions.project.name) || '';
+  $('chat-sub').textContent = t('m.onPc', { project });
+  $('feed').innerHTML = '';
+  show('chat-view');
+  await tick();
+}
+function goHome(){ currentSession = null; sheetKey = ''; setTab('threads'); }
+function textOf(m){
+  if (typeof m.content === 'string') return m.content;
+  if (Array.isArray(m.content)) return m.content.map(p => (p && p.text) || '').join('');
+  return m.content == null ? '' : JSON.stringify(m.content);
+}
+function stepOf(c){
+  const name = (c.function && c.function.name) || '?';
+  let args = {}; try { args = JSON.parse((c.function && c.function.arguments) || '{}'); } catch(e){}
+  const line = el('span');
+  const put = (verb, code) => { line.appendChild(document.createTextNode(t(verb) + ' ')); line.appendChild(el('code', '', code)); };
+  if (name === 'shell' && args.command) put('m.step.ran', String(args.command));
+  else if (name === 'read_file' && args.path) put('m.step.read', String(args.path));
+  else if (EDIT_TOOLS.includes(name) && args.path) put('m.step.edited', String(args.path));
+  else put('m.step.called', name + (args.path ? ' ' + args.path : ''));
+  return line;
+}
+function stepsBlock(steps, open){
+  const lg = el('div', 'lg steps' + (open ? ' open' : ''));
+  const h = el('button'); const car = el('span', 'car', '▸'); h.appendChild(car); h.appendChild(document.createTextNode(t('m.worked', { n: steps.length })));
+  h.onclick = () => lg.classList.toggle('open');
+  lg.appendChild(h);
+  const st = el('div', 'st'); steps.forEach(s => st.appendChild(s)); lg.appendChild(st);
+  return lg;
+}
+// 运行中的这一轮还没写进会话（网关只给出本轮之前的消息）：从事件流补上本轮的用户消息、工具步骤和中间回复。
+function liveTurn(v){
+  const out = [];
+  if (v.status !== 'running' || !Array.isArray(v.events)) return out;
+  let last = -1; v.events.forEach((e, i) => { if (e.type === 'user') last = i; });
+  if (last < 0) return out;
+  v.events.slice(last).forEach(e => {
+    const d = e.data || {};
+    if (e.type === 'user') out.push({ role: 'user', content: String(d.content || '') });
+    else if (e.type === 'tool_start') out.push({ role: 'assistant', content: '', tool_calls: [{ function: { name: String(d.name || '?'), arguments: typeof d.arguments === 'string' ? d.arguments : JSON.stringify(d.arguments || {}) } }] });
+    else if (e.type === 'assistant') out.push({ role: 'assistant', content: String(d.content || '') });
+  });
+  return out;
+}
+function renderFeed(v){
+  const all = v.messages || [];
+  const msgs = all.filter(m => m.role !== 'system').concat(liveTurn(v));
+  const key = msgs.length + ':' + (msgs.length ? textOf(msgs[msgs.length - 1]).length : 0) + ':' + v.status + ':' + (v.next || 0);
+  $('chat-status').textContent = v.status === 'running' ? t('m.working') : (v.status === 'error' ? t('m.errorPrefix', { msg: v.error || '' }) : '');
+  const firstUser = msgs.find(m => m.role === 'user');
+  if (firstUser) $('chat-title').textContent = textOf(firstUser).slice(0, 60) || t('m.untitled');
+  if (v.status !== 'running') markSeen(currentSession, all.length);
+  if (key === lastFeedKey) return;
+  lastFeedKey = key;
+  const feed = $('feed'); feed.innerHTML = '';
+  let steps = [];
+  const flush = (open) => { if (steps.length) { feed.appendChild(stepsBlock(steps, open)); steps = []; } };
+  msgs.forEach(m => {
+    if (m.role === 'tool') return;
+    const txt = textOf(m);
+    if (m.role === 'assistant' && m.tool_calls && m.tool_calls.length) {
+      if (txt) { flush(false); feed.appendChild(bubble(m, all, txt)); }
+      m.tool_calls.forEach(c => steps.push(stepOf(c)));
+      return;
+    }
+    if (!txt) return;
+    flush(false);
+    feed.appendChild(bubble(m, all, txt));
+  });
+  flush(false);
+  // 运行中的这一轮还没写进会话：先把刚发出的消息显示出来。
+  if (pendingText && v.status === 'running' && !msgs.some(m => m.role === 'user' && textOf(m) === pendingText)) feed.appendChild(el('div', 'u', pendingText));
+  if (v.status !== 'running') pendingText = '';
+  window.scrollTo(0, document.body.scrollHeight);
+}
+function bubble(m, all, txt){
+  const b = el('div', m.role === 'user' ? 'u' : 'p', txt);
+  // 点一下消息展开回退操作（与桌面页一致：回退到此 / 编辑重发 / Fork 新会话）。
+  const index = all.indexOf(m);
+  if (index >= 0) b.onclick = () => toggleRewind(b, index, txt);
+  return b;
+}
+function toggleRewind(b, index, text){
+  const next = b.nextSibling;
+  if (next && next.classList && next.classList.contains('rw')) { next.remove(); return; }
+  const row = el('div', 'rw');
+  if (b.classList.contains('u')) row.style.justifyContent = 'flex-end';
+  [['m.rewind.truncate', 'truncate'], ['m.rewind.edit', 'edit'], ['m.rewind.fork', 'fork']].forEach(([label, action]) => {
+    const x = el('button', '', t(label)); x.onclick = () => doRewind(index, action, text); row.appendChild(x);
+  });
+  b.after(row);
+}
+async function doRewind(index, action, text){
+  if (!currentSession) return;
+  const rows = await api('/api/sessions/' + encodeURIComponent(currentSession) + '/history').catch(() => null);
+  const messageId = rows && rows.messages && rows.messages[index] ? rows.messages[index].id : null;
+  if (messageId === null) { toast(t('m.rewind.notYet')); return; }
+  let edited = null;
+  if (action === 'edit') { edited = prompt(t('m.rewind.editPrompt'), text || ''); if (edited === null) return; }
+  try {
+    const res = await api('/api/sessions/' + encodeURIComponent(currentSession) + '/rewind', { method: 'POST', body: JSON.stringify({ message_id: messageId, action, text: edited }) });
+    if (res && res.new_session_id) { await openSession(res.new_session_id); return; }
+    lastFeedKey = ''; await tick();
+  } catch (e) { toast(t('m.rewind.failed', { msg: e.message })); }
+}
+async function sendMsg(){
+  const input = $('input'); const text = input.value.trim();
+  if (!text || !currentSession) return;
+  input.value = ''; autoGrow(); pendingText = text; lastFeedKey = '';
+  try { await api('/api/sessions/' + encodeURIComponent(currentSession) + '/messages', { method: 'POST', body: JSON.stringify({ text }) }); }
+  catch (e) { toast(e.message); input.value = text; }
+  await tick();
+}
+function autoGrow(){ const i = $('input'); i.style.height = 'auto'; i.style.height = Math.min(i.scrollHeight, window.innerHeight * 0.3) + 'px'; }
+function toggleMenu(){ $('menu').classList.toggle('hidden'); }
+
+// ---------------------------------------------------------------- 审批弹层 ---
+function ruleLabel(sg){
+  if (!sg) return '';
+  if (sg.kind === 'prefix' && Array.isArray(sg.prefix)) return t('m.rule.prefix', { prefix: sg.prefix.join(' ') });
+  if (sg.kind === 'edits') return t('m.rule.edits');
+  return sg.label || '';
+}
+function parseDiff(summary){
+  const lines = String(summary || '').split('\n');
+  let path = '', add = 0, del = 0; const body = [];
+  lines.slice(1).forEach(l => {
+    if (l.startsWith('+++ ')) { path = l.replace(/^\+\+\+ (b\/)?/, ''); return; }
+    if (l.startsWith('--- ')) { if (!path) path = l.replace(/^--- (a\/)?/, ''); return; }
+    if (l.startsWith('+')) { add++; body.push(['a', '+', l.slice(1)]); }
+    else if (l.startsWith('-')) { del++; body.push(['d', '−', l.slice(1)]); }
+    else if (l.trim()) body.push(['', '', l]);
+  });
+  return { path, add, del, body, head: lines[0] || '' };
+}
+function closeSheet(){ $('sheet').classList.add('hidden'); $('dim').classList.add('hidden'); sheetKey = ''; }
+function renderSheet(){
+  const a = currentSession ? lastApprovals.find(x => x.session === currentSession) : null;
+  if (!a) { if (!$('sheet').classList.contains('hidden')) closeSheet(); return; }
+  const st = cardState[a.id] || (cardState[a.id] = { open: null, scope: 'session', feedback: '' });
+  const key = a.id + ':' + st.open + ':' + st.scope;
+  if (key === sheetKey) return;
+  sheetKey = key;
+  const sh = $('sheet'); sh.innerHTML = ''; sh.dataset.id = a.id;
+  sh.appendChild(el('div', 'grab'));
+  const isEdit = EDIT_TOOLS.includes(a.tool);
+  const isShell = a.tool === 'shell' && a.command;
+  if (isEdit) {
+    const d = parseDiff(a.summary);
+    sh.appendChild(el('h2', '', t('m.allowEdit')));
+    const meta = el('div', 'meta', a.tool + (d.path ? ' · ' + d.path : '') + ' · ');
+    meta.appendChild(el('span', 'ok', '+' + d.add)); meta.appendChild(document.createTextNode(' ')); meta.appendChild(el('span', 'bad', '−' + d.del));
+    sh.appendChild(meta);
+    const code = el('div', 'code');
+    (d.body.length ? d.body : [['', '', d.head]]).forEach(([c, sign, txt]) => {
+      const ln = el('div', 'ln ' + c); ln.appendChild(el('span', 'n', sign)); ln.appendChild(document.createTextNode(txt)); code.appendChild(ln);
+    });
+    sh.appendChild(code);
+  } else if (isShell) {
+    sh.appendChild(el('h2', '', t('m.allowCommand')));
+    sh.appendChild(el('div', 'meta', t('m.runsOnPc')));
+    sh.appendChild(el('div', 'cmd', a.command));
+  } else {
+    sh.appendChild(el('h2', '', t('m.allowTool', { tool: a.tool })));
+    sh.appendChild(el('div', 'meta', a.tool));
+    sh.appendChild(el('div', 'cmd', a.summary || ''));
+  }
+  const btns = el('div', 'btns');
+  const deny = el('button', 'bt' + (st.open === 'deny' ? ' sel' : ''), t('m.deny')); deny.dataset.act = 'deny';
+  deny.onclick = () => { st.open = st.open === 'deny' ? null : 'deny'; renderSheet(); };
+  btns.appendChild(deny);
+  // 复合命令 / 危险操作没有建议规则：不给“总是允许”。
+  if (a.suggestion) {
+    const al = el('button', 'bt' + (st.open === 'always' ? ' sel' : ''), t('m.always')); al.dataset.act = 'always';
+    al.onclick = () => { st.open = st.open === 'always' ? null : 'always'; renderSheet(); };
+    btns.appendChild(al);
+  }
+  const once = el('button', 'bt p', t('m.allowOnce')); once.dataset.act = 'allow';
+  once.onclick = () => decide(a.id, { approve: true });
+  btns.appendChild(once);
+  sh.appendChild(btns);
+  if (st.open === 'always' && a.suggestion) {
+    const box = el('div', 'sub always');
+    box.appendChild(el('div', 'k', t('m.remember.title')));
+    box.appendChild(el('code', 'rule', ruleLabel(a.suggestion)));
+    const seg = el('div', 'seg');
+    [['session', 'm.scope.session'], ['project', 'm.scope.project']].forEach(([val, label]) => {
+      const b = el('button', st.scope === val ? 'on' : '', t(label)); b.dataset.scope = val;
+      b.onclick = () => { st.scope = val; renderSheet(); };
+      seg.appendChild(b);
+    });
+    box.appendChild(seg);
+    box.appendChild(el('div', 'note', t(st.scope === 'project' ? 'm.scope.projectHelp' : 'm.scope.sessionHelp')));
+    const ok = el('button', 'bt p full', t('m.remember.confirm')); ok.dataset.act = 'remember-confirm';
+    ok.onclick = () => decide(a.id, { approve: true, scope: st.scope });
+    box.appendChild(ok);
+    sh.appendChild(box);
+  }
+  if (st.open === 'deny') {
+    const box = el('div', 'sub deny');
+    const ta = el('textarea'); ta.rows = 3; ta.placeholder = t('m.deny.placeholder'); ta.value = st.feedback; ta.id = 'deny-' + a.id;
+    ta.oninput = () => { st.feedback = ta.value; };
+    box.appendChild(ta);
+    const send = el('button', 'bt p full', t('m.deny.confirm')); send.dataset.act = 'deny-confirm';
+    send.onclick = () => decide(a.id, { approve: false, feedback: (st.feedback || '').trim() });
+    box.appendChild(send);
+    sh.appendChild(box);
+  }
+  if (!a.suggestion && a.tool === 'shell') sh.appendChild(el('div', 'foot', t('m.noRule')));
+  else if (isEdit && lastInfo && lastInfo.config && lastInfo.config.sandbox === 'local') sh.appendChild(el('div', 'foot', t('m.checkpoint')));
+  sh.classList.remove('hidden'); $('dim').classList.remove('hidden');
+}
+async function decide(id, body){
+  try {
+    await api('/api/approvals/' + encodeURIComponent(id), { method: 'POST', body: JSON.stringify(body) });
+    delete cardState[id]; sheetKey = '';
+    lastApprovals = lastApprovals.filter(a => a.id !== id);
+    toast(body.approve ? (body.scope ? t('m.toast.remembered') : t('m.toast.allowed')) : (body.feedback ? t('m.toast.deniedFeedback') : t('m.toast.denied')));
+    renderSheet();
+    await tick();
+  } catch (e) { toast(t('m.toast.failed', { msg: e.message })); }
+}
+async function tick(){
+  try {
+    const data = await api('/api/approvals');
+    lastApprovals = data.approvals || [];
+    document.title = lastApprovals.length ? '(' + lastApprovals.length + ') Nyra' : 'Nyra';
+    if (currentSession) { renderFeed(await api('/api/sessions/' + encodeURIComponent(currentSession))); renderSheet(); }
+    else if (currentTab === 'threads' && !$('threads-view').classList.contains('hidden')) await loadSessions();
+  } catch (e) { /* 断网时下次再试 */ }
+}
+
+// ---------------------------------------------------------------- 标签页 ---
+async function setTab(tab){
+  currentTab = tab; currentSession = null; sheetKey = '';
+  show(tab + '-view');
+  try {
+    if (tab === 'threads') await loadSessions();
+    if (tab === 'automations') await loadAutomations();
+    if (tab === 'skills') await loadSkills();
+    if (tab === 'settings') await openSettings();
+  } catch (e) { toast(e.message); }
+}
+function scheduleText(task){
+  if (task.at) return t('m.auto.daily', { at: task.at });
+  const s = Number(task.every_seconds || 0);
+  if (s >= 3600 && s % 3600 === 0) return t('m.auto.everyHour', { n: s / 3600 });
+  return t('m.auto.everyMin', { n: Math.round(s / 60) });
+}
+function fmtWhen(iso){
+  try { const d = new Date(iso); return d.toLocaleString(LANG === 'zh' ? 'zh-CN' : 'en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch(e){ return iso; }
+}
+async function loadAutomations(){
+  const data = await api('/api/schedule');
+  const box = $('autos'); box.innerHTML = '';
+  const list = data.tasks || [];
+  if (!list.length) {
+    const e = el('div', 'empty'); e.appendChild(el('b', '', t('m.auto.emptyTitle')));
+    e.appendChild(el('code', '', t('m.auto.emptyHint'))); box.appendChild(e); return;
+  }
+  list.forEach(task => {
+    const on = task.enabled !== false;
+    const row = el('div', 'it auto');
+    const tx = el('div', 'tx'); tx.appendChild(el('b', '', task.name));
+    tx.appendChild(el('small', '', on ? scheduleText(task) + (task.mode ? ' · ' + t('m.mode.' + task.mode) : '') : t('m.auto.paused')));
+    row.appendChild(tx);
+    const tg = el('button', 'tg' + (on ? '' : ' off')); tg.dataset.act = 'toggle'; tg.setAttribute('role', 'switch'); tg.setAttribute('aria-checked', String(on)); tg.setAttribute('aria-label', task.name);
+    tg.onclick = async () => {
+      tg.disabled = true;
+      try { const r = await api('/api/schedule', { method: 'POST', body: JSON.stringify({ action: 'toggle', name: task.name }) }); toast(t(r.task && r.task.enabled === false ? 'm.auto.off' : 'm.auto.on', { name: task.name })); }
+      catch (e) { toast(t('m.auto.toggleFailed', { msg: e.message })); }
+      await loadAutomations();
+    };
+    row.appendChild(tg);
+    box.appendChild(row);
+  });
+  const ran = list.filter(x => x.last_run).sort((a, b) => String(b.last_run).localeCompare(String(a.last_run))).slice(0, 3);
+  if (ran.length) {
+    box.appendChild(el('div', 'lh', t('m.auto.lastRun')));
+    ran.forEach(task => {
+      const row = el('div', 'it');
+      const ok = task.last_status === 'ok';
+      row.appendChild(el('span', ok ? 'ok' : 'bad', ok ? '✓' : '✕'));
+      const tx = el('div', 'tx'); tx.appendChild(el('b', '', task.name));
+      tx.appendChild(el('small', 'wrap', fmtWhen(task.last_run) + (task.last_summary ? ' · ' + task.last_summary : '')));
+      row.appendChild(tx); box.appendChild(row);
+    });
+  }
+}
+async function loadSkills(){
+  const info = await loadInfo();
+  const box = $('skill-list'); box.innerHTML = '';
+  const list = info.skills || [];
+  if (!list.length) {
+    const e = el('div', 'empty'); e.appendChild(el('b', '', t('m.skills.emptyTitle')));
+    e.appendChild(el('code', '', t('m.skills.emptyHint'))); box.appendChild(e); return;
+  }
+  box.appendChild(el('div', 'lh', t('m.skills.count', { n: list.length })));
+  list.forEach(s => {
+    const row = el('div', 'it');
+    const tx = el('div', 'tx'); tx.appendChild(el('b', '', s.name)); if (s.description) tx.appendChild(el('small', 'wrap', s.description));
+    row.appendChild(tx); box.appendChild(row);
+  });
+}
+
+// ---------------------------------------------------------------- 设置 ---
+const MODE_KEYS = { readonly: 'm.mode.readonly', auto: 'm.mode.auto', full: 'm.mode.full', creator: 'm.mode.creator' };
+function modeLabel(m){ return MODE_KEYS[m] ? t(MODE_KEYS[m]) : m; }
+async function openSettings(){
+  fullStep = 0;
+  await loadInfo().catch(() => {});
+  renderModes();
+  $('provider-line').textContent = lastInfo && lastInfo.provider_desc ? lastInfo.provider_desc : t('m.set.notConfigured');
+  $('version-line').textContent = t('m.set.version', { v: (lastInfo && lastInfo.version) || '' });
+  await loadRules();
+}
+function renderModes(){
+  const box = $('modes'); box.innerHTML = '';
+  const cur = lastInfo ? lastInfo.mode : '';
+  const modes = ['readonly', 'auto', 'full'];
+  if (cur === 'creator') modes.push('creator');
+  modes.forEach(m => {
+    const b = el('button', m === cur ? 'on' : '', modeLabel(m)); b.dataset.mode = m;
+    b.onclick = () => chooseMode(m);
+    box.appendChild(b);
+  });
+  const c = $('mode-confirm'); c.innerHTML = '';
+  if (fullStep === 1) {
+    const w = el('div', 'warn');
+    w.appendChild(el('b', '', t('m.full.warnTitle')));
+    w.appendChild(el('div', 'note', t('m.full.warnBody')));
+    const go = el('button', 'bt danger', t('m.full.continue')); go.dataset.act = 'full-step1'; go.onclick = () => { fullStep = 2; renderModes(); };
+    const no = el('button', 'bt ghost', t('m.cancel')); no.onclick = () => { fullStep = 0; renderModes(); };
+    w.appendChild(go); w.appendChild(no); c.appendChild(w);
+  } else if (fullStep === 2) {
+    const w = el('div', 'warn');
+    w.appendChild(el('b', '', t('m.full.confirmTitle')));
+    const go = el('button', 'bt danger', t('m.full.confirm')); go.dataset.act = 'full-step2'; go.onclick = () => setMode('full');
+    const no = el('button', 'bt ghost', t('m.cancel')); no.onclick = () => { fullStep = 0; renderModes(); };
+    w.appendChild(go); w.appendChild(no); c.appendChild(w);
+  }
+}
+function chooseMode(m){
+  if (lastInfo && m === lastInfo.mode) return;
+  if (m === 'full') { fullStep = 1; renderModes(); return; }
+  setMode(m);
+}
+async function setMode(m){
+  try {
+    await api('/api/mode', { method: 'POST', body: JSON.stringify(m === 'full' ? { mode: m, confirm: 'full' } : { mode: m }) });
+    fullStep = 0; await loadInfo(); renderModes();
+    toast(t('m.set.switched', { mode: modeLabel(m) }));
+  } catch (e) { toast(t('m.set.switchFailed', { msg: e.message })); }
+}
+async function loadRules(){
+  const data = await api('/api/rules');
+  const box = $('rules'); box.innerHTML = '';
+  const list = data.rules || [];
+  if (!list.length) { const r = el('div', 'row'); r.appendChild(el('span', 'tx note', t('m.set.rulesEmpty'))); box.appendChild(r); return; }
+  list.forEach(r => {
+    const row = el('div', 'row rule-row');
+    const tx = el('div', 'tx'); tx.appendChild(el('code', '', ruleLabel(r) || r.label)); row.appendChild(tx);
+    row.appendChild(el('span', 'tag', r.scope === 'project' ? t('m.scope.project') : t('m.scope.session')));
+    const b = el('button', 'chipbtn', t('m.set.revoke')); b.dataset.act = 'revoke-rule';
+    b.onclick = async () => {
+      try { await api('/api/rules/' + encodeURIComponent(r.id) + '/revoke', { method: 'POST', body: '{}' }); toast(t('m.set.revoked')); await loadRules(); }
+      catch (e) { toast(t('m.set.revokeFailed', { msg: e.message })); }
+    };
+    row.appendChild(b); box.appendChild(row);
+  });
+}
+function forgetDevice(){
+  if (!confirm(t('m.set.disconnectConfirm'))) return;
+  try { localStorage.removeItem('nyra-device-token'); localStorage.removeItem('nyra-token'); } catch(e){}
+  clearInterval(poll); poll = null; show('pair-view');
+}
+
+// ---------------------------------------------------------------- 字体 ---
+// CSP 不放开 font-src：同源 fetch 拿到 woff 字节，再用 FontFace 从 ArrayBuffer 加载。
+function loadFonts(){
+  if (!window.FontFace || !document.fonts) return;
+  [['Inter', 'inter-400', '400'], ['Inter', 'inter-600', '500 700'], ['JetBrains Mono', 'jbm-400', '400']].forEach(([fam, file, weight]) => {
+    fetch('/m/fonts/' + file + '.woff').then(r => r.ok ? r.arrayBuffer() : Promise.reject())
+      .then(buf => new FontFace(fam, buf, { weight }).load()).then(f => document.fonts.add(f)).catch(() => {});
+  });
+}
+
+// ---------------------------------------------------------------- 入场动画 ---
+function isStandalone(){
+  try { return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true; } catch(e){ return false; }
+}
+function isPhone(){
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPod/.test(ua)) return true;
+  try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600; } catch(e){ return false; }
+}
+function shouldSplash(){
+  if (!isStandalone() || !isPhone()) return false;
+  try { if (sessionStorage.getItem('nyra-splash-shown')) return false; sessionStorage.setItem('nyra-splash-shown', '1'); } catch(e){}
+  return true;
+}
+function setThemeColor(c){ document.querySelectorAll('meta[name=theme-color]').forEach(m => { if (!m.dataset.orig) m.dataset.orig = m.content; m.content = c || m.dataset.orig; }); }
+function runSplash(){
+  const s = $('splash');
+  if (!shouldSplash()) { s.remove(); return; }
+  let reduce = false; try { reduce = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch(e){}
+  s.classList.remove('hidden'); s.dataset.state = 'playing'; setThemeColor('#0B0B0C');
+  const finish = () => {
+    s.dataset.state = 'done'; s.classList.add('out'); setThemeColor('');
+    setTimeout(() => s.remove(), 480);
+  };
+  if (reduce) { s.classList.add('reduce'); s.innerHTML = splashSvg(SPLASH_END); setTimeout(finish, 1400); return; }
+  s.classList.add('play');
+  let start = null;
+  const step = (ts) => {
+    if (start === null) start = ts;
+    const sec = (ts - start) / 1000;
+    s.innerHTML = splashSvg(Math.min(sec, SPLASH_END));
+    s.dataset.t = sec.toFixed(2);
+    if (sec >= SPLASH_HOLD) { finish(); return; }
+    if (sec >= SPLASH_END) { setTimeout(() => finish(), (SPLASH_HOLD - sec) * 1000); return; }
+    requestAnimationFrame(step);
+  };
+  s.innerHTML = splashSvg(0);
+  requestAnimationFrame(step);
+}
+
+// ---------------------------------------------------------------- 启动 ---
+async function boot(){
+  await loadInfo();
+  await setTab('threads');
+  await tick();
+  clearInterval(poll); poll = setInterval(tick, 1500);
+}
+window.addEventListener('load', async () => {
+  applyI18n();
+  runSplash();
+  loadFonts();
+  $('pair-btn').onclick = pair;
+  $('fab').onclick = newSession;
+  $('search-btn').onclick = toggleSearch;
+  $('search').oninput = () => { searchQ = $('search').value.trim(); renderThreads(); };
+  $('back').onclick = goHome;
+  $('kebab').onclick = toggleMenu;
+  $('menu-new').onclick = () => { $('menu').classList.add('hidden'); newSession(); };
+  $('menu-settings').onclick = () => { $('menu').classList.add('hidden'); setTab('settings'); };
+  $('send-btn').onclick = sendMsg;
+  $('input').oninput = autoGrow;
+  $('auto-add').onclick = () => toast(t('m.auto.addHint'));
+  $('disconnect').onclick = forgetDevice;
+  document.querySelectorAll('#nav button').forEach(b => { b.onclick = () => setTab(b.dataset.tab); });
+  const m = /^#pair=(\d{6})$/.exec(location.hash || '');
+  if (m) {
+    $('pair-code').value = m[1];
+    show('pair-view');
+    // 扫码打开：自动兑换一次；失败就留在配对页让用户手动输入。
+    await pair();
+    return;
+  }
+  if (!token()) { show('pair-view'); return; }
+  try { await boot(); } catch (e) { if (!$('pair-view').classList.contains('hidden')) return; $('fatal').textContent = t('m.loadFailed', { msg: e.message }); }
+});

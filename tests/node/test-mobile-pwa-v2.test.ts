@@ -330,11 +330,18 @@ test("icons: manifest 192/512 any + maskable、apple 180、favicon；几何与 n
     const any = pngInfo(new Uint8Array(await (await fetch(`${base}/m/icon-512.png`)).arrayBuffer()));
     const white = any.pixel(Math.round(512 * 0.47), Math.round(512 * 0.55));
     expect(white.slice(0, 3)).toEqual([255, 255, 255]);
+    // maskable / apple：黑底 + 浅色圆盘（= 入场动画终帧），中心一点是浅色圆盘。
+    const mask = pngInfo(new Uint8Array(await (await fetch(`${base}/m/icon-maskable-512.png`)).arrayBuffer()));
+    expect(mask.pixel(0, 0).slice(0, 3)).toEqual([0x0b, 0x0b, 0x0c]);
+    expect(mask.pixel(Math.round(512 * 0.3), Math.round(512 * 0.5)).slice(0, 3)).toEqual([0xf5, 0xf5, 0xf7]);
     const fav = await fetch(`${base}/m/favicon.svg`);
-    expect(await fav.text()).toContain("linearGradient");
+    const favSvg = await fav.text();
+    expect(favSvg).toContain('fill="#0B0B0C"');
+    expect(favSvg).not.toContain("linearGradient");
     const page = await (await fetch(`${base}/m`)).text();
     expect(page).toContain('rel="apple-touch-icon"');
     expect(page).toContain("允许并不再询问");
+    expect(page).toContain("Allow and don't ask again");
     expect(page).not.toMatch(/angel/i);
   } finally { await gw.stop(); }
 });
@@ -363,7 +370,7 @@ test("settings: 手机切全权要二次确认标记，电脑端不受影响；�
   } finally { await gw.stop(); }
 });
 
-test("splash: 只在手机主屏幕独立窗口播放，可跳过，减少动态效果时只淡入", async () => {
+test("splash: 原 Nyra 入场动画，只在手机主屏幕独立窗口播放、不能点击跳过，减少动态效果时只淡入终帧", async () => {
   const gw = new Gateway({ home: tmp("nyra-splash-"), workdir: "/tmp", host: "127.0.0.1", port: 0, config: { mcp_enabled: false } });
   const info = await gw.start();
   try {
@@ -371,9 +378,50 @@ test("splash: 只在手机主屏幕独立窗口播放，可跳过，减少动态
     expect(page).toContain("(display-mode: standalone)");
     expect(page).toContain("navigator.standalone");
     expect(page).toContain("prefers-reduced-motion: reduce");
-    expect(page).toContain("finish('skipped')");
-    expect(page).toContain("reduce ? 1100 : 3400");
+    // 原 Nyra splash：0–2.95 s 动画、终帧停到 3.8 s 再淡出；不能点击跳过。
+    expect(page).toContain("SPLASH_END=2.95, SPLASH_HOLD=3.8");
+    expect(page).toContain("function frame(t,lang)");
+    expect(page).not.toContain("finish('skipped')");
+    expect(page).not.toMatch(/addEventListener\('(click|touchstart)'/);
     expect(page).toContain("sessionStorage");
     expect(page).toContain("API Key 请在电脑上输入");
+  } finally { await gw.stop(); }
+});
+
+// ---------------------------------------------------------- 设计稿改版 ---
+test("mobile v2 design: 中英文案键齐全、四个标签、字体同源加载且 CSP 不放开 font-src", async () => {
+  const { MESSAGES } = await import("../../src/i18n.ts");
+  const zhKeys = Object.keys(MESSAGES.zh).filter((k) => k.startsWith("m."));
+  const enKeys = Object.keys(MESSAGES.en).filter((k) => k.startsWith("m."));
+  expect(zhKeys.length).toBeGreaterThan(50);
+  expect(enKeys.sort()).toEqual(zhKeys.sort());
+  for (const k of zhKeys) { expect(MESSAGES.zh[k as keyof typeof MESSAGES.zh]).not.toMatch(/angel/i); expect(MESSAGES.en[k as keyof typeof MESSAGES.en]).not.toMatch(/angel/i); }
+  const gw = new Gateway({ home: tmp("nyra-m2-"), workdir: "/tmp", host: "127.0.0.1", port: 0, config: { mcp_enabled: false } });
+  const info = await gw.start();
+  try {
+    const base = `http://127.0.0.1:${info.port}`;
+    const res = await fetch(`${base}/m`);
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).not.toContain("font-src");
+    const page = await res.text();
+    for (const tab of ["threads", "automations", "skills", "settings"]) expect(page).toContain(`data-tab="${tab}"`);
+    expect(page).toContain("new FontFace(");
+    expect(page).toContain("prefers-color-scheme:dark");
+    // 页面不含任何 token
+    expect(page).not.toContain(gw.token);
+    for (const f of ["inter-400", "inter-600", "jbm-400"]) {
+      const font = await fetch(`${base}/m/fonts/${f}.woff`);
+      expect(font.status).toBe(200);
+      expect(font.headers.get("content-type")).toBe("font/woff");
+      const head = new Uint8Array(await font.arrayBuffer()).slice(0, 4);
+      expect(String.fromCharCode(...head)).toBe("wOFF");
+    }
+    expect((await fetch(`${base}/m/fonts/../../etc/passwd`)).status).toBe(404);
+    expect((await fetch(`${base}/m/fonts/other.woff`)).status).toBe(404);
+    // 会话列表带 status 字段（手机状态点用）
+    const sid = (await (await fetch(`${base}/api/sessions`, { method: "POST", headers: { "X-Nyra-Token": gw.token }, body: "{}" })).json() as { id: string }).id;
+    const list = await (await fetch(`${base}/api/sessions`, { headers: { "X-Nyra-Token": gw.token } })).json() as { sessions: { id: string; status: string }[] };
+    expect(list.sessions.find((s) => s.id === sid)?.status).toBe("idle");
   } finally { await gw.stop(); }
 });

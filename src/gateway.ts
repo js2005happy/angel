@@ -23,7 +23,7 @@ import { Provider, buildProviderChain, type ProviderLike } from "./providers.ts"
 import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS, type ApproveResult } from "./tools.ts";
 import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, type RuleScope, type RuleSuggestion } from "./approvalRules.ts";
 import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
-import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, mobileIconPng, mobileFaviconSvg } from "./webuiMobile.ts";
+import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFont } from "./webuiMobile.ts";
 import { runHooks } from "./hooks.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome } from "./memory.ts";
@@ -392,7 +392,9 @@ export class Gateway {
     }
     const sessions = [...byId.values()].map((item) => {
       const workdir = projects[item.id];
-      return { ...item, workdir: workdir ?? null, project: workdir ? workdir.split("/").pop() ?? null : null };
+      // status：手机列表的状态点用（运行中 / 出错 / 空闲）；没有 live run 的会话一律 idle。
+      const status = this.runs.get(item.id)?.status ?? "idle";
+      return { ...item, workdir: workdir ?? null, project: workdir ? workdir.split("/").pop() ?? null : null, status };
     });
     return {
       sessions,
@@ -1148,7 +1150,7 @@ export class Gateway {
     const method = req.method ?? "GET";
 
     // 手机公共壳：页面与静态资源不含秘密，不用 token；API 仍要鉴权。
-    // 手机 v2（src/webuiMobile.ts）：终端 v2 配色、Codex 式审批卡、从 nyra-mark.svg 光栅化的图标。
+    // 手机 v2（src/webuiMobile.ts）：按 docs/assets/screenshots 设计稿的黑白界面、审批底部弹层、从 nyra-mark.svg 光栅化的图标。
     if (method === "GET" && (path === "/m" || path === "/m/")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": CSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" });
       res.end(MOBILE_V2_HTML);
@@ -1165,6 +1167,15 @@ export class Gateway {
       const png = mobileIconPng(mobileIcon.size, mobileIcon.kind);
       res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "public, max-age=86400" });
       res.end(png);
+      return;
+    }
+    // 手机字体（Inter / JetBrains Mono，OFL）：公开静态资源，页面用 FontFace 从 ArrayBuffer 加载（CSP 不变）。
+    const fontMatch = MOBILE_FONT_ROUTE.exec(path);
+    if (method === "GET" && fontMatch) {
+      const font = mobileFont(fontMatch[1]);
+      if (!font) { this.sendError(res, 404, "未找到"); return; }
+      res.writeHead(200, { "Content-Type": "font/woff", "Content-Length": font.length, "Cache-Control": "public, max-age=86400" });
+      res.end(font);
       return;
     }
     if (method === "GET" && path === "/m/favicon.svg") {
