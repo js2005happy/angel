@@ -5,9 +5,12 @@
 # 第 0 阶段已验证格式）；随后 windows-latest 与 macos-latest 各下一个
 # 对应产物跑 --version / --example 冒烟（真机运行验证，不是只看格式）。
 # Release 只在打 v* 标签时创建，二进制挂为 Release 附件，不进 git。
-# 注意：产物未签名、未公证——Windows SmartScreen 与 macOS Gatekeeper
-# 的首次运行提示仍存在（见 docs/windows-install.md / docs/macos-install.md），
-# 本 workflow 只验证“能跑”，不解决签名问题。
+# 代码签名是条件式的（见 docs/signing.md）：WINDOWS_CERTIFICATE 秘密
+# 存在时，构建后用 osslsigncode 给 nyra-windows-x64.exe 做 Authenticode
+# 签名；秘密不存在时整步跳过，产物保持未签名。macOS 的 Node 二进制目前
+# 不签名（裸 Mach-O 文件，见 docs/signing.md 的说明），桌面端 .app/.dmg
+# 的签名走 desktop.yml。
+# 本 workflow 只验证“能跑”，签名状态见 docs/signing.md。
 
 name: Node binaries
 
@@ -63,6 +66,29 @@ jobs:
 
       - name: Build binaries
         run: bash scripts/build-binaries.sh
+
+      # --- 条件签名接线（docs/signing.md） ---------------------------------
+      # 只有 WINDOWS_CERTIFICATE 秘密存在时才跑；不存在时整步跳过，
+      # nyra-windows-x64.exe 保持未签名。秘密只配了一半时里面直接报错退出，
+      # 绝不悄悄出未签名包。Linux 上用 osslsigncode 做 Authenticode 签名
+      # （与 Windows signtool 同一种签名，时间戳用 DigiCert 的 RFC 3161 服务）。
+      - name: Sign Windows binary with OV certificate (optional)
+        if: secrets.WINDOWS_CERTIFICATE != ''
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$WINDOWS_CERTIFICATE_PASSWORD" ]; then echo "::error::WINDOWS_CERTIFICATE 已配置，但 WINDOWS_CERTIFICATE_PASSWORD 为空"; exit 1; fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode
+          echo "$WINDOWS_CERTIFICATE" | base64 -d > /tmp/nyra-sign.pfx
+          # osslsigncode 不能原地覆盖：先签到临时文件再换回来。
+          osslsigncode sign -pkcs12 /tmp/nyra-sign.pfx -pass "$WINDOWS_CERTIFICATE_PASSWORD" \
+            -h sha256 -ts http://timestamp.digicert.com \
+            -in dist/nyra-windows-x64.exe -out /tmp/nyra-windows-x64-signed.exe
+          mv /tmp/nyra-windows-x64-signed.exe dist/nyra-windows-x64.exe
+          rm -f /tmp/nyra-sign.pfx
+          osslsigncode verify -in dist/nyra-windows-x64.exe
+          echo "Windows binary signed."
 
       - name: Check formats
         run: file dist/*
@@ -161,8 +187,6 @@ jobs:
           prerelease: false # 0.4.1 起是正式版，不再标预发布
           generate_release_notes: true
           body: |
-            Nyra Node 运行时第 1 阶段预览：单文件可执行（Bun --compile）。
+            Nyra Node 运行时：单文件可执行（Bun --compile）。
             下载对应平台的文件，给执行权限，直接运行；首次使用跑 `nyra setup`。
-            注意：Windows/macOS 产物未签名、未公证，首次运行会有系统提示（见安装文档）。
-            模型任务（agent 核心）在第 2 阶段移植，本预览版只含安装、doctor、向导与本地示例任务；
-            模型任务请继续用 Python 版（`python3 -m nyra`）。
+            代码签名：见 docs/signing.md。证书配置后构建即自动签名（Windows 命令行版与桌面安装包、macOS 桌面安装包）；未配置证书时产物未签名、未公证，Windows SmartScreen 与 macOS Gatekeeper 的首次运行提示仍存在（见安装文档）。

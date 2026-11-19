@@ -5,10 +5,17 @@
 # Output is uploaded as workflow artifacts only; nothing is published to a
 # GitHub Release here.
 #
-# The installers are NOT signed (no Apple Developer ID / Windows code-signing
-# certificate yet). macOS builds get the standard ad-hoc signature only
-# (signingIdentity "-"), which is not a developer identity and is not
-# notarized. See docs/desktop.md for how users open them.
+# Code signing is conditional (see docs/signing.md): if the signing secrets
+# are configured, the build signs (Windows: OV certificate from
+# WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD, imported into the cert
+# store and passed to `tauri build --config`; macOS: Developer ID
+# certificate from APPLE_CERTIFICATE/APPLE_CERTIFICATE_PASSWORD, imported
+# into a temporary keychain, plus APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID for
+# notarization). If no signing secrets exist, the build runs exactly as
+# before and the installers are unsigned: macOS gets the standard ad-hoc
+# signature only (signingIdentity "-"), which is not a developer identity
+# and is not notarized; Windows .msi/.exe are unsigned. A half-configured
+# secret set fails the build loudly instead of silently shipping unsigned.
 #
 # The app does not bundle a runtime: it starts the installed `nyra` binary
 # (`nyra ui --host 127.0.0.1 --port 0 --print-url-json`) and shows a guide
@@ -100,9 +107,91 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --locked
 
+      # --- 条件签名接线（docs/signing.md） ---------------------------------
+      # 两步只在对应平台 + 证书秘密存在时跑；秘密一个都没有时整步跳过，
+      # 构建与以前完全一致（未签名）。秘密只配了一半时里面直接报错退出，
+      # 绝不悄悄出未签名包。证书只活在本次 runner 里，不进 git。
+      - name: Import Windows certificate (if configured)
+        if: matrix.os == 'windows-latest' && (secrets.WINDOWS_CERTIFICATE != '' || secrets.WINDOWS_CERTIFICATE_PASSWORD != '')
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:WINDOWS_CERTIFICATE) -or [string]::IsNullOrEmpty($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            Write-Error "WINDOWS_CERTIFICATE 与 WINDOWS_CERTIFICATE_PASSWORD 必须同时配置（只配了一个），构建已停住而不是悄悄出未签名包"
+            exit 1
+          }
+          # 步骤照 Tauri 官方 Windows 签名文档：base64 解码出 .pfx、导入证书库。
+          New-Item -ItemType Directory -Path certificate -Force | Out-Null
+          Set-Content -Path certificate/tempCert.txt -Value $env:WINDOWS_CERTIFICATE
+          certutil -decode certificate/tempCert.txt certificate/certificate.pfx
+          Remove-Item certificate/tempCert.txt
+          $cert = Import-PfxCertificate -FilePath certificate/certificate.pfx -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText)
+          Remove-Item certificate/certificate.pfx
+          # thumbprint 写进 --config 覆盖文件（tauri.conf.json 本身不动，
+          # `tauri build --config` 会把它与默认配置合并）；密码不进文件。
+          $signingConfig = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $cert.Thumbprint
+                digestAlgorithm = 'sha256'
+                timestampUrl = 'http://timestamp.digicert.com'
+              }
+            }
+          } | ConvertTo-Json -Compress -Depth 5
+          Set-Content -Path desktop/signing-config.json -Value $signingConfig
+          Write-Host "Windows signing enabled: certificate imported, thumbprint $($cert.Thumbprint)"
+
+      - name: Import Apple certificate (if configured)
+        if: matrix.os == 'macos-latest' && (secrets.APPLE_CERTIFICATE != '' || secrets.APPLE_CERTIFICATE_PASSWORD != '')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            echo "::error::APPLE_CERTIFICATE 与 APPLE_CERTIFICATE_PASSWORD 必须同时配置（只配了一个），构建已停住而不是悄悄出未签名包"; exit 1
+          fi
+          if [ -z "$KEYCHAIN_PASSWORD" ]; then
+            echo "::error::APPLE_CERTIFICATE 已配置，但 KEYCHAIN_PASSWORD 为空（建临时钥匙串需要它）"; exit 1
+          fi
+          # 步骤照 Tauri 官方 macOS 签名文档：base64 解码出 .p12、导入临时钥匙串。
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f certificate.p12
+          CERT_ID=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          if [ -z "$CERT_ID" ]; then echo "::error::导入的证书里没有找到 Developer ID Application 身份"; exit 1; fi
+          # 签名身份走 --config 覆盖文件（盖掉 tauri.conf.json 里的 "-"），
+          # 公证凭证走环境变量（Tauri 构建时自动公证；只配了签名没配公证
+          # 时只签名不公证，不报错）。
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+          [ -n "$APPLE_ID" ] && echo "APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+          [ -n "$APPLE_PASSWORD" ] && echo "APPLE_PASSWORD=$APPLE_PASSWORD" >> "$GITHUB_ENV"
+          [ -n "$APPLE_TEAM_ID" ] && echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+          node -e "const fs=require('fs');fs.writeFileSync('desktop/signing-config.json',JSON.stringify({bundle:{macOS:{signingIdentity:process.argv[1]}}}));" "$CERT_ID"
+          echo "macOS signing enabled: $CERT_ID"
+
       - name: Build installers
         working-directory: desktop
-        run: npx tauri build ${{ matrix.tauri_args }}
+        run: |
+          # signing-config.json 只有上面导入证书的步骤成功时才存在；
+          # 不存在时走原来的无签名构建，行为与以前完全一致。
+          if [ -f signing-config.json ]; then
+            echo "Signing enabled: building with signing-config.json"
+            npx tauri build ${{ matrix.tauri_args }} --config signing-config.json
+          else
+            echo "Signing not configured: building unsigned"
+            npx tauri build ${{ matrix.tauri_args }}
+          fi
 
       - name: List bundles
         run: find "${{ matrix.bundle_dir }}" -maxdepth 2 -type f -exec ls -l {} \;
