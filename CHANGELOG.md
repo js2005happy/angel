@@ -1,5 +1,21 @@
 # Nyra 变更记录
 
+## 未发布（0.4.1：审查留下的 12 项待拍板事项全部落地）
+
+- 版本升到 0.4.1（`src/config.ts`、package.json、桌面端两处；`src/cli.ts` 的 e2b 报错文案同步）；`node-binaries.yml` 的 Release 不再标 `prerelease`（0.4.1 起是正式版）。
+- 密码箱 PBKDF2 由 200k 次提到 600k 次（OWASP 对 SHA-256 的建议值）：新建密码箱直接 600k；旧密码箱（文件里无 `iterations` 字段即按 200k 读）在下次成功解锁时后台自动重算升级并保存，用户无感，升级失败不影响本次解锁（`src/vault.ts`，`VaultDoc.iterations`，`deriveKeys(password, salt, iterations)`）。
+- 主密码最小长度 8 位（新建与改密码时 enforcing，已有弱口令密码箱照常用）；解锁输错限流：5 次后递进锁死（60 秒起、翻倍、上限 15 分钟），锁死状态记密码箱旁的 `vault.attempts.json`（0600）跨进程生效，锁死期间直接拒绝不烧 PBKDF2；CLI 解锁失败时区分提示“尝试次数过多，请 N 秒后再试”（`src/vault.ts`、`src/cli.ts`）。
+- 配对 token 加 180 天未使用过期：每次认证成功刷新 `last_seen`，常用设备永不过期；超期自动从列表剪掉（`src/pairing.ts`，`TOKEN_INACTIVITY_TTL_SECONDS`）。配对码保留 6 位（好记；错 5 次作废 + 300 秒 TTL + 一次性已堵住暴力破解）；UDP 发现应答只回名字和 HTTP 端口，不带码也不带 token（无配对码预言机，`buildDiscoveryReply` 回归测试锁定）。
+- SSRF 只拦内网/保留地址段，公网 URL 正常放行：`src/net.ts` 新增 `isPrivateOrReservedHost`/`isPrivateOrReservedIp`（回环、RFC1918、100.64/10、169.254/16、组播、保留段、`.localhost`、`.local`、`metadata.google.internal`、IPv6 回环/链路本地/唯一本地/组播、`::ffff:a.b.c.d` 映射解包）与 `assertPublicUrl`（主机名检查 + `dns.lookup` 解析后逐个验 IP；解析失败放行、让 fetch 自己报错；`NYRA_ALLOW_PRIVATE_URLS=1` 可放行本地开发）；`web_fetch`/`http_post`（含重定向每一跳）入口调用。诚实边界：拦的是地址本身在内网段，拦不住内网服务自己暴露到公网、也拦不住解析后地址被换掉。
+- 只读工具默认限制在工作目录内：`src/tools.ts` 新增 `workspaceReadPath`（与 `workspaceWritePath` 同款；后端分支不动），用于 `read_file`/`list_dir`/`grep_search`/`git_status` 的本地分支；越界给清楚提示并允许 `NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1` 显式放开。
+- 群 Key 不再明文存 `room.json`：改存 `api_keys_enc`（`v1:vault:<密码箱条目名>` 或 `v1:local:<nonce>:<data>:<mac>`），优先密码箱（存在 + `NYRA_VAULT_PASSWORD` 能解锁时），否则本机密钥 `<home>/groups.key`（首次自动生成 32 随机字节、0600）；读到旧明文 `api_keys` 自动迁移并写回；公开返回同时剥掉 `api_keys` 与 `api_keys_enc`；密码箱实例在 `GroupStore` 内缓存（免得每次解密都重算 600k 次 PBKDF2）；解不出的 Key 不进轮换，`providerForBot` 报清楚原因（`src/groups.ts`）。
+- 聊天 zip 存档走与记忆导出同一套脱敏：`importChatZip` 落盘前按 JSON 结构逐值脱敏并返回删掉的行数；`scrubSecrets` 改成 PEM 块感知（`BEGIN PRIVATE KEY` 起整块删到 `END` 行，补齐 Python S-H3 的 Node 缺口）（`src/memoryExchange.ts`、`src/cli.ts`）。
+- shell 黑名单加固（Python S-H2 移植到 Node）：`rm` 组合短标志逐位解析（`rm -r -f /`、`rm --recursive --force /`、`rm -rfv /` 都拦）+ `--` 终止符 + 危险目标归一化（`~/`、`$HOME/`、`${HOME}/`、`/*`、`.`、`..`），仅递归+强制同时满足且目标危险时拦；`dd … of=/dev/…` 与 `chmod 777 -R /` 两种参数顺序都拦；顶部加诚实边界注释（`find … -delete`、`curl | sh` 等仍未拦，黑名单是绊线不是沙箱）（`src/tools.ts`）。
+- 向导 Key 掩码与 rc 明文：新增 `readSecret`（终端上 raw-mode 逐字回显 `*`，退格与 Ctrl-C 处理；管道输入回退到普通提问）；Key 确认行只显示后 4 位；rc 里已有 Key 时只显示后 4 位，密码箱可用时问是否迁入密码箱（迁完删 rc 里那行）；新 Key 密码箱可用时默认问“存密码箱还是追加进 rc”（默认密码箱），否则走 rc 流程 + 追加后 `chmod 600`（POSIX）（`src/wizard.ts`）。
+- 桌面端单实例：`tauri-plugin-single-instance = "2"`，第二次启动取 `main` 窗口 `unminimize()` + `set_focus()` + `show()`（`desktop/src-tauri/Cargo.toml`、`desktop/src-tauri/src/lib.rs`、`docs/desktop.md`）。本机无 cargo，Rust 改动未编译验证，靠 CI 的 desktop 工作流验证。
+- Windows 安装脚本：`nyra ui --open` 在 0.4.0 起是真实命令，快捷方式保留；补 `--uninstall` 开关（删安装目录、删两个桌面快捷方式、从用户级 PATH 摘掉安装目录，保留 `~/.nyra` 数据）（`scripts/install-node.ps1`）。
+- 验证（集成树内实测，2026-11-19）：`tsc --noEmit` 0 错误；Node 全量 **748 项 0 失败**（2819 个 expect，56 个文件，约 112 秒；基线 723 项，新增 25 项）；探针 6/6；预算检查全部通过（二进制 110,049,456 字节 ≤130MB、`--help` 100ms ≤2000ms、首字节 117ms ≤1000ms、gateway 空闲 RSS 36,912KB ≤60MB）；600k 次 PBKDF2 解锁实测约 0.4–0.5 秒（本机），只在解锁时算一次，常用路径不受影响；Linux x64 二进制重编后 `--version` 输出 `nyra 0.4.1 (node runtime)`。Rust 改动未编译验证（本机无 cargo）；Windows 安装脚本的 `--uninstall` 未在真机验证。
+
 ## 未发布（集成：审查 75 项 + Node 第 2 阶段移植 + 第 3 阶段 + 第 4 阶段）
 
 - 0.4.0（第 4 阶段）：**Python 全部移除**——仓库里不再有任何 `.py` 文件（`nyra/` 58 个、`tests/*.py` 78 个、`scripts/remote_run.py`、`scripts/upload_nyra.py`、`desktop/scripts/make_icons.py`，共 139 个），另删 4 个 Python 时代安装/打包脚本与 2 个已嵌进二进制的群聊页原文件；工作流 `python-ci.yml` 与 `build-windows.yml` 已删，新增 `node-ci.yml`（push main + PR 时跑 `tsc` + 三平台 `bun test tests/node` + 探针，另有 budgets job）；`--sandbox e2b` 在 0.4.0 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植），当前只支持 `--sandbox local`；版本升到 0.4.0（`src/config.ts`、package.json、桌面端两处）；桌面端 `lib.rs` 改指 Node 二进制（本机无 cargo，未编译验证，靠 CI 的 desktop 工作流验证）；网关 `urlJson()` 的 `nyra` 字段由 `"nyra"` 改回 `"ui"`（桌面外壳契约，Python 版一直是 `"ui"`）；群聊页随二进制打包（`src/assets/`）；`systemd` 与 `launchd` 服务文件改调 `nyra` 二进制；README/GUIDE/DESIGN/安装文档里的 Python 引用已全部改写为 Node 口径。
