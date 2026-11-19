@@ -1,3 +1,9 @@
+## 2026-11-19 — Windows 写入句柄 reparse 检查（仅静态）
+
+- 静态核对：`_verify_written_windows_entry()` 原先只核验路径 `os.lstat()` 的 reparse 属性，现先调用 `_reject_windows_event_reparse(written)`，拒绝已打开写入句柄报告的重解析点；仅在 `os.name == "nt"` 生效。
+- 已编写模拟回归测试 `test_windows_writer_rejects_opened_reparse_handle_before_path_check`，验证在检查路径前拒绝异常句柄；**未执行测试、未安装软件、未触发 CI**。
+- 未验证 Windows 实机 `fstat` 属性可用性；仍缺少 Windows ACL、稳定目录句柄及跨进程事务，不构成防篡改或 exactly-once 保证。
+
 ## 2026-11-19 — Windows 已打开事件句柄元数据复核（仅静态）
 
 - 核对 `_records()`：原先 Windows reparse 检查只针对目录项的 `lstat`，未针对 `os.fstat` 返回的已打开事件句柄。现补充句柄检查并增加模拟测试源码。静态检查确认新增调用位于打开文件后、读取前。
