@@ -1,3 +1,8 @@
+## 2026-11-20 — ToolJournal 人工对账状态信号（仅静态）
+
+- 读取 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 与相关测试；核对近期主分支提交、开放 Issue/PR。新增 `manual_review_required` 仅由已有未知结果计数与歧义状态推导，不改变写入或执行路径。
+- 静态核对空日志、未决 intent、配对结果的新增测试源码；**未运行** Python、测试、CI 或 Windows 实机验证。配对日志不能证明外部副作用，自动续跑仍禁止。
+
 ## 2026-11-19 — ToolJournal 源码换行错误（仅静态）
 
 - 读取开发分支 `angel/tool_journal.py`，确认前次孤立 result 修复将三处源码换行意外写成字面量 `\n`，致使 `invalid = ...` 与 `pending = ...` 落入注释行；此处恢复真实换行。静态对照原片段和新片段；未运行解析器、测试、CI 或安装。此前孤立结果修复不能视为已验证。
