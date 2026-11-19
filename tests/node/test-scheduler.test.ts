@@ -2,7 +2,7 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   ScheduleError, validateTask, loadSchedule, saveSchedule, addScheduleTask,
   removeScheduleTask, listScheduleTasks, isDue, dueTasks, runDueTasks,
@@ -49,7 +49,7 @@ test("SchedulerTest.test_load_corrupt_file_backs_up_and_raises", () => {
   // 原文件仍在，且同目录出现 .corrupt-* 备份。
   expect(readFileSync(path, "utf-8")).toContain("not json");
   const { readdirSync } = require("node:fs") as typeof import("node:fs");
-  const dir = path.slice(0, path.lastIndexOf("/"));
+  const dir = dirname(path);
   expect(readdirSync(dir).some((f: string) => f.includes(".corrupt-"))).toBe(true);
 });
 

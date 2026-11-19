@@ -75,7 +75,8 @@ test("VerifyHelperTests.test_resolve_verify_settings", () => {
 
 test("VerifyRunTests.test_success_is_verified_from_exit_code", async () => {
   const ctx = newToolContext({ workdir: tmpdir(), mode: "full", interactive: false });
-  const result = await runVerifyCommand(ctx, "true", 30);
+  // "true" 不是 Windows 命令：exit 0 在 /bin/sh 与 cmd.exe 下都是退出码 0。
+  const result = await runVerifyCommand(ctx, "exit 0", 30);
   expect(result.passed).toBe(true);
   expect(result.exit_code).toBe(0);
 });
@@ -88,10 +89,10 @@ test("VerifyRunTests.test_model_claim_without_command_stays_unverified", () => {
 
 test("VerifyRunTests.test_fail_then_fix_retries_and_verified", async () => {
   const ctx = newToolContext({ workdir: tmpdir(), mode: "full", interactive: false });
-  const fail = await runVerifyCommand(ctx, "false", 30);
+  const fail = await runVerifyCommand(ctx, "exit 1", 30);
   expect(fail.passed).toBe(false);
   expect(fail.exit_code).toBe(1);
-  const ok = await runVerifyCommand(ctx, "true", 30);
+  const ok = await runVerifyCommand(ctx, "exit 0", 30);
   expect(ok.passed).toBe(true);
 });
 
@@ -128,7 +129,9 @@ test("VerifyRunTests.test_denied_command_is_not_executed", async () => {
 
 test("VerifyRunTests.test_timeout_is_reported", async () => {
   const ctx = newToolContext({ workdir: tmpdir(), mode: "full", interactive: false });
-  const result = await runVerifyCommand(ctx, "sleep 5", 1);
+  // Windows 没有 sleep：ping -n 6 约 5 秒，超过 1 秒超时。
+  const slow = process.platform === "win32" ? "ping -n 6 127.0.0.1 >nul" : "sleep 5";
+  const result = await runVerifyCommand(ctx, slow, 1);
   expect(result.timeout).toBe(true);
   expect(result.passed).toBe(false);
 });

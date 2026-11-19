@@ -253,6 +253,9 @@ test("NetworkPolicyTest.test_legacy_room_without_instance_uses_created_at_stamp"
 // --- 审计：上限 250 条、排序、limit 边界 ---
 
 test("NetworkPolicyTest.test_audit_trail_is_capped_at_250_events", () => {
+  // 260 次 change() 每次都是持锁 + fsync + 原子重命名 的耐久写；Windows
+  // CI 上实测 6.4 秒，超过 bun 默认 5 秒测试超时，故放宽到 15 秒。
+  // 这不是放宽等待：上限断言本身不变，慢的是 Windows 文件 IO。
   const root = makeRoot();
   const policy = new NetworkPolicy({ root });
   for (let i = 0; i < 260; i++) {
@@ -270,7 +273,7 @@ test("NetworkPolicyTest.test_audit_trail_is_capped_at_250_events", () => {
   expect(page.events[0].at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/);
   expect(policy.audit({ limit: 1 }).events.length).toBe(1);
   expect(policy.audit().events.length).toBe(30);
-});
+}, 15000);
 
 test("NetworkPolicyTest.test_audit_query_bounds", () => {
   const root = makeRoot();

@@ -9,9 +9,12 @@ import { Gateway, type SessionRun } from "../../src/gateway.ts";
 import { echoProvider } from "./fake-provider.ts";
 
 function makeRun(home: string, promptTokens: number): SessionRun {
-  const gw = new Gateway({ home, workdir: "/tmp", host: "127.0.0.1", port: 0, config: {} });
+  // "/tmp" 在 Windows 上不存在：检查点构造器会因工作目录不存在而抛错，
+  // 每次都用真实临时目录。
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-gc-work-"));
+  const gw = new Gateway({ home, workdir, host: "127.0.0.1", port: 0, config: {} });
   const agent = new Agent(echoProvider("ok"), {
-    workdir: "/tmp", mode: "full", sessionId: "s-compact", home,
+    workdir, mode: "full", sessionId: "s-compact", home,
     contextWindowTokens: 10000,
   });
   agent.usage.record({ usage: { prompt_tokens: promptTokens, completion_tokens: 10, total_tokens: promptTokens + 10 } });
@@ -31,7 +34,7 @@ function makeRun(home: string, promptTokens: number): SessionRun {
 
 test("GatewayCompactTest.test_below_threshold_no_trigger", () => {
   const home = mkdtempSync(join(tmpdir(), "nyra-gc-"));
-  const gw = new Gateway({ home, workdir: "/tmp", host: "127.0.0.1", port: 0, config: {} });
+  const gw = new Gateway({ home, workdir: mkdtempSync(join(tmpdir(), "nyra-gc-work-")), host: "127.0.0.1", port: 0, config: {} });
   const run = makeRun(home, 4000); // 40% < 85%
   const result = gw.gatewayCompactCheck(run);
   expect(result.triggered).toBe(false);
@@ -41,7 +44,7 @@ test("GatewayCompactTest.test_below_threshold_no_trigger", () => {
 
 test("GatewayCompactTest.test_at_85_trims_old_tool_results_without_llm", () => {
   const home = mkdtempSync(join(tmpdir(), "nyra-gc-"));
-  const gw = new Gateway({ home, workdir: "/tmp", host: "127.0.0.1", port: 0, config: {} });
+  const gw = new Gateway({ home, workdir: mkdtempSync(join(tmpdir(), "nyra-gc-work-")), host: "127.0.0.1", port: 0, config: {} });
   const run = makeRun(home, 8500); // 85%
   const before = run.agent!.messages.length;
   const result = gw.gatewayCompactCheck(run);

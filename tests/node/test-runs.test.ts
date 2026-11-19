@@ -90,7 +90,7 @@ test("RunTests.test_real_event_statuses", async () => {
   mkdirSync(workdir, { recursive: true });
   const store = new RunStore(join(home, "runs"));
   const agent = makeAgent(workdir, home);
-  const rec = new RunRecorder(store, agent, "写 a.txt", { verifyCmd: "true", verifyTimeout: 30, verifyRetries: 0 });
+  const rec = new RunRecorder(store, agent, "写 a.txt", { verifyCmd: "exit 0", verifyTimeout: 30, verifyRetries: 0 });
   const out = await rec.run("写 a.txt");
   expect(out).toContain("done");
   const final = store.load(rec.runId);
