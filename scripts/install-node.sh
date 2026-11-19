@@ -17,7 +17,7 @@
 #                             [--with-systemd] [--uninstall] [--help]
 #   默认 --version 是 latest（GitHub Releases 最新版）；已编好二进制时
 #   用 --from-file dist/nyra-linux-x64 从本地文件安装（不联网下载）。
-#   --version 传版本号时带 v 前缀，如 v0.3.0（不带 v 也行，脚本会补上）。
+#   --version 传版本号时带 v 前缀，如 v0.5.1（不带 v 也行，脚本会补上）。
 #   重复跑就是升级：旧二进制会被替换，~/.nyra 里的数据不动。
 #
 # 要求：curl 或 wget（二选一）；--with-systemd 还要 systemctl。
@@ -39,8 +39,7 @@ log()  { printf '%s\n' "nyra-install: $*"; }
 die()  { printf '%s\n' "nyra-install: 错误：$*" >&2; exit 1; }
 
 # 拒绝危险的 --prefix：空、根目录、$HOME 本身、已存在的文件、含空格。
-# （与 scripts/install.sh 的 check_prefix 同款；卸载时 rm -rf $PREFIX，
-# 不拦住的话 --prefix / 或 --prefix $HOME 会删掉系统或整个 home。）
+# （卸载时 rm -rf $PREFIX，不拦住的话 --prefix / 或 --prefix $HOME 会删掉系统或整个 home。）
 check_prefix() {
     local p="$1"
     [ -n "$p" ] || die "--prefix 不能为空"
@@ -65,12 +64,11 @@ usage() {
     cat <<'EOF'
 
 选项：
-  --version TAG      Release 版本（默认 latest，如 v0.3.0）
+  --version TAG      Release 版本（默认 latest，如 v0.5.1）
   --from-file PATH   从本地已编好的二进制安装（不联网下载）
   --prefix DIR       安装位置（默认 ~/.local/share/nyra）
   --bin-dir DIR      nyra 链接位置（默认 ~/.local/bin）
   --with-systemd     再装 systemd 用户服务文件（只装文件、不启动，
-                     第 1 阶段二进制还没有 schedule daemon；
                      只在带 systemd 的 Linux 上有效）
   --uninstall        卸载：停掉并删掉服务、安装目录与链接；
                      ~/.nyra（你的数据）会保留

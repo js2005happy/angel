@@ -14,7 +14,7 @@
 #     积累信誉或买代码签名证书后才会消失。
 #   - exe 本身未经真机运行验证：CI 会在 windows-latest 上跑 `nyra.exe --version`
 #     烟雾测试；真机首次运行体验待用户反馈后补充。
-#   - 旧的 Python 版安装脚本是 scripts/install.ps1（仍可用）。
+#   - 旧的 Python 版安装脚本 scripts/install.ps1 已在 0.4.0 删除。
 param(
     [string]$Version = "latest",
     [string]$InstallDir = "$env:USERPROFILE\nyra",

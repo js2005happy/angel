@@ -16,15 +16,15 @@
 #                                   [--prefix DIR] [--bin-dir DIR]
 #                                   [--with-launchd] [--uninstall] [--help]
 #   默认 --version 是 latest；已编好二进制时用 --from-file 本地安装。
-#   --version 传版本号时带 v 前缀，如 v0.3.0（不带 v 也行，脚本会补上）。
+#   --version 传版本号时带 v 前缀，如 v0.5.1（不带 v 也行，脚本会补上）。
 #
 # 要求：curl；--with-launchd 还要 launchctl。
 # 注意（诚实写，不编造）：
 #   - 二进制未签名、未公证：macOS Gatekeeper 首次运行会拦，
 #     需右键点“打开”放行一次，或等后续公证流程；不要编造“已签名”。
-#   - .dmg/.pkg 安装包：本机做不了，待办见 docs/macos-install.md，
-#     不要假装已提供。
-#   - 旧的 Python 版安装脚本是 scripts/install-macos.sh（仍可用）。
+#   - .dmg 安装包由 CI 构建（Actions → Build desktop app → 产物
+#     Nyra-macos-universal），不在 Release 里；.pkg 没有，不要假装已提供。
+#   - 旧的 Python 版安装脚本 scripts/install-macos.sh 已在 0.4.0 删除。
 set -euo pipefail
 
 REPO="js2005happy/nyra"
@@ -39,8 +39,7 @@ log()  { printf '%s\n' "nyra-install: $*"; }
 die()  { printf '%s\n' "nyra-install: 错误：$*" >&2; exit 1; }
 
 # 拒绝危险的 --prefix：空、根目录、$HOME 本身、已存在的文件、含空格。
-# （与 scripts/install.sh 的 check_prefix 同款；卸载时 rm -rf $PREFIX，
-# 不拦住的话 --prefix / 或 --prefix $HOME 会删掉系统或整个 home。）
+# （卸载时 rm -rf $PREFIX，不拦住的话 --prefix / 或 --prefix $HOME 会删掉系统或整个 home。）
 check_prefix() {
     local p="$1"
     [ -n "$p" ] || die "--prefix 不能为空"
@@ -55,7 +54,6 @@ check_prefix() {
 }
 
 # 本脚本只在 macOS 上跑：在别的系统上直接拒绝，别装一半。
-# （与 Python 版 scripts/install-macos.sh 的 check_darwin 同款。）
 check_darwin() {
     [ "$(uname -s)" = "Darwin" ] || die "这个脚本只在 macOS 上运行"
 }
@@ -65,12 +63,11 @@ usage() {
     cat <<'EOF'
 
 选项：
-  --version TAG      Release 版本（默认 latest，如 v0.3.0）
+  --version TAG      Release 版本（默认 latest，如 v0.5.1）
   --from-file PATH   从本地已编好的二进制安装（不联网下载）
   --prefix DIR       安装位置（默认 ~/.local/share/nyra）
   --bin-dir DIR      nyra 链接位置（默认 ~/.local/bin）
-  --with-launchd     再装 launchd 定时任务文件（只装文件、不 load，
-                     第 1 阶段二进制还没有 schedule daemon）
+  --with-launchd     再装 launchd 定时任务文件（只装文件、不 load）
   --uninstall        卸载：停掉并删掉服务、安装目录与链接；
                      ~/.nyra（你的数据）会保留
   --help             显示本帮助
