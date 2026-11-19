@@ -14,6 +14,7 @@ import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
 import { evaluate, parseRules, type RuleSet } from "./permissionRules.ts";
 import { runSeatbelt, SeatbeltUnavailableError } from "./seatbelt.ts";
+import { runWindowsSandboxed, WindowsSandboxUnavailableError } from "./windowsSandbox.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untrusted.ts";
 import { CheckpointStore, CheckpointError } from "./checkpoints.ts";
@@ -944,6 +945,23 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
         return `错误：Seatbelt 启动失败，命令未执行（未降级为裸奔）：${err.message}`;
       }
       return `错误：Seatbelt 执行失败，命令未完成：${err instanceof Error ? err.message : String(err)}（未降级为裸奔；改用 --sandbox local 可显式退出 OS 沙箱）`;
+    }
+  }
+  if (sandbox !== null && sandbox.level === "jobobject") {
+    // P0-6：Windows Job Object。与 Seatbelt 分支同款语义：失败即 fail-closed，
+    // 绝不裸奔。输出不是流式（子进程输出先落临时文件、结束时一次性返回），
+    // 所以不传 onStream；超时与退出码语义与 Seatbelt/bwrap 分支一致。
+    try {
+      const result = await runWindowsSandboxed(command, {
+        workdir: resolvedCwd,
+        mode: sandbox.mode as "read-only" | "workspace-write", timeout,
+      });
+      return formatSandboxResult(result);
+    } catch (err) {
+      if (err instanceof WindowsSandboxUnavailableError) {
+        return `错误：Job Object 启动失败，命令未执行（未降级为裸奔）：${err.message}`;
+      }
+      return `错误：Job Object 执行失败，命令未完成：${err instanceof Error ? err.message : String(err)}（未降级为裸奔；改用 --sandbox local 可显式退出 OS 沙箱）`;
     }
   }
   if (sandbox !== null && sandbox.level === "bwrap") {

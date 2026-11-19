@@ -25,6 +25,7 @@ import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing } from "./banner.ts";
 import { formatUsage } from "./usage.ts";
 import { formatReplStatus, ToolPrinter, useColor, styleEnabled, truncateWidth } from "./consoleUi.ts";
+import { dashboardCostSegment } from "./dashboard.ts";
 import { askApproval } from "./approvalUi.ts";
 import { JsonLines, invalidArguments, EXIT_SUCCESS, EXIT_RUNTIME, EXIT_ARGUMENT, EXIT_INCOMPLETE, EXIT_VERIFY, EXIT_INTERRUPTED, EXIT_COST } from "./jsonMode.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
@@ -1347,7 +1348,8 @@ async function runRepl(args: CliArgs): Promise<number> {
       const cols = termCols();
       // Node 版暂不支持 shift+tab 切换模式（用 /mode），所以不显示该提示。
       const frame = renderInputFrame(
-        { model: providerDesc, mode, contextUsage, modeSwitchKey: false },
+        // P2-3：框式状态栏同样追加成本段（上一轮算出的 lastCost；没配单价/没跑过一轮时不显示）。
+        { model: providerDesc, mode, contextUsage, modeSwitchKey: false, cost: dashboardCostSegment(agent.lastCost) },
         { width: cols, color: uiColor, unicode: uiUnicode },
       );
       // 先画上横线并在下面预留几行（避免之后滚屏），光标回到输入行；
@@ -1374,7 +1376,8 @@ async function runRepl(args: CliArgs): Promise<number> {
         process.stdout.write(`\x1b[${up}A\r\x1b[J` + styleEnabled(`> ${line}`, ["dim"], uiColor) + "\n");
       }
     } else {
-      process.stdout.write(formatReplStatus(providerDesc, workdir, contextUsage, mode) + "\n");
+      // P2-3：纯文本状态行同样追加成本段（与框式状态栏同一份 lastCost）。
+      process.stdout.write(formatReplStatus(providerDesc, workdir, contextUsage, mode, dashboardCostSegment(agent.lastCost)) + "\n");
       line = await ask("> ");
     }
     if (line === null) { process.stdout.write("\n"); break; }

@@ -207,6 +207,8 @@ export interface StatusInfo {
   contextUsage: number | null;
   /** 只有当前运行时真的支持 shift+tab 切换模式时才传 true。 */
   modeSwitchKey?: boolean;
+  /** P2-3：成本段（`成本 $0.0123/$0.50` 或 `成本未知`）；不传时状态栏保持原样。 */
+  cost?: string | null;
 }
 
 /** 输入区下方的暗色状态栏：模型 · 模式 · 上下文 n%（+ 可选的 shift+tab 提示）。 */
@@ -220,6 +222,7 @@ export function renderStatusBar(
     : `${Math.round(info.contextUsage * 100)}%`;
   const sep = ` ${g.dot} `;
   let text = [info.model, info.mode, `上下文 ${pct}`].join(sep);
+  if (info.cost) text += `${sep}${info.cost}`;
   if (info.modeSwitchKey) text += `${sep}shift+tab to switch modes`;
   const room = Math.max(1, opts.width - 3);
   return paint("  " + truncateWidth(text, room, g.ellipsis), opts.color ?? false, "dim");

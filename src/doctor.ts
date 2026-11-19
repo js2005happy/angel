@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { loadConfig, resolveProvider, VERSION } from "./config.ts";
 import { vaultExists, vaultMode } from "./vault/index.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——doctor 加一项隔离级别检查。
-import { getSandboxStatus } from "./sandbox.ts";
+import { getSandboxStatus, sandboxLevelText } from "./sandbox.ts";
 
 export interface DoctorCheck {
   name: string;
@@ -87,9 +87,12 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ checks: DoctorCh
   // 不要让 doctor 因为 bwrap 缺失而整体报失败；显式要求 bwrap 但缺失时，
   // 原因写进 detail，shell 执行时会 fail-closed 报错（见 docs/sandbox.md）。
   const sandboxStatus = getSandboxStatus(config);
+  // P0-6：级别文案按 level 全列出来——之前只有 bwrap/tool-level 两档，
+  // seatbelt 与 jobobject 会误显示"未生效"。jobobject 是进程级沙箱，文案写明。
+  const levelText = sandboxLevelText(sandboxStatus.level);
   checks.push({
     name: "隔离级别", ok: true,
-    detail: `沙箱后端 ${sandboxStatus.backend}，模式 ${sandboxStatus.mode}，隔离级别 ${sandboxStatus.level === "bwrap" ? "OS 沙箱（bwrap）" : sandboxStatus.level === "tool-level" ? "工具级（非 OS 沙箱）" : "未生效"}，bwrap ${sandboxStatus.bwrapAvailable ? "可用" : "不可用"}——${sandboxStatus.detail}`,
+    detail: `沙箱后端 ${sandboxStatus.backend}，模式 ${sandboxStatus.mode}，隔离级别 ${levelText}，bwrap ${sandboxStatus.bwrapAvailable ? "可用" : "不可用"}——${sandboxStatus.detail}`,
   });
 
   // 3）配置目录（loadConfig 已建好；这里只验存在与 0700）

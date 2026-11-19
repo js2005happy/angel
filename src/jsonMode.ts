@@ -30,6 +30,11 @@ export class JsonLines {
     // 原始工具参数/结果绝不进 JSONL（可能含密钥、私人文件）。
     if (["usage", "auto_compact", "auto_compact_failed", "auto_compact_skipped"].includes(kind)) {
       this.emit(kind, data);
+    } else if (kind === "cost_update") {
+      // P2-3：每轮的看板快照（字段见 src/dashboard.ts 的 DashboardSnapshot）。
+      // 与 "cost" 事件不同：cost 只在 priced 时发，cost_update 每轮都发，
+      // 算不出金额时 status 为 unpriced/missing、金额字段为 null。
+      this.emit("cost_update", data);
     } else if (kind === "verify_started") {
       this.emit("verify_started", { command: data.command ?? "" });
     } else if (kind === "verify_result") {

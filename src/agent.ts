@@ -31,6 +31,7 @@ import {
 import { EvidenceStore } from "./evidence.ts";
 import { UsageTracker } from "./usage.ts";
 import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
+import { buildDashboardSnapshot } from "./dashboard.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { randomBytes } from "node:crypto";
 
@@ -514,6 +515,10 @@ export class Agent {
       if (resp && typeof resp === "object" && typeof (resp as Record<string, unknown>).usage === "object") {
         this.emit("usage", this.usage.snapshot() as unknown as Record<string, unknown>);
       }
+      // P2-3：每轮发一次看板快照（cost_update）。与 usage 事件不同：usage 只在
+      // provider 报了用量时发，cost_update 每轮都发——算不出金额时状态写
+      // unpriced/missing、金额为 null，CLI/JSON 侧显示"未知"，不编造。
+      this.emitCostUpdate();
       const choices = (resp.choices as Record<string, unknown>[]) ?? [];
       const msg = (choices[0]?.message ?? {}) as Record<string, unknown>;
       const assistantMsg: Record<string, unknown> = { role: "assistant", content: (msg.content as string) || "" };
@@ -641,6 +646,20 @@ export class Agent {
         `成本上限已超：已花费 $${(e.spentUsd ?? 0).toFixed(4)}（上限 $${(e.limitUsd ?? 0).toFixed(2)}），运行已中止`,
       );
     }
+  }
+
+  /**
+   * P2-3：每轮的看板快照。金额与 checkCost() 用同一份 estimateCost 口径，
+   * lastCost 在此同步（与 checkCost 算出的值一致，只是多算一次纯函数调用）。
+   * 自动压缩里那次额外调用的用量不单独发事件，直接并进下一轮的累计值。
+   */
+  private emitCostUpdate(): void {
+    const e = estimateCost(this.usage.snapshot(), this.pricing, this.maxCostUsd);
+    this.lastCost = e;
+    const snap = buildDashboardSnapshot({
+      turn: this.turn, maxTurns: this.maxTurns, snapshot: this.usage.snapshot(), estimate: e,
+    });
+    this.emit("cost_update", snap as unknown as Record<string, unknown>);
   }
 
   async delegate(task: string, maxTurns = 6, opts: DelegateOptions = {}): Promise<string> {

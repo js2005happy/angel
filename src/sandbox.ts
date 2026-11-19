@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { seatbeltAvailable } from "./seatbelt.ts";
+import { windowsSandboxAvailable } from "./windowsSandbox.ts";
 import { delimiter, join } from "node:path";
 
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——三档模式。
@@ -17,12 +18,13 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——后端选择。
 // auto：Linux 且有 bwrap 时用 bwrap，否则工具级；local：显式只要工具级；
 // bwrap：强制 bwrap，缺失即 fail-closed 报错；e2b：0.5.1 暂不支持。
-export type SandboxBackend = "auto" | "local" | "bwrap" | "seatbelt" | "e2b";
+// seatbelt：macOS sandbox-exec；jobobject：Windows Job Object（P0-6）。
+export type SandboxBackend = "auto" | "local" | "bwrap" | "seatbelt" | "jobobject" | "e2b";
 
 export const SANDBOX_MODES: readonly SandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
-export const SANDBOX_BACKENDS: readonly SandboxBackend[] = ["auto", "local", "bwrap", "seatbelt", "e2b"];
+export const SANDBOX_BACKENDS: readonly SandboxBackend[] = ["auto", "local", "bwrap", "seatbelt", "jobobject", "e2b"];
 
-export type SandboxLevel = "bwrap" | "seatbelt" | "tool-level" | "none";
+export type SandboxLevel = "bwrap" | "seatbelt" | "jobobject" | "tool-level" | "none";
 
 export interface SandboxStatus {
   backend: string;
@@ -34,8 +36,8 @@ export interface SandboxStatus {
 
 export interface ResolvedSandbox {
   /** 生效的后端（auto 已解析为 bwrap 或 local）。 */
-  backend: "bwrap" | "seatbelt" | "local";
-  /** 用户原始选择（auto/local/bwrap/seatbelt），用于提示文案。 */
+  backend: "bwrap" | "seatbelt" | "jobobject" | "local";
+  /** 用户原始选择（auto/local/bwrap/seatbelt/jobobject），用于提示文案。 */
   requested: SandboxBackend;
   mode: SandboxMode;
   level: SandboxLevel;
@@ -43,6 +45,8 @@ export interface ResolvedSandbox {
   bwrapAvailable: boolean;
   /** macOS 上 sandbox-exec 是否可用（其他平台恒 false）。 */
   seatbeltAvailable?: boolean;
+  /** Windows 上 PowerShell 是否可用（其他平台恒 false）。 */
+  jobObjectAvailable?: boolean;
 }
 
 /** bwrap 不可用时抛出的错误：调用方据此降级或 fail-closed，绝不静默裸奔。 */
@@ -152,6 +156,21 @@ export function resolveSandboxBackend(
     }
     return { backend: "seatbelt", requested, mode, level: "seatbelt", allowNet, bwrapAvailable, seatbeltAvailable: true };
   }
+  // P0-6：Windows Job Object（PowerShell + kernel32）。与 bwrap/Seatbelt 同款语义，
+  // 只是隔离面不同：Job Object 只管进程生命周期与资源（随作业死、进程数上限），
+  // 不管文件与网络——那两轴仍由工具级规则兜底（见 docs/sandbox.md，不夸大）。
+  if (requested === "jobobject") {
+    if (process.platform !== "win32") {
+      throw new Error(`--sandbox jobobject 只支持 Windows（当前平台 ${process.platform}）；请改回 --sandbox auto 或 --sandbox local`);
+    }
+    if (!windowsSandboxAvailable()) {
+      throw new Error("--sandbox jobobject 要求本机有 PowerShell（powershell.exe 或 pwsh.exe），但 PATH 里找不到它；请改回 --sandbox auto 或 --sandbox local");
+    }
+    if (mode === "danger-full-access") {
+      throw new Error("danger-full-access 与沙箱互斥：该模式要求无限制执行，不能进 Job Object；如需无限制请用 --sandbox local 并自行承担风险");
+    }
+    return { backend: "jobobject", requested, mode, level: "jobobject", allowNet, bwrapAvailable, jobObjectAvailable: true };
+  }
   if (requested === "local") {
     return { backend: "local", requested, mode, level: "tool-level", allowNet, bwrapAvailable };
   }
@@ -165,17 +184,45 @@ export function resolveSandboxBackend(
   // 注意：auto **不**自动选 Seatbelt。SBPL 不是 Apple 的稳定 API，且避免在没有 mac
   // 实测的情况下悄悄改变既有行为（auto 无 bwrap → 工具级 是已有契约）。
   // 需要 macOS OS 级沙箱请显式 --sandbox seatbelt。
+  // 同理 auto 也不自动选 Job Object：Windows 一侧同样未经真机验证，且 Job Object
+  // 的隔离面与 bwrap/Seatbelt 不同（不管文件与网络），悄悄改变行为会误导用户；
+  // 需要 Windows 进程级沙箱请显式 --sandbox jobobject。
   return { backend: "local", requested, mode, level: "tool-level", allowNet, bwrapAvailable };
 }
 
 /** auto 回落到工具级时，在 doctor 与首次 shell 执行时给一次的提示文案。 */
 export function toolLevelFallbackNotice(status: ResolvedSandbox | SandboxStatus): string {
-  return `沙箱提示：当前是工具级隔离，不是 OS 沙箱（后端 ${status.backend}，模式 ${status.mode}；本机无 bwrap）。` +
+  const osHint = process.platform === "win32"
+    ? "想用进程级沙箱请用 --sandbox jobobject（需要 PowerShell；只管进程生命周期与资源，不管文件与网络）"
+    : `想用 OS 级沙箱请安装 bwrap：${BWRAP_INSTALL_HINT}`;
+  const missing = process.platform === "win32" ? "本机未启用 Job Object" : "本机无 bwrap";
+  return `沙箱提示：当前是工具级隔离，不是 OS 沙箱（后端 ${status.backend}，模式 ${status.mode}；${missing}）。` +
     `工作目录内读写与审批、shell 黑名单仍生效，但命令在宿主机上跑，无内核级拦截；` +
-    `出工作区写与联网仍由工具级规则拦。想用 OS 级沙箱请安装 bwrap：${BWRAP_INSTALL_HINT}`;
+    `出工作区写与联网仍由工具级规则拦。${osHint}`;
 }
 
-/** 给 doctor / CLI 用的状态快照：解析失败（显式 bwrap 缺失、e2b）也不抛错，level 记 none 并把原因写进 detail。 */
+/** 各后端一句话状态（纯函数，供测试直接覆盖 macOS/Windows 才可达的分支）。 */
+export function describeSandboxLevel(resolved: ResolvedSandbox): string {
+  if (resolved.level === "bwrap") {
+    return `后端 ${resolved.requested} → bwrap（OS 级沙箱，bubblewrap 可用），模式 ${resolved.mode}，网络 ${resolved.allowNet ? "已放开" : "默认断开"}；出工作区写与联网会被挡住`;
+  }
+  if (resolved.level === "seatbelt") {
+    return `后端 ${resolved.requested} → Seatbelt（OS 级沙箱，sandbox-exec 可用），模式 ${resolved.mode}，网络 ${resolved.allowNet ? "已放开" : "默认断开（只放 localhost）"}；出工作区写与联网会被挡住`;
+  }
+  if (resolved.level === "jobobject") {
+    return `后端 ${resolved.requested} → Job Object（进程级沙箱，PowerShell 可用），模式 ${resolved.mode}，网络 ${resolved.allowNet ? "已放开" : "默认断开"}；作业关柄即全杀、进程数有上限，但文件与网络隔离仍由工具级规则兜底`;
+  }
+  return toolLevelFallbackNotice(resolved);
+}
+
+/** doctor 的隔离级别文案（纯函数；jobobject 是进程级沙箱，文案写明）。 */
+export function sandboxLevelText(level: SandboxLevel): string {
+  if (level === "bwrap") return "OS 沙箱（bwrap）";
+  if (level === "seatbelt") return "OS 沙箱（Seatbelt）";
+  if (level === "jobobject") return "进程级沙箱（Job Object，不管文件与网络）";
+  if (level === "tool-level") return "工具级（非 OS 沙箱）";
+  return "未生效";
+}
 export function getSandboxStatus(
   config?: Record<string, unknown> | null,
   flag?: string | null,
@@ -185,9 +232,9 @@ export function getSandboxStatus(
   try { mode = resolveSandboxMode(config); } catch { /* 模式非法时 doctor 仍要出状态，detail 里说明 */ }
   try {
     const resolved = resolveSandboxBackend(config, flag);
-    const detail = resolved.level === "bwrap"
-      ? `后端 ${resolved.requested} → bwrap（OS 级沙箱，bubblewrap 可用），模式 ${resolved.mode}，网络 ${resolved.allowNet ? "已放开" : "默认断开"}；出工作区写与联网会被挡住`
-      : `${toolLevelFallbackNotice(resolved)}`;
+    // 各后端一句话状态见 describeSandboxLevel（纯函数，可单测）。
+    // 注意：之前这里只有 bwrap 一个分支，seatbelt 会误落进工具级提示——已一并修掉。
+    const detail = describeSandboxLevel(resolved);
     return { backend: resolved.backend, mode: resolved.mode, bwrapAvailable, level: resolved.level, detail };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

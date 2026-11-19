@@ -1,5 +1,6 @@
 // src/consoleUi.ts — 终端输出样式与工具打印，与 Python 版 nyra/console.py 同语义。
 // 颜色只在 TTY 且 NO_COLOR 未设且 TERM 不是 dumb 时启用；其余情况纯文本。
+import { formatDashboardLine, type DashboardSnapshot } from "./dashboard.ts";
 const STYLES: Record<string, string> = {
   bold: "1", dim: "2", gold: "33", blue: "34", cyan: "36", green: "32", red: "31",
 };
@@ -151,6 +152,9 @@ export class ToolPrinter {
         : `${this.s("│", "dim")} ${this.s(text, "dim")}`;
     } else if (kind === "assistant") {
       line = this.s("· " + oneLine(data.content ?? "", 100), "dim");
+    } else if (kind === "cost_update") {
+      // P2-3：每轮的看板行（与 --json 的 cost_update 事件同一份快照）。
+      line = this.s(formatDashboardLine(data as unknown as DashboardSnapshot), "dim");
     } else {
       return;
     }
@@ -158,8 +162,10 @@ export class ToolPrinter {
   }
 }
 
-/** REPL 状态行：[模型] | 目录 · 上下文 n% · 模式；上下文只用模型实际报告的数字，未报告显示 --。 */
-export function formatReplStatus(model: string, cwd: string, contextUsage: number | null, mode: string): string {
+/** REPL 状态行：[模型] | 目录 · 上下文 n% · 模式；上下文只用模型实际报告的数字，未报告显示 --。
+ * P2-3：cost 有值时末尾追加成本段（`成本 $0.0123/$0.50` 或 `成本未知`），无值时行保持原样。 */
+export function formatReplStatus(model: string, cwd: string, contextUsage: number | null, mode: string, cost?: string | null): string {
   const pct = contextUsage === null || contextUsage === undefined ? "--" : `${Math.round(contextUsage * 100)}%`;
-  return `[${model}] | ${cwd} · 上下文 ${pct} · ${mode}`;
+  const base = `[${model}] | ${cwd} · 上下文 ${pct} · ${mode}`;
+  return cost ? `${base} · ${cost}` : base;
 }
