@@ -312,6 +312,25 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal.inspect()["unknown_outcomes"], 2)
         self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
+    def test_finish_rechecks_post_commit_competing_intent(self):
+        # A competing writer inserts an intent after our result is persisted.
+        # The result stays on disk, but finish must not report a clean commit.
+        journal = ToolJournal("finish-post-commit-race", root=self.root)
+        call_id = journal.begin("shell")
+        original_write = journal._write
+
+        def racing_write(event, cid, tool):
+            original_write(event, cid, tool)
+            if event == "result_ok":
+                original_write("intent", "a" * 32, "http_post")
+
+        with mock.patch.object(journal, "_write", side_effect=racing_write):
+            with self.assertRaisesRegex(JournalError, "结果写入后发现并发"):
+                journal.finish(call_id, "shell", success=True)
+        status = journal.inspect()
+        self.assertEqual(status["unknown_outcomes"], 1)
+        self.assertFalse(status["safe_to_auto_resume"])
+
     def test_finish_rejects_unrelated_orphan_result(self):
         journal = ToolJournal("orphan-before-finish", root=self.root)
         pending_id = journal.begin("shell")
