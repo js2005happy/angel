@@ -106,7 +106,13 @@ export function parseSkillText(text: string, path: string): Skill {
 // 不按技能名排序：字母序会打乱项目层覆盖全局层的优先级表达，提示词索引、
 // --list-skills 与网关状态三处都以这个顺序为准。
 export function canonicalSkillDirs(workdir: string, home: string, pluginDirs: string[] = []): string[] {
-  return [join(workdir, "skills"), join(workdir, ".nyra", "skills"), join(home, "skills"), ...pluginDirs];
+  // 目录一律归一化为 POSIX 形式（`/`）：join() 在 Windows 上产出 `\`，而
+  // 技能路径在提示词、--list-skills、网关状态与 matchSkillsByPaths 里都按
+  // `/` 做字符串比较与展示——不归一化，Windows 上同一条目录在三处会写成
+  // 两种样子（Node CI #49 的 test-skill-order 失败就是这么来的）。
+  // fs 操作本身两种分隔符都能接受，所以归一化不影响加载。
+  const toPosix = (p: string): string => p.replace(/\\/g, "/");
+  return [toPosix(join(workdir, "skills")), toPosix(join(workdir, ".nyra", "skills")), toPosix(join(home, "skills")), ...pluginDirs.map(toPosix)];
 }
 
 /** 把任意技能列表规范化为规范顺序：同名去重（先出现者胜），其余保持原顺序。 */
