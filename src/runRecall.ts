@@ -23,6 +23,10 @@ export interface RecallOptions {
   workdir?: string;
   /** 要排除的运行 ID（通常是本次运行的 ID）。 */
   excludeRunId?: string;
+  /** 只回忆这么多天以内的运行；<=0 表示不限。默认 30 天。 */
+  maxAgeDays?: number;
+  /** 当前时间（测试注入）。默认 Date.now()。 */
+  now?: number;
 }
 
 export interface RecalledRun {
@@ -34,6 +38,8 @@ export interface RecalledRun {
   verify_cmd: string | null;
   verify_exit: number | null;
   created_at: string;
+  /** 距今天数（用于提示"这条历史有多旧"）。 */
+  ageDays: number;
 }
 
 /** 只回忆这些状态：有明确结论的运行。 */
@@ -70,6 +76,13 @@ export function selectRecalledRuns(runs: readonly RunState[], task: string, opts
     const pastTask = str(rec.task);
     const score = taskSimilarity(task, pastTask);
     if (score < threshold) continue;
+    // 新鲜度：太老的历史当不了"上次结论"——代码早就变了，沿用会误导。
+    const maxAge = opts.maxAgeDays ?? 30;
+    if (maxAge > 0) {
+      const created = Date.parse(str(rec.created_at));
+      const now = opts.now ?? Date.now();
+      if (Number.isFinite(created) && Number.isFinite(now) && now - created > maxAge * 24 * 60 * 60 * 1000) continue;
+    }
     const vr = (rec.verify_result ?? {}) as Record<string, unknown>;
     out.push({
       run_id: id,
@@ -80,6 +93,9 @@ export function selectRecalledRuns(runs: readonly RunState[], task: string, opts
       verify_cmd: typeof rec.verify_cmd === "string" ? rec.verify_cmd : null,
       verify_exit: typeof vr.exit_code === "number" ? (vr.exit_code as number) : null,
       created_at: str(rec.created_at),
+      ageDays: Number.isFinite(Date.parse(str(rec.created_at)))
+        ? Math.max(0, Math.floor(((opts.now ?? Date.now()) - Date.parse(str(rec.created_at))) / 86_400_000))
+        : 0,
     });
   }
   out.sort((a, b) => b.score - a.score || (a.created_at < b.created_at ? 1 : -1));
@@ -93,7 +109,8 @@ export function formatRecallNote(recalled: readonly RecalledRun[], maxChars = 12
   for (const r of recalled) {
     const task = r.task.length > 60 ? r.task.slice(0, 60) + "…" : r.task;
     const statusText = r.status === "verified" ? "已验证" : r.status === "verify_failed" ? "验证未通过" : "未验证";
-    const bits: string[] = [`- ${task}（${statusText}，相似度 ${(r.score * 100).toFixed(0)}%）`];
+    const age = r.ageDays > 0 ? `${r.ageDays} 天前` : "今天";
+    const bits: string[] = [`- ${task}（${statusText}，${age}，相似度 ${(r.score * 100).toFixed(0)}%）`];
     if (r.changed_files.length) bits.push(`  改过：${r.changed_files.join("、")}`);
     if (r.verify_cmd) bits.push(`  验证：${r.verify_cmd}${r.verify_exit === null ? "" : `（退出码 ${r.verify_exit}）`}`);
     lines.push(bits.join("\n"));
