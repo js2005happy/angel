@@ -62,6 +62,12 @@ jobs:
         with:
           bun-version: ${{ matrix.bun }}
 
+      # 必须先装依赖：tsconfig 的 "types": ["bun", "node"] 要求
+      # node_modules/@types/bun 与 @types/node 存在；没有这一步 tsc 报
+      # TS2688（36f08e6 的 Node CI #9 三平台同错，测试一步都没跑到）。
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
       - name: Type check
         run: bun x tsc -p tsconfig.json --noEmit
 
