@@ -23,6 +23,7 @@ import { handleCost } from "./costCli.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
+import { handleConfig } from "./configCli.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
@@ -220,7 +221,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["config", "redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -1937,6 +1938,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
+  if (args.subcommand === "config") return handleConfig(args.subArgs ?? [], home);
   if (args.subcommand === "redlines") {
     // 上线红线自检：把 docs/VISION-NEXT.md 第七节变成可执行命令。
     const cfgRed = loadConfig(home);
