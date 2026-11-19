@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，ToolJournal 人工对账原因分类）
+
+- `inspect()` 新增只读 `review_reason`：`journal_ambiguous`、`unknown_outcomes`、`none`；优先报告日志歧义，不暴露调用 ID、参数或结果。与 `manual_review_required` 配套供人工对账界面区分原因，不授予自动恢复或执行权限。新增静态回归测试源码，未运行测试或 CI，无新依赖。
+
 ## 未发布（2026-11-20，ToolJournal 人工对账状态信号）
 
 - `inspect()` 增加只读布尔字段 `manual_review_required`：当日志有未知结果或歧义时为 true；干净配对时为 false，但 `execution_verified` 与 `safe_to_auto_resume` 仍始终为 false。该字段不证明外部副作用已完成，也不提供跨进程锁或自动重放。
