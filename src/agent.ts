@@ -25,7 +25,7 @@ import { RepeatGuard } from "./repeatGuard.ts";
 import { SessionRules } from "./approvalRules.ts";
 import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, skillRenderOptionsFor, type Skill } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
-import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession } from "./memory.ts";
+import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession, buildMemorySection } from "./memory.ts";
 import {
   compactMessages, shouldAutoCompact, validateAutoCompactThreshold,
   DEFAULT_AUTO_COMPACT_THRESHOLD, trimOldToolResults, splitCompletedVsActive,
@@ -277,6 +277,7 @@ export class Agent {
       interactive: this.interactive,
       home: this.home,
       memoryPath: this.memoryPath,
+      sessionId: this.sessionId,
       skillsDir: join(this.home, "skills"),
       // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用 Agent 当前
       // 的技能集合（闭包活读 this.skills，setMode 换创造模式技能后同样有效）。
@@ -563,8 +564,12 @@ export class Agent {
     if (full.length) sections.push("## 相关技能\n" + full.map((s) => renderSkill(s, skillRenderOpts)).join("\n\n"));
     // 跨会话回忆：上次同类任务的结论（历史，需复核）。没有就不加，零影响。
     if (this.recallNote) sections.push(this.recallNote);
-    const memory = loadMemorySummary(40, this.memoryPath, this.home);
-    if (memory) sections.push("## 长期记忆\n" + memory);
+    // 缺口 1：长期记忆按需检索（BM25 + 作用域过滤），替代无条件读最后 40 行。
+    // 有命中只注入命中的条目（附来源）；无命中回落到最后 40 行；与 runRecall
+    // 的“runs/ 回忆”互补、不是重复：一个是 MEMORY.md 里的事实，一个是上次
+    // 同类任务的结论，两边都留。
+    const memory = buildMemorySection(this.memoryPath, this.home, task);
+    if (memory) sections.push(memory);
     // 延迟加载（P3）：本轮没发出去的工具告诉模型一声，附上怎么拿回来
     // （调 search_tools 检索）。deferredNote 由 toolSchemas(task) 算出，
     // runLoop 先调 toolSchemas 再调这里；不经 runLoop 的调用不带这段。

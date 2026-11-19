@@ -174,9 +174,11 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
   }
 
   // 8) 工具集常驻成本：原生工具每轮都发一遍 schema，工具多就是每轮白烧 token。
-  // 注意：延迟加载只覆盖 MCP 工具（MCP > 8 个时自动开启，NYRA_LAZY_TOOLS=0
-  // 可关），原生工具集的体积只能靠裁剪控制；features.tool_search /
-  // config.tool_search.enabled 目前不控制延迟加载，不要在这里把它当开关用。
+  // 注意：延迟加载只覆盖 MCP 工具——MCP > 8 个时自动开启；显式开启
+  // features.tool_search / config.tool_search.enabled 时阈值降到 topK
+  // （默认 8），即使 MCP 工具不多也会进入延迟加载；NYRA_LAZY_TOOLS=0
+  // 一票否决。原生工具集的体积只能靠裁剪控制，tools-bloat 只量原生
+  // 工具，不拿 tool_search 当开关。
   const tb = input.toolBudget;
   if (tb) {
     const heavy = tb.totalTools >= 25 || tb.tokensPerTurn >= 2500 || (tb.contextRatio !== null && tb.contextRatio >= 0.05);

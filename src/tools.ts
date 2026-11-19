@@ -1,4 +1,4 @@
-// src/tools.ts — 25 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
+// src/tools.ts — 28 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
 // 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
 // src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
@@ -9,7 +9,7 @@ import {
   statSync, writeFileSync,
 } from "node:fs";
 import { join, resolve, relative, dirname, sep, posix } from "node:path";
-import { appendMemory } from "./memory.ts";
+import { appendMemory, searchMemoryEntries, formatMemorySearchResults, previewMemoryDelete, deleteMemoryEntries, listMemoryEntries, memoryOwnerForPath, MemoryDeleteError } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
 import { evaluate, parseRules, matchPathGlob, type RuleSet } from "./permissionRules.ts";
@@ -69,10 +69,10 @@ export const MUTATING_TOOLS = new Set([
   "write_file", "edit_file", "apply_patch", "shell", "memory_append", "save_skill",
   "plan", "http_post", "browser_navigate", "browser_click", "browser_screenshot",
   "computer_screenshot", "computer_click", "computer_type", "computer_key",
-  "computer_windows", "mcp",
+  "computer_windows", "mcp", "memory_forget", "memory_delete",
 ]);
 
-export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan"]);
+export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan", "memory_forget", "memory_delete"]);
 export const SESSION_GRANT_TOOLS = new Set([...SESSION_FILE_TOOLS, "shell"]);
 export const APPROVE_ALWAYS = "always";
 /** 审批回调返回值：true/false、"always"（本会话同一命令/文件），或结构化决定（带规则范围 / 拒绝反馈）。 */
@@ -117,6 +117,9 @@ export interface ToolContext {
   // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用的技能集合。
   // Agent 会传一个活读 this.skills 的闭包；没传时回退到从 skillsDir 现场加载。
   getSkills?: (() => Skill[]) | null;
+  /** 当前会话 id：memory_forget / memory_delete 用它做进行中会话保护
+   * （本会话正在跑时，其记忆拒绝删除）；memory_append 用它记来源会话。 */
+  sessionId?: string | null;
   /** 额外可写根（--add-dir / config.extra_writable_dirs）：这些目录下的写入同样放行。 */
   extraWriteDirs?: string[] | null;
   /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
@@ -218,6 +221,18 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
     { models: { type: "array", items: { type: "string" }, description: "模型列表，如 [\"deepseek\", \"xai:grok-4\"]" }, prompt: { type: "string" }, system: { type: "string" }, synthesizer: { type: "string" }, timeout: { type: "number", default: 120.0 } },
     ["models", "prompt"]),
   schema("memory_append", "把一条重要信息写入长期记忆", { text: { type: "string" } }, ["text"]),
+  // 缺口 1：按需检索长期记忆（BM25 + 作用域过滤）。只读，不需审批；
+  // 每条结果附来源（记忆 id、来源会话、时间戳、文件行号）。向量检索另算。
+  schema("memory_search", "按需检索长期记忆：按查询词 BM25 检索 MEMORY.md，返回最相关的几条，每条附记忆 id、来源会话、时间戳与文件行号；session_id 有值时只查该会话写的记忆",
+    { query: { type: "string" }, limit: { type: "integer", default: 5 }, session_id: { type: "string" }, owner: { type: "string", description: "记忆 owner：global 或 bot:<群>/<机器人>；与当前记忆文件不符时拒绝" } },
+    ["query"]),
+  // 缺口 2：删除长期记忆（memory_forget 与 memory_delete 同义，两个名字都留着：
+  // 别家 MCP 叫 forget_session，用户口语也常说“忘记这条”）。与 write_file
+  // 同级审批；删错 owner 的不删、进行中会话的记忆拒绝删除；删除本身记进证据链。
+  schema("memory_forget", "删除长期记忆：按记忆 id 列表删，或按来源会话删一整批。ids 与 session_id 至少给一个；owner 与当前记忆文件不符的目标不删；进行中会话的记忆拒绝删除",
+    { ids: { type: "array", items: { type: "string" }, description: "要删的记忆 id 列表（memory_search 返回的 id）" }, session_id: { type: "string", description: "删掉该会话写下的全部记忆" }, owner: { type: "string" }, reason: { type: "string", description: "删除原因（记进证据链，如“写错了”“过期了”）" } }),
+  schema("memory_delete", "删除长期记忆（与 memory_forget 同义）：按记忆 id 列表删，或按来源会话删一整批。ids 与 session_id 至少给一个；owner 与当前记忆文件不符的目标不删；进行中会话的记忆拒绝删除",
+    { ids: { type: "array", items: { type: "string" }, description: "要删的记忆 id 列表（memory_search 返回的 id）" }, session_id: { type: "string", description: "删掉该会话写下的全部记忆" }, owner: { type: "string" }, reason: { type: "string", description: "删除原因（记进证据链，如“写错了”“过期了”）" } }),
   schema("save_skill", "把一次成功做法保存为可复用技能",
     { name: { type: "string" }, description: { type: "string" }, when: { type: "string" }, keywords: { type: "string", description: "用逗号分隔的关键词" }, instructions: { type: "string" } },
     ["name", "description", "when", "keywords", "instructions"]),
@@ -1480,8 +1495,97 @@ async function toolMultiModelResearch(ctx: ToolContext, models: string[], prompt
 
 async function toolMemoryAppend(ctx: ToolContext, text: string): Promise<string> {
   await checkApproval(ctx, "memory_append", tr("sum.memory", { text: text.slice(0, 60) }));
-  appendMemory(text, ctx.memoryPath);
+  // 来源会话记进 sidecar 索引：以后按会话删（memory_forget session_id）就靠它。
+  appendMemory(text, ctx.memoryPath, undefined, undefined, ctx.sessionId ?? null);
   return "已写入长期记忆";
+}
+
+// ---- 缺口 1 + 缺口 2：记忆检索与删除 ----
+
+async function toolMemorySearch(ctx: ToolContext, query: string, limit: number, sessionId: string | null, owner: string | null): Promise<string> {
+  let results;
+  try {
+    results = searchMemoryEntries(ctx.memoryPath, query, {
+      limit,
+      session_id: sessionId ?? undefined,
+      owner: owner ?? undefined,
+      home: ctx.home,
+    });
+  } catch (err: unknown) {
+    return `错误：${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (!results.length) return "没有找到相关记忆。";
+  return formatMemorySearchResults(results);
+}
+
+async function toolMemoryForget(ctx: ToolContext, toolName: string, args: Record<string, unknown>): Promise<string> {
+  const ids = Array.isArray(args.ids)
+    ? (args.ids as unknown[]).map((v) => String(v)).filter(Boolean)
+    : undefined;
+  const sessionId = typeof args.session_id === "string" && args.session_id ? args.session_id : undefined;
+  const ownerArg = typeof args.owner === "string" && args.owner ? args.owner : undefined;
+  const reason = typeof args.reason === "string" && args.reason ? args.reason : undefined;
+  if ((!ids || !ids.length) && !sessionId) {
+    return "错误：须指定 ids（记忆 id 列表）或 session_id（来源会话）之一";
+  }
+  const owner = memoryOwnerForPath(ctx.memoryPath, ctx.home);
+  let preview;
+  try {
+    preview = previewMemoryDelete(ctx.memoryPath, { ids, session_id: sessionId, owner: ownerArg, home: ctx.home });
+  } catch (err: unknown) {
+    return `错误：${err instanceof Error ? err.message : String(err)}`;
+  }
+  const notes: string[] = [];
+  if (preview.notFound.length) notes.push(`未找到：${preview.notFound.join("、")}`);
+  if (preview.skipped.length) notes.push(`跳过（owner 不符，未删）：${preview.skipped.map((s) => s.id).join("、")}`);
+  if (!preview.targets.length) {
+    return `没有可删除的记忆。${notes.length ? notes.join("；") : ""}`;
+  }
+  const listed = preview.targets
+    .map((e) => `- [${e.id}] ${e.text.length > 80 ? e.text.slice(0, 80) + "…" : e.text}`)
+    .join("\n");
+  const summary =
+    `删除 ${preview.targets.length} 条长期记忆（${owner}，删后剩 ${preview.remaining} 条）${reason ? `，原因：${reason}` : ""}\n${listed}` +
+    (notes.length ? `\n${notes.join("；")}` : "");
+  // 与 write_file 同级审批：auto 非交互 / readonly / 权限规则 deny 都在这里拦住。
+  await checkApproval(ctx, toolName, summary, { fileTarget: ctx.memoryPath });
+  // 审批期间文件可能已变：按 id 重算再删（deleteMemoryEntries 内部按 id 解析）。
+  let result;
+  try {
+    result = deleteMemoryEntries(ctx.memoryPath, {
+      ids,
+      session_id: sessionId,
+      owner: ownerArg,
+      activeSessionIds: ctx.sessionId ? [ctx.sessionId] : [],
+      home: ctx.home,
+    });
+  } catch (err: unknown) {
+    if (err instanceof MemoryDeleteError) return `错误：${err.message}`;
+    throw err;
+  }
+  // 删除本身进证据链：删了什么、谁批准的、删后数量。
+  if (ctx.evidence) {
+    try {
+      const approvalChannel = ctx.mode === "full"
+        ? "full 模式（启动时已授权）"
+        : ctx.approveFn ? "网关/网页审批卡" : "终端审批";
+      const body = [
+        `工具：${toolName}`,
+        `记忆文件：${ctx.memoryPath}（${owner}）`,
+        `批准：用户经${approvalChannel}批准（${ctx.mode} 模式）`,
+        reason ? `原因：${reason}` : null,
+        `删了 ${result.deleted.length} 条，删后剩 ${result.remaining} 条：`,
+        ...result.deleted.map((e) => `- [${e.id}] ${e.text}（来源会话：${e.source_session ?? "未记录"}；${e.created_at || "时间未记录"}）`),
+        ...(result.skipped.length ? [`跳过（owner 不符，未删）：${result.skipped.map((s) => s.id).join("、")}`] : []),
+        ...(result.notFound.length ? [`未找到：${result.notFound.join("、")}`] : []),
+      ].filter((x): x is string => x !== null).join("\n");
+      ctx.evidence.save("memory_delete", `memory://${owner}`, body);
+    } catch { /* 证据落盘失败不破坏删除结果 */ }
+  }
+  const tail: string[] = [];
+  if (result.skipped.length) tail.push(`跳过（owner 不符，未删）：${result.skipped.map((s) => s.id).join("、")}`);
+  if (result.notFound.length) tail.push(`未找到：${result.notFound.join("、")}`);
+  return `已删除 ${result.deleted.length} 条记忆，剩余 ${result.remaining} 条。${tail.length ? tail.join("；") : ""}`.trim();
 }
 
 async function toolSaveSkill(ctx: ToolContext, name: string, description: string, when: string, keywords: string | string[], instructions: string): Promise<string> {
@@ -1687,7 +1791,7 @@ export function disconnectBrowser(ctx: ToolContext): void {
 
 // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
 // 跑 PreToolUse 的四类工具：写文件 / 改文件 / 打补丁 / 跑命令。其余工具不跑钩子。
-export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "shell"]);
+export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete"]);
 
 /**
  * PreToolUse：checkApproval 之前跑，被拦截时抛 ToolError。
@@ -1753,6 +1857,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case "computer_windows": return await toolComputerWindows(ctx);
       case "multi_model_research": return await toolMultiModelResearch(ctx, args.models as string[], String(args.prompt), args.system as string | null ?? null, args.synthesizer as string | null ?? null, args.timeout === undefined ? 120 : Number(args.timeout));
       case "memory_append": return await toolMemoryAppend(ctx, String(args.text));
+      case "memory_search": return await toolMemorySearch(ctx, String(args.query), args.limit === undefined ? 5 : Number(args.limit), typeof args.session_id === "string" ? args.session_id : null, typeof args.owner === "string" ? args.owner : null);
+      case "memory_forget": case "memory_delete": return await toolMemoryForget(ctx, name, args);
       case "save_skill": return await toolSaveSkill(ctx, String(args.name), String(args.description), String(args.when), args.keywords as string | string[], String(args.instructions));
       case "read_skill": return await toolReadSkill(ctx, String(args.name));
       case "delegate": return await toolDelegate(
@@ -1800,7 +1906,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
 /** 可安全直接重试的只读工具（无副作用）。截图类工具不在内：每次执行都会在本地多存一个截图文件。 */
 export const READONLY_TOOLS = new Set([
   "read_file", "list_dir", "grep_search", "git_status",
-  "web_fetch", "web_search", "read_skill",
+  "web_fetch", "web_search", "read_skill", "memory_search",
   "poppy_discover", "poppy_identity_check", "poppy_permission_check",
 ]);
 
@@ -1828,7 +1934,8 @@ function readRawForVerify(ctx: ToolContext, path: string): string | null {
  * 写操作重试前的状态核查：读回目标状态，确认本次写入是否已生效。
  * 返回 true = 已生效（不再执行）、false = 未生效（可以重试）、
  * null = 无法核查（不盲目重试）。只有能确定性读回的写操作才可核查：
- * write_file / edit_file / plan / memory_append / save_skill；
+ * write_file / edit_file / plan / memory_append / save_skill /
+ * memory_delete / memory_forget（目标 id 已不在记忆里即生效）；
  * apply_patch、shell、http_post、浏览器 / 电脑操作、delegate、mcp
  * 无法通用核查，一律返回 null。
  */
@@ -1863,6 +1970,22 @@ export async function verifyWriteApplied(
       } catch {
         return false;
     }
+    }
+    if (name === "memory_delete" || name === "memory_forget") {
+      // 删除已生效 = 目标 id / 该会话的条目已不在记忆里（失败重试时不再重复删）。
+      try {
+        const entries = listMemoryEntries(ctx.memoryPath, ctx.home);
+        if (Array.isArray(args.ids)) {
+          const ids = (args.ids as unknown[]).map((v) => String(v));
+          return ids.every((id) => !entries.some((e) => e.id === id));
+        }
+        if (typeof args.session_id === "string") {
+          return !entries.some((e) => e.source_session === args.session_id);
+        }
+        return null;
+      } catch {
+        return false;
+      }
     }
     if (name === "save_skill") {
       const target = join(ctx.skillsDir, `${String(args.name)}.md`);

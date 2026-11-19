@@ -26,7 +26,7 @@ import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
 import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFont } from "./webuiMobile.ts";
 import { runHooks } from "./hooks.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
-import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome } from "./memory.ts";
+import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome, MemoryDeleteError } from "./memory.ts";
 import { ConversationStore } from "./conversations.ts";
 import { trimOldToolResults, GATEWAY_COMPACT_THRESHOLD, DEFAULT_AUTO_COMPACT_THRESHOLD, validateAutoCompactThreshold } from "./compact.ts";
 import { loadSchedule, saveSchedule, schedulePath, listScheduleTasks, removeScheduleTask, runDueTasks, type ScheduleTask } from "./scheduler.ts";
@@ -38,8 +38,9 @@ import { loadModelCache, manualWindowFromConfig, resolveContextWindow, type Wind
 import { MCPToolManager, buildMcpManager } from "./mcp.ts";
 import { McpCostTracker, estimateToolCost, costLimitUsd } from "./mcpCost.ts";
 import { DeviceRegistry, defaultDevicesPath, startDiscoveryResponder, PairingError } from "./pairing.ts";
-import { memoryScopes, memoryView, memorySave, MemoryBrowserError } from "./memoryBrowser.ts";
+import { memoryScopes, memoryView, memorySave, deleteMemoryForScope, MemoryBrowserError } from "./memoryBrowser.ts";
 import { listArtifacts, getArtifact } from "./artifacts.ts";
+import { EvidenceStore } from "./evidence.ts";
 import { GroupStore, type BotConfig } from "./groups.ts";
 // 群聊页嵌进二进制（.txt 后缀：bun-types 只给 *.txt 声明了 string 类型；
 // 内容分别是群聊页 HTML 与 JS，原文件在 nyra/ 已随 Python 删除，改这里要同步改 .txt）。
@@ -1368,6 +1369,66 @@ export class Gateway {
       if (outcome === "unknown") { this.sendError(res, 404, "会话不存在"); return; }
       if (outcome === "running") { this.sendError(res, 409, "会话正在执行任务，请等它完成再关闭"); return; }
       this.sendJson(res, 200, { id: sid, closed: true });
+      return;
+    }
+
+    // 缺口 2：网关删除记忆。body：{scope, room?, bot?, ids? | session_id?,
+    // revision?}——ids 与 session_id 至少给一个；revision 有值时走 CAS
+    // （memoryBrowser.ts 的思路：对不上 409，一条都不删）。进行中会话的
+    // 记忆拒绝删除（与 closeSession 对齐回 409）。信任级别与已有的
+    // POST /api/memory（整文件保存）一致：token 鉴权、用户主动发起，
+    // 不另设审批；agent 工具侧的删除仍走 checkApproval（见 tools.ts）。
+    if (method === "DELETE" && path === "/api/memory") {
+      let body: Record<string, unknown>;
+      try { body = await this.readBody(req); } catch (err) { this.sendError(res, 400, `请求无效：${err instanceof Error ? err.message : String(err)}`); return; }
+      const scope = String(body.scope ?? "global");
+      const room = typeof body.room === "string" ? body.room : null;
+      const bot = typeof body.bot === "string" ? body.bot : null;
+      const ids = Array.isArray(body.ids)
+        ? (body.ids as unknown[]).map((v) => String(v)).filter(Boolean)
+        : undefined;
+      const sessionId = typeof body.session_id === "string" && body.session_id ? body.session_id : undefined;
+      if ((!ids || !ids.length) && !sessionId) { this.sendError(res, 400, "须指定 ids（记忆 id 列表）或 session_id（来源会话）之一"); return; }
+      const running = new Set(
+        [...this.runs.values()].filter((r) => r.status === "running").map((r) => r.sessionId),
+      );
+      if (sessionId && running.has(sessionId)) { this.sendError(res, 409, "该会话正在执行任务，请等它完成再删除其记忆"); return; }
+      try {
+        const result = deleteMemoryForScope(this.home, scope, room, bot, {
+          ids,
+          session_id: sessionId,
+          activeSessionIds: running,
+          revision: typeof body.revision === "string" ? body.revision : undefined,
+        });
+        // 删除本身进证据链：删了什么、删后数量（网关侧无审批卡，批准方记 token 持有人）。
+        try {
+          const store = new EvidenceStore(join(this.home, "evidence"), "memory");
+          store.save(
+            "memory_delete",
+            `memory://${scope}`,
+            [
+              "网关 DELETE /api/memory",
+              `范围：${scope}${scope === "bot" ? `（${room}/${bot}）` : ""}`,
+              `批准：token 持有人（${isOwner ? "本机" : "已配对设备"}）`,
+              `删了 ${result.deleted.length} 条，删后剩 ${result.remaining} 条：`,
+              ...result.deleted.map((e) => `- [${e.id}] ${e.text}（来源会话：${e.source_session ?? "未记录"}；${e.created_at || "时间未记录"}）`),
+              ...(result.skipped.length ? [`跳过（owner 不符，未删）：${result.skipped.map((s) => s.id).join("、")}`] : []),
+              ...(result.notFound.length ? [`未找到：${result.notFound.join("、")}`] : []),
+            ].join("\n"),
+          );
+        } catch { /* 证据落盘失败不破坏删除结果 */ }
+        this.sendJson(res, 200, {
+          deleted: result.deleted.length,
+          deleted_ids: result.deleted.map((e) => e.id),
+          remaining: result.remaining,
+          skipped: result.skipped,
+          not_found: result.notFound,
+        });
+      } catch (err) {
+        if (err instanceof MemoryBrowserError && err.name === "MemoryConflict") this.sendError(res, 409, err.message);
+        else if (err instanceof MemoryDeleteError && err.reason === "session_running") this.sendError(res, 409, err.message);
+        else this.sendError(res, 400, err instanceof Error ? err.message : String(err));
+      }
       return;
     }
 

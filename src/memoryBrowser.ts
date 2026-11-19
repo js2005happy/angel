@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { resolveNyraHome } from "./memory.ts";
+import { resolveNyraHome, deleteMemoryEntries, type MemoryDeleteResult } from "./memory.ts";
 
 export const MAX_MEMORY_BYTES = 64 * 1024;
 const REVISION_RE = /^(?:missing|[0-9a-f]{64})$/;
@@ -118,6 +118,42 @@ export function memoryView(home: string, scope: string, room?: string | null, bo
 export function memorySave(home: string, scope: string, room: string | null, bot: string | null, revision: string, content: string): MemoryView {
   const { path, root } = memoryTarget(home, scope, room, bot);
   return replaceMemory(path, revision, content, root);
+}
+
+// ---- 缺口 2：按范围删除记忆（网关 DELETE /api/memory 用） ----
+//
+// 范围解析与 CAS 复用本文件的思路：目标先经 memoryTarget 校验
+// （scope/room/bot 不合法直接拒绝，不拼路径）；revision 有值时先核对
+// 当前文件 SHA-256，对不上抛 MemoryConflict，一条都不删。owner 由范围
+// 决定（global 或 bot:<room>/<bot>），与文件实际 owner 不符的目标只
+// 跳过不删；进行中会话的记忆由 deleteMemoryEntries 整批拒绝。
+export function deleteMemoryForScope(
+  home: string,
+  scope: string,
+  room: string | null,
+  bot: string | null,
+  opts: {
+    ids?: string[];
+    session_id?: string;
+    activeSessionIds?: Iterable<string>;
+    revision?: string;
+  } = {},
+): MemoryDeleteResult {
+  const { path, root } = memoryTarget(home, scope, room, bot);
+  if (opts.revision !== undefined) {
+    const current = inspectMemory(path, root);
+    if (current.revision !== opts.revision) {
+      throw new MemoryConflict("记忆已被其他进程修改，请重新读取后再删除");
+    }
+  }
+  const owner = scope === "bot" ? `bot:${room}/${bot}` : "global";
+  return deleteMemoryEntries(path, {
+    ids: opts.ids,
+    session_id: opts.session_id,
+    owner,
+    activeSessionIds: opts.activeSessionIds,
+    home,
+  });
 }
 
 /** 已知的记忆范围（只列已存在的群机器人，不枚举任意路径）。 */

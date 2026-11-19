@@ -111,7 +111,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
   nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
-  nyra memory <export|export-prompt|import|local|import-zip>  记忆交换
+  nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
   nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
   nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
   nyra setup                     首次启动向导
@@ -155,7 +155,7 @@ Usage:
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
   nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
-  nyra memory <export|export-prompt|import|local|import-zip>  memory exchange
+  nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
   nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
   nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
   nyra setup                     first-run wizard
@@ -942,6 +942,72 @@ async function handleCreator(argv: string[], home: string, workdir: string): Pro
 async function handleMemory(argv: string[], home: string): Promise<number> {
   const { exportSnapshot, importSnapshot, importChatZip, readLocalCodex, readLocalClaude, readLocalDir, EXPORT_PROMPT } = await import("./memoryExchange.ts");
   const cmd = argv[0];
+  // 缺口 1：nyra memory search <关键词> [--limit N] [--session <会话 id>]
+  if (cmd === "search") {
+    const { searchMemoryEntries, formatMemorySearchResults } = await import("./memory.ts");
+    const rest = argv.slice(1);
+    const limitIdx = rest.indexOf("--limit");
+    const limit = limitIdx >= 0 ? parseInt(rest[limitIdx + 1], 10) : 5;
+    const sessIdx = rest.indexOf("--session");
+    const sessionId = sessIdx >= 0 ? rest[sessIdx + 1] : undefined;
+    const query = rest.filter((a, i) => a !== "--limit" && a !== "--session" && !(limitIdx >= 0 && i === limitIdx + 1) && !(sessIdx >= 0 && i === sessIdx + 1)).join(" ");
+    if (!query.trim()) { process.stderr.write("用法：nyra memory search <关键词> [--limit N] [--session <会话 id>]\n"); return 2; }
+    const results = searchMemoryEntries(join(home, "MEMORY.md"), query, { limit: Number.isFinite(limit) ? limit : 5, session_id: sessionId, home });
+    if (!results.length) { process.stdout.write("没有找到相关记忆。\n"); return 0; }
+    process.stdout.write(formatMemorySearchResults(results) + "\n");
+    return 0;
+  }
+  // 缺口 2：nyra memory forget <id...> [--session <会话 id>] [--yes]
+  // 缺省先列出要删的条目再问一次；--yes 跳过确认（脚本里用）。
+  if (cmd === "forget" || cmd === "delete") {
+    const { previewMemoryDelete, deleteMemoryEntries, memoryOwnerForPath } = await import("./memory.ts");
+    const { EvidenceStore } = await import("./evidence.ts");
+    const rest = argv.slice(1);
+    const yes = rest.includes("--yes");
+    const sessIdx = rest.indexOf("--session");
+    const sessionId = sessIdx >= 0 ? rest[sessIdx + 1] : undefined;
+    const ids = rest.filter((a, i) => a !== "--yes" && a !== "--session" && !(sessIdx >= 0 && i === sessIdx + 1));
+    const memoryPath = join(home, "MEMORY.md");
+    if (!ids.length && !sessionId) { process.stderr.write("用法：nyra memory forget <记忆 id...> [--session <会话 id>] [--yes]\n"); return 2; }
+    let preview;
+    try {
+      preview = previewMemoryDelete(memoryPath, { ids: ids.length ? ids : undefined, session_id: sessionId, home });
+    } catch (err: unknown) {
+      process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
+    if (preview.notFound.length) process.stdout.write(`未找到：${preview.notFound.join("、")}\n`);
+    if (!preview.targets.length) { process.stdout.write("没有可删除的记忆。\n"); return 0; }
+    process.stdout.write(`将删除 ${preview.targets.length} 条记忆（删后剩 ${preview.remaining} 条）：\n`);
+    for (const e of preview.targets) process.stdout.write(`- [${e.id}] ${e.text}\n`);
+    if (!yes) {
+      const choice = await askApproval("确认删除这些记忆吗？");
+      if (choice !== "yes") { process.stdout.write("已取消，未删除任何东西。\n"); return 0; }
+    }
+    let result;
+    try {
+      result = deleteMemoryEntries(memoryPath, { ids: ids.length ? ids : undefined, session_id: sessionId, home });
+    } catch (err: unknown) {
+      process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
+    try {
+      const owner = memoryOwnerForPath(memoryPath, home);
+      new EvidenceStore(join(home, "evidence"), "memory").save(
+        "memory_delete",
+        `memory://${owner}`,
+        [
+          "nyra memory forget（终端）",
+          `记忆文件：${memoryPath}（${owner}）`,
+          "批准：用户（终端确认）",
+          `删了 ${result.deleted.length} 条，删后剩 ${result.remaining} 条：`,
+          ...result.deleted.map((e) => `- [${e.id}] ${e.text}（来源会话：${e.source_session ?? "未记录"}；${e.created_at || "时间未记录"}）`),
+        ].join("\n"),
+      );
+    } catch { /* 证据落盘失败不破坏删除结果 */ }
+    process.stdout.write(`已删除 ${result.deleted.length} 条记忆，剩余 ${result.remaining} 条。\n`);
+    return 0;
+  }
   if (cmd === "export") {
     // exportSnapshot 要的是记忆文件路径，不是 Nyra 家目录。
     process.stdout.write(exportSnapshot(join(home, "MEMORY.md")) + "\n");
@@ -993,7 +1059,7 @@ async function handleMemory(argv: string[], home: string): Promise<number> {
     process.stdout.write("配对读记忆在 Node 版第 3 阶段，暂走 Python 版：python3 -m nyra.memory_exchange peer <配对码> [主机 端口]\n");
     return 2;
   }
-  process.stdout.write("用法：nyra memory <export|export-prompt|import|local|import-zip|peer>\n");
+  process.stdout.write("用法：nyra memory <export|export-prompt|import|local|import-zip|peer|search|forget>\n");
   return 2;
 }
 
