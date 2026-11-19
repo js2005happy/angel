@@ -68,6 +68,11 @@ timedOut: number;
 rejected: number;
 /** 全部线程已花美元合计；任一线程未计价时仍为已计价部分之和，调用方不得当成全量。 */
 totalSpentUsd: number | null;
+  /**
+   * 仍在后台跑的超时线程数。它们的最终花费事后会计入父级 delegateSpentUsd，
+   * 但不进 totalSpentUsd——>0 时 totalSpentUsd 只是下限（汇总文本写 "≥"）。
+   */
+  pendingAfterTimeout: number;
 totalDurationMs: number;
 maxConcurrency: number;
 timeoutMs: number;
@@ -242,6 +247,8 @@ failed,
 timedOut,
 rejected,
 totalSpentUsd: totalSpent,
+  // 超时线程没有 AbortSignal，底层仍在跑：花费此刻未知，且不进 totalSpent。
+  pendingAfterTimeout: timedOut,
 totalDurationMs: Date.now() - startedAt,
 maxConcurrency,
 timeoutMs,
@@ -297,8 +304,8 @@ lines.push(
 (result.timedOut? `，超时 ${result.timedOut} 个`: "") +
 (result.rejected? `，被拒 ${result.rejected} 个`: "") +
 `；总耗时 ${(result.totalDurationMs / 1000).toFixed(1)} 秒` +
-`；已计价花费合计 ${result.totalSpentUsd === null? "未知（未计价）": "$" + result.totalSpentUsd.toFixed(4)}` +
-`（超时线程事后花的钱不进此合计，仍计入父级累计）` +
+    `；已计价花费合计 ${result.totalSpentUsd === null ? "未知（未计价）" : (result.pendingAfterTimeout > 0 ? "≥" : "") + "$" + result.totalSpentUsd.toFixed(4)}` +
+    `（${result.pendingAfterTimeout > 0 ? `${result.pendingAfterTimeout} 个超时线程仍在后台跑，其花费未结算——上值只是下限` : "无超时线程，上值为全部"}）` +
 `；并发上限 ${result.maxConcurrency}（${result.maxConcurrencyClamped? "调用方要求更高，已按硬顶 5 夹住": "默认"}）` +
 `，单任务超时 ${Math.round(result.timeoutMs / 1000)} 秒。`,
 );

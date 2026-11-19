@@ -85,7 +85,9 @@ provider、工具集、审批回调与 worktree 状态的主线程异步对象�
 - **超时不取消底层任务**：`Agent.run` 目前没有 AbortSignal，超时的线程仍在后台
   跑完，它的 worktree 清理与花费记账（`delegate` 的 `recordChildUsage`）照常走，
   只是结果不再等它；事后多花的钱仍会计入父级的 `delegateSpentUsd`，但不进本批
-  返回的 `totalSpentUsd`——不要把 `totalSpentUsd` 当成最终账单。
+  返回的 `totalSpentUsd`。**为了让这条不吃人**：结果里新增 `pendingAfterTimeout`
+  （仍在后台的超时线程数），有超时线程时汇总文本的金额写成 `≥$x` 并注明「上值只是
+  下限」——不要把 `totalSpentUsd` 当最终账单，也不要把它当上限。
 - **非 worktree 的并行线程共享同一工作目录**：两个线程同时改同一文件会互相覆盖，
   本批不做冲突检测与合并（那是 3b / 缺口 13 验收队列的事）；需要隔离写操作时用
   `isolation: "worktree"`，每线程各拿一个独立工作树。
