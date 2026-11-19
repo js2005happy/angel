@@ -1,5 +1,13 @@
 # Nyra 变更记录
 
+## 未发布（0.5.2：P1 长任务可信度）
+
+- Node CI #73 附带小修（不是 #38 的真回归）：#38 合入后 main 上 Node CI #73 只有 Windows 任务失败，ubuntu/macOS 同一提交全过；两个失败都是 5000ms 超时、无断言错误（`test-gateway-sandbox.test.ts`「网关沙箱：默认断网」5187ms、`test-knowledge.test.ts`「大知识库异步/同步搜索一致性」9084ms），是 Windows 运行器偏慢导致的偶发超时。按之前 rewind 用例的做法，给这两个用例单独加 15000ms；测试逻辑本身未动。
+- P1-2 证据链落盘：工具调用 → 产物 → 校验结果三元组可回放。`src/runs.ts`：`RunState` 加可选 `file_hashes`（运行结束时为每个改动文件记 sha256，成功与失败路径都记，读不到跳过、失败不影响运行）；新增 `RunStore.readEvents()`（读 `events.jsonl`，跳过损坏行）；新增 `verifyEvidenceChain()`（五项检查：verify-result、tool-calls-closed、artifacts-present、artifacts-hash、tests-modified 只警告不失败）与 `formatEvidenceReport()`；新增 `nyra evidence verify <运行 ID>`（`src/cli.ts`，通过 0、链不完整 4、运行不存在/记录损坏 1、用法错误 2）。复用现有 `evidence.ts` / `artifacts.ts` / `runs.ts` / `--verify`，未另发明存储格式。文档 `docs/evidence.md`。测试：`tests/node/test-evidence-chain.test.ts` 11 项（含 CLI 级 spawn 真测）。诚实边界：复核不重跑验证命令，只核对记录自洽与产物未改；旧运行无 `file_hashes` 时哈希检查失败并明说原因。
+- P1-4 断点续跑不重复副作用：幂等键 = `sha256(工具名 + "\n" + 参数的稳定序列化)`（键序无关）。`src/tools.ts` 新增 `stableStringify` / `idempotencyKey` / `RESUME_IDEMPOTENT_TOOLS`（只含 `verifyWriteApplied` 能读回核查的 5 个写工具：`write_file`、`edit_file`、`plan`、`memory_append`、`save_skill`）与 `resumeWriteAlreadyDone()`（键命中 **且** 读回核查仍证明写入已生效才跳过；中断后文件被外部改动/删除时重执行，不撒谎）；`src/runs.ts` 的 `RunRecorder.call()` 在 `tool_start` / `tool_result` 事件记 `args_hash`，新增 `loadCompletedWriteKeys()`；`src/agent.ts` 分派循环在参数校验后、循环守卫之前查跳过（跳过的调用不进守卫计数）；`src/cli.ts` 的 `--resume-run` 路径接线并打 stderr 提示。附带修掉一个真问题：`appendEvent` 的脱敏会把 64 位十六进制的 `args_hash` 当密钥打码成 `[已隐藏]`，现对该字段豁免（单向指纹，不可还原参数原文）。`shell` / `apply_patch` / `http_post` / 浏览器与电脑操作 / `delegate` / MCP 不参与去重（相同参数不等于相同结果），续跑时照常重执行。文档 `docs/resume.md`。测试：`tests/node/test-resume-idempotent.test.ts` 7 项（含跳过、正常执行、外部改动重执行、文件删除重执行、记录器往返）。
+- P1-3（失败三分类）未做：DeepSeek 正在做同一项（分支 `feat/failure-classes`，PR #40《失败三分类 + JSON 事件契约文档》），按避让规则跳过，等它合入后再核对。
+- README 的“更新了什么”一节与五处版本号本次不动（仍保持 0.5.1），等发版时再补。
+
 ## 未发布（0.5.1：补齐 0.5.0 的已知缺口 + OpenMausBot 循环守卫与幂等重试）
 
 - 版本升到 0.5.1（五处一致：`src/config.ts` 的 `VERSION`、根 package.json、desktop/package.json、desktop/src-tauri/tauri.conf.json、desktop/src-tauri/Cargo.toml 与 Cargo.lock 里的 `nyra-desktop` 条目；`src/sandbox.ts` 的 e2b 报错文案与测试断言同步 0.5.1；安装文档与 GUIDE 里当前版本期望输出同步 0.5.1，历史叙述保留 0.5.0 不动）。
