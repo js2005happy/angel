@@ -2,8 +2,13 @@
 // 房间持久化在 <home>/groups/<room_id>/room.json；每机器人独立多 Key，
 // 最多 5 把，不同机器人不共享 Key 池；轮换复用 providers.ts 的
 // KeyRotatingProvider，不另造轮换逻辑。
-// 已知未决项（审查报告第 7 项，需用户拍板）：群 Key 明文存 room.json，
-// 本文件保持原样，不擅自改走密码箱。
+// 群 Key 存储（审查报告第 7 项）：room.json 里不再存明文 Key，只存加密条目
+// `api_keys_enc`（格式 `v1:vault:<密码箱条目名>` 或 `v1:local:<nonce>:<data>:<mac>`）。
+// 优先走密码箱（存在且 NYRA_VAULT_PASSWORD 能解锁时），否则用本机密钥
+// `<home>/groups.key`（首次自动生成 32 随机字节、0600）加密；读写对用户透明，
+// 旧 room.json 里的明文 api_keys 在读到时自动迁移并写回。公开返回（publicBot）
+// 同时剥掉 api_keys 与 api_keys_enc。解密失败的 Key 不进轮换，
+// providerForBot 会报清楚原因而不是静默少一把 Key。
 // 与 Python 的两处有意偏差（并行化要求）：
 // 1. 同轮 bot 并行问模型（Python 是串行），汇总时仍按机器人顺序写入；
 // 并行轮内各 bot 只看到轮次开始前的记录，看不到同轮其他 bot 的回复。
@@ -11,7 +16,7 @@
 // Python 只 cap 单次 chat 调用（最多 3 轮 Agent 循环可达约 360 秒）。
 // 超时只记该 bot 一条 error 记录，不拖垮整轮。
 // 只用 Node 标准库，不加依赖。
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -39,6 +44,7 @@ import {
   type ProviderLike,
   type SwitchRecord,
 } from "./providers.ts";
+import { decryptEntry, encryptEntry, Vault } from "./vault.ts";
 
 export const MAX_BOTS = 6;
 export const MAX_API_KEYS = 5;
@@ -102,7 +108,7 @@ function writeJsonAtomic(path: string, data: unknown): void {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
   try {
-    // 群目录里存着各机器人的明文 API Key：目录只允许属主进出。
+    // 群目录 0700：room.json 里只有加密后的 Key，但消息记录仍属隐私。
     chmodSync(dir, 0o700);
   } catch {
     /* 忽略 chmod 失败，与 Python 口径一致 */
@@ -111,6 +117,7 @@ function writeJsonAtomic(path: string, data: unknown): void {
   try {
     writeFileSync(tempPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
     // tempfile.mkstemp 默认建 0600 文件；Node 显式 chmod 以保证同口径。
+    // （目录 0700：room.json 里只有加密后的 Key，但消息记录仍属隐私。）
     chmodSync(tempPath, 0o600);
     renameSync(tempPath, path);
   } finally {
@@ -126,6 +133,7 @@ export interface BotConfig {
   provider?: string | null;
   model?: string | null;
   api_keys?: string[] | null;
+  api_keys_enc?: string[] | null;
   mode?: string;
 }
 
@@ -136,11 +144,14 @@ export interface Bot {
   instructions: string;
   provider: string | null;
   model: string | null;
+  /** 明文 Key：只在内存里短暂出现（用户刚配好、还没落盘时），落盘前必转 api_keys_enc。 */
   api_keys: string[] | null;
+  /** 加密后的 Key（落盘形态）：`v1:vault:<密码箱条目名>` 或 `v1:local:<nonce>:<data>:<mac>`。 */
+  api_keys_enc: string[] | null;
   mode: string;
 }
 
-export type PublicBot = Omit<Bot, "api_keys">;
+export type PublicBot = Omit<Bot, "api_keys" | "api_keys_enc">;
 
 export interface RoomMessage {
   sender: string;
@@ -182,6 +193,7 @@ const BOT_FIELDS = new Set([
   "provider",
   "model",
   "api_keys",
+  "api_keys_enc",
   "mode",
 ]);
 
@@ -207,6 +219,19 @@ export function validateBot(bot: Bot): Bot {
     for (const key of bot.api_keys) {
       if (typeof key !== "string" || !key.trim()) {
         throw new GroupError("api_keys 里不能有空 Key");
+      }
+    }
+  }
+  if (bot.api_keys_enc !== null && bot.api_keys_enc !== undefined) {
+    if (!Array.isArray(bot.api_keys_enc)) {
+      throw new GroupError("api_keys_enc 必须是字符串列表");
+    }
+    if (bot.api_keys_enc.length > MAX_API_KEYS) {
+      throw new GroupError(`每个机器人最多配置 ${MAX_API_KEYS} 个 API Key`);
+    }
+    for (const stored of bot.api_keys_enc) {
+      if (typeof stored !== "string" || !stored.startsWith("v1:")) {
+        throw new GroupError("api_keys_enc 格式无效（应为 v1:vault:… 或 v1:local:…）");
       }
     }
   }
@@ -236,6 +261,7 @@ export function parseBot(value: unknown): Bot {
     provider: (raw.provider as string | null | undefined) ?? null,
     model: (raw.model as string | null | undefined) ?? null,
     api_keys: (raw.api_keys as string[] | null | undefined) ?? null,
+    api_keys_enc: (raw.api_keys_enc as string[] | null | undefined) ?? null,
     mode: (raw.mode as string | undefined) ?? "readonly",
   };
   return validateBot(bot);
@@ -251,6 +277,7 @@ export const DEFAULT_BOTS: Bot[] = [
     provider: null,
     model: null,
     api_keys: null,
+    api_keys_enc: null,
     mode: "readonly",
   },
   {
@@ -262,6 +289,7 @@ export const DEFAULT_BOTS: Bot[] = [
     provider: null,
     model: null,
     api_keys: null,
+    api_keys_enc: null,
     mode: "readonly",
   },
   {
@@ -273,6 +301,7 @@ export const DEFAULT_BOTS: Bot[] = [
     provider: null,
     model: null,
     api_keys: null,
+    api_keys_enc: null,
     mode: "readonly",
   },
   {
@@ -283,6 +312,7 @@ export const DEFAULT_BOTS: Bot[] = [
     provider: null,
     model: null,
     api_keys: null,
+    api_keys_enc: null,
     mode: "readonly",
   },
 ];
@@ -353,8 +383,9 @@ export interface GroupStoreOptions {
 }
 
 function publicBot(raw: Bot): PublicBot {
-  const { api_keys: _dropped, ...rest } = raw;
+  const { api_keys: _dropped, api_keys_enc: _droppedEnc, ...rest } = raw;
   void _dropped;
+  void _droppedEnc;
   return rest;
 }
 
@@ -369,6 +400,10 @@ export class GroupStore {
   readonly botTimeoutSeconds: number;
   readonly botRunner: BotRunner | null;
   private sendQueue = new Map<string, Promise<void>>();
+  /** 已解锁的密码箱缓存：600k 次 PBKDF2 只在进程里算一次（审查报告第 1 项的性能点）。 */
+  private vaultCache: Vault | null | undefined = undefined;
+  /** 本机密钥（groups.key 派生的加解密密钥）缓存。 */
+  private localKeyCache: { encKey: Buffer; macKey: Buffer } | null = null;
 
   constructor(root: string, opts: GroupStoreOptions = {}) {
     this.root = resolve(root);
@@ -376,6 +411,144 @@ export class GroupStore {
     this.providerFactory = opts.providerFactory ?? null;
     this.botTimeoutSeconds = opts.botTimeoutSeconds ?? BOT_TIMEOUT_SECONDS;
     this.botRunner = opts.botRunner ?? null;
+  }
+
+  // -- 群 Key 加密存储（审查报告第 7 项） --
+  /** 密码箱可用时返回已解锁的 Vault（实例内缓存，免得每次解密都重算 600k 次 PBKDF2）。 */
+  private getVault(): Vault | null {
+    if (this.vaultCache !== undefined) return this.vaultCache;
+    try {
+      const password = process.env.NYRA_VAULT_PASSWORD;
+      if (!password) {
+        this.vaultCache = null;
+        return null;
+      }
+      const vault = new Vault(join(this.home, "vault.json"));
+      if (!vault.exists() || !vault.unlock(password)) {
+        this.vaultCache = null;
+        return null;
+      }
+      this.vaultCache = vault;
+      return vault;
+    } catch {
+      this.vaultCache = null;
+      return null;
+    }
+  }
+
+  /** 本机密钥：<home>/groups.key（32 随机字节，首次自动生成、0600），HMAC 派生加解密两把钥。 */
+  private localKeys(): { encKey: Buffer; macKey: Buffer } {
+    if (this.localKeyCache) return this.localKeyCache;
+    const keyPath = join(this.home, "groups.key");
+    let raw: Buffer;
+    if (existsSync(keyPath)) {
+      raw = readFileSync(keyPath);
+      if (raw.length !== 32) throw new GroupError("群聊本机密钥文件已损坏：groups.key");
+    } else {
+      raw = randomBytes(32);
+      mkdirSync(this.home, { recursive: true });
+      writeFileSync(keyPath, raw);
+      try { chmodSync(keyPath, 0o600); } catch { /* ignore */ }
+    }
+    const encKey = createHmac("sha256", raw).update("nyra-groups-enc-v1").digest();
+    const macKey = createHmac("sha256", raw).update("nyra-groups-mac-v1").digest();
+    this.localKeyCache = { encKey, macKey };
+    return this.localKeyCache;
+  }
+
+  /** 一把明文 Key → 一条加密存储串。优先密码箱，否则本机密钥。 */
+  private encryptKey(key: string): string {
+    const vault = this.getVault();
+    if (vault) {
+      const entryName = `group-${randomBytes(8).toString("hex")}`;
+      vault.add(entryName, key);
+      return `v1:vault:${entryName}`;
+    }
+    const { encKey, macKey } = this.localKeys();
+    const entry = encryptEntry(encKey, macKey, Buffer.from(key, "utf-8"));
+    return `v1:local:${entry.nonce}:${entry.data}:${entry.mac}`;
+  }
+
+  /** 一条加密存储串 → 明文 Key；解不出来返回 null（不抛错，由调用方决定怎么报）。 */
+  private decryptKey(stored: string): string | null {
+    if (stored.startsWith("v1:vault:")) {
+      const name = stored.slice("v1:vault:".length);
+      const vault = this.getVault();
+      if (!vault) return null;
+      try {
+        return vault.get(name);
+      } catch {
+        // 密码可能换了：清掉缓存的旧 Vault，用当前密码重解一次。
+        this.vaultCache = undefined;
+        const retry = this.getVault();
+        if (!retry) return null;
+        try { return retry.get(name); } catch { return null; }
+      }
+    }
+    if (stored.startsWith("v1:local:")) {
+      const parts = stored.split(":");
+      if (parts.length !== 5) return null;
+      try {
+        const { encKey, macKey } = this.localKeys();
+        return decryptEntry(encKey, macKey, { nonce: parts[2], data: parts[3], mac: parts[4] }).toString("utf-8");
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** 该机器人全部可用 Key（明文）：先解 api_keys_enc，解不出的不进轮换； */
+  resolveBotKeys(bot: Bot): string[] {
+    const keys: string[] = [];
+    for (const stored of bot.api_keys_enc ?? []) {
+      const plain = this.decryptKey(stored);
+      if (plain !== null) keys.push(plain);
+    }
+    // 兜底：内存里还没落盘的明文 api_keys（刚配好、或旧 room.json 未迁移时）。
+    if (bot.api_keys) keys.push(...bot.api_keys);
+    return keys;
+  }
+
+  /**
+   * 把一组明文 Key 存回 bot：api_keys 清掉，api_keys_enc 写加密串。
+   * 已存条目按明文值复用，不重复建密码箱条目；返回被换掉的旧存储串，
+   * 调用方在 writeRoom 成功后再调 deleteStoredVaultEntries 删对应的密码箱条目。
+   */
+  private storeBotKeys(bot: Bot, keys: string[] | null): string[] {
+    const oldStored = bot.api_keys_enc ?? [];
+    const oldByValue = new Map<string, string>();
+    for (const stored of oldStored) {
+      const plain = this.decryptKey(stored);
+      if (plain !== null && !oldByValue.has(plain)) oldByValue.set(plain, stored);
+    }
+    const next: string[] = [];
+    if (keys) {
+      for (const key of keys) {
+        next.push(oldByValue.get(key) ?? this.encryptKey(key));
+      }
+    }
+    const removed = oldStored.filter((stored) => !next.includes(stored));
+    bot.api_keys = null;
+    bot.api_keys_enc = next.length > 0 ? next : null;
+    return removed;
+  }
+
+  /** 尽力删掉被换掉的密码箱条目（删失败也不影响本次写入）。 */
+  private deleteStoredVaultEntries(removed: string[]): void {
+    if (removed.length === 0) return;
+    const vault = this.getVault();
+    if (!vault) return;
+    for (const stored of removed) {
+      if (!stored.startsWith("v1:vault:")) continue;
+      try { vault.remove(stored.slice("v1:vault:".length)); } catch { /* ignore */ }
+    }
+  }
+
+  /** create() 用：把刚配好的明文 Key 转成加密存储。返回被换掉的旧存储串（新房间一般为空）。 */
+  private normalizeBotKeys(bot: Bot): string[] {
+    const keys = this.resolveBotKeys(bot);
+    return this.storeBotKeys(bot, keys.length > 0 ? keys : null);
   }
 
   roomFile(roomId: string): string {
@@ -403,7 +576,27 @@ export class GroupStore {
     }
     const room = data as Record<string, unknown>;
     if (room.id !== roomId) throw new GroupError("群数据格式无效");
-    return data as RoomData;
+    const roomData = data as RoomData;
+    // 自动迁移：旧 room.json 里的明文 api_keys → 加密存储后写回（审查报告第 7 项）。
+    // 读到即迁，用户无感；写回失败不影响本次读取，下次读到再迁。
+    if (Array.isArray(roomData.bots)) {
+      let migrated = false;
+      const removed: string[] = [];
+      for (const bot of roomData.bots) {
+        if (bot.api_keys !== null && bot.api_keys !== undefined) {
+          const keys = this.resolveBotKeys(bot);
+          removed.push(...this.storeBotKeys(bot, keys.length > 0 ? keys : null));
+          migrated = true;
+        }
+      }
+      if (migrated) {
+        try {
+          this.writeRoom(roomData);
+          this.deleteStoredVaultEntries(removed);
+        } catch { /* ignore */ }
+      }
+    }
+    return roomData;
   }
 
   private writeRoom(room: RoomData): void {
@@ -467,7 +660,11 @@ export class GroupStore {
       // 稳定、不可猜的 incarnation 标记；同 id 重建不得继承旧的外部策略。
       instance_id: randomBytes(16).toString("hex"),
     };
+    // 刚配好的明文 Key 落盘前转加密存储（审查报告第 7 项）。
+    const removed: string[] = [];
+    for (const bot of members) removed.push(...this.normalizeBotKeys(bot));
     this.writeRoom(data);
+    this.deleteStoredVaultEntries(removed);
     // 返回给调用方（web UI 原样发给浏览器）：绝不含 api_keys。
     return publicRoom(data);
   }
@@ -507,12 +704,13 @@ export class GroupStore {
     const room = this.readRoom(roomId);
     const bot = room.bots.find((b) => b.id === botId);
     if (!bot) throw new GroupError(`机器人不存在：${botId}`);
-    const keys = bot.api_keys ?? [];
+    const keys = this.resolveBotKeys(bot);
     if (keys.length >= MAX_API_KEYS) {
       throw new GroupError(`每个机器人最多配置 ${MAX_API_KEYS} 个 API Key`);
     }
-    bot.api_keys = [...keys, key];
+    const removed = this.storeBotKeys(bot, [...keys, key.trim()]);
     this.writeRoom(room);
+    this.deleteStoredVaultEntries(removed);
     return publicRoom(room);
   }
 
@@ -525,14 +723,15 @@ export class GroupStore {
     const room = this.readRoom(roomId);
     const bot = room.bots.find((b) => b.id === botId);
     if (!bot) throw new GroupError(`机器人不存在：${botId}`);
-    const keys = bot.api_keys ?? [];
+    const keys = this.resolveBotKeys(bot);
     const index =
       typeof keyOrIndex === "number" ? keyOrIndex : keys.indexOf(keyOrIndex);
     if (!Number.isInteger(index) || index < 0 || index >= keys.length) {
       throw new GroupError("API Key 不存在");
     }
-    bot.api_keys = keys.filter((_, i) => i !== index);
+    const removed = this.storeBotKeys(bot, keys.filter((_, i) => i !== index));
     this.writeRoom(room);
+    this.deleteStoredVaultEntries(removed);
     return publicRoom(room);
   }
 
@@ -557,8 +756,9 @@ export class GroupStore {
     const room = this.readRoom(roomId);
     const bot = room.bots.find((b) => b.id === botId);
     if (!bot) throw new GroupError(`机器人不存在：${botId}`);
-    bot.api_keys = keys ? [...keys] : null;
+    const removed = this.storeBotKeys(bot, keys ? keys.map((k) => k.trim()) : null);
     this.writeRoom(room);
+    this.deleteStoredVaultEntries(removed);
     return publicRoom(room);
   }
 
@@ -582,7 +782,7 @@ export class GroupStore {
         "CLI provider（Codex）没有 API Key，不能为机器人配置 api_keys",
       );
     }
-    const keyed = (bot.api_keys ?? []).map(
+    const keyed = this.resolveBotKeys(bot).map(
       (key) => new Provider({ ...base, apiKey: key, auth: "env" }),
     );
     const rotating = new KeyRotatingProvider(keyed, fallbackNotice);
@@ -632,26 +832,32 @@ export class GroupStore {
     let provider: ProviderLike;
     if (this.providerFactory !== null) {
       provider = this.providerFactory(bot);
-    } else if (bot.api_keys && bot.api_keys.length > 0) {
-      provider = this.keyRotatingProvider(bot);
     } else {
-      const config = loadConfig(this.home);
-      const primary = resolveProvider({
-        home: this.home,
-        config,
-        providerName: bot.provider ?? undefined,
-        model: bot.model ?? undefined,
-      });
-      provider = buildProviderChain(
-        primary,
-        resolveFallbackChain(config, primary.name),
-        fallbackNotice,
-        {
-          providerCls: Provider,
-          resolver: (name: string) =>
-            resolveProvider({ home: this.home, config, providerName: name }),
-        },
-      );
+      const keys = this.resolveBotKeys(bot);
+      if (keys.length > 0) {
+        provider = this.keyRotatingProvider(bot);
+      } else if ((bot.api_keys_enc?.length ?? 0) > 0) {
+        // 配了 Key 但一把都解不出来（密码箱没解锁、或密钥已换）：说清楚，别静默当没配。
+        throw new GroupError("该机器人的 API Key 无法解密：密码箱未解锁（请设 NYRA_VAULT_PASSWORD）或密钥已更换，请重新配置 Key");
+      } else {
+        const config = loadConfig(this.home);
+        const primary = resolveProvider({
+          home: this.home,
+          config,
+          providerName: bot.provider ?? undefined,
+          model: bot.model ?? undefined,
+        });
+        provider = buildProviderChain(
+          primary,
+          resolveFallbackChain(config, primary.name),
+          fallbackNotice,
+          {
+            providerCls: Provider,
+            resolver: (name: string) =>
+              resolveProvider({ home: this.home, config, providerName: name }),
+          },
+        );
+      }
     }
     if (!provider.hasCredentials()) {
       throw new GroupError("模型凭证未配置");

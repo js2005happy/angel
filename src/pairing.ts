@@ -1,8 +1,18 @@
 // src/pairing.ts — 扫码配对与设备登记，与 Python 版 nyra/pairing.py 同语义。
 // 配对码：6 位数字、5 分钟有效（DeviceRegistry，DEVICE_CODE_TTL_SECONDS=300）、
 // 一次性、错 5 次作废；同一时刻只有一个有效码，重新生成旧码立即失效。
+// 保留 6 位（审查报告第 4 项）：好记、顺手；暴力破解被错 5 次作废 +
+// 300 秒 TTL + 一次性三重堵住，6 位空间足够。UDP 发现应答只回名字和
+// HTTP 端口，不带配对码也不带 token——没有配对码预言机（审查报告
+// Python S-H1 的那个 bug 在 Node 版不存在，回归测试锁定）。
+// 配对 token（审查报告第 3 项）：180 天不用自动失效——设备每次认证成功
+// 都刷新 last_seen，常用设备永不过期；长期不用的设备 token 被剪掉，
+// 丢了的旧手机不会一直能连。过期判断只看 last_seen，改动对用户透明。
 // 配对成功发设备专属 token（只此一次返回），磁盘只存 SHA-256；文件 0600、
-// 原子写入。配对码与 token 均为明文传输（HTTP 与 UDP），只在可信网络上配对。
+// 原子写入。配对码与 token 均为明文传输（HTTP 与 UDP），只在可信网络上配对：
+// 适用范围就是本机局域网发现 + 本机 HTTP 端口，不要跨公网配对；
+// 这是局域网配对的常规做法，改成 HTTPS 需要给每台电脑发证书，
+// 普通用户配不起来，所以保留明文并写清范围，不假装它安全。
 // 注意：PairingHost 的 CODE_TTL_SECONDS=600 是另一条旧路径，网页端走
 // DeviceRegistry 的 300 秒，以此为准。
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -17,6 +27,8 @@ export const CODE_TTL_SECONDS = 300;
 export const MAX_FAILED_ATTEMPTS = 5;
 export const MAX_DEVICES = 10;
 export const MAX_DEVICE_NAME = 40;
+/** 配对 token 连续不用多少秒后自动失效（180 天；审查报告第 3 项）。 */
+export const TOKEN_INACTIVITY_TTL_SECONDS = 180 * 24 * 3600;
 export const DEVICES_FILE = "devices.json";
 const LAST_SEEN_WRITE_INTERVAL = 60.0;
 
@@ -37,8 +49,10 @@ function cleanName(name: unknown): string {
   return (text.slice(0, MAX_DEVICE_NAME) || "手机");
 }
 
-function nowIso(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+function nowIso(epochSeconds?: number): string {
+  // 传时钟秒数时按它算（测试用注入时钟）；不传按墙钟算（生产默认时钟即墙钟）。
+  const ms = epochSeconds === undefined ? Date.now() : epochSeconds * 1000;
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 export interface DeviceRecord {
@@ -153,8 +167,8 @@ export class DeviceRegistry {
       id: randomBytes(8).toString("hex"),
       name: cleanName(name),
       token_sha256: hashDeviceToken(token),
-      created: nowIso(),
-      last_seen: nowIso(),
+      created: nowIso(this.clock()),
+      last_seen: nowIso(this.clock()),
     };
     this.devices.push(device);
     this.save();
@@ -172,11 +186,19 @@ export class DeviceRegistry {
       if (a.length === b.length && timingSafeEqual(a, b)) found = d;
     }
     if (!found) return null;
+    // 180 天没用过：token 自动失效，从列表里剪掉（审查报告第 3 项）。
+    const lastSeenMs = Date.parse(found.last_seen);
+    if (!Number.isNaN(lastSeenMs) && this.clock() - lastSeenMs / 1000 > TOKEN_INACTIVITY_TTL_SECONDS) {
+      this.devices = this.devices.filter((d) => d.id !== found.id);
+      delete this.lastSeenWritten[found.id];
+      try { this.save(); } catch { /* ignore */ }
+      return null;
+    }
     const now = this.clock();
     const last = this.lastSeenWritten[found.id];
     if (last === undefined || now - last >= LAST_SEEN_WRITE_INTERVAL) {
       this.lastSeenWritten[found.id] = now;
-      found.last_seen = nowIso();
+      found.last_seen = nowIso(now);
       try { this.save(); } catch { /* ignore */ }
     }
     const { token_sha256: _omit, ...rest } = found;
@@ -200,6 +222,11 @@ export class DeviceRegistry {
   }
 }
 
+/** UDP 发现应答内容：只有名字 + HTTP 端口，绝不带配对码或 token（审查报告第 4 项：无预言机）。 */
+export function buildDiscoveryReply(name: string, httpPort: number): string {
+  return JSON.stringify({ magic: DISCOVERY_MAGIC, name: name ?? "Nyra", port: httpPort });
+}
+
 /** UDP 发现应答：收到 NYRA-PAIR-SEARCH 的广播后回包（JSON：名字 + HTTP 端口）。 */
 export function startDiscoveryResponder(opts: { name?: string; httpPort: number; onError?: (err: Error) => void }): Socket {
   const sock = createSocket("udp4");
@@ -207,7 +234,7 @@ export function startDiscoveryResponder(opts: { name?: string; httpPort: number;
     const text = msg.toString("utf-8").trim();
     const parts = text.split(" ");
     if (parts.length !== 2 || parts[0] !== DISCOVERY_MAGIC) return;
-    const payload = JSON.stringify({ magic: DISCOVERY_MAGIC, name: opts.name ?? "Nyra", port: opts.httpPort });
+    const payload = buildDiscoveryReply(opts.name ?? "Nyra", opts.httpPort);
     sock.send(payload, rinfo.port, rinfo.address);
   });
   sock.on("error", (err) => { opts.onError?.(err); });

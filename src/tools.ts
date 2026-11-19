@@ -19,6 +19,7 @@ import type { ProviderLike } from "./providers.ts";
 import { CDPBrowser } from "./cdpBrowser.ts";
 import { ComputerControl, computerErrorMessage } from "./computer.ts";
 import { discoverPoppy, inspectPoppyIdentity, PermissionLedger } from "./poppy.ts";
+import { assertPublicUrl } from "./net.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -197,6 +198,27 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
   return target;
 }
 
+// 只读工具的工作目录限制（审查报告第 6 项）：与 workspaceWritePath 同款，
+// 本地分支 resolve 后必须在 workdir 内；后端分支不动（后端沙盒本身就是隔离）。
+// 越界时给清楚提示并允许显式放开（NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1），
+// 不静默拒绝、不直接砍功能。
+export function workspaceReadPath(ctx: ToolContext, path: string): string {
+  if (typeof path !== "string" || !path || path.includes("\x00")) {
+    throw new ToolError("读取文件路径无效");
+  }
+  if (ctx.backend) return resolveBackendPath(ctx, path);
+  if (process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR === "1") return resolvePath(ctx, path);
+  const root = resolve(ctx.workdir);
+  // 绝对路径按绝对算（resolvePath 同款），相对路径拼到工作目录下；再验是否在目录内。
+  const target = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
+    ? resolve(path)
+    : resolve(join(root, path));
+  if (!(target === root || target.startsWith(root + sep))) {
+    throw new ToolError(`只读工具只能访问工作目录内的路径：${path}（如需读取工作目录外的内容，请设 NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1）`);
+  }
+  return target;
+}
+
 export function workspaceShellCwd(ctx: ToolContext, cwd?: string | null): string {
   if (cwd !== null && cwd !== undefined && (typeof cwd !== "string" || cwd.includes("\x00") || !cwd)) {
     throw new ToolError("shell 工作目录无效");
@@ -311,37 +333,84 @@ export async function checkApproval(
   // full 模式：直接放行（denylist 仍在 shell 入口先行检查）。
 }
 
-/** shell denylist（与 Python 版 _check_shell_denied 同规则）。 */
+// shell 黑名单（审查报告第 9 项）：
+// 诚实边界——这只是启发式绊线，不是沙箱。它拦得住“手滑输错 / 模型照抄的
+// 典型危险命令”，拦不住存心绕过的人：`find … -delete`、`curl | sh`、
+// `python -c os.system(…)`、`systemctl poweroff`、`shred` 等都不在表里，
+// full 模式下 shell 本来就没有审批。真正的高危操作靠审批流程 + 用户
+// 自己看一眼命令原文，不要以为有黑名单就安全。
+// 本轮加固（相对 Python S-H2 的移植）：rm 的组合短标志逐位解析
+// （`rm -r -f /`、`rm --recursive --force /`、`rm -rfv /` 都拦，
+// 只认 `-rf`/`-fr` 的旧版漏了这些）；`dd … of=/dev/…` 与
+// `chmod 777 -R /` 两种参数顺序都拦；危险目标归一化
+// （`~/`、`$HOME/`、`${HOME}/`、`/*`、`.`、`..`）。
 export function checkShellDenied(command: string): string | null {
   const tokenRe = /(?:[^\s;&|<>()"'\\]|\\.|"(?:\\.|[^"\\])*"|'[^']*')+|[;&|<>()]/g;
   const rawTokens = command.match(tokenRe) ?? [];
   const tokens = rawTokens.map((t) =>
     t.length >= 2 && t[0] === t[t.length - 1] && (t[0] === '"' || t[0] === "'") ? t.slice(1, -1) : t,
   );
-  const dangerousTargets = new Set(["/", "~", "$HOME", "${HOME}", "*", ".", ".."]);
   const separators = new Set([";", "&", "|", "<", ">", "(", ")"]);
-  for (let index = 0; index < tokens.length; index++) {
-    const token = tokens[index];
-    if (token !== "rm" && !token.endsWith("/rm")) continue;
-    const args: string[] = [];
-    for (const arg of tokens.slice(index + 1)) {
-      if (separators.has(arg)) break;
-      args.push(arg);
-    }
-    if (args.some((a) => a === "-rf" || a === "-fr")) {
-      if (args.some((a) => dangerousTargets.has(a) || a.startsWith("/*"))) {
+  // 按分隔符分段：同一段内的参数顺序不限（dd of= 与 chmod 的两种顺序都拦）。
+  const segments: string[][] = [[]];
+  for (const t of tokens) {
+    if (separators.has(t)) segments.push([]);
+    else segments[segments.length - 1].push(t);
+  }
+  const dangerousTargets = new Set(["/", "~", "$HOME", "${HOME}", "*", ".", ".."]);
+  const isDangerousRmTarget = (t: string): boolean =>
+    dangerousTargets.has(t) ||
+    t.startsWith("~/") || t.startsWith("$HOME/") || t.startsWith("${HOME}/") || t.startsWith("/*");
+  for (const seg of segments) {
+    for (let index = 0; index < seg.length; index++) {
+      if (seg[index] !== "rm" && !seg[index].endsWith("/rm")) continue;
+      let recursive = false;
+      let force = false;
+      let endOfFlags = false;
+      const targets: string[] = [];
+      for (const arg of seg.slice(index + 1)) {
+        if (!endOfFlags && arg === "--") { endOfFlags = true; continue; }
+        if (!endOfFlags && arg.startsWith("--")) {
+          if (arg === "--recursive") recursive = true;
+          else if (arg === "--force") force = true;
+          continue;
+        }
+        // 组合短标志逐位解析：-r/-R 递归，-f 强制；-rfv、-r -f 都算。
+        if (!endOfFlags && arg.startsWith("-") && arg.length > 1 && !/^-\d/.test(arg)) {
+          for (const ch of arg.slice(1)) {
+            if (ch === "r" || ch === "R") recursive = true;
+            else if (ch === "f") force = true;
+          }
+          continue;
+        }
+        targets.push(arg);
+      }
+      // 只拦“递归 + 强制 + 危险目标”同时满足：rm -rf /tmp/my-project 照常放行。
+      if (recursive && force && targets.some(isDangerousRmTarget)) {
         return "禁止 rm -rf 删除根目录、家目录或通配路径";
       }
+    }
+    // dd：of=/dev/... 写在 dd 前面还是后面都拦。
+    if (seg.some((t) => t === "dd" || t.endsWith("/dd")) && seg.some((t) => /^of=\/dev\//.test(t))) {
+      return "禁止 dd 写入设备";
+    }
+    // chmod：777 与 -R 两种顺序都拦，目标是根目录。
+    if (seg.some((t) => t === "chmod" || t.endsWith("/chmod"))) {
+      const has777 = seg.includes("777");
+      const hasRecursive = seg.some((t) =>
+        t === "-R" || t === "--recursive" ||
+        (t.startsWith("-") && !t.startsWith("--") && t.length <= 5 && t.slice(1).includes("R")),
+      );
+      const hasRootTarget = seg.some((t) => t === "/" || t.startsWith("/*"));
+      if (has777 && hasRecursive && hasRootTarget) return "禁止 chmod -R 777 /";
     }
   }
   const rules: [RegExp, string][] = [
     [/\bsudo\s+rm\b/, "禁止 sudo rm"],
     [/\bmkfs(\.\w+)?\b/, "禁止 mkfs 格式化命令"],
-    [/\bdd\b.*\bof=\/dev\//, "禁止 dd 写入设备"],
     [/\b(shutdown|reboot|poweroff|halt)\b/, "禁止关机/重启命令"],
     [/:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;/, "禁止 fork 炸弹"],
     [/>\s*\/dev\/(sd|hd|nvme|vd)[a-z0-9]*/, "禁止重定向写入磁盘设备"],
-    [/\bchmod\s+-R\s+777\s+\//, "禁止 chmod -R 777 /"],
     [/\bchown\s+-R\b.*\s\/$/, "禁止 chown -R 到根目录"],
   ];
   for (const [pattern, reason] of rules) {
@@ -380,7 +449,7 @@ export function changePreview(ctx: ToolContext, target: string, newContent: stri
 
 async function toolReadFile(ctx: ToolContext, path: string): Promise<string> {
   if (ctx.backend?.readFile) return truncate(ctx.backend.readFile(resolveBackendPath(ctx, path)));
-  const target = resolvePath(ctx, path);
+  const target = workspaceReadPath(ctx, path);
   if (!existsSync(target) || !statSync(target).isFile()) return `错误：文件不存在：${path}`;
   return truncate(readFileSync(target, "utf-8"));
 }
@@ -558,7 +627,7 @@ async function toolApplyPatch(ctx: ToolContext, path: string, patch: string): Pr
 
 async function toolListDir(ctx: ToolContext, path = "."): Promise<string> {
   if (ctx.backend?.listDir) return ctx.backend.listDir(resolveBackendPath(ctx, path));
-  const target = resolvePath(ctx, path);
+  const target = workspaceReadPath(ctx, path);
   if (!existsSync(target) || !statSync(target).isDirectory()) return `错误：目录不存在：${path}`;
   const entries = readdirSync(target).sort((a, b) => {
     const aDir = statSync(join(target, a)).isDirectory();
@@ -745,16 +814,44 @@ function stripTags(htmlText: string): string {
   return htmlText.replace(/<[^>]+>/g, " ");
 }
 
-async function fetchText(url: string, headers: Record<string, string>, timeoutMs = 30000): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { headers, redirect: "follow", signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
-  } finally {
-    clearTimeout(timer);
+/** 带 SSRF 检查的 fetch：起跳 URL 与重定向每一跳都先过 assertPublicUrl（审查报告第 5 项），
+// 最多跟 5 跳；302/303 转 GET 时去掉 body。 */
+async function fetchChecked(url: string, init: RequestInit, timeoutMs?: number): Promise<Response> {
+  let current = url;
+  let method = init.method ?? "GET";
+  let body: RequestInit["body"] = init.body;
+  const headers: Record<string, string> = { ...((init.headers as Record<string, string> | undefined) ?? {}) };
+  for (let hop = 0; hop <= 5; hop++) {
+    await assertPublicUrl(current);
+    const controller = new AbortController();
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(), timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(current, { ...init, method, body, headers, redirect: "manual", signal: controller.signal });
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    const loc = res.headers.get("location");
+    if ([301, 302, 303, 307, 308].includes(res.status) && loc) {
+      if (hop === 5) throw new Error("重定向次数过多（超过 5 次）");
+      current = new URL(loc, current).toString();
+      if (res.status === 303 || (res.status === 302 && method !== "GET")) {
+        method = "GET";
+        body = undefined;
+        delete headers["Content-Type"];
+        delete headers["content-type"];
+      }
+      continue;
+    }
+    return res;
   }
+  throw new Error("重定向次数过多（超过 5 次）");
+}
+
+async function fetchText(url: string, headers: Record<string, string>, timeoutMs = 30000): Promise<string> {
+  const res = await fetchChecked(url, { headers }, timeoutMs);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.text();
 }
 
 async function toolWebFetch(ctx: ToolContext, url: string): Promise<string> {
@@ -1081,7 +1178,7 @@ async function toolGrepSearch(ctx: ToolContext, pattern: string, path = ".", reg
     if (lines.length > maxResults) result += `\n……（已达上限 ${maxResults} 条）`;
     return result;
   }
-  const root = resolvePath(ctx, path);
+  const root = workspaceReadPath(ctx, path);
   if (!existsSync(root)) return `错误：路径不存在：${path}`;
   let match: (line: string) => boolean;
   if (regex) {
@@ -1156,7 +1253,7 @@ async function toolGitStatus(ctx: ToolContext, path = "."): Promise<string> {
     if (diff.trim() && !diff.includes("fatal")) combined += "\n\n改动统计：\n" + diff.trim();
     return truncate(combined);
   }
-  const target = resolvePath(ctx, path);
+  const target = workspaceReadPath(ctx, path);
   if (!existsSync(target) || !statSync(target).isDirectory()) return `错误：目录不存在：${path}`;
   try {
     const status = execFileSync("git", ["-C", target, "status", "--short", "--branch"], { encoding: "utf-8", timeout: 15000 });
@@ -1176,7 +1273,7 @@ async function toolGitStatus(ctx: ToolContext, path = "."): Promise<string> {
 async function toolHttpPost(ctx: ToolContext, url: string, body = "", contentType = "application/json"): Promise<string> {
   await checkApproval(ctx, "http_post", `POST 请求：${url}`);
   try {
-    const res = await fetch(url, {
+    const res = await fetchChecked(url, {
       method: "POST",
       headers: { "Content-Type": contentType, "User-Agent": "Nyra/0.2" },
       body,

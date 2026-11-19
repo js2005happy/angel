@@ -1,7 +1,7 @@
 // src/memoryExchange.ts — Nyra 记忆模式，与 Python 版 nyra/memory_exchange.py 同语义。
 // 快照导入/导出、聊天 .zip 导入、本地 Codex/Claude 记忆只读；
 // 安全硬规则：导出与导入两端都要过 scrubSecrets，含凭据的行直接删掉并计数；
-// 导入只追加不覆盖；不做自动事实提炼。
+// 聊天 zip 的存档文件落盘前也要过同一套脱敏；导入只追加不覆盖；不做自动事实提炼。
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
@@ -48,11 +48,24 @@ export class ChatZipError extends Error {
   constructor(message: string) { super(message); this.name = "ChatZipError"; }
 }
 
-/** 删掉含凭据的行，返回（清理后的文本，删掉的行数）。 */
+/** 删掉含凭据的行，返回（清理后的文本，删掉的行数）。
+ * PEM 私钥块整块删：从 BEGIN 行删到 END 行（审查报告第 8 项；
+ * 旧版只删 BEGIN 这一行，密钥体还留在存档里）。 */
 export function scrubSecrets(text: string): [string, number] {
   const kept: string[] = [];
   let removed = 0;
-  for (const line of text.split("\n")) {
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(line)) {
+      removed += 1;
+      while (i + 1 < lines.length) {
+        i += 1;
+        removed += 1;
+        if (/-----END [A-Z ]*PRIVATE KEY-----/i.test(lines[i])) break;
+      }
+      continue;
+    }
     if (SECRET_RES.some((p) => p.test(line))) { removed += 1; continue; }
     kept.push(line);
   }
@@ -172,7 +185,7 @@ function readZipEntries(buf: Buffer): ZipEntry[] {
   return entries;
 }
 
-export function importChatZip(zipPath: string, home?: string): { conversations: number; archived: string } {
+export function importChatZip(zipPath: string, home?: string): { conversations: number; archived: string; removed: number } {
   if (!existsSync(zipPath)) throw new ChatZipError(`文件不存在：${zipPath}`);
   const buf = readFileSync(zipPath);
   let entries: ZipEntry[];
@@ -189,10 +202,30 @@ export function importChatZip(zipPath: string, home?: string): { conversations: 
   mkdirSync(archiveDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const archivePath = join(archiveDir, `chat-${stamp}.json`);
-  writeFileSync(archivePath, JSON.stringify(list, null, 2), "utf-8");
+  // 存档先脱敏再落盘（审查报告第 8 项）：聊天导出里常带 API Key、私钥，
+  // 存档文件不能比记忆导出还松；与记忆导出同一套 scrubSecrets。
+  // 按 JSON 结构逐值脱敏（不是按行扫整个文件）：PEM 块在 JSON 字符串里
+  // 是转义的 \n，整行删会把后面的内容也吞掉；逐值脱敏则结构一定合法。
+  let removed = 0;
+  const scrubValue = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      const [cleaned, n] = scrubSecrets(value);
+      removed += n;
+      return cleaned;
+    }
+    if (Array.isArray(value)) return value.map(scrubValue);
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = scrubValue(v);
+      return out;
+    }
+    return value;
+  };
+  const cleanedText = JSON.stringify(scrubValue(list), null, 2);
+  writeFileSync(archivePath, cleanedText, "utf-8");
   // MEMORY.md 只记一行导入记录，不自动提炼事实。
-  appendMemory(`从聊天导出导入 ${list.length} 条对话（原文存档：${archivePath}）`, join(h, "MEMORY.md"));
-  return { conversations: list.length, archived: archivePath };
+  appendMemory(`从聊天导出导入 ${list.length} 条对话（原文存档：${archivePath}${removed ? `，已删掉 ${removed} 行含凭据的内容` : ""}）`, join(h, "MEMORY.md"));
+  return { conversations: list.length, archived: archivePath, removed };
 }
 
 // -- 本地读记忆（只读） --

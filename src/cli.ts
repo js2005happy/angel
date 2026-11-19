@@ -796,7 +796,7 @@ async function handleMemory(argv: string[], home: string): Promise<number> {
   if (cmd === "import-zip") {
     try {
       const result = importChatZip(argv[1], home);
-      process.stdout.write(`已导入 ${result.conversations} 条对话，原文存档：${result.archived}\n`);
+      process.stdout.write(`已导入 ${result.conversations} 条对话，原文存档：${result.archived}${result.removed ? `（已删掉 ${result.removed} 行含凭据的内容）` : ""}\n`);
       return 0;
     } catch (err: unknown) {
       process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
@@ -847,7 +847,13 @@ export async function handleVault(argv: string[], home: string, input?: VaultInp
       return false;
     }
     if (!vault.unlock(await ask("主密码："))) {
-      process.stderr.write("主密码错误或密码箱已损坏\n");
+      // 锁死时说清楚要等多久，而不是让用户以为密码错了（审查报告第 2 项）。
+      const remaining = vault.lockoutRemainingMs();
+      if (remaining > 0) {
+        process.stderr.write(`尝试次数过多，请 ${Math.ceil(remaining / 1000)} 秒后再试\n`);
+      } else {
+        process.stderr.write("主密码错误或密码箱已损坏\n");
+      }
       return false;
     }
     return true;
@@ -1569,7 +1575,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (args.sandbox && args.sandbox !== "local") {
-    process.stderr.write("错误：--sandbox e2b 在 0.4.0 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植）；当前只支持 local\n");
+    process.stderr.write("错误：--sandbox e2b 在 0.4.1 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植）；当前只支持 local\n");
     return 2;
   }
   if (args.contextWindow !== null && (typeof args.contextWindow !== "number" || !Number.isInteger(args.contextWindow) || args.contextWindow < 1)) {
