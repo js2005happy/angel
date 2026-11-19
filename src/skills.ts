@@ -7,8 +7,42 @@ export interface Skill {
   description: string;
   when: string;
   keywords: string[];
+  // 调研报告第 2 项：技能渐进披露（学 Claude Code + OpenHands）——paths 触发。
+  // 可选：逗号分隔的 glob（如 `src/**/*.ts, docs/*.md`，写在 frontmatter 的 paths: 行）。
+  // agent 触碰到匹配的文件时，该技能全文才被确定性注入；平时只占索引里约 100 字。
+  paths?: string[];
   instructions: string;
   path: string;
+}
+
+// 调研报告第 2 项：技能渐进披露（学 Claude Code + OpenHands）——30 行内的小 glob 匹配器，无新依赖。
+// 支持 `**`（跨任意多层目录，含 0 层）、`*`（单层内任意字符）、`?`（单层内单个字符）。
+// 路径分隔符统一转 `/` 再匹配，Windows 的 `\` 路径同样能命中。
+export function matchGlob(pattern: string, filePath: string): boolean {
+  const norm = (s: string) => s.replace(/\\/g, "/");
+  const pSegs = norm(pattern).split("/").filter((s) => s.length > 0);
+  const fSegs = norm(filePath).split("/").filter((s) => s.length > 0);
+  const segMatch = (pat: string, str: string): boolean => {
+    let pi = 0, si = 0, star = -1, mark = 0;
+    while (si < str.length) {
+      if (pi < pat.length && (pat[pi] === "?" || pat[pi] === str[si])) { pi++; si++; }
+      else if (pi < pat.length && pat[pi] === "*") { star = pi++; mark = si; }
+      else if (star !== -1) { pi = star + 1; si = ++mark; }
+      else return false;
+    }
+    while (pi < pat.length && pat[pi] === "*") pi++;
+    return pi === pat.length;
+  };
+  const rec = (pi: number, si: number): boolean => {
+    if (pi === pSegs.length) return si === fSegs.length;
+    if (pSegs[pi] === "**") {
+      for (let k = si; k <= fSegs.length; k++) if (rec(pi + 1, k)) return true;
+      return false;
+    }
+    if (si >= fSegs.length) return false;
+    return segMatch(pSegs[pi], fSegs[si]) && rec(pi + 1, si + 1);
+  };
+  return rec(0, 0);
 }
 
 export function parseSkillFile(path: string): Skill {
@@ -29,7 +63,8 @@ export function parseSkillText(text: string, path: string): Skill {
     const idx = line.indexOf(":");
     if (idx !== -1) {
       const key = line.slice(0, idx).trim();
-      if (["name", "description", "when", "keywords"].includes(key)) {
+      // 调研报告第 2 项：技能渐进披露——frontmatter 新增可选 paths 字段（逗号分隔的 glob）。
+      if (["name", "description", "when", "keywords", "paths"].includes(key)) {
         metadata[key] = line.slice(idx + 1).trim();
       }
     }
@@ -41,6 +76,12 @@ export function parseSkillText(text: string, path: string): Skill {
     .split(",")
     .map((k) => k.trim())
     .filter(Boolean);
+  // 调研报告第 2 项：技能渐进披露——paths 与 keywords 同样是逗号分隔；
+  // 也接受 `[a, b]` 的括号写法与每项两侧的引号，写错格式只丢掉该项、不抛错。
+  const paths = (metadata.paths ?? "")
+    .split(",")
+    .map((p) => p.trim().replace(/^\[/, "").replace(/\]$/, "").replace(/^["']|["']$/g, "").trim())
+    .filter(Boolean);
   const bodyLines = lines.slice(closingIndex + 1);
   let start = 0;
   let end = bodyLines.length;
@@ -51,6 +92,8 @@ export function parseSkillText(text: string, path: string): Skill {
     description: metadata.description ?? "",
     when: metadata.when ?? "",
     keywords,
+    // 调研报告第 2 项：技能渐进披露——没写 paths 的旧技能保持 undefined，行为与以前一致。
+    ...(paths.length ? { paths } : {}),
     instructions: bodyLines.slice(start, end).join("\n"),
     path,
   };
@@ -107,6 +150,38 @@ export function renderSkill(skill: Skill): string {
   if (skill.when) lines.push(`何时使用：${skill.when}`);
   lines.push(skill.instructions);
   return lines.join("\n");
+}
+
+// 调研报告第 2 项：技能渐进披露（学 Claude Code + OpenHands）——常驻提示词用的技能索引。
+// 每个技能只占一行 `name — description`，描述按字符截断到约 100 字（中文按字算，超了加 `…`）。
+// 全文不进索引，需要时用 read_skill 按名按需读取。
+export const SKILL_INDEX_DESC_CHARS = 100;
+
+export function skillIndex(skills: Skill[]): string {
+  return skills.map((skill) => {
+    const chars = [...(skill.description ?? "")];
+    const shown = chars.length > SKILL_INDEX_DESC_CHARS
+      ? chars.slice(0, SKILL_INDEX_DESC_CHARS).join("") + "…"
+      : chars.join("");
+    return shown ? `${skill.name} — ${shown}` : skill.name;
+  }).join("\n");
+}
+
+// 调研报告第 2 项：技能渐进披露（学 OpenHands）——路径触发：任一 touched 文件路径
+// 命中某技能的 paths glob 即返回该技能；去重、按技能名排序。零基线成本：
+// 没触碰匹配文件时一个字也不注入。
+export function matchSkillsByPaths(filePaths: string[], skills: Skill[]): Skill[] {
+  if (!filePaths.length || !skills.length) return [];
+  const normalized = filePaths.map((p) => p.replace(/\\/g, "/"));
+  return skills
+    .filter((skill) => (skill.paths ?? []).some((glob) => normalized.some((p) => matchGlob(glob, p))))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// 调研报告第 2 项：技能渐进披露——按名取技能全文（renderSkill 格式），供 read_skill 按需读取；没有则返回 null。
+export function readSkillBody(skills: Skill[], name: string): string | null {
+  const skill = skills.find((s) => s.name === name);
+  return skill ? renderSkill(skill) : null;
 }
 
 export function saveSkillFile(

@@ -11,6 +11,12 @@ export const COMPACT_SYSTEM_INSTRUCTION =
   "不要编造对话中没有的内容，不要写客套话。" +
   "只输出摘要本身，不要加标题以外的多余格式。";
 
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——压缩后重读的备注标记，
+// 与 compact focus 的上限、token 估算口径（4 字符 ≈ 1 token，仅估算用）。
+export const RE_READ_MARKER = "[压缩后重读：记忆与规则]";
+export const MAX_FOCUS_KEPT_MESSAGES = 10;
+export const CHARS_PER_TOKEN_ESTIMATE = 4;
+
 export const DEFAULT_AUTO_COMPACT_THRESHOLD = 0.8;
 /** 分层阈值：网关 85% / agent 50%（默认 agent 侧用 0.5，CLI 可按模型覆盖）。 */
 export const GATEWAY_COMPACT_THRESHOLD = 0.85;
@@ -56,22 +62,79 @@ export function splitCompletedVsActive(messages: ChatMessageLike[]): { older: Ch
   return { older: before.slice(0, currentStart), active: before.slice(currentStart) };
 }
 
-export function buildCompactMessages(messages: ChatMessageLike[], summary: string, keepLast = 4): ChatMessageLike[] {
+export function buildCompactMessages(
+  messages: ChatMessageLike[],
+  summary: string,
+  keepLast = 4,
+  opts?: { focus?: string; reRead?: string | null },
+): ChatMessageLike[] {
   const out: ChatMessageLike[] = [
     { role: "user", content: "[此前会话摘要]\n" + summary },
     { role: "assistant", content: "已压缩会话，继续。" },
   ];
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——压缩后重读的记忆与规则
+  // 放在摘要之后、保留消息之前；只在压缩成功时由 compactMessages 传入，
+  // fallback 绝不追加（不在已损坏的会话上叠加内容）。
+  if (opts?.reRead) out.push({ role: "user", content: opts.reRead });
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——compact focus：除 keepLast
+  // 尾部外，额外保留含 focus 关键词的历史消息（按原顺序、去重、上限 10 条）。
+  const focus = (opts?.focus ?? "").trim();
+  if (focus) {
+    const keywords = focusKeywords(focus);
+    const tailStart = keepLast > 0 ? Math.max(0, messages.length - keepLast) : messages.length;
+    const extra: ChatMessageLike[] = [];
+    for (let i = 0; i < tailStart && extra.length < MAX_FOCUS_KEPT_MESSAGES; i++) {
+      if (messageMatchesFocus(messages[i], keywords)) extra.push(messages[i]);
+    }
+    out.push(...extra);
+  }
   if (keepLast > 0) out.push(...messages.slice(-keepLast));
   return out;
+}
+
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——focus 关键词切分：按空白与
+// 常用分隔符切分；中文关键词本身就是一个词（子串匹配），英文按词匹配。
+export function focusKeywords(focus: string): string[] {
+  return focus.split(/[\s,，;；、|/]+/).map((k) => k.trim()).filter(Boolean);
+}
+
+export function messageMatchesFocus(message: ChatMessageLike, keywords: string[]): boolean {
+  if (!keywords.length) return false;
+  const text = typeof message.content === "string" ? message.content.toLowerCase() : "";
+  if (!text) return false;
+  return keywords.some((k) => text.includes(k.toLowerCase()));
+}
+
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——压缩后重读的备注正文：
+// 记忆取 loadMemorySummary 的末 40 行（调用方传入），规则取 AGENTS.md 末尾段落
+// （最后 2 个段落）；两边都空时返回 null，调用方不追加任何内容。
+export function buildReReadNote(memoryText: string, agentsText: string): string | null {
+  const memory = (memoryText ?? "").trim();
+  const agents = (agentsText ?? "").trim();
+  if (!memory && !agents) return null;
+  const parts = [RE_READ_MARKER];
+  if (memory) parts.push("## 长期记忆（压缩后重读）\n" + memory);
+  if (agents) {
+    const paragraphs = agents.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    const tail = paragraphs.slice(-2).join("\n\n");
+    parts.push("## 规则（压缩后重读，取 AGENTS.md 末尾段落）\n" + tail);
+  }
+  return parts.join("\n\n");
 }
 
 export async function summarizeWithProvider(
   provider: { chat(messages: unknown[], tools?: unknown, timeout?: number): Promise<Record<string, unknown>> },
   messages: ChatMessageLike[],
   onResponse?: (response: Record<string, unknown>) => void,
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——compact focus：非空时摘要
+  // 指令追加重点保留与 focus 相关的内容。
+  focus?: string,
 ): Promise<string> {
+  const instruction = (focus ?? "").trim()
+    ? COMPACT_SYSTEM_INSTRUCTION + `\n重点保留与「${(focus as string).trim()}」相关的内容：相关事实、决定与待办不要丢。`
+    : COMPACT_SYSTEM_INSTRUCTION;
   const requestMessages = [
-    { role: "system", content: COMPACT_SYSTEM_INSTRUCTION },
+    { role: "system", content: instruction },
     ...messages,
     { role: "user", content: "请按以上要求压缩这段对话。" },
   ];
@@ -87,15 +150,22 @@ export async function compactMessages(
   provider: { chat(messages: unknown[], tools?: unknown, timeout?: number): Promise<Record<string, unknown>> },
   messages: ChatMessageLike[],
   keepLast = 4,
-  opts?: { strict?: boolean; onResponse?: (response: Record<string, unknown>) => void },
+  opts?: {
+    strict?: boolean;
+    onResponse?: (response: Record<string, unknown>) => void;
+    // 调研报告第 3 项：上下文补齐（学 Claude Code）——focus 只影响摘要指令与
+    // 额外保留；reRead 只在压缩成功时追加，失败回退时不追加。
+    focus?: string;
+    reRead?: string | null;
+  },
 ): Promise<[ChatMessageLike[], { method: string; summary_chars: number; before: number; after: number }]> {
   const before = messages.length;
   if (!messages.length) {
     return [[], { method: "none", summary_chars: 0, before: 0, after: 0 }];
   }
   try {
-    const summary = await summarizeWithProvider(provider, messages, opts?.onResponse);
-    const newMessages = buildCompactMessages(messages, summary, keepLast);
+    const summary = await summarizeWithProvider(provider, messages, opts?.onResponse, opts?.focus);
+    const newMessages = buildCompactMessages(messages, summary, keepLast, { focus: opts?.focus, reRead: opts?.reRead ?? null });
     return [newMessages, { method: "model", summary_chars: summary.length, before, after: newMessages.length }];
   } catch (err: unknown) {
     if (opts?.strict) throw err;

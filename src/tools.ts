@@ -1,4 +1,4 @@
-// src/tools.ts — 24 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
+// src/tools.ts — 25 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
 // 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
 // src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
@@ -10,7 +10,7 @@ import {
 import { join, resolve, relative, dirname, sep, posix } from "node:path";
 import { appendMemory } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
-import { saveSkillFile } from "./skills.ts";
+import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untrusted.ts";
 import { CheckpointStore, CheckpointError } from "./checkpoints.ts";
@@ -18,6 +18,14 @@ import { research as multiModelResearch } from "./multiModel.ts";
 import type { ProviderLike } from "./providers.ts";
 import { CDPBrowser } from "./cdpBrowser.ts";
 import { ComputerControl, computerErrorMessage } from "./computer.ts";
+import { runHooks } from "./hooks.ts";
+// 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 的两处执行点统一走这里解析后端。
+// 审批仍在 checkApproval，钩子仍在宿主机跑（hooks.ts 不动），沙箱内只跑命令本身。
+import {
+  resolveSandboxBackend, runSandboxed, toolLevelFallbackNotice,
+  SandboxUnavailableError,
+  type SandboxMode, type ResolvedSandbox,
+} from "./sandbox.ts";
 import { discoverPoppy, inspectPoppyIdentity, PermissionLedger } from "./poppy.ts";
 import { assertPublicUrl } from "./net.ts";
 
@@ -67,6 +75,11 @@ export interface ToolContext {
   interactive: boolean;
   memoryPath: string;
   skillsDir: string;
+  // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用的技能集合。
+  // Agent 会传一个活读 this.skills 的闭包；没传时回退到从 skillsDir 现场加载。
+  getSkills?: (() => Skill[]) | null;
+  /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
+  home?: string;
   delegateFn?: ((task: string, maxTurns?: number) => Promise<string>) | null;
   evidence?: EvidenceStore | null;
   backend?: { name?: string; readFile?(p: string): string; writeFile?(p: string, c: string): string; listDir?(p: string): string; runCommand?(cmd: string, cwd: string, timeout: number): string } | null;
@@ -82,6 +95,12 @@ export interface ToolContext {
   multiModelFactory?: (name: string, model: string | null) => ProviderLike;
   browser?: CDPBrowser | null;
   computer?: ComputerControl | null;
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——CLI/Agent 透传的沙箱配置
+  //（后端原始值、模式、网络开关；由 toolShell 按 resolveSandboxBackend 解析）。
+  // 未设置时保持旧行为：直接走现有 spawn 路径，不解析、不提示。
+  sandbox?: { backend?: string | null; mode?: SandboxMode; allowNet?: boolean } | null;
+  /** auto 回落到工具级时的提示是否已给过（每个 ToolContext 只给一次）。 */
+  sandboxFallbackWarned?: boolean;
 }
 
 export function newToolContext(partial: Partial<ToolContext> & { workdir: string }): ToolContext {
@@ -150,6 +169,11 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("save_skill", "把一次成功做法保存为可复用技能",
     { name: { type: "string" }, description: { type: "string" }, when: { type: "string" }, keywords: { type: "string", description: "用逗号分隔的关键词" }, instructions: { type: "string" } },
     ["name", "description", "when", "keywords", "instructions"]),
+  // 调研报告第 2 项：技能渐进披露（学 Claude Code）——只读工具，按名读技能全文。
+  // 系统提示里常驻的只是技能索引（每技能约 100 字描述），需要完整步骤时用这个工具按需读取。
+  schema("read_skill", "按名读取一个技能的全文（描述、适用时机与完整步骤）。只读，不改文件、不需审批；不存在的技能名会返回可用技能列表",
+    { name: { type: "string", description: "技能名，如 debugging" } },
+    ["name"]),
   schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮",
     { task: { type: "string", minLength: 1 }, max_turns: { type: "integer", default: 6, minimum: 1, maximum: 12 } },
     ["task"]),
@@ -750,6 +774,36 @@ async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd:
   });
 }
 
+// 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 执行前的后端选择。
+// 只在 ctx.sandbox 已设置时解析（CLI/Agent 透传）；未设置时返回 null，
+// 调用方保持旧行为（直接走现有 spawn 路径），旧测试与旧调用方不受影响。
+// 解析失败（显式 bwrap 缺失、e2b、danger+bwrap、非法值）直接抛错：
+// fail-closed，命令不跑，绝不静默降级裸奔。
+function resolveShellSandbox(ctx: ToolContext): ResolvedSandbox | null {
+  if (!ctx.sandbox) return null;
+  const cfg: Record<string, unknown> = {};
+  if (ctx.sandbox.backend !== undefined && ctx.sandbox.backend !== null) cfg.sandbox = ctx.sandbox.backend;
+  if (ctx.sandbox.mode !== undefined) cfg.sandbox_mode = ctx.sandbox.mode;
+  if (ctx.sandbox.allowNet !== undefined) cfg.sandbox_allow_net = ctx.sandbox.allowNet;
+  return resolveSandboxBackend(cfg, ctx.sandbox.backend ?? null);
+}
+
+/** 沙箱内跑完的结果拼成 shell 工具的返回文本（与现有非流式路径同格式：stdout + 标准错误段）。 */
+function formatSandboxResult(result: { code: number; stdout: string; stderr: string }): string {
+  let combined = result.stdout;
+  if (result.stderr) {
+    if (combined && !combined.endsWith("\n")) combined += "\n";
+    combined += "标准错误：\n" + result.stderr;
+  }
+  if (result.code !== 0 && result.code !== -1) {
+    // 退出码非零时写清楚：命令本身在沙箱内失败了（例如出工作区写被 EPERM 挡住），
+    // 不是 Nyra 没跑起来；怎么放开见 docs/sandbox.md。
+    if (combined && !combined.endsWith("\n")) combined += "\n";
+    combined += `（沙箱内命令退出码 ${result.code}）`;
+  }
+  return truncate(combined) || "（无输出）";
+}
+
 async function toolShell(ctx: ToolContext, command: string, cwd?: string | null, timeout = 60): Promise<string> {
   const denied = checkShellDenied(command);
   if (denied) return `错误：${denied}`;
@@ -757,6 +811,43 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
   await checkApproval(ctx, "shell", `执行命令：${command}（cwd: ${resolvedCwd}；timeout: ${timeout}s）`, { command, cwd: String(resolvedCwd), timeout });
   if (ctx.backend?.runCommand) {
     return truncate(ctx.backend.runCommand(command, String(resolvedCwd), timeout)) || "（无输出）";
+  }
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——后端选择在审批之后、
+  // 执行之前：审批（何时问人）与沙箱（物理上能做什么）是两轴，互不替代。
+  // PreToolUse 钩子已在 checkApproval 之前于宿主机跑过（见 hooks.ts 接线），
+  // 沙箱内只跑命令本身，钩子不在沙箱内重跑。
+  let sandbox: ResolvedSandbox | null = null;
+  try {
+    sandbox = resolveShellSandbox(ctx);
+  } catch (err) {
+    return `错误：沙箱配置有问题，命令未执行：${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (sandbox !== null && sandbox.level === "bwrap") {
+    try {
+      const onStream = ctx.streamToolOutput && ctx.onEvent
+        ? (stream: "stdout" | "stderr", text: string) => {
+            for (const rawLine of text.split("\n")) {
+              if (rawLine === "" && text.endsWith("\n")) continue;
+              const line = rawLine.replace(/\r$/, "");
+              try { ctx.onEvent?.("tool_stream", { name: "shell", stream, text: line }); } catch { /* ignore */ }
+            }
+          }
+        : undefined;
+      const result = await runSandboxed(command, {
+        workdir: resolvedCwd, allowNet: sandbox.allowNet, mode: sandbox.mode, timeout, onStream,
+      });
+      return formatSandboxResult(result);
+    } catch (err) {
+      if (err instanceof SandboxUnavailableError) {
+        return `错误：沙箱启动失败，命令未执行（未降级为裸奔）：${err.message}`;
+      }
+      return `错误：沙箱执行失败，命令未完成：${err instanceof Error ? err.message : String(err)}（未降级为裸奔；改用 --sandbox local 可显式退出 OS 沙箱）`;
+    }
+  }
+  if (sandbox !== null && sandbox.level === "tool-level" && sandbox.requested === "auto" && !ctx.sandboxFallbackWarned) {
+    // auto 回落到工具级：首次 shell 执行时给一次清楚提示（说明是工具级隔离、不是 OS 沙箱）。
+    ctx.sandboxFallbackWarned = true;
+    console.error(toolLevelFallbackNotice(sandbox));
   }
   if (ctx.streamToolOutput && ctx.onEvent) {
     return runShellStreaming(ctx, command, resolvedCwd, timeout);
@@ -1136,6 +1227,22 @@ async function toolSaveSkill(ctx: ToolContext, name: string, description: string
   return `已保存技能 ${name}`;
 }
 
+// 调研报告第 2 项：技能渐进披露（学 Claude Code）——只读、不审批，与 read_file 同级。
+// 不存在的技能名返回清楚的错误（含可用技能列表），不抛异常、不触发审批。
+async function toolReadSkill(ctx: ToolContext, name: string): Promise<string> {
+  const trimmed = String(name ?? "").trim();
+  if (!trimmed) return "错误：read_skill 需要技能名（name），如 read_skill({\"name\": \"debugging\"})";
+  const skills = ctx.getSkills ? ctx.getSkills() : loadSkills([ctx.skillsDir]);
+  const body = readSkillBody(skills, trimmed);
+  if (body === null) {
+    const available = skills.map((s) => s.name).sort();
+    return available.length
+      ? `错误：没有名为 ${trimmed} 的技能；可用技能：${available.join("、")}`
+      : `错误：没有名为 ${trimmed} 的技能；当前未加载任何技能`;
+  }
+  return body;
+}
+
 async function toolDelegate(ctx: ToolContext, task: string, maxTurns = 6): Promise<string> {
   if (!ctx.delegateFn) return "错误：子 agent 不可用";
   return ctx.delegateFn(task, maxTurns);
@@ -1312,9 +1419,40 @@ export function disconnectBrowser(ctx: ToolContext): void {
   ctx.browser = null;
 }
 
+// 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
+// 跑 PreToolUse 的四类工具：写文件 / 改文件 / 打补丁 / 跑命令。其余工具不跑钩子。
+export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "shell"]);
+
+/**
+ * PreToolUse：checkApproval 之前跑，被拦截时抛 ToolError。
+ * executeTool 会把 ToolError 转成 `错误：…` 的工具结果，原因写进工具结果给模型看。
+ * ctx.home 未传时无法定位钩子目录，直接跳过（不 spawn、不报错）。
+ */
+async function runPreToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {
+  if (!ctx.home) return;
+  const result = await runHooks("PreToolUse", { tool, args, home: ctx.home, workdir: ctx.workdir });
+  if (result.blocked) {
+    throw new ToolError(`钩子拦截了 ${tool}：${result.hook ?? "未知钩子"}${result.reason ? `：${result.reason}` : ""}`);
+  }
+}
+
+/** PostToolUse：只通知、不拦截；runHooks 内部对钩子出错/超时已 fail-open，这里再兜一层。 */
+async function runPostToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {
+  if (!ctx.home) return;
+  try {
+    await runHooks("PostToolUse", { tool, args, home: ctx.home, workdir: ctx.workdir });
+  } catch {
+    // 钩子通知失败绝不能破坏已成功的工具结果。
+  }
+}
+
 export async function executeTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<string> {
   try {
-    switch (name) {
+    // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
+    // 钩子在审批之前跑：钩子先拦下危险操作，省一次人工审批打扰；审批流程本身不变。
+    if (HOOKED_TOOLS.has(name)) await runPreToolHook(ctx, name, args);
+    const result = await (async (): Promise<string> => {
+      switch (name) {
       case "read_file": return await toolReadFile(ctx, String(args.path));
       case "write_file": return await toolWriteFile(ctx, String(args.path), String(args.content));
       case "edit_file": return await toolEditFile(ctx, String(args.path), String(args.old_text), String(args.new_text));
@@ -1334,6 +1472,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case "multi_model_research": return await toolMultiModelResearch(ctx, args.models as string[], String(args.prompt), args.system as string | null ?? null, args.synthesizer as string | null ?? null, args.timeout === undefined ? 120 : Number(args.timeout));
       case "memory_append": return await toolMemoryAppend(ctx, String(args.text));
       case "save_skill": return await toolSaveSkill(ctx, String(args.name), String(args.description), String(args.when), args.keywords as string | string[], String(args.instructions));
+      case "read_skill": return await toolReadSkill(ctx, String(args.name));
       case "delegate": return await toolDelegate(ctx, String(args.task), args.max_turns === undefined ? 6 : Number(args.max_turns));
       case "plan": return await toolPlan(ctx, String(args.title), args.steps as string[], args.path === undefined ? "plan.md" : String(args.path));
       case "grep_search": return await toolGrepSearch(ctx, String(args.pattern), args.path === undefined ? "." : String(args.path), args.regex === true, args.case_sensitive === true, args.max_results === undefined ? 50 : Number(args.max_results));
@@ -1343,7 +1482,12 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         return await toolPoppy(ctx, name, args);
       default:
         return `错误：未知工具 ${name}`;
-    }
+      }
+    })();
+    // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
+    // 工具执行成功后跑 PostToolUse：只通知、不拦截，失败只警告（runHooks 内部已 fail-open）。
+    if (HOOKED_TOOLS.has(name)) await runPostToolHook(ctx, name, args);
+    return result;
   } catch (err: unknown) {
     if (err instanceof ApprovalRequired) throw err;
     if (err instanceof ToolError) return `错误：${err.message}`;

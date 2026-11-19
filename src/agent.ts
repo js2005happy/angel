@@ -16,12 +16,13 @@ import {
   newToolContext, executeTool, ToolError, checkApproval,
   type ToolContext,
 } from "./tools.ts";
-import { loadSkills, matchSkills, parseSkillText, renderSkill, type Skill } from "./skills.ts";
+import { loadSkills, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, type Skill } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession } from "./memory.ts";
 import {
   compactMessages, shouldAutoCompact, validateAutoCompactThreshold,
   DEFAULT_AUTO_COMPACT_THRESHOLD, trimOldToolResults, splitCompletedVsActive,
+  buildReReadNote, RE_READ_MARKER, CHARS_PER_TOKEN_ESTIMATE,
 } from "./compact.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { UsageTracker } from "./usage.ts";
@@ -37,6 +38,23 @@ export class AgentError extends Error {
 export const MAX_DELEGATE_DEPTH = 3;
 export const MAX_DELEGATE_CALLS = 8;
 export const MAX_DELEGATE_TURNS = 12;
+
+// 调研报告第 2 项：技能渐进披露——带 path 参数、算“触碰文件”的工具。
+// shell 不在内：命令文本里的路径不可靠解析，不做路径触发。
+export const FILE_PATH_TOOLS = new Set([
+  "read_file", "write_file", "edit_file", "apply_patch",
+  "list_dir", "grep_search", "git_status", "plan",
+]);
+
+// 调研报告第 2 项：技能渐进披露——工具参数里的路径转成相对工作目录的
+// touched 路径（paths glob 按相对路径匹配；Windows 分隔符统一转 `/`）。
+export function toTouchedPath(workdir: string, raw: string): string {
+  const norm = raw.replace(/\\/g, "/");
+  const wd = workdir.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (wd && wd !== "." && (norm === wd || norm.startsWith(wd + "/"))) return norm.slice(wd.length + 1);
+  if (wd === "." && norm.startsWith("./")) return norm.slice(2);
+  return norm.replace(/^\.\//, "");
+}
 
 export class DelegationBudget {
   remaining = MAX_DELEGATE_CALLS;
@@ -91,6 +109,9 @@ export interface AgentOptions {
   poppyEnabled?: boolean;
   streamToolOutput?: boolean;
   home?: string;
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——CLI 从 config.json /
+  // 环境变量 / --sandbox 解析出的沙箱配置，透传给 ToolContext（toolShell 解析生效）。
+  sandbox?: { backend?: string | null; mode?: import("./sandbox.ts").SandboxMode; allowNet?: boolean } | null;
   /** 父级禁用的工具名；委派时子级工具集 = 父级减禁用。 */
   disabledTools?: string[] | null;
   /** MCP 工具执行器（第 3 阶段前为 null，走 worker 桥）。 */
@@ -102,6 +123,21 @@ export interface AgentOptions {
   multiModelFactory?: ToolContext["multiModelFactory"];
 }
 
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化的 breakdown。
+// token 数只用模型实报的用量快照（usage.snapshot()，与 shouldAutoCompact 同源）；
+// 模型没报告时 usedTokens 是按 4 字符 ≈ 1 token 的估算，并以 estimated: true
+// 明确标记，绝不把估算写成实报。
+export interface ContextUsage {
+  system: number;
+  skills: number;
+  history: number;
+  toolResults: number;
+  totalChars: number;
+  windowTokens: number | null;
+  usedTokens: number | null;
+  estimated: boolean;
+}
+
 export class Agent {
   provider: ProviderLike;
   poppyEnabled: boolean;
@@ -110,6 +146,9 @@ export class Agent {
   autoCompactThreshold: number;
   autoCompactCount = 0;
   turn = 0;
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——最近一次 run 的任务文本，
+  // /context 无参数时按它算技能注入（与下一轮相同的注入口径）。
+  lastTask = "";
   systemInstructions: string;
   memoryPath: string;
   delegateDepth: number;
@@ -124,6 +163,9 @@ export class Agent {
   messages: Record<string, unknown>[];
   skillsDirs: string[];
   skills: Skill[];
+  // 调研报告第 2 项：技能渐进披露——技能索引缓存。技能集合以数组引用标识：
+  // syncCreatorSkill 每次都换新数组，引用一变缓存即失效；集合不变时不再重拼字符串。
+  private cachedSkillIndex: { skills: Skill[]; index: string } | null = null;
   mcpManager: AgentOptions["mcpManager"];
   backend: ToolContext["backend"];
   checkpoints: CheckpointStore | null;
@@ -150,8 +192,16 @@ export class Agent {
     this.interactive = opts.interactive ?? true;
     this.sessionId = opts.sessionId ?? newSessionId();
     this.messages = opts.messages ? [...opts.messages] : [];
+    // 调研报告第 2 项：技能渐进披露——分层加载。loadSkills 是“先加载的赢”
+    // （seen 去重：同名技能只保留第一次出现的），所以数组顺序即优先级顺序：
+    // 项目层（<workdir>/skills、<workdir>/.nyra/skills）在前、全局层
+    // （~/.nyra/skills）居中、插件层最后；同名技能项目层覆盖全局层。
+    // 任务书“全局 → 项目”的写法是优先级由低到高的分层表述，代码里顺序
+    // 正好反过来——先出现者胜，不要按字面把全局放最前。loadSkills 的
+    // 去重语义本身未改。
     this.skillsDirs = opts.skillsDirs ?? [
-      join(process.cwd(), "skills"),
+      join(this.workdir, "skills"),
+      join(this.workdir, ".nyra", "skills"),
       join(this.home, "skills"),
       ...pluginSkillDirs(this.home),
     ];
@@ -168,8 +218,12 @@ export class Agent {
       workdir: this.workdir,
       mode: this.mode,
       interactive: this.interactive,
+      home: this.home,
       memoryPath: this.memoryPath,
       skillsDir: join(this.home, "skills"),
+      // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用 Agent 当前
+      // 的技能集合（闭包活读 this.skills，setMode 换创造模式技能后同样有效）。
+      getSkills: () => this.skills,
       delegateFn: (task, maxTurns) => this.delegate(task, maxTurns),
       evidence: this.evidence,
       backend: this.backend ?? null,
@@ -179,7 +233,26 @@ export class Agent {
       streamToolOutput: opts.streamToolOutput ?? false,
       onEvent: (kind, data) => this.emit(kind, data),
       multiModelFactory: opts.multiModelFactory,
+      // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——沙箱配置透传给工具层。
+      sandbox: opts.sandbox ?? null,
     });
+  }
+
+  /** 调研报告第 2 项：技能渐进披露——常驻技能索引（描述常驻、全文按需）；技能集合变化时才重算。 */
+  skillIndexText(): string {
+    if (this.cachedSkillIndex && this.cachedSkillIndex.skills === this.skills) return this.cachedSkillIndex.index;
+    const index = skillIndex(this.skills);
+    this.cachedSkillIndex = { skills: this.skills, index };
+    return index;
+  }
+
+  /** 调研报告第 2 项：技能渐进披露——全文注入的技能 = 关键词前 2 + 路径触发命中（去重，关键词优先）。 */
+  private fullSkills(task: string, touchedPaths: string[]): Skill[] {
+    const full = matchSkills(task, this.skills, 2);
+    for (const s of matchSkillsByPaths(touchedPaths, this.skills)) {
+      if (!full.some((x) => x.name === s.name)) full.push(s);
+    }
+    return full;
   }
 
   /**
@@ -224,8 +297,64 @@ export class Agent {
     return schemas;
   }
 
-  async compact(keepLast = 4): Promise<{ method: string; summary_chars: number; before: number; after: number }> {
-    const [newMessages, info] = await compactMessages(this.provider, this.messages as never, keepLast);
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——压缩后重读的备注正文：
+  // 用现有的 loadMemorySummary(40) 与 loadAgentsMd 取末尾段落；文件不存在
+  // 或读失败时返回 null，不追加、不破坏压缩流程。
+  private postCompactReReadNote(): string | null {
+    try {
+      return buildReReadNote(
+        loadMemorySummary(40, this.memoryPath, this.home),
+        loadAgentsMd(this.workdir, this.home),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化。
+  // 各部分划分：system = 系统提示（含常驻技能索引描述）+ 压缩后重读备注；
+  // skills = 全文注入的技能；history = 用户/助手消息；toolResults = role 为
+  // tool 的消息。重读备注以 "[压缩后重读" 开头，特判进 system，不让它成为
+  // 看不见的隐藏占用。task/touchedPaths 用于算出与下一轮相同的技能注入。
+  contextUsage(task?: string, touchedPaths: string[] = []): ContextUsage {
+    const effectiveTask = task ?? this.lastTask;
+    const systemPrompt = this.buildSystemPrompt(effectiveTask, touchedPaths);
+    const fullSkillsText = this.fullSkills(effectiveTask, touchedPaths).map(renderSkill).join("\n\n");
+    const skills = fullSkillsText.length;
+    let system = Math.max(0, systemPrompt.length - skills);
+    let history = 0;
+    let toolResults = 0;
+    for (const m of this.messages) {
+      const content = m.content;
+      const chars = typeof content === "string" ? content.length : JSON.stringify(content ?? "").length;
+      if (typeof content === "string" && content.startsWith(RE_READ_MARKER)) {
+        system += chars;
+      } else if (m.role === "tool") {
+        toolResults += chars;
+      } else if (m.role === "system") {
+        system += chars;
+      } else {
+        history += chars;
+      }
+    }
+    const totalChars = system + skills + history + toolResults;
+    const snap = this.usage.snapshot();
+    const windowTokens = snap.context_window_tokens;
+    const reported = snap.last_prompt_tokens;
+    const estimated = reported === null || reported === undefined;
+    const usedTokens = estimated ? Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE) : (reported as number);
+    return { system, skills, history, toolResults, totalChars, windowTokens, usedTokens, estimated };
+  }
+
+  // 调研报告第 3 项：上下文补齐（学 Claude Code）——compact focus：focus 为非
+  // 空字符串时摘要指令追加重点保留、并额外保留含关键词的历史消息（上限 10 条，
+  // 见 buildCompactMessages）；focus 为空时行为与原来完全一致。压缩成功后自动
+  // 重读记忆与规则（见 postCompactReReadNote）；压缩失败走 fallback 时不重读。
+  async compact(keepLast = 4, focus?: string): Promise<{ method: string; summary_chars: number; before: number; after: number }> {
+    const [newMessages, info] = await compactMessages(this.provider, this.messages as never, keepLast, {
+      focus: (focus ?? "").trim() || undefined,
+      reRead: this.postCompactReReadNote(),
+    });
     this.messages = newMessages as Record<string, unknown>[];
     saveSession(this.sessionId, this.messages, this.home);
     return info;
@@ -251,7 +380,9 @@ export class Agent {
         }
       };
       const [compressedOld, info] = await compactMessages(
-        this.provider, trimmed as never, 0, { strict: true, onResponse: account },
+        // 调研报告第 3 项：上下文补齐（学 Claude Code）——自动压缩走同一条路，
+        // 压缩成功后同样重读记忆与规则；strict 失败时抛错、走外层 catch，不重读。
+        this.provider, trimmed as never, 0, { strict: true, onResponse: account, reRead: this.postCompactReReadNote() },
       );
       const reduced = [...compressedOld, ...active] as Record<string, unknown>[];
       const newSize = JSON.stringify(reduced).length;
@@ -270,7 +401,7 @@ export class Agent {
     }
   }
 
-  buildSystemPrompt(task: string): string {
+  buildSystemPrompt(task: string, touchedPaths: string[] = []): string {
     const sections = [SYSTEM_PROMPT_BASE, MODE_NOTES[this.mode] ?? ""];
     if (this.poppyEnabled) {
       sections.push(
@@ -298,8 +429,17 @@ export class Agent {
     }
     const agentsMd = loadAgentsMd(this.workdir, this.home);
     if (agentsMd) sections.push(agentsMd);
-    const matched = matchSkills(task, this.skills, 2);
-    if (matched.length) sections.push("## 相关技能\n" + matched.map(renderSkill).join("\n\n"));
+    // 调研报告第 2 项：技能渐进披露——两段式。常驻段只放技能索引（每技能约
+    // 100 字描述，skillIndexText 有缓存、集合不变不重算）；全文段只放命中的
+    // 技能（关键词前 2 + 路径触发命中）。未命中的技能全文绝不进提示词——
+    // 这是本项省 token 的核心收益。touchedPaths 是调用方已知的本轮触碰路径
+    // （runLoop 里工具调用产生的新路径见工具结果注入，不走这里）。
+    const index = this.skillIndexText();
+    if (index) {
+      sections.push("## 技能索引\n" + index + "\n（需要某个技能的完整步骤时，用 read_skill 按名读取全文；不要凭描述猜步骤。）");
+    }
+    const full = this.fullSkills(task, touchedPaths);
+    if (full.length) sections.push("## 相关技能\n" + full.map(renderSkill).join("\n\n"));
     const memory = loadMemorySummary(40, this.memoryPath, this.home);
     if (memory) sections.push("## 长期记忆\n" + memory);
     return sections.join("\n\n");
@@ -314,6 +454,7 @@ export class Agent {
   }
 
   private async runLoop(task: string, resume: boolean): Promise<string> {
+    this.lastTask = task;
     if (this.delegateDepth === 0) {
       this.delegateBudget.reset();
       this.checkpoints?.beginTurn();
@@ -331,6 +472,9 @@ export class Agent {
     }
     const turnOffset = resume ? this.turn : 0;
     let attemptedAutoCompact = false;
+    // 调研报告第 2 项：技能渐进披露——本轮已注入过的路径触发技能（去重用）。
+    // 关键词命中的技能已在 system prompt 全文段里，先记下来，路径触发不再重复注入。
+    const injectedPathSkills = new Set(matchSkills(task, this.skills, 2).map((s) => s.name));
     for (let i = 0; i < this.maxTurns; i++) {
       let current = messages;
       if (this.autoCompactEnabled && !attemptedAutoCompact &&
@@ -406,6 +550,20 @@ export class Agent {
         } else {
           result = await executeTool(fnName, args, this.ctx);
         }
+        // 调研报告第 2 项：技能渐进披露——路径触发（学 OpenHands）：本轮工具刚
+        // 触碰的文件命中某技能的 paths 时，把该技能全文确定性地追加到这次工具
+        // 结果后、零基线成本；不改 system prompt，不破坏提示词缓存不变式；
+        // 同一技能一轮运行里只注入一次。shell 不参与（命令里的路径不可靠）。
+        if (FILE_PATH_TOOLS.has(fnName) && args !== null && typeof args.path === "string" && args.path) {
+          const touched = toTouchedPath(this.workdir, args.path);
+          const newly = matchSkillsByPaths([touched], this.skills)
+            .filter((s) => !injectedPathSkills.has(s.name));
+          if (newly.length) {
+            for (const s of newly) injectedPathSkills.add(s.name);
+            result += "\n\n## 路径触发的技能（你刚触碰了匹配文件，按以下技能执行）\n" +
+              newly.map(renderSkill).join("\n\n");
+          }
+        }
         this.emit("tool_result", { id: (tc.id as string) ?? "", name: fnName, result });
         messages.push({ role: "tool", tool_call_id: (tc.id as string) ?? "", content: result });
         saveSession(this.sessionId, messages.slice(1), this.home);
@@ -452,6 +610,8 @@ export class Agent {
       home: this.home,
       disabledTools: [...this.disabledTools],
       multiModelFactory: this.ctx.multiModelFactory,
+      // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——子 agent 继承父级的沙箱配置。
+      sandbox: this.ctx.sandbox ?? null,
     });
     try {
       const summary = await child.run(task);

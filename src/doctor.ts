@@ -11,6 +11,8 @@ import { existsSync, statSync, writeFileSync, rmSync, statfsSync } from "node:fs
 import { join } from "node:path";
 import { loadConfig, resolveProvider, VERSION } from "./config.ts";
 import { vaultExists, vaultMode } from "./vault/index.ts";
+// 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——doctor 加一项隔离级别检查。
+import { getSandboxStatus } from "./sandbox.ts";
 
 export interface DoctorCheck {
   name: string;
@@ -79,6 +81,16 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ checks: DoctorCh
     checks.push({ name: "配置文件", ok: false, detail: `config.json 读失败：${err instanceof Error ? err.message : String(err)}`, fix: `删掉损坏的 ${join(home, "config.json")} 后重跑 nyra setup，会重建默认配置。` });
     return { checks, allOk: false };
   }
+
+  // 2b）隔离级别（调研报告第 9 项：OS 级分级沙箱，学 Codex CLI）。
+  // 这一项恒为通过：bwrap 不可用、回落到工具级是预期内的降级，不是故障，
+  // 不要让 doctor 因为 bwrap 缺失而整体报失败；显式要求 bwrap 但缺失时，
+  // 原因写进 detail，shell 执行时会 fail-closed 报错（见 docs/sandbox.md）。
+  const sandboxStatus = getSandboxStatus(config);
+  checks.push({
+    name: "隔离级别", ok: true,
+    detail: `沙箱后端 ${sandboxStatus.backend}，模式 ${sandboxStatus.mode}，隔离级别 ${sandboxStatus.level === "bwrap" ? "OS 沙箱（bwrap）" : sandboxStatus.level === "tool-level" ? "工具级（非 OS 沙箱）" : "未生效"}，bwrap ${sandboxStatus.bwrapAvailable ? "可用" : "不可用"}——${sandboxStatus.detail}`,
+  });
 
   // 3）配置目录（loadConfig 已建好；这里只验存在与 0700）
   if (!existsSync(home)) {

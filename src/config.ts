@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getCredential } from "./vault.ts";
 
-export const VERSION = "0.4.1";
+export const VERSION = "0.5.0";
 
 export interface ProviderPreset {
   baseUrl: string | null;
@@ -53,14 +53,20 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   fallback_enabled: false, // 默认关闭：模型自动兜底只由用户自己开启（用户定的安全事项）。
   fallback_providers: ["deepseek", "xai", "ollama"],
   custom_providers: {},
-  sandbox: "local",
+  sandbox: "auto",
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——沙箱模式与默认网络。
+  // sandbox_mode 默认 workspace-write；sandbox_allow_net 默认 false（断网）。
+  sandbox_mode: "workspace-write",
+  sandbox_allow_net: false,
   e2b_template: "base",
   e2b_timeout: 3600,
   e2b_sandbox_id: null,
 };
 
 export const VALID_MODES = ["readonly", "auto", "full", "creator"] as const;
-export const VALID_SANDBOXES = ["local", "e2b"] as const;
+export const VALID_SANDBOXES = ["auto", "local", "bwrap", "e2b"] as const;
+// 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——三档沙箱模式。
+export const VALID_SANDBOX_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
 export const PLAINTEXT_HTTP_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 /** 自定义 provider 条目（config.json 里是 snake_case）转内置预置格式。 */
@@ -391,6 +397,11 @@ export interface SandboxSettings {
   sandboxId: string | null;
   template: string;
   timeout: number;
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——模式与网络开关。
+  // mode：config.sandbox_mode / NYRA_SANDBOX_MODE，默认 workspace-write；
+  // allowNet：config.sandbox_allow_net / NYRA_SANDBOX_ALLOW_NET=1，默认 false（断网）。
+  mode: string;
+  allowNet: boolean;
 }
 
 export function resolveSandbox(
@@ -401,10 +412,18 @@ export function resolveSandbox(
   timeout?: number | null,
 ): SandboxSettings {
   const cfg = config ?? {};
-  const chosen = backend || envVar("SANDBOX") || (cfg.sandbox as string) || "local";
+  const chosen = backend || envVar("SANDBOX") || (cfg.sandbox as string) || "auto";
   if (!(VALID_SANDBOXES as readonly string[]).includes(chosen)) {
     throw new Error(`Invalid sandbox backend: ${chosen}. Valid backends: ${VALID_SANDBOXES.join(", ")}`);
   }
+  const modeRaw = envVar("SANDBOX_MODE") || (cfg.sandbox_mode as string) || "workspace-write";
+  if (!(VALID_SANDBOX_MODES as readonly string[]).includes(modeRaw)) {
+    throw new Error(`Invalid sandbox_mode: ${modeRaw}. Valid modes: ${VALID_SANDBOX_MODES.join(", ")}`);
+  }
+  const allowNetEnv = envVar("SANDBOX_ALLOW_NET");
+  const allowNet = allowNetEnv !== undefined
+    ? ["1", "true", "yes", "on"].includes(allowNetEnv.trim().toLowerCase())
+    : (cfg.sandbox_allow_net as boolean | undefined) === true;
   let resolvedTimeout = timeout ?? null;
   if (resolvedTimeout === null) {
     const envTimeout = envVar("E2B_TIMEOUT");
@@ -421,6 +440,8 @@ export function resolveSandbox(
     sandboxId: sandboxId || envVar("E2B_SANDBOX_ID") || (cfg.e2b_sandbox_id as string) || null,
     template: template || envVar("E2B_TEMPLATE") || (cfg.e2b_template as string) || "base",
     timeout: resolvedTimeout,
+    mode: modeRaw,
+    allowNet,
   };
 }
 

@@ -302,6 +302,10 @@ export class Gateway {
       evidence: this.listEvidence(sessionId),
       plan,
       usage: run?.agent ? run.agent.usage.snapshot() : null,
+      // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化的
+      // 网页端接口：沿用 sessionView 的返回体，加 context breakdown 字段；
+      // 无 live agent 时为 null（读会话文件时不拼系统提示，不编造数字）。
+      context: run?.agent ? run.agent.contextUsage() : null,
       auto_compact_count: run?.agent ? run.agent.autoCompactCount : 0,
     };
   }

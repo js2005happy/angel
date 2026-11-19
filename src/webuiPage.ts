@@ -87,6 +87,19 @@ function showTab(name){
   document.querySelectorAll('[data-tab]').forEach(el => { el.style.display = el.dataset.tab === name ? '' : 'none'; });
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.nav === name));
 }
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——网页端在现有状态行旁展示
+// /api/sessions/:id 返回的 context breakdown（接口已备，见 gateway sessionView）；
+// 无 live agent 时 context 为 null，这里只清空、不编造数字。
+function renderContext(v){
+  const el = document.getElementById('context');
+  if (!el) return;
+  const c = v.context;
+  if (!c) { el.textContent = ''; return; }
+  const pct = (n) => c.totalChars ? Math.round(n / c.totalChars * 100) + '%' : '0%';
+  let line = '上下文：系统 ' + pct(c.system) + ' · 技能 ' + pct(c.skills) + ' · 历史 ' + pct(c.history) + ' · 工具结果 ' + pct(c.toolResults) + ' · 共 ' + c.totalChars + ' 字符';
+  if (c.usedTokens !== null && c.usedTokens !== undefined) line += '（' + c.usedTokens + ' token，' + (c.estimated ? '估算' : '实报') + '）';
+  el.textContent = line;
+}
 `;
 
 const DESKTOP_JS = SHARED_JS + `
@@ -145,6 +158,7 @@ async function refreshSession(){
     pend.appendChild(row);
   } else pend.style.display = 'none';
   document.getElementById('status').textContent = '状态：' + v.status + (v.error ? '（' + v.error + '）' : '');
+  renderContext(v);
   renderApprovals(); renderArtifacts(v);
 }
 async function renderArtifacts(v){
@@ -238,6 +252,7 @@ export const PAGE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset=
 <p id="fatal" class="err"></p>
 <section data-tab="chat">
 <div class="row"><button onclick="newSession()">＋ 新会话</button><span id="chat-title" class="muted">未选会话</span><span id="status" class="muted"></span></div>
+<div class="row"><span id="context" class="muted"></span></div>
 <div id="sessions"></div>
 <div id="pending" class="approval" style="display:none"></div>
 <div id="messages"></div>
@@ -324,6 +339,7 @@ async function refreshSession(){
     pend.appendChild(row);
   } else pend.style.display = 'none';
   document.getElementById('status').textContent = '状态：' + v.status + (v.error ? '（' + v.error + '）' : '');
+  renderContext(v);
   await renderApprovals();
 }
 async function sendMsg(){
@@ -418,6 +434,7 @@ export const MOBILE_HTML = `<!doctype html><html lang="zh-CN"><head><meta charse
 <div class="row"><input id="pair-code" inputmode="numeric" placeholder="6 位配对码" class="grow"><button onclick="pair()">配对</button></div></div>
 <section data-tab="chat">
 <div class="row"><button onclick="newSession()">＋ 新会话</button><span id="chat-title" class="muted">未选会话</span><span id="status" class="muted"></span></div>
+<div class="row"><span id="context" class="muted"></span></div>
 <div id="sessions"></div>
 <div id="pending" class="approval" style="display:none"></div>
 <div id="messages"></div>

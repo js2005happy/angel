@@ -15,7 +15,7 @@ import {
   listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets,
 } from "./config.ts";
 import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
-import { Agent, AgentError } from "./agent.ts";
+import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, formatRunReport } from "./runs.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills } from "./skills.ts";
@@ -32,6 +32,9 @@ import { PermissionLedger, PermissionConflict } from "./poppy.ts";
 import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
 import { NetworkPolicy } from "./eigenfluxPolicy.ts";
 import { printDoctorResult, runDoctor } from "./doctor.ts";
+// 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——main 入口做 fail-closed 校验，
+// buildAgent 把解析出的沙箱配置透传给 Agent（再进 ToolContext）。
+import { resolveSandboxBackend } from "./sandbox.ts";
 import { runExampleTask } from "./exampleTask.ts";
 import { printNoKeyAndExitCode } from "./noKey.ts";
 import { defaultExampleFile, runWizard } from "./wizard.ts";
@@ -39,6 +42,7 @@ import { ensureNyraHome } from "./migration.ts";
 import { ApprovalRequired, TOOL_SCHEMAS } from "./tools.ts";
 import { Vault, vaultUsage, VaultError } from "./vault.ts";
 import { runCreator, verifyStagedPlugin, installStagedPlugin, describePlannedChanges, CreatorError } from "./creator.ts";
+import { listHooks, HOOK_EVENTS } from "./hooks.ts";
 import { Gateway } from "./gateway.ts";
 import { GatewayClient } from "./gatewayClient.ts";
 import { ConversationStore } from "./conversations.ts";
@@ -68,6 +72,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra ui --print-url-json --exit-on-stdin-close   桌面外壳模式：stdout 首行一行 JSON，stdin 关闭即退出
   nyra gw <sessions|send|view|approve|rewind|info|schedule>   连正在跑的 gateway 当客户端
   nyra --compact <会话 ID>       压缩指定会话后退出
+  REPL：/context 查看上下文占用；/compact focus <关键词> 按重点压缩会话（详见 docs/context.md）
   nyra --resume <会话 ID>        继续指定会话
   nyra --resume-run <运行 ID>    从运行记录断点续跑
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -78,6 +83,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra task <add|list|show|cancel|worker|approve>   管理后台任务队列
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
+  nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
   nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
   nyra memory <export|export-prompt|import|local|import-zip>  记忆交换
   nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
@@ -131,7 +137,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
   ]);
-  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault"]);
+  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -334,6 +340,14 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1) {
     throw new Error("--max-turns 必须为正整数");
   }
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——后端/模式/网络开关
+  // 按 CLI flag > 环境变量 > config.json 解析（resolveSandbox）；显式 bwrap
+  // 缺失、e2b 等 fail-closed 情况在这里抛错，命令不跑。
+  const sandboxSettings = resolveSandbox(config, args.sandbox ?? null);
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——这里再做一次 fail-closed
+  // 解析：显式 bwrap 缺失、e2b 等直接抛错（main 入口已先拦一道，这里是纵深，
+  // 覆盖 --compact 这类先调 buildAgent 的路径；auto 回落不报错）。
+  resolveSandboxBackend(config, args.sandbox ?? null);
   const agent = new Agent(provider, {
     workdir: resolve(args.workdir),
     mode,
@@ -345,6 +359,11 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     autoCompactThreshold: args.autoCompactThreshold ?? undefined,
     poppyEnabled: args.poppy,
     home,
+    sandbox: {
+      backend: sandboxSettings.backend,
+      mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",
+      allowNet: sandboxSettings.allowNet,
+    },
   });
   return { agent, providerName: primaryCfg.name, config, home };
 }
@@ -811,6 +830,30 @@ async function handleMemory(argv: string[], home: string): Promise<number> {
   return 2;
 }
 
+// ---- 子命令：hooks（调研报告第 1 项：Hooks 确定性钩子层，学 Claude Code） ----
+async function handleHooks(argv: string[], home: string): Promise<number> {
+  const HOOKS_USAGE = "用法：\n  nyra hooks list   列出已安装的钩子";
+  const cmd = argv[0];
+  if (cmd !== undefined && cmd !== "list") {
+    process.stderr.write(`未知钩子子命令：${cmd}\n${HOOKS_USAGE}\n`);
+    return 2;
+  }
+  const hooks = listHooks(home);
+  if (!hooks.length) {
+    process.stdout.write("未安装任何钩子。\n");
+    process.stdout.write(`放脚本的位置：${join(home, "hooks", "<事件>.d")}/，例如 ${join(home, "hooks", "PreToolUse.d", "lint.sh")}\n`);
+    process.stdout.write("事件：PreToolUse、PostToolUse、SessionStart、SessionEnd；用法与例子见 docs/hooks.md。\n");
+    return 0;
+  }
+  for (const event of HOOK_EVENTS) {
+    const items = hooks.filter((h) => h.event === event);
+    if (!items.length) continue;
+    process.stdout.write(`${event}：\n`);
+    for (const h of items) process.stdout.write(`- ${h.path}\n`);
+  }
+  return 0;
+}
+
 // ---- 子命令：vault（密码箱 CLI，与 python3 -m nyra.vault 同行为） ----
 // 密钥只从环境变量 NYRA_VAULT_PASSWORD 或交互输入读，绝不从 argv 读
 // （argv 会进进程表和 shell 历史）。
@@ -1106,6 +1149,64 @@ export function listCustomCommands(workdir: string, home: string): string[] {
   return found;
 }
 
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——/compact 的 REPL 分发解析
+// （纯函数，供测试直接覆盖 REPL 分发逻辑）：
+//   "/compact" → { focus: "" }（行为与原来完全一致）；
+//   "/compact focus <关键词>" → { focus: "<关键词>" }；
+//   其他 /compact 开头的写法（缺关键词、未知参数）→ null，调用方打印用法。
+export function parseCompactCommand(text: string): { focus: string } | null {
+  if (text === "/compact") return { focus: "" };
+  const m = /^\/compact focus\s+(.+)$/.exec(text);
+  if (m) return { focus: m[1].trim() };
+  if (text === "/compact focus" || text.startsWith("/compact ")) return null;
+  return null;
+}
+
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 的优化建议触发规则：
+// 总量为 0 时无需优化；占比最高的类别超过 50% 时给出针对性建议，否则报均衡。
+export function contextSuggestion(u: ContextUsage): string {
+  if (u.totalChars <= 0) return "上下文为空，无需优化。";
+  const parts: [string, number, string][] = [
+    ["系统提示", u.system, "系统提示占比最高：检查 AGENTS.md / 长期记忆是否过长，或精简常驻技能索引。"],
+    ["技能全文", u.skills, "技能全文占比最高：减少本轮命中的技能，或先 /compact 精简会话后再试。"],
+    ["对话历史", u.history, "对话历史占比最高：可用 /compact 压缩会话，或 /compact focus <关键词> 只保留重点。"],
+    ["工具结果", u.toolResults, "工具结果占比最高：可用 /compact 压缩会话，旧工具结果会被先折叠。"],
+  ];
+  let top = parts[0];
+  for (const p of parts) if (p[1] > top[1]) top = p;
+  if (top[1] / u.totalChars <= 0.5) return "各部分占比均衡，暂无需压缩。";
+  return top[2];
+}
+
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 的打印格式：四类
+// 占比 + 总量 + 模型窗口 + 优化建议。token 数是实报还是估算必须写明：实报来自
+// 模型用量快照，估算按 4 字符 ≈ 1 token，只在模型没报告用量时用。
+export function formatContextUsage(u: ContextUsage): string {
+  const pct = (n: number) => (u.totalChars > 0 ? `${Math.round((n / u.totalChars) * 100)}%` : "0%");
+  const lines = [
+    "上下文占用（字符数）：",
+    `  系统提示：${u.system}（${pct(u.system)}）`,
+    `  技能全文：${u.skills}（${pct(u.skills)}）`,
+    `  对话历史：${u.history}（${pct(u.history)}）`,
+    `  工具结果：${u.toolResults}（${pct(u.toolResults)}）`,
+    `  总计：${u.totalChars} 字符`,
+  ];
+  if (u.windowTokens === null || u.windowTokens === undefined) {
+    lines.push("  模型窗口：未配置（未配置该模型的 context_window_tokens）");
+  } else {
+    lines.push(`  模型窗口：${u.windowTokens.toLocaleString("en-US")} tokens`);
+  }
+  if (u.usedTokens === null || u.usedTokens === undefined) {
+    lines.push("  已用 token：未知");
+  } else if (u.estimated) {
+    lines.push(`  已用 token：约 ${u.usedTokens.toLocaleString("en-US")}（估算：4 字符 ≈ 1 token，模型未报告用量）`);
+  } else {
+    lines.push(`  已用 token：${u.usedTokens.toLocaleString("en-US")}（模型实报）`);
+  }
+  lines.push(`建议：${contextSuggestion(u)}`);
+  return lines.join("\n");
+}
+
 // ---- REPL ----
 async function runRepl(args: CliArgs): Promise<number> {
   const home = resolveHome();
@@ -1146,7 +1247,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     if (!text) continue;
     if (text === "/exit" || text === "/quit") break;
     if (text === "/help") {
-      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/compact 压缩会话；/mode <readonly|auto|full|creator> 切换模式；/creator 进入创造模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
+      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/context 查看上下文占用；/compact 压缩会话；/compact focus <关键词> 按重点压缩会话（重点保留与关键词相关的内容）；/mode <readonly|auto|full|creator> 切换模式；/creator 进入创造模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
       continue;
     }
     if (text === "/clear") {
@@ -1155,10 +1256,21 @@ async function runRepl(args: CliArgs): Promise<number> {
       process.stdout.write("会话已清空。\n");
       continue;
     }
-    if (text === "/compact") {
+    // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化与
+    // /compact focus（分发走 parseCompactCommand，见该函数注释）。
+    if (text === "/context") {
+      process.stdout.write(formatContextUsage(agent.contextUsage()) + "\n");
+      continue;
+    }
+    if (text === "/compact" || text.startsWith("/compact ")) {
+      const parsed = parseCompactCommand(text);
+      if (parsed === null) {
+        process.stderr.write("用法：/compact 或 /compact focus <关键词>\n");
+        continue;
+      }
       try {
-        const info = await agent.compact();
-        process.stdout.write(`已压缩：${info.before} 条 → ${info.after} 条（${info.method}）\n`);
+        const info = await agent.compact(4, parsed.focus || undefined);
+        process.stdout.write(`已压缩${parsed.focus ? `（focus：${parsed.focus}）` : ""}：${info.before} 条 → ${info.after} 条（${info.method}）\n`);
       } catch (err: unknown) {
         process.stderr.write(`压缩失败：${err instanceof Error ? err.message : String(err)}\n`);
       }
@@ -1428,6 +1540,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "creator") return handleCreator(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
+  if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "ui") {
     return handleUi(args.subArgs ?? [], resolve(args.workdir), home);
   }
@@ -1574,8 +1687,13 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  if (args.sandbox && args.sandbox !== "local") {
-    process.stderr.write("错误：--sandbox e2b 在 0.4.1 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植）；当前只支持 local\n");
+  // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——沙箱选择 fail-closed 校验。
+  // 显式 --sandbox bwrap 但本机无 bwrap、--sandbox e2b、danger-full-access + bwrap
+  // 等直接报错退出（exit 2），绝不静默降级裸奔；auto 回落到工具级不报错。
+  try {
+    resolveSandboxBackend(loadConfig(home), args.sandbox ?? undefined);
+  } catch (err) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
     return 2;
   }
   if (args.contextWindow !== null && (typeof args.contextWindow !== "number" || !Number.isInteger(args.contextWindow) || args.contextWindow < 1)) {
