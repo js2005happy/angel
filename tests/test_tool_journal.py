@@ -11,6 +11,24 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_finish_rejects_competing_intent_in_final_snapshot(self):
+        journal = ToolJournal("finish-final-snapshot-race", root=self.root)
+        cid = journal.begin("shell")
+        original_records = journal._records
+        reads = 0
+
+        def competing_snapshot():
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                journal._write("intent", "c" * 32, "http_post")
+            return original_records()
+
+        with mock.patch.object(journal, "_records", side_effect=competing_snapshot):
+            with self.assertRaisesRegex(JournalError, "结果提交前发现并发"):
+                journal.finish(cid, "shell", success=True)
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 2)
+
     def test_begin_requires_own_intent_still_pending(self):
         # A competing process can finish our intent while leaving exactly
         # one different intent unresolved; the global count alone is unsafe.
