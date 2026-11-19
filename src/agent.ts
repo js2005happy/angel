@@ -1052,6 +1052,8 @@ export class Agent {
     this.lastCost = e;
     const snap = buildDashboardSnapshot({
       turn: this.turn, maxTurns: this.maxTurns, snapshot: this.usage.snapshot(), estimate: e,
+      // 委派花费不能只出现在中止文案里：看板要报出来，否则「显示 .02 实际 .15」。
+      delegateUsd: this.delegateSpentUsd,
     });
     this.emit("cost_update", snap as unknown as Record<string, unknown>);
   }
