@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal 路径回退枚举拒绝诊断）
+
+- Windows/path 回退读取的首次及末次 `iterdir()` 枚举若遭遇 `OSError`（含权限拒绝），统一转为 `JournalError` 并保留异常链，避免原始文件系统异常泄漏到调用者且不能误报空日志。新增两项模拟回归测试源码，未运行；未实现 Windows ACL、稳定句柄或跨进程事务。
+
 ## 未发布（2026-11-19，ToolJournal 目录类型检查拒绝语义）
 
 - `_safe_directory()` 的末次目录类型检查由 `exists()/is_dir()` 改为 `lstat()`，仅明确缺失允许继续；权限拒绝或其他元数据读取错误保守抛出 `JournalError`。新增模拟回归测试源码，未执行。该增量不实现 Windows ACL、稳定句柄或跨进程事务。
