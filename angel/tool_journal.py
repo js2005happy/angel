@@ -628,11 +628,20 @@ class ToolJournal:
             "journal_ambiguous": invalid,
             # Read-only reconciliation signal: never imply that an absent
             # pending intent proves external effects or authorizes replay.
-            "manual_review_required": bool(pending or invalid),
-            # Machine-readable, read-only reason; never grants execution rights.
+            # A reported tool error may still have produced external effects.
+            # Do not mark such a journal as requiring no human review.
+            "manual_review_required": bool(
+                pending or invalid or any(
+                    x["outcome"] == "result_error" for x in calls.values()
+                )
+            ),
+            # Prioritize corruption and unknown outcomes over reported errors.
             "review_reason": (
                 "journal_ambiguous" if invalid else
-                "unknown_outcomes" if pending else "none"
+                "unknown_outcomes" if pending else
+                "reported_errors" if any(
+                    x["outcome"] == "result_error" for x in calls.values()
+                ) else "none"
             ),
             "execution_verified": False,
             "safe_to_auto_resume": False,
