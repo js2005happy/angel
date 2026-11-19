@@ -194,7 +194,10 @@ test("ToolsTest.test_shell_denied_command_not_run", async () => {
 test("ToolsTest.test_shell_timeout_returns_error_text", async () => {
   const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
   const ctx = fullCtx(wd);
-  const out = await executeTool("shell", { command: "sleep 5", timeout: 1 }, ctx);
+  // Windows 没有 sleep：ping -n 6 约 5 秒，超过 1 秒超时；timeout.exe 在
+  // stdin 重定向时会立即返回，造不出超时。
+  const slow = process.platform === "win32" ? "ping -n 6 127.0.0.1 >nul" : "sleep 5";
+  const out = await executeTool("shell", { command: slow, timeout: 1 }, ctx);
   expect(out).toContain("超时");
 });
 
@@ -205,7 +208,9 @@ test("ToolsTest.test_shell_streaming_lines_capped", async () => {
     streamToolOutput: true,
     onEvent: (kind) => { events.push(kind); },
   });
-  const out = await executeTool("shell", { command: "seq 1 250", timeout: 10 }, ctx);
+  // Windows 没有 seq：cmd 的 for /L 循环同样输出 1..250。
+  const seq = process.platform === "win32" ? "for /L %i in (1,1,250) do echo %i" : "seq 1 250";
+  const out = await executeTool("shell", { command: seq, timeout: 10 }, ctx);
   expect(out).toContain("250");
   expect(events).toContain("tool_stream");
 });
