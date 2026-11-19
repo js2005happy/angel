@@ -1,4 +1,4 @@
-﻿// src/tools.ts — 25 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
+// src/tools.ts — 25 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
 // 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
 // src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
@@ -15,6 +15,7 @@ import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.t
 import { evaluate, parseRules, matchPathGlob, type RuleSet } from "./permissionRules.ts";
 import { RuleStore, SessionRules, suggestionFor, rejectionMessage, formatPrefix, type ApprovalDecision, type ApprovalRule } from "./approvalRules.ts";
 import { runSeatbelt, SeatbeltUnavailableError } from "./seatbelt.ts";
+import { selectTools } from "./toolSearch.ts";
 import { runWindowsSandboxed, WindowsSandboxUnavailableError } from "./windowsSandbox.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untrusted.ts";
@@ -117,6 +118,10 @@ export interface ToolContext {
   // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用的技能集合。
   // Agent 会传一个活读 this.skills 的闭包；没传时回退到从 skillsDir 现场加载。
   getSkills?: (() => Skill[]) | null;
+  /** 工具检索：可检索的全部工具（含 MCP），供 search_tools 用。 */
+  searchableTools?: (() => { type?: string; function?: { name?: string; description?: string; parameters?: unknown } }[]) | null;
+  /** 工具检索：把命中的工具加入"下一轮要发送"的集合。 */
+  revealTools?: ((names: string[]) => void) | null;
   /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
   home?: string;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
@@ -195,7 +200,45 @@ export const POPPY_PERMISSION_SCHEMA = schema(
   ["site", "scope"],
 );
 
+// 工具检索（延迟加载的第二步）：模型只看到核心工具，需要别的时调它把工具拉回来。
+// 只返回名字 + 一句话描述（不返回完整 schema），避免"检索本身又把上下文撑大"。
+export const SEARCH_TOOLS_SCHEMA: Record<string, unknown> = {
+  type: "function",
+  function: {
+    name: "search_tools",
+    description: "检索工具。当前只发送了核心工具；需要其他能力（MCP、生图、浏览器等）时先用它按关键词检索，命中的工具会在下一轮可用。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "要做什么，例如「读取.env」「调用浏览器截图」「检索记忆库」" },
+        limit: { type: "number", description: "最多返回几个，默认 8" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+/** search_tools 的实现：检索 → 返回名字+描述 → 通知 agent 下一轮带上它们。 */
+export function toolSearchTools(ctx: ToolContext, query: string, limit = 8): string {
+  const all = ctx.searchableTools?.() ?? [];
+  if (!all.length) return "错误：当前没有可检索的工具";
+  const { kept, dropped, suggestions } = selectTools(all, query, { topK: Math.max(1, Math.min(20, Math.floor(limit))) });
+  // 无命中时 selectTools 会全量回退：这里如实告诉模型"没匹配到，但工具都在"
+  const matched = dropped.length ? kept : kept;
+  ctx.revealTools?.(matched);
+  const describe = (name: string) => {
+    const s = all.find((x) => x.function?.name === name);
+    const desc = (s?.function?.description ?? "").split("\n")[0].slice(0, 80);
+    return desc ? `${name} — ${desc}` : name;
+  };
+  const lines = [`检索命中 ${matched.length} 个工具（下一轮可用）：`];
+  for (const n of matched) lines.push(`- ${describe(n)}`);
+  if (suggestions.length) lines.push(`\n其他可能相关的：${suggestions.join("、")}（可再检索）`);
+  if (!dropped.length) lines.push("\n（关键词没有明确命中，已把所有工具都放开）");
+  return lines.join("\n");
+}
 export const TOOL_SCHEMAS: Record<string, unknown>[] = [
+  SEARCH_TOOLS_SCHEMA,
   schema("read_file", "读取文件内容", { path: { type: "string" } }, ["path"]),
   schema("write_file", "创建或覆盖写入文件", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
   schema("edit_file", "精确替换文件中的一段文本", { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } }, ["path", "old_text", "new_text"]),
@@ -1723,6 +1766,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     }
     const result = await (async (): Promise<string> => {
       switch (name) {
+      case "search_tools": return toolSearchTools(ctx, String(args.query ?? ""), Number(args.limit ?? 8));
       case "read_file": return await toolReadFile(ctx, String(args.path));
       case "write_file": return await toolWriteFile(ctx, String(args.path), String(args.content));
       case "edit_file": return await toolEditFile(ctx, String(args.path), String(args.old_text), String(args.new_text));

@@ -72,7 +72,9 @@ function scoreOne(schema: ToolSchemaLike, queryTokens: string[], queryLower: str
     }
   }
   for (const t of queryTokens) {
-    if (t.length >= 3 && descLower.includes(t)) {
+    // 中文按 2-gram 切，长度天然是 2——门槛按字符类型区分，否则中文查询永远命不中描述。
+    const minLen = /[\u4e00-\u9fff]/.test(t) ? 2 : 3;
+    if (t.length >= minLen && descLower.includes(t)) {
       score += 1;
       matched.push(`desc:${t}`);
     }
