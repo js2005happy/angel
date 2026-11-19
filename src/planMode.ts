@@ -3,7 +3,7 @@
 // plan.md 全文 SHA-256，文件改动即失效。
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { executeTool, type ToolContext } from "./tools.ts";
 
 export const PLAN_NAME = "plan.md";
@@ -37,7 +37,7 @@ function safeReadPath(workdir: string, filename: string): string {
   }
   const root = resolve(workdir);
   const target = resolve(join(root, filename));
-  if (target !== root && !target.startsWith(root + "/")) {
+  if (target !== root && !target.startsWith(root + sep)) {
     throw new PlanError("计划模式不能读取工作目录之外的文件");
   }
   return target;

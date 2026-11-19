@@ -4,6 +4,7 @@
 // tools/list 分页；tools/call 遇多轮往返（input_required）直接报错，不假装完成。
 // 服务器主动发来的请求一律回 -32601（不支持）。超时放弃的旧响应按 id 丢弃。
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { DEFAULT_MCP_PRESETS, resolvePreset } from "./mcpPresets.ts";
 
 export const LATEST_PROTOCOL_VERSION = "2026-07-28";
@@ -98,6 +99,9 @@ export class MCPClient {
   private pending = new Map<number, { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private staleIds = new Set<number>();
   private exitPromise: Promise<number | null> | null = null;
+  // stdout 按字节攒行：StringDecoder 会缓存被 chunk 边界切断的多字节字符，
+  // 避免逐 chunk 转字符串时出现 U+FFFD 导致整行 JSON 解析失败被静默丢弃。
+  private stdoutDecoder = new StringDecoder("utf-8");
 
   constructor(config: MCPServerConfig, timeout = 30.0) {
     this.config = config;
@@ -125,10 +129,17 @@ export class MCPClient {
     });
     this.process = child;
     this.exitPromise = new Promise((resolve) => { child.on("exit", (code) => resolve(code)); });
-    child.stdout.setEncoding("utf-8");
-    child.stdout.on("data", (chunk: string) => this.onStdout(chunk));
+    this.stdoutDecoder = new StringDecoder("utf-8");
+    child.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk));
     child.stderr.setEncoding("utf-8");
     child.stderr.on("data", () => { /* MCP 服务端日志不进协议流，丢弃 */ });
+    child.on("error", (err: Error) => {
+      // spawn 失败（如命令不存在）时只触发 error，不一定有 exit；
+      // 不挂监听会变成未处理异常，挂起的请求也要立即失败而不是等超时。
+      const e = new MCPError(`MCP 服务器 ${this.config.name} 启动失败：${err.message}`);
+      for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(e); }
+      this.pending.clear();
+    });
     child.on("exit", () => {
       const err = new MCPError(`MCP 服务器 ${this.config.name} 已退出`);
       for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
@@ -137,8 +148,9 @@ export class MCPClient {
     this.negotiate();
   }
 
-  private onStdout(chunk: string): void {
-    this.buffer += chunk;
+  private onStdout(chunk: Buffer | string): void {
+    const text = typeof chunk === "string" ? chunk : this.stdoutDecoder.write(chunk);
+    this.buffer += text;
     let idx: number;
     while ((idx = this.buffer.indexOf("\n")) >= 0) {
       const line = this.buffer.slice(0, idx);

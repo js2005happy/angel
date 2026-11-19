@@ -582,10 +582,18 @@ function killTree(child: ReturnType<typeof spawn>): void {
   try { child.kill("SIGKILL"); } catch { /* ignore */ }
 }
 
+/** 跨平台默认 shell：Windows 用 ComSpec（cmd.exe），POSIX 用 /bin/sh。
+ * 两个 spawn 调用点与 runs.ts 的校验命令共用，避免某处漏改后
+ * Windows 上又出现 /bin/sh ENOENT。 */
+export function defaultShell(): string {
+  if (process.platform === "win32") return process.env.ComSpec ?? "cmd.exe";
+  return "/bin/sh";
+}
+
 async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd: string, timeout: number): Promise<string> {
   const started = Date.now();
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { shell: "/bin/sh", cwd: resolvedCwd, detached: process.platform !== "win32" });
+    const child = spawn(command, { shell: defaultShell(), cwd: resolvedCwd, detached: process.platform !== "win32" });
     const outLines: string[] = [];
     const errLines: string[] = [];
     let shown = 0;
@@ -605,13 +613,14 @@ async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd:
       outBuf += d.toString("utf-8");
       const parts = outBuf.split("\n");
       outBuf = parts.pop() ?? "";
-      for (const line of parts) { outLines.push(line + "\n"); emit(line, "stdout"); }
+      // Windows 输出是 CRLF：行尾 \r 不属于行内容，去掉再逐行上报。
+      for (const rawLine of parts) { const line = rawLine.replace(/\r$/, ""); outLines.push(line + "\n"); emit(line, "stdout"); }
     });
     child.stderr?.on("data", (d: Buffer) => {
       errBuf += d.toString("utf-8");
       const parts = errBuf.split("\n");
       errBuf = parts.pop() ?? "";
-      for (const line of parts) { errLines.push(line + "\n"); emit(line, "stderr"); }
+      for (const rawLine of parts) { const line = rawLine.replace(/\r$/, ""); errLines.push(line + "\n"); emit(line, "stderr"); }
     });
     const timer = setTimeout(() => {
       timedOut = true;
@@ -673,7 +682,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
     return runShellStreaming(ctx, command, resolvedCwd, timeout);
   }
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { shell: "/bin/sh", cwd: resolvedCwd, detached: process.platform !== "win32" });
+    const child = spawn(command, { shell: defaultShell(), cwd: resolvedCwd, detached: process.platform !== "win32" });
     let stdout = "";
     let stderr = "";
     let timedOut = false;

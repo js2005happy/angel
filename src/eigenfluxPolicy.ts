@@ -234,7 +234,9 @@ export class NetworkPolicy {
     if (!isAbsolute(path)) {
       throw new NetworkPolicyError("策略路径必须是绝对路径");
     }
-    const canonicalRoot = canonicalize(this.root);
+    // this.root 在构造时已规范化过，不必每调用一次就再 realpath 一遍
+    //（Windows 上每次 realpath 都要解析 8.3 短名，是审计类批量写入变慢的主因之一）。
+    const canonicalRoot = this.root;
     const canonicalPath = canonicalize(path);
     if (!isWithinRoot(canonicalPath, canonicalRoot)) {
       throw new NetworkPolicyError("策略文件必须位于 Nyra 数据目录内");
@@ -342,7 +344,7 @@ export class NetworkPolicy {
     this.safeFile(this.path);
     const parent = dirname(resolve(this.path));
     mkdirSync(parent, { recursive: true, mode: 0o700 });
-    if (parent !== canonicalize(this.root) && process.platform !== "win32") {
+    if (parent !== this.root && process.platform !== "win32") {
       try { chmodSync(parent, 0o700); } catch { /* 已是期望权限时忽略 */ }
     }
     this.safeFile(this.path);

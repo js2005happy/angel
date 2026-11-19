@@ -266,7 +266,9 @@ export function defaultRunProbe(binary: string, home: string, args: string[]): P
     const timedOut = code === "ETIMEDOUT" || /timed out/i.test(result.error.message);
     return { status: "failed", exitCode: null, output: "", reason: timedOut ? "TimeoutExpired" : (code || result.error.name) };
   }
-  const firstLine = ((result.stdout as string | null) ?? "").trim().split("\n")[0] ?? "";
+  // 先切行再 trim 首行：Windows .cmd 的 echo 输出是 CRLF，整串 trim 只能去掉
+  // 末尾换行，中间行的行尾 \r 会残留在首行里（"v1.2.3\r"）。
+  const firstLine = (((result.stdout as string | null) ?? "").split("\n")[0] ?? "").trim();
   const probe: ProbeResult = {
     status: result.status === 0 ? "ok" : "failed",
     exitCode: result.status,
