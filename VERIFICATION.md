@@ -1,3 +1,9 @@
+## 2026-11-19 ToolJournal 本次意图身份复核（仅静态审阅）
+
+- 静态审阅 `begin()`：确认二次 `inspect()` 的全局 unknown=1 不足以证明本次 call_id 未完成；加入按 call_id 读取并核验仅有 intent 的守卫。
+- 新增 `test_begin_requires_own_intent_still_pending`，模拟并发写入本次 result 与另一个 intent。**未运行测试、未运行 CI、未进行 Windows 实机验证**。
+- 仍存在检查与工具派发间 TOCTOU，未提供跨进程锁、崩溃对账或真实外部副作用凭证。
+
 ## 2026-11-19 — begin 写后并发门禁（仅静态）
 
 - 静态检查 `ToolJournal.begin()`：原实现首次 `inspect()` 与 `_write("intent")` 之间可能插入竞争意图；新增写后 `inspect()`，发现多个未决结果或歧义则在工具调度前拒绝返回调用 ID。
