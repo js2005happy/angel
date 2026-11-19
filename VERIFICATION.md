@@ -1,3 +1,8 @@
+## 2026-11-19 ToolJournal finish 最终快照并发门禁（仅静态）
+
+- 首次 `inspect()` 与最终 `_records()` 之间可插入竞争 intent；现在最终快照检查其他调用的 intent/result 配对及工具名一致性。
+- 新增 `test_finish_rejects_competing_intent_in_final_snapshot` 模拟竞争；未运行测试、CI 或跨平台验证。最终检查与写 result 之间仍有 TOCTOU。
+
 ## 2026-11-19 ToolJournal 最终快照并发复核（仅静态）
 
 - begin() 原先最后一次 _records() 仅过滤自己的 call_id，未检查其他新增 intent；现在在同一最终快照要求其他调用均为一条 intent 与一条同工具 result。
