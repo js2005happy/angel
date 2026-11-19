@@ -9,12 +9,15 @@
 // schema 只构建一次、逐轮不变；可变内容只出现在消息尾部。测试覆盖见
 // tests/node/test-agent.test.ts（缓存不变式专项）。
 import { join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { ProviderError, type ProviderLike } from "./providers.ts";
 import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
   TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
   newToolContext, executeTool, executeToolIdempotent, ToolError, checkApproval,
-  type ToolContext,
+  type ToolContext, type DelegateOptions,
 } from "./tools.ts";
 import { RepeatGuard } from "./repeatGuard.ts";
 import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, skillRenderOptionsFor, type Skill } from "./skills.ts";
@@ -601,7 +604,7 @@ export class Agent {
    * 委派（2.6 第 5 条）：子级全新会话 + 独立 task_id，工具集 = 父级减禁用，
    * 父级只看调用与最终摘要（子级 onEvent 不接父级观察器），一次只给一个明确目标。
    */
-  async delegate(task: string, maxTurns = 6): Promise<string> {
+  async delegate(task: string, maxTurns = 6, opts: DelegateOptions = {}): Promise<string> {
     if (typeof task !== "string" || !task.trim()) return "错误：子任务必须是非空字符串";
     if (typeof maxTurns === "boolean" || typeof maxTurns !== "number" ||
       !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_DELEGATE_TURNS) {
@@ -609,9 +612,67 @@ export class Agent {
     }
     if (this.delegateDepth >= MAX_DELEGATE_DEPTH) return `错误：子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`;
     if (!this.delegateBudget.consume()) return `错误：本次任务最多创建 ${MAX_DELEGATE_CALLS} 个子 Agent`;
+
     const taskId = `task-${randomBytes(4).toString("hex")}`;
-    const child = new Agent(this.provider, {
-      workdir: this.workdir,
+    const notes: string[] = [];
+
+    // S4-1：工具白名单。子 Agent 默认继承父级工具集；给了 tools 就只保留名单内的，
+    // 其余全部禁用——这样"只读调研"这类子任务拿不到 shell / 写文件能力。
+    let disabledTools = [...this.disabledTools];
+    if (opts.tools?.length) {
+      const allowed = new Set(opts.tools.map((t) => t.trim()).filter(Boolean));
+      const allNames = TOOL_SCHEMAS
+        .map((s) => (s as { function?: { name?: string } }).function?.name)
+        .filter((n): n is string => Boolean(n));
+      const unknown = [...allowed].filter((t) => !allNames.includes(t));
+      if (unknown.length) notes.push(`忽略未知工具名：${unknown.join(", ")}`);
+      for (const name of allNames) if (!allowed.has(name)) disabledTools.push(name);
+      disabledTools = [...new Set(disabledTools)];
+    }
+
+    // S4-2：独立模型。用 multiModelFactory 造一个该模型的 provider；造不出来就退回父级模型，
+    // 并把"为什么没生效"写进结果，不静默假装切换成功。
+    let provider = this.provider;
+    if (opts.model) {
+      const factory = this.ctx.multiModelFactory;
+      if (!factory) notes.push(`未配置多模型，子任务沿用父级模型（请求的 ${opts.model} 未生效）`);
+      else {
+        try {
+          provider = factory("delegate", opts.model);
+          notes.push(`子任务模型：${opts.model}`);
+        } catch (err: unknown) {
+          notes.push(`切换模型 ${opts.model} 失败，沿用父级模型：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    // S4-3：worktree 隔离。子 Agent 在独立工作树里干活，主工作区一个字节都不动；
+    // 干完把 diff 摘要交回父级，由人决定要不要合并。
+    let childWorkdir = this.workdir;
+    let worktreePath: string | null = null;
+    if (opts.isolation === "worktree") {
+      const probe = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: this.workdir, encoding: "utf-8", windowsHide: true });
+      if (probe.status !== 0) {
+        return `错误：worktree 隔离要求工作目录是 git 仓库（${this.workdir} 不是，或本机没有 git）；改用 isolation:none 或先 git init`;
+      }
+      try {
+        const dir = mkdtempSync(join(tmpdir(), "nyra-subagent-"));
+        const add = spawnSync("git", ["worktree", "add", "--detach", dir, "HEAD"], {
+          cwd: this.workdir, encoding: "utf-8", windowsHide: true,
+        });
+        if (add.status !== 0) {
+          rmSync(dir, { recursive: true, force: true });
+          return `错误：创建 worktree 失败：${`${add.stdout ?? ""}${add.stderr ?? ""}`.trim().slice(0, 300)}`;
+        }
+        childWorkdir = dir;
+        worktreePath = dir;
+      } catch (err: unknown) {
+        return `错误：创建 worktree 失败：${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    const child = new Agent(provider, {
+      workdir: childWorkdir,
       mode: this.mode,
       maxTurns,
       sessionId: null,
@@ -627,18 +688,35 @@ export class Agent {
       contextWindowTokens: this.usage.configuredWindow,
       autoCompactEnabled: this.autoCompactEnabled,
       autoCompactThreshold: this.autoCompactThreshold,
-      checkpointStore: this.checkpoints,
+      // worktree 子任务不共用主工作区的检查点库，避免把临时工作树的内容写进主回滚链。
+      checkpointStore: worktreePath ? null : this.checkpoints,
       poppyEnabled: this.poppyEnabled,
       home: this.home,
-      disabledTools: [...this.disabledTools],
+      disabledTools,
       multiModelFactory: this.ctx.multiModelFactory,
       // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——子 agent 继承父级的沙箱配置。
       sandbox: this.ctx.sandbox ?? null,
     });
     try {
       const summary = await child.run(task);
-      return `[子任务 ${taskId} 已完成]\n${summary}`;
+      const head = notes.length ? `[子任务 ${taskId} 已完成]\n（${notes.join("；")}）\n` : `[子任务 ${taskId} 已完成]\n`;
+      if (!worktreePath) return head + summary;
+
+      // 收尾：给 diff 摘要。有改动就保留工作树让人审，没改动就清掉。
+      const st = spawnSync("git", ["status", "--porcelain"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
+      const stat = spawnSync("git", ["diff", "--stat", "HEAD"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
+      const changed = (st.stdout ?? "").trim();
+      const diffStat = (stat.stdout ?? "").trim();
+      if (!changed) {
+        spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
+        return head + summary + "\n\n（worktree 隔离：子任务没有改动任何文件，工作树已清理）";
+      }
+      return head + summary +
+        `\n\n（worktree 隔离：改动留在独立工作树，主工作区未受影响）\n路径：${worktreePath}\n` +
+        (diffStat ? `diffstat：\n${diffStat}` : "") +
+        `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"`;
     } catch (err: unknown) {
+      if (worktreePath) spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
       if (err instanceof AgentError) return `子任务失败：${err.message}`;
       return `子任务异常：${(err as Error)?.name ?? "Error"}: ${err instanceof Error ? err.message : String(err)}`;
     }
