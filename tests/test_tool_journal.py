@@ -425,6 +425,41 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal.inspect()["unknown_outcomes"], 0)
         self.assertTrue(journal.begin("http_post"))
 
+    def test_finish_rejects_competing_reported_error(self):
+        # Simulate another process reporting a failure after this intent.
+        # No result may be written for our call until manual reconciliation.
+        journal = ToolJournal("finish-competing-error", root=self.root)
+        call_id = journal.begin("shell")
+        before = journal.inspect()["event_count"]
+        original_inspect = journal.inspect
+        with mock.patch.object(journal, "inspect", return_value={
+            "journal_ambiguous": False,
+            "unknown_outcomes": 1,
+            "reported_errors": 1,
+        }):
+            with self.assertRaisesRegex(JournalError, "其他工具报告失败"):
+                journal.finish(call_id, "shell", success=True)
+        self.assertEqual(original_inspect()["event_count"], before)
+        self.assertEqual(original_inspect()["unknown_outcomes"], 1)
+
+    def test_finish_final_snapshot_rejects_other_error(self):
+        journal = ToolJournal("finish-final-error", root=self.root)
+        call_id = journal.begin("shell")
+        original_records = journal._records
+
+        def competing_error():
+            records = original_records()
+            records.extend([
+                {"call_id": "a" * 32, "tool": "http_post", "event": "intent"},
+                {"call_id": "a" * 32, "tool": "http_post", "event": "result_error"},
+            ])
+            return records
+
+        with mock.patch.object(journal, "_records", side_effect=competing_error):
+            with self.assertRaisesRegex(JournalError, "其他工具报告失败"):
+                journal.finish(call_id, "shell", success=True)
+        self.assertEqual(journal.inspect()["unknown_outcomes"], 1)
+
     def test_finish_rejects_second_unresolved_intent(self):
         # Simulate another process recording an intent between begin and finish.
         journal = ToolJournal("concurrent-pending-finish", root=self.root)
