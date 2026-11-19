@@ -34,7 +34,9 @@ import {
 import { EvidenceStore } from "./evidence.ts";
 import { UsageTracker } from "./usage.ts";
 import type { WindowSource } from "./modelCatalog.ts";
-import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
+import { estimateCost, checkMonthlyCap, type CostEstimate, type Pricing } from "./cost.ts";
+import { nextMonthlyResetDate } from "./usageLedger.ts";
+import { t } from "./i18n.ts";
 import type { AuxTask } from "./modelRouting.ts";
 import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
@@ -138,6 +140,17 @@ export interface AgentOptions {
   /** P2-2：该模型的单价；null = 未配置，金额未知（不编造）。 */
   pricing?: Pricing | null;
   /**
+   * 缺口 29：月度支出上限（美元）；null = 未配置（默认，不挡老用户）。
+   * 一旦配了就是硬停（与 --max-cost 同级，无豁免口子）；0 = 锁死一切计价花费。
+   */
+  monthlyCostLimitUsd?: number | null;
+  /**
+   * 缺口 29：本月已花（不含本次运行：已落盘的 LLM + MCP 花费，减去本次运行
+   * 已落盘的部分）；返回 null = 算不出（不假装封顶）。由 CLI 传入，
+   * 子任务继承时父级会把自己进行中的花费也算进去。
+   */
+  monthlySpentBeforeUsd?: (() => { spentUsd: number; incomplete: boolean } | null) | null;
+  /**
    * 工具检索（延迟加载）。两档行为：
    * - 默认：MCP 工具 > MCP_LAZY_LOAD_THRESHOLD 个时自动开（见 toolSchemas）
    * - 显式开启（config.tool_search.enabled 或 features.tool_search=true）：
@@ -196,6 +209,9 @@ export class Agent {
   private delegateBudget: DelegationBudget;
   private maxCostUsd: number | null;
   private pricing: Pricing | null;
+  /** 缺口 29：月度上限与本月已花（不含本次运行）；见 AgentOptions。 */
+  private monthlyCostLimitUsd: number | null;
+  private monthlySpentBeforeUsd: AgentOptions["monthlySpentBeforeUsd"];
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
@@ -209,6 +225,10 @@ export class Agent {
   private deferredNote = "";
   /** 最近一次成本估算；超支时由 checkCost 抛错前写入，供 CLI 汇报。 */
   lastCost: CostEstimate | null = null;
+  /** 缺口 29：已完成子任务的计价花费合计（单次硬顶要含这部分，否则委派就是旁路）。 */
+  private delegateSpentUsd = 0;
+  /** 缺口 29：最近一次算出的本月已花（含本次运行）；算不出时为 null。 */
+  lastMonthlySpentUsd: number | null = null;
   onEvent: AgentEventHandler | null;
   onFinal: ((text: string, messages: Record<string, unknown>[]) => Promise<Record<string, unknown>[] | null> | Record<string, unknown>[] | null) | null = null;
   workdir: string;
@@ -243,6 +263,8 @@ export class Agent {
     this.delegateBudget = opts.delegateBudget ?? new DelegationBudget();
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
     this.pricing = opts.pricing ?? null;
+    this.monthlyCostLimitUsd = typeof opts.monthlyCostLimitUsd === "number" ? opts.monthlyCostLimitUsd : null;
+    this.monthlySpentBeforeUsd = opts.monthlySpentBeforeUsd ?? null;
     this.auxModels = opts.auxModels ?? {};
     this.recallNote = opts.recallNote ?? null;
     this.toolSearchRequested = opts.toolSearch?.enabled === true;
@@ -773,18 +795,48 @@ export class Agent {
    * P2-2：每次上报 usage 后检查成本上限。超限直接抛错中止运行——这是"硬顶"，
    * 不是警告。金额算不出来时（未配单价 / provider 未报 usage）不抛错、不假装封顶，
    * 只把状态留在 lastCost 里供 CLI 说明。
+   *
+   * 缺口 29：同一位置再查月度上限（与单次硬顶同一口径、同一诚实边界）。
+   * 月度已花 = 账本里本月已落盘的 LLM 花费 + 本月 MCP 花费（调用方在
+   * monthlySpentBeforeUsd 里算好）+ 本次运行进行中的花费；超限同样抛
+   * AgentError 中止，报错里写清已花多少、上限多少、哪天重置、怎么放宽。
    */
   private checkCost(): void {
-    if (this.maxCostUsd === null && this.pricing === null) return;
+    if (this.maxCostUsd === null && this.pricing === null && this.monthlyCostLimitUsd === null) return;
     const e = estimateCost(this.usage.snapshot(), this.pricing, this.maxCostUsd);
     this.lastCost = e;
     if (e.status === "priced") {
       this.emit("cost", { spent_usd: e.spentUsd, limit_usd: e.limitUsd, remaining_usd: e.remainingUsd });
     }
-    if (e.exceeded) {
-      throw new AgentError(
-        `成本上限已超：已花费 $${(e.spentUsd ?? 0).toFixed(4)}（上限 $${(e.limitUsd ?? 0).toFixed(2)}），运行已中止`,
-      );
+    if (e.status === "priced" && e.spentUsd !== null && this.maxCostUsd !== null) {
+      // 单次硬顶按“本次运行全部花费”判定：主 agent + 已完成的子任务。
+      // 子任务自己也拿到了同一上限（见 delegate），两边都是硬停。
+      const runSpent = e.spentUsd + this.delegateSpentUsd;
+      if (runSpent > this.maxCostUsd) {
+        throw new AgentError(
+          this.delegateSpentUsd > 0
+            ? `成本上限已超：已花费 $${runSpent.toFixed(4)}（上限 $${this.maxCostUsd.toFixed(2)}，其中子任务 $${this.delegateSpentUsd.toFixed(4)}），运行已中止`
+            : `成本上限已超：已花费 $${e.spentUsd.toFixed(4)}（上限 $${this.maxCostUsd.toFixed(2)}），运行已中止`,
+        );
+      }
+    }
+    if (this.monthlyCostLimitUsd !== null && e.status === "priced" && e.spentUsd !== null) {
+      const before = this.monthlySpentBeforeUsd?.() ?? null;
+      const check = checkMonthlyCap(before?.spentUsd ?? null, e.spentUsd, this.monthlyCostLimitUsd);
+      this.lastMonthlySpentUsd = check.monthSpentUsd;
+      if (check.exceeded && check.monthSpentUsd !== null) {
+        const reset = nextMonthlyResetDate();
+        this.emit("monthly_cost", {
+          spent_usd: check.monthSpentUsd, limit_usd: this.monthlyCostLimitUsd, reset,
+        });
+        throw new AgentError(
+          t("cost.monthlyExceeded", {
+            spent: check.monthSpentUsd.toFixed(4), limit: this.monthlyCostLimitUsd.toFixed(2), reset,
+          }) +
+          (before?.incomplete ? " " + t("cost.monthlyIncomplete") : "") +
+          "\n" + t("cost.monthlyRelax"),
+        );
+      }
     }
   }
 
@@ -902,9 +954,41 @@ export class Agent {
       multiModelFactory: this.ctx.multiModelFactory,
       // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——子 agent 继承父级的沙箱配置。
       sandbox: this.ctx.sandbox ?? null,
+      // 缺口 29：月度上限子任务同样受限（没有豁免口子）。子任务的“本月已花”
+      // = 父级账本口径 + 父级本次运行进行中的花费；父级花不出来（未计价）
+      // 时子任务同样算不出，不假装封顶。
+      // 缺口 29：子任务继承单价与两个上限——否则子任务花的钱既不进单次硬顶、
+      // 也不进月度硬顶，等于给硬顶留了个旁路。子任务的月度“本月已花”已在
+      // monthlySpentBeforeUsd 里把父级进行中的花费算进去（见下）。
+      maxCostUsd: this.maxCostUsd,
+      pricing: this.pricing,
+      monthlyCostLimitUsd: this.monthlyCostLimitUsd,
+      monthlySpentBeforeUsd: this.monthlyCostLimitUsd === null ? null : (() => {
+        const before = this.monthlySpentBeforeUsd?.() ?? null;
+        const own = this.lastCost?.status === "priced" && this.lastCost.spentUsd !== null
+          ? this.lastCost.spentUsd : null;
+        if (before === null || own === null) return null;
+        return { spentUsd: before.spentUsd + own, incomplete: before.incomplete };
+      }),
     });
+    // 缺口 20/29：子任务用量记账（只记一次）：成功时在 child.run 返回后记，
+    // 失败时（包括子任务自己撞上成本上限）在 catch 里补记——失败子任务
+    // 已经花的钱不能凭空消失，否则账本与单次硬顶都会漏计。
+    let delegateUsageRecorded = false;
+    const recordChildUsage = (): void => {
+      if (delegateUsageRecorded) return;
+      delegateUsageRecorded = true;
+      const childSpent = child.lastCost?.status === "priced" ? child.lastCost.spentUsd : null;
+      if (childSpent !== null) this.delegateSpentUsd += childSpent;
+      this.emit("delegate_usage", {
+        snapshot: child.usage.snapshot() as unknown as Record<string, unknown>,
+        spent_usd: childSpent,
+        model: child.provider.model,
+      });
+    };
     try {
       const summary = await child.run(task);
+      recordChildUsage();
       const head = notes.length ? `[子任务 ${taskId} 已完成]\n（${notes.join("；")}）\n` : `[子任务 ${taskId} 已完成]\n`;
       if (!worktreePath) return head + summary;
 
@@ -922,6 +1006,7 @@ export class Agent {
         (diffStat ? `diffstat：\n${diffStat}` : "") +
         `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"`;
     } catch (err: unknown) {
+      recordChildUsage();
       if (worktreePath) spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
       if (err instanceof AgentError) return `子任务失败：${err.message}`;
       return `子任务异常：${(err as Error)?.name ?? "Error"}: ${err instanceof Error ? err.message : String(err)}`;

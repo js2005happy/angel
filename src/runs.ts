@@ -171,12 +171,12 @@ function lastLines(text: string, count = 20): string {
 return (text || "").split("\n").slice(-count).join("\n");
 }
 
-export function formatRunReport(state: Record<string, unknown>): string {
+export function formatRunReport(state: Record<string, unknown>, stats?: RunStats): string {
 const status = state.status as string;
 const files = (state.changed_files as string[])?? [];
 const result = (state.verify_result as Record<string, unknown>)?? {};
 const cmd = state.verify_cmd as string | null;
-const lines = ["", "----"];
+const lines = ["", "----", formatRunStatsHeader(stats ?? statsFromState(state))];
 if (status === "verified") lines.push("运行状态：verified（已验证）");
 else lines.push(`运行状态：${status}`);
 lines.push("改动文件：" + (files.length? files.join("、"): "（无）"));
@@ -289,6 +289,8 @@ verify_result: Record<string, unknown> | null;
 changed_files: string[];
 /** P1-2：运行结束时为每个改动文件记的 sha256（证据链的“产物”一环）。旧运行没有该字段。 */
 file_hashes?: Record<string, string>;
+/** 缺口 20：运行结束时记的用量摘要（统计头“花费”的来源）。旧运行没有该字段；新运行创建时为 null。 */
+usage_summary?: UsageSummary | null;
 error: string | null;
 pid: number;
 host: string;
@@ -345,7 +347,7 @@ if (typeof state.status!== "string" ||!RUN_STATUSES.has(state.status)) {
 throw new Error("运行状态无效");
 }
 const required = new Set(["session_id", "task", "workdir", "mode", "turn", "max_turns", "created_at", "updated_at", "verify_cmd", "verify_result", "changed_files", "error", "pid", "host"]);
-const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes"]);
+const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes", "usage_summary"]);
 const keys = Object.keys(state);
 if (keys.some((k) =>!allowed.has(k)) || ![...required].every((k) => keys.includes(k)) ||!Array.isArray(state.changed_files)) {
 throw new Error("运行记录字段无效");
@@ -361,6 +363,11 @@ if (!strKeys.every((k) => typeof state[k] === "string") ||
 (state.verify_result!== null && (typeof state.verify_result!== "object" || Array.isArray(state.verify_result))) ||
 (state.file_hashes!== undefined && (typeof state.file_hashes!== "object" || Array.isArray(state.file_hashes) ||
 !Object.values(state.file_hashes as Record<string, unknown>).every((v) => typeof v === "string"))) ||
+(state.usage_summary!== undefined && state.usage_summary!== null && (typeof state.usage_summary!== "object" || Array.isArray(state.usage_summary) ||
+!["calls", "delegate_calls"].every((k) => typeof (state.usage_summary as Record<string, unknown>)[k] === "number") ||
+!["prompt_tokens", "completion_tokens", "total_tokens", "spent_usd", "delegate_spent_usd"].every((k) =>
+  (state.usage_summary as Record<string, unknown>)[k] === null || typeof (state.usage_summary as Record<string, unknown>)[k] === "number") ||
+typeof (state.usage_summary as Record<string, unknown>).cost_status !== "string" && (state.usage_summary as Record<string, unknown>).cost_status !== null)) ||
 (state.pending_approval!== undefined && state.pending_approval!== null && (typeof state.pending_approval!== "object" || Array.isArray(state.pending_approval)))) {
 throw new Error("运行记录字段类型无效");
 }
@@ -414,7 +421,7 @@ const state: RunState = {
 schema_version: 1, run_id: runId!, session_id: sessionId,
 task: redact(task)?? "", workdir: String(workdir), mode, status,
 turn: 0, max_turns: maxTurns, created_at: nowIso(), updated_at: nowIso(),
-verify_cmd: verifyCmd?? null, verify_result: null, changed_files: [], file_hashes: {}, error: null,
+verify_cmd: verifyCmd?? null, verify_result: null, changed_files: [], file_hashes: {}, usage_summary: null, error: null,
 pid: process.pid, host: hostname(),
 };
 this.write(state);
@@ -530,6 +537,9 @@ workdir: string;
 mode: string;
 maxTurns: number;
 turn: number;
+/** 缺口 20：用量快照与最近成本估算（Agent 真实提供；测试替身可不提供）。 */
+usage?: { snapshot(): { calls: number; prompt_tokens: number | null; completion_tokens: number | null; total_tokens: number | null } };
+lastCost?: { status: string; spentUsd: number | null } | null;
 checkpoints: { recordPosition(): number; filesChangedSince(pos: number): string[]} | null;
 ctx: ToolContext & { approvalObserver?: ((tool: string, approved: boolean | null) => void) | null};
 onEvent: ((kind: string, data: Record<string, unknown>) => void) | null;
@@ -552,6 +562,12 @@ verifyAttempts = 0;
 position: number;
 /** P1-4：本轮 tool_start 的调用 ID → 幂等键（tool_result 到时据此补 args_hash）。 */
 private argsHashes = new Map<string, string>();
+/** 缺口 20：子任务用量累计（delegate_usage 事件来，主 agent 快照里没有这部分）。 */
+private delegateCalls = 0;
+private delegatePrompt = 0;
+private delegateCompletion = 0;
+private delegateTotal = 0;
+private delegateSpent: number | null = null;
 private previous: ((kind: string, data: Record<string, unknown>) => void) | null;
 private previousApproval: ((tool: string, approved: boolean | null) => void) | null;
 private previousFinal: AgentLike["onFinal"];
@@ -620,12 +636,49 @@ this.store.update(this.runId, { file_hashes: hashes });
 } catch { /* 哈希落盘失败不影响运行本身；复核时会报缺少哈希证据 */ }
 }
 
+/** 缺口 20：运行结束时把用量摘要写进 state.json（统计头“花费”的来源）。 */
+recordUsageSummary(): void {
+try {
+const snap = this.agent.usage?.snapshot();
+const cost = this.agent.lastCost ?? null;
+const addTok = (a: number | null | undefined, b: number): number | null => {
+if ((a === null || a === undefined) && b === 0) return null;
+return (a ?? 0) + b;
+};
+const summary: UsageSummary = {
+calls: (snap?.calls ?? 0) + this.delegateCalls,
+prompt_tokens: addTok(snap?.prompt_tokens, this.delegatePrompt),
+completion_tokens: addTok(snap?.completion_tokens, this.delegateCompletion),
+total_tokens: addTok(snap?.total_tokens, this.delegateTotal),
+spent_usd: cost?.status === "priced" ? cost.spentUsd : null,
+cost_status: cost?.status ?? null,
+delegate_spent_usd: this.delegateSpent,
+delegate_calls: this.delegateCalls,
+};
+this.store.update(this.runId, { usage_summary: summary });
+} catch { /* 摘要落盘失败不影响运行本身；统计头会显示未知 */ }
+}
+
 call(kind: string, data: Record<string, unknown>): void {
 const turn = this.agent.turn;
 if (typeof turn === "number" && turn!== this.turn) {
 this.turn = turn;
 this.store.update(this.runId, { turn});
 this.store.appendEvent(this.runId, "turn", { turn});
+}
+// 缺口 20：子任务用量不进 events.jsonl 的计数口径（tool_start 只记主 agent），
+// 只累计进用量摘要，统计头的 token/花费才不漏子任务。
+if (kind === "delegate_usage") {
+  const snap = data.snapshot as Record<string, unknown> | undefined;
+  if (snap && typeof snap === "object") {
+    this.delegateCalls += typeof snap.calls === "number" ? snap.calls : 0;
+    this.delegatePrompt += typeof snap.prompt_tokens === "number" ? snap.prompt_tokens : 0;
+    this.delegateCompletion += typeof snap.completion_tokens === "number" ? snap.completion_tokens : 0;
+    this.delegateTotal += typeof snap.total_tokens === "number" ? snap.total_tokens : 0;
+  }
+  if (typeof data.spent_usd === "number") {
+    this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
+  }
 }
 if (["tool_start", "tool_result", "final", "max_turns"].includes(kind)) {
 const fields = {...data};
@@ -718,7 +771,9 @@ try {
 const result = this.continuing? await this.agent.resume(task): await this.agent.run(task);
 this.changed();
 this.recordFileHashes();
-return (result || "") + formatRunReport(this.store.load(this.runId));
+this.recordUsageSummary();
+const finalState = this.store.load(this.runId);
+return (result || "") + formatRunReport(finalState, computeRunStats(this.store, this.runId, finalState));
 } catch (err: unknown) {
 if (err instanceof ApprovalRequired) {
 this.changed();
@@ -732,6 +787,7 @@ throw err;
 }
 this.changed();
 this.recordFileHashes();
+this.recordUsageSummary();
 this.store.appendEvent(this.runId, "error", { error_type: (err as Error)?.name?? "Error"});
 this.store.setStatus(this.runId, "failed", { error: `${(err as Error)?.name?? "Error"}: ${err instanceof Error? err.message: String(err)}`});
 throw err;
@@ -944,9 +1000,113 @@ export function verifyEvidenceChain(store: RunStore, runId: string): EvidenceVer
   return { run_id: runId, status, passed, checks };
 }
 
-export function formatEvidenceReport(r: EvidenceVerifyResult): string {
-  const lines = ["", "----", `证据链复核：${r.run_id}`, `运行状态：${r.status}`];
+export function formatEvidenceReport(r: EvidenceVerifyResult, stats?: RunStats): string {
+  const lines = ["", "----", `证据链复核：${r.run_id}`, formatRunStatsHeader(stats ?? null), `运行状态：${r.status}`];
   for (const c of r.checks) lines.push(`${c.ok ? "✓" : "✗"} ${c.name}：${c.detail}`);
   lines.push(r.passed ? "结论：通过（证据链完整，状态可信）" : "结论：失败（证据链不完整，状态不可信）");
   return lines.join("\n");
+}
+
+// ---- 缺口 20：运行级统计头（Raven 的 6 个 headline 统计 + 花费）----
+// 时长、轮次、LLM 调用数、工具调用数、错误数、花费——数据都现成：
+// 时长/轮次/花费来自 state.json（用量摘要在运行结束时落盘），
+// 调用数/错误数从 events.jsonl 数出来；数不出的字段写“未知”，不猜。
+export interface UsageSummary {
+  calls: number;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  /** 本次运行（主 agent）已花费；未计价时为 null。 */
+  spent_usd: number | null;
+  /** 主 agent 成本状态（priced/unpriced/missing）；没跑过成本估算时为 null。 */
+  cost_status: string | null;
+  /** 子任务已花费合计（有计价的子任务时才有值）；没有子任务/未计价时为 null。 */
+  delegate_spent_usd: number | null;
+  delegate_calls: number;
+}
+
+export interface RunStats {
+  durationMs: number | null;
+  turns: number;
+  llmCalls: number | null;
+  /** 没读 events.jsonl 时为 null（未知），不要写成 0 冒充“没调过工具”。 */
+  toolCalls: number | null;
+  toolErrors: number | null;
+  runErrors: number | null;
+  spentUsd: number | null;
+  /** 花费只是下界（有未计价的用量没算进去）时为 true。 */
+  costPartial: boolean;
+}
+
+function numOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function formatDurationMs(ms: number | null): string {
+  if (ms === null) return tr("run.statsUnknown");
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const mins = Math.floor(ms / 60_000);
+  const secs = Math.round((ms % 60_000) / 1000);
+  return `${mins}m ${secs}s`;
+}
+
+/** 只从 state 拼统计头（没读 events.jsonl 时用：调用数写“未知”）。 */
+export function statsFromState(state: Record<string, unknown>): RunStats {
+  const created = typeof state.created_at === "string" ? Date.parse(state.created_at) : NaN;
+  const updated = typeof state.updated_at === "string" ? Date.parse(state.updated_at) : NaN;
+  const summary = (state.usage_summary ?? {}) as Record<string, unknown>;
+  const spent = numOrNull(summary.spent_usd);
+  const delegateSpent = numOrNull(summary.delegate_spent_usd);
+  const total = spent !== null || delegateSpent !== null ? (spent ?? 0) + (delegateSpent ?? 0) : null;
+  return {
+    durationMs: Number.isFinite(created) && Number.isFinite(updated) && updated >= created ? updated - created : null,
+    turns: typeof state.turn === "number" ? state.turn : 0,
+    llmCalls: null,
+    toolCalls: null,
+    toolErrors: null,
+    runErrors: null,
+    spentUsd: total,
+    costPartial: spent === null && delegateSpent !== null,
+  };
+}
+
+/** 从运行记录（state + events.jsonl）算出完整统计。 */
+export function computeRunStats(store: RunStore, runId: string, state: RunState): RunStats {
+  const base = statsFromState(state as unknown as Record<string, unknown>);
+  const events = store.readEvents(runId);
+  let llmCalls = 0;
+  let toolCalls = 0;
+  let toolErrors = 0;
+  let runErrors = 0;
+  for (const ev of events) {
+    if (ev.type === "turn") llmCalls += 1;
+    else if (ev.type === "tool_start") toolCalls += 1;
+    else if (ev.type === "tool_result" && ev.ok === false) toolErrors += 1;
+    else if (ev.type === "error") runErrors += 1;
+  }
+  return { ...base, llmCalls: llmCalls > 0 ? llmCalls : null, toolCalls, toolErrors, runErrors };
+}
+
+export function formatRunStatsHeader(stats: RunStats | null): string {
+  if (stats === null) {
+    return tr("run.statsHead", {
+      duration: tr("run.statsUnknown"), turns: 0, llm: tr("run.statsUnknown"),
+      tools: tr("run.statsUnknown"), errors: tr("run.statsUnknown"), cost: tr("run.statsUnknown"),
+    });
+  }
+  const cost = stats.spentUsd === null
+    ? tr("run.statsUnknown")
+    : `$${stats.spentUsd.toFixed(4)}${stats.costPartial ? " " + tr("run.statsPartial") : ""}`;
+  const unknown = tr("run.statsUnknown");
+  const errors = stats.toolErrors === null || stats.runErrors === null
+    ? unknown : stats.toolErrors + stats.runErrors;
+  return tr("run.statsHead", {
+    duration: formatDurationMs(stats.durationMs),
+    turns: stats.turns,
+    llm: stats.llmCalls === null ? unknown : stats.llmCalls,
+    tools: stats.toolCalls === null ? unknown : stats.toolCalls,
+    errors,
+    cost,
+  });
 }

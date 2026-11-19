@@ -17,11 +17,17 @@ export type ProviderErrorKind =
 export class ProviderError extends Error {
   status: number | null;
   kind: ProviderErrorKind;
-  constructor(message: string, opts?: { status?: number | null; kind?: ProviderErrorKind }) {
+  /**
+   * 缺口 20：服务端通过 Retry-After 告诉我们的等待毫秒数（null = 没给）。
+   * 只在 HTTP 层解析出来才有；重试时与客户端退避取最大值，不凭空编等待时间。
+   */
+  retryAfterMs: number | null;
+  constructor(message: string, opts?: { status?: number | null; kind?: ProviderErrorKind; retryAfterMs?: number | null }) {
     super(message);
     this.name = "ProviderError";
     this.status = opts?.status ?? null;
     this.kind = opts?.kind ?? "unknown";
+    this.retryAfterMs = opts?.retryAfterMs ?? null;
   }
   get recoverable(): boolean {
     return (RECOVERABLE_KINDS as readonly string[]).includes(this.kind);
@@ -41,7 +47,7 @@ export function kindForStatus(code: number): ProviderErrorKind {
   return "server";
 }
 
-export function httpError(code: number, body: string, action = "API 请求"): ProviderError {
+export function httpError(code: number, body: string, action = "API 请求", retryAfterMs?: number | null): ProviderError {
   // 用量上限文本优先于状态码：429 措辞像 rate limit 也可能是用量上限。
   const kind = classifyHttpError(code, body);
   let message: string;
@@ -50,7 +56,25 @@ export function httpError(code: number, body: string, action = "API 请求"): Pr
   else if (kind === "quota") message = `用量上限 (HTTP ${code})：已达到用量上限，请充值或等额度恢复后再试，不要重复重试。详情：${body}`;
   else if (kind === "rate_limit") message = `请求过于频繁 (HTTP 429)：请稍后再试。详情：${body}`;
   else message = `${action}失败 (HTTP ${code})：${body}`;
-  return new ProviderError(message, { status: code, kind });
+  return new ProviderError(message, { status: code, kind, retryAfterMs: retryAfterMs ?? null });
+}
+
+/**
+ * 缺口 20：解析 Retry-After 响应头。秒数（delay-seconds）或 HTTP-date 都认；
+ * 无效值返回 null（不猜）；等待时间封顶 10 分钟——服务端让等更久时，
+ * 宁可按 10 分钟重试一次、由下一轮重试再看，也不在一次睡眠里无上限地等。
+ */
+export function parseRetryAfter(value: string | null | undefined, nowMs = Date.now()): number | null {
+  if (value === null || value === undefined) return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) {
+    return Math.min(600_000, Math.max(0, Math.floor(seconds * 1000)));
+  }
+  const dateMs = Date.parse(raw);
+  if (Number.isNaN(dateMs)) return null;
+  return Math.min(600_000, Math.max(0, dateMs - nowMs));
 }
 
 // ---- 错误分类 + 幂等重试 + 退避（OpenMausBot C 项：retry.ts 的思路，
@@ -309,7 +333,9 @@ export class Provider implements ProviderLike {
     const rawBody = await response.text();
     if (!response.ok) {
       const body = this.redact(rawBody, headers.Authorization).slice(0, 1000);
-      throw httpError(response.status, body, action);
+      // 缺口 20：429/503 的 Retry-After 读出来交给重试层（没有也不编）。
+      const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
+      throw httpError(response.status, body, action, retryAfterMs);
     }
     let result: unknown;
     try {
@@ -771,7 +797,8 @@ export class FallbackProvider implements ProviderLike {
           // 用量上限是否应触发切换，由总协调另定，本处不擅自改。
           if (isTransientProviderError(exc) && attempt < MAX_SAME_PROVIDER_RETRIES) {
             const base = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)] ?? 1000;
-            const delay = jitteredDelayMs(base);
+            // 缺口 20：服务端让等更久时以服务端为准（Retry-After），否则走客户端退避。
+            const delay = Math.max(jitteredDelayMs(base), exc.retryAfterMs ?? 0);
             const leftMs = budgetMs - (Date.now() - started);
             // 重试还要再花一次 attempt：剩余预算必须够“退避 + 再试一次”，
             // 再试的超时按剩余预算封顶（太短就没意义，直接改走切换）。
@@ -907,7 +934,8 @@ export class KeyRotatingProvider implements ProviderLike {
           // （isTransientProviderError 已把 quota 文案排除在外）。
           if (isTransientProviderError(exc) && attempt < MAX_SAME_PROVIDER_RETRIES) {
             const base = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)] ?? 1000;
-            const delay = jitteredDelayMs(base);
+            // 缺口 20：服务端让等更久时以服务端为准（Retry-After），否则走客户端退避。
+            const delay = Math.max(jitteredDelayMs(base), exc.retryAfterMs ?? 0);
             const leftMs = budgetMs - (Date.now() - started);
             const retryTimeout = Math.min(attemptTimeout, (leftMs - delay - 100) / 1000);
             if (retryTimeout >= 0.2) {
@@ -960,6 +988,8 @@ export function buildProviderChain(
     providerCls?: new (cfg: ResolvedProvider) => ProviderLike;
     resolver?: (name: string) => ResolvedProvider;
     cliProviderCls?: new (cfg: ResolvedProvider) => ProviderLike;
+    /** 缺口 20：同一 provider 重试前的回调（CLI 用来显示 429 冷却倒计时）。 */
+    onRetry?: ((record: RetryRecord) => void) | null;
   },
 ): ProviderLike {
   const providerCls = opts?.providerCls ?? Provider;
@@ -994,5 +1024,5 @@ export function buildProviderChain(
     providers.push(candidate);
   }
   if (providers.length === 1) return providers[0];
-  return new FallbackProvider(providers, onSwitch ?? null);
+  return new FallbackProvider(providers, onSwitch ?? null, { onRetry: opts?.onRetry ?? null });
 }

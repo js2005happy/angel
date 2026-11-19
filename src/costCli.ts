@@ -4,7 +4,9 @@
 //   nyra cost --show                    当前定价配置
 //
 // 输出原则：给区间 + 明写假设。不打印"精确预估"这种骗人的数字。
-import { estimateRunCost, resolvePricing, formatCost, estimateCost, adjustEstimateForRecall, type Pricing } from "./cost.ts";
+import { estimateRunCost, resolvePricing, formatCost, estimateCost, adjustEstimateForRecall, resolveMonthlyLimit, type Pricing } from "./cost.ts";
+import { UsageLedger, monthKeyString, nextMonthlyResetDate } from "./usageLedger.ts";
+import { McpCostTracker } from "./mcpCost.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { t } from "./i18n.ts";
 
@@ -23,31 +25,47 @@ function parseFlags(argv: string[]): { estimate?: string; show: boolean; turns: 
   return out;
 }
 
-function printPricingTable(config: Record<string, unknown>): void {
+function printPricingTable(config: Record<string, unknown>, home?: string): void {
   const table = config.pricing;
   const entries = table && typeof table === "object" ? Object.entries(table as Record<string, unknown>) : [];
   if (entries.length === 0) {
     process.stdout.write(t("cost.pricingEmpty") + "\n");
     process.stdout.write(t("cost.pricingNoGuess") + "\n");
-    return;
-  }
-  process.stdout.write(t("cost.pricingHead") + "\n");
-  for (const [model, raw] of entries) {
-    const p = resolvePricing({ [model]: raw }, model);
-    if (!p) {
-      process.stdout.write(`  ${model}：配置无效（已忽略）\n`);
-      continue;
+  } else {
+    process.stdout.write(t("cost.pricingHead") + "\n");
+    for (const [model, raw] of entries) {
+      const p = resolvePricing({ [model]: raw }, model);
+      if (!p) {
+        process.stdout.write(`  ${model}：配置无效（已忽略）\n`);
+        continue;
+      }
+      process.stdout.write(`  ${model}：输入 $${p.inputPer1M} / 输出 $${p.outputPer1M}\n`);
     }
-    process.stdout.write(`  ${model}：输入 $${p.inputPer1M} / 输出 $${p.outputPer1M}\n`);
   }
   const limit = typeof config.max_cost_usd === "number" ? config.max_cost_usd : null;
   process.stdout.write(t("cost.limitLine", { limit: limit === null ? t("cost.limitUnset") : "$" + limit.toFixed(2) }) + "\n");
+  // 缺口 29：月度上限与本月已花（与 --max-cost 同口径的账本数）。
+  if (home) {
+    const month = monthKeyString();
+    const llm = new UsageLedger(home).monthTotal(month);
+    const mcp = new McpCostTracker(home).monthTotalUsd(month);
+    const monthly = resolveMonthlyLimit(config);
+    const spent = llm.spentUsd + mcp;
+    if (monthly === null) {
+      process.stdout.write(t("cost.monthlyUnset", { spent: spent.toFixed(4), mcp: mcp.toFixed(4) }) + "\n");
+    } else {
+      process.stdout.write(t("cost.monthlyLine", {
+        limit: monthly.toFixed(2), spent: spent.toFixed(4),
+        mcp: mcp.toFixed(4), reset: nextMonthlyResetDate(),
+      }) + "\n");
+    }
+  }
 }
 
-export function handleCost(argv: string[], config: Record<string, unknown>, model: string | null, opts?: { recalledCount?: number }): number {
+export function handleCost(argv: string[], config: Record<string, unknown>, model: string | null, opts?: { recalledCount?: number; home?: string }): number {
   const flags = parseFlags(argv);
   if (flags.show || (!flags.estimate && !flags.show)) {
-    printPricingTable(config);
+    printPricingTable(config, opts?.home);
     if (!flags.estimate) return 0;
   }
 

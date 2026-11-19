@@ -15,11 +15,12 @@ import {
   loadConfig, resolveHome, resolveProvider, resolveProfile, resolveFallbackChain,
   listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets, saveConfig,
 } from "./config.ts";
-import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
+import { Provider, buildProviderChain, ProviderError, type RetryRecord } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
-import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport } from "./runs.ts";
-import { resolvePricing } from "./cost.ts";
+import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport, computeRunStats } from "./runs.ts";
+import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { handleCost } from "./costCli.ts";
+import { handleStats, formatMonthLine } from "./statsCli.ts";
 import { handleModels } from "./modelsCli.ts";
 import { loadModelCache, manualWindowFromConfig, resolveContextWindow } from "./modelCatalog.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
@@ -43,7 +44,9 @@ import {
   PetController, PET_WIDTH, petVisible, petEnabledFromConfig, parsePetCommand, renderPet, renderBubble, petFace,
 } from "./pet.ts";
 import { Spinner } from "./spinner.ts";
-import { formatUsage, windowSourceLabel } from "./usage.ts";
+import { formatUsage, windowSourceLabel, type UsageSnapshot } from "./usage.ts";
+import { UsageLedger, formatHeatmap, monthKeyString } from "./usageLedger.ts";
+import { McpCostTracker } from "./mcpCost.ts";
 import { formatReplStatus, ToolPrinter, useColor, textWidth } from "./consoleUi.ts";
 import { dashboardCostSegment } from "./dashboard.ts";
 import { askApproval, approvalHooks } from "./approvalUi.ts";
@@ -84,6 +87,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
 
 用法：
   nyra "任务" [--provider 名字] [--mode readonly|auto|full|creator]   一次性执行任务
+  --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
   nyra                                                        进入交互模式（REPL）
   nyra --help                    显示帮助（不用 Key、不联网）
   nyra --version                 显示版本
@@ -101,6 +105,8 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra --resume <会话 ID>        继续指定会话
   nyra --resume-run <运行 ID>    从运行记录断点续跑
   nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
+  nyra stats [--heatmap]         本月用量与每日用量热力图（详见 docs/cost.md）
+  nyra cost --show               定价、单次上限与月度上限（本月已花）
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
   nyra --execute-plan --approve-plan <SHA256>   执行经校验值批准的 plan.md
   nyra --verify "<命令>"         任务完成后运行验证命令（退出码 0 才算验证通过）
@@ -127,6 +133,7 @@ export const USAGE_EN = `Nyra ${VERSION} (Node runtime)
 
 Usage:
   nyra "task" [--provider name] [--mode readonly|auto|full|creator]   run one task
+  --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
   nyra                                                        interactive mode (REPL)
   nyra --help                    show help (no key, no network)
   nyra --version                 show version
@@ -145,6 +152,8 @@ Usage:
   nyra --resume <session id>     continue a session
   nyra --resume-run <run id>     resume a run from its record
   nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
+  nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
+  nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
   nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
   nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
@@ -191,6 +200,8 @@ export interface CliArgs {
   verify: string | null; verifyTimeout: number | null; verifyRetries: number | null;
   /** P2-2：本次运行的成本上限（美元）；null = 不设上限。 */
   maxCost: number | null;
+  /** 缺口 29：本次运行的月度支出上限（美元）；null = 按配置（默认不设上限）。 */
+  monthlyMaxCost: number | null;
   /** 本次运行禁用的工具（可重复 --disable-tool）。 */
   disableTools: string[];
   /** 功能开关的 CLI 覆盖（--enable-feature / --disable-feature，可重复）。 */
@@ -220,7 +231,7 @@ export function parseArgs(argv: string[]): CliArgs {
     listSkills: false, listSessions: false, listMcp: false,
     compact: null, resume: null, resumeRun: null,
     planMode: false, executePlan: false, approvePlan: null,
-    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [], addDirs: [],
+    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, monthlyMaxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [], addDirs: [],
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
@@ -231,12 +242,12 @@ export function parseArgs(argv: string[]): CliArgs {
   const positional: string[] = [];
   const valueFlags = new Set([
     "--provider", "--model", "--profile", "--mode", "--max-turns", "--context-window",
-    "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries",
+    "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks", "stats"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -287,6 +298,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--resume-run": args.resumeRun = value; break;
         case "--verify": args.verify = value; break;
         case "--max-cost": args.maxCost = parseFloat(value); break;
+        case "--monthly-max-cost": args.monthlyMaxCost = parseFloat(value); break;
         case "--disable-tool": args.disableTools.push(value); break;
         case "--enable-feature": args.enableFeatures.push(value); break;
         case "--add-dir": args.addDirs.push(value); break;
@@ -419,9 +431,11 @@ interface BuiltAgent {
   providerName: string;
   config: Record<string, unknown>;
   home: string;
+  /** 缺口 20/29：用量账本与本次运行已落盘的 LLM 花费 holder（月度口径要扣掉它，避免重复计）。 */
+  monthly: { ledger: UsageLedger; flushed: { flushedUsd: number } };
 }
 
-async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[] }): Promise<BuiltAgent> {
+async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void }): Promise<BuiltAgent> {
   const home = resolveHome();
   const config = loadConfig(home);
   const profile = resolveProfile(args.profile ?? null, config);
@@ -436,6 +450,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     (r) => fallbackNotice(r as { from: string; to: string; error: string }),
     {
       resolver: (name: string) => resolveProvider({ home, config, providerName: name }),
+      // 缺口 20：同一 provider 重试前的回调（CLI 用来显示 429 冷却倒计时）。
+      onRetry: opts?.onRetry ?? null,
     },
   );
   if (!provider.hasCredentials()) {
@@ -468,6 +484,22 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
     cache: loadModelCache(home),
   });
+  // 缺口 29：月度硬顶的“本月已花（不含本次运行）”——账本里的本月 LLM 花费
+  // + 本月 MCP 花费，减去本次运行已经落盘的部分（账本里有、但本次运行的
+  // 进行中花费还没算进去，扣掉才不重复计）。账本读失败返回 null：算不出
+  // 就不封顶，不假装。月度上限本身：CLI 显式值 > 配置，默认不设上限。
+  const monthlyLedger = new UsageLedger(home);
+  const monthlyFlushed = { flushedUsd: 0 };
+  const monthlyLimit = resolveMonthlyLimit(config, args.monthlyMaxCost ?? null);
+  const monthlySpentBeforeUsd = monthlyLimit === null ? null : (): { spentUsd: number; incomplete: boolean } | null => {
+    try {
+      const llm = monthlyLedger.monthTotal(monthKeyString());
+      const mcp = new McpCostTracker(home).monthTotalUsd(monthKeyString());
+      return { spentUsd: llm.spentUsd + mcp - monthlyFlushed.flushedUsd, incomplete: llm.incomplete };
+    } catch {
+      return null;
+    }
+  };
   const agent = new Agent(provider, {
     workdir: resolve(args.workdir),
     mode,
@@ -484,6 +516,9 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     // P2-2：成本硬顶。单价从 config.pricing 按模型名解析；未配置时金额未知（不编造）。
     maxCostUsd: args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null),
     pricing: resolvePricing(config.pricing, provider.model),
+    // 缺口 29：月度支出硬顶（与 --max-cost 同级硬停；默认不设上限，见 docs/cost.md）。
+    monthlyCostLimitUsd: monthlyLimit,
+    monthlySpentBeforeUsd,
     // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
     auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
     // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
@@ -525,7 +560,49 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       allowNet: sandboxSettings.allowNet,
     },
   });
-  return { agent, providerName: primaryCfg.name, config, home };
+  return { agent, providerName: primaryCfg.name, config, home, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed } };
+}
+
+// ---- 缺口 20：用量账本 flush ----
+// 把一次运行的累计用量增量写进账本（热力图与月度硬顶的事实源）。
+// own 事件（usage/cost_update）：按上次 flush 的快照算增量；
+// delegate_usage：子任务独立累计，全量当增量记。账本写失败绝不破坏运行。
+function makeUsageFlusher(built: BuiltAgent): {
+  flush: (agent: Agent, kind: string, data: Record<string, unknown>) => void;
+  flushNow: (agent: Agent) => void;
+} {
+  const ledger = built.monthly.ledger;
+  let lastSnap: UsageSnapshot | null = null;
+  let lastSpent: number | null = null;
+  const recordOwn = (agent: Agent): void => {
+    const snap = agent.usage.snapshot();
+    const spent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
+    const rec = ledger.recordDelta(snap, lastSnap, spent, lastSpent, agent.provider.model);
+    // 只有主 agent 自己的已落盘花费才进 flushedUsd：月度口径 = 账本 - flushedUsd
+    // + 本次运行进行中花费；子任务的花费已在账本里、但不在主 agent 快照里，
+    // 不能扣，扣了就会漏计子任务。
+    if (rec && rec.spent_usd !== null) built.monthly.flushed.flushedUsd += rec.spent_usd;
+    lastSnap = snap;
+    lastSpent = spent;
+  };
+  return {
+    flush: (agent, kind, data) => {
+      try {
+        if (kind === "delegate_usage") {
+          const snap = data.snapshot as unknown as UsageSnapshot | undefined;
+          if (snap && typeof snap === "object") {
+            const spent = typeof data.spent_usd === "number" ? data.spent_usd : null;
+            ledger.recordDelta(snap, null, spent, null, typeof data.model === "string" ? data.model : null);
+          }
+        } else if (kind === "usage" || kind === "cost_update") {
+          recordOwn(agent);
+        }
+      } catch { /* 账本写失败不破坏运行 */ }
+    },
+    flushNow: (agent) => {
+      try { recordOwn(agent); } catch { /* ignore */ }
+    },
+  };
 }
 
 function verifySetup(args: CliArgs, config: Record<string, unknown>, workdir: string): { command: string | null; skipReason: string | null } {
@@ -1106,7 +1183,8 @@ async function handleEvidence(argv: string[], home: string): Promise<number> {
   const store = new RunStore(join(home, "runs"));
   try {
     const result = verifyEvidenceChain(store, runId);
-    process.stdout.write(formatEvidenceReport(result) + "\n");
+    const state = store.load(runId);
+    process.stdout.write(formatEvidenceReport(result, computeRunStats(store, runId, state)) + "\n");
     return result.passed ? EXIT_SUCCESS : EXIT_VERIFY;
   } catch (err: unknown) {
     process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
@@ -1269,16 +1347,26 @@ async function runJson(args: CliArgs): Promise<number> {
       return invalidArguments(process.stdout, "--json 与 --plan/--execute-plan 不能组合使用");
     }
     if (!args.task) return invalidArguments(process.stdout, "--json 需要任务文本");
-    const { agent, config, home } = await buildAgent(args, { interactive: false });
+    const built = await buildAgent(args, {
+      interactive: false,
+      // 缺口 20：429 冷却以 JSON 事件报出（delay_ms 是本次计划等待的毫秒数）。
+      onRetry: (r) => lines.emit("rate_limit_cooldown", { provider: r.provider, attempt: r.attempt, delay_ms: r.delayMs, kind: r.kind }),
+    });
+    const { agent, config, home } = built;
     const workdir = resolve(args.workdir);
     const { command, skipReason } = verifySetup(args, config, workdir);
     const [timeout, retries] = resolveVerifySettings(args.verifyTimeout, args.verifyRetries, config);
     const store = new RunStore(join(home, "runs"));
+    // 缺口 20 的前置修复：onEvent 必须先挂再建 recorder——recorder 捕获当时的
+    // onEvent 当 previous 并转发；事后覆盖会把 recorder 的 wrapper 摘掉，
+    // 事件就再也进不了 events.jsonl，统计头只能写“未知”。
+    const flusher = makeUsageFlusher(built);
+    agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); lines.agentEvent(kind, data); };
     const recorder = new RunRecorder(store, agent, args.task, {
       verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
     });
-    agent.onEvent = (kind, data) => lines.agentEvent(kind, data);
     const result = await recorder.run(args.task);
+    flusher.flushNow(agent);
     const final = store.load(recorder.runId);
     lines.emit("run_completed", { run_id: recorder.runId, status: final.status });
     // P1-1：未验证通过的运行，不得在输出里宣称"已完成"。
@@ -1329,7 +1417,13 @@ async function runOneShot(args: CliArgs): Promise<number> {
       const [state, messages, count] = prepareResume(store, args.resumeRun, { workdir, home });
       // P1-4：中断前已成功的写操作幂等键——续跑时同键调用跳过，不重复执行。
       const completedKeys = loadCompletedWriteKeys(store, args.resumeRun);
-      const { agent } = await buildAgent({ ...args, mode: state.mode, maxTurns: state.max_turns }, { interactive: true });
+      const builtResume = await buildAgent({ ...args, mode: state.mode, maxTurns: state.max_turns }, {
+        interactive: true,
+        onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+      });
+      const { agent } = builtResume;
+      const flusherResume = makeUsageFlusher(builtResume);
+      agent.onEvent = (kind, data) => flusherResume.flush(agent, kind, data);
       agent.ctx.resumeCompletedWriteKeys = completedKeys;
       if (completedKeys.size) process.stderr.write(`续跑幂等：${completedKeys.size} 个已成功的写操作将被跳过（不重复执行）。\n`);
       agent.messages = messages;
@@ -1339,6 +1433,7 @@ async function runOneShot(args: CliArgs): Promise<number> {
         state, interruptedToolCalls: count, verifyTimeout: timeout, verifyRetries: retries,
       });
       const output = await recorder.run(state.task);
+      flusherResume.flushNow(agent);
       process.stdout.write(output + "\n");
       const final = store.load(recorder.runId);
       return final.status === "verify_failed" ? EXIT_VERIFY : EXIT_SUCCESS;
@@ -1381,10 +1476,17 @@ async function runOneShot(args: CliArgs): Promise<number> {
       try {
         const approved = readApprovedPlan(workdir, args.approvePlan!);
         const task = approvedExecutionTask(approved);
-        const { agent } = await buildAgent(args, { interactive: true });
+        const builtPlan = await buildAgent(args, {
+          interactive: true,
+          onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+        });
+        const { agent } = builtPlan;
+        const flusherPlan = makeUsageFlusher(builtPlan);
+        agent.onEvent = (kind, data) => flusherPlan.flush(agent, kind, data);
         const store = new RunStore(join(home, "runs"));
         const recorder = new RunRecorder(store, agent, task, { verifyCmd: null });
         const output = await recorder.run(task);
+        flusherPlan.flushNow(agent);
         process.stdout.write(output + "\n");
         return 0;
       } catch (err: unknown) {
@@ -1395,8 +1497,12 @@ async function runOneShot(args: CliArgs): Promise<number> {
   }
   if (!args.task) return 0; // 无任务时由 main 分派 REPL。
   try {
-    const built = await buildAgent(args, { interactive: true });
+    const built = await buildAgent(args, {
+      interactive: true,
+      onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+    });
     const { agent } = built;
+    const flusher = makeUsageFlusher(built);
     if (args.resume) {
       const messages = loadSession(args.resume, home);
       if (messages === null) {
@@ -1410,12 +1516,14 @@ async function runOneShot(args: CliArgs): Promise<number> {
     if (skipReason) process.stderr.write(`注意：${skipReason}\n`);
     const [timeout, retries] = resolveVerifySettings(args.verifyTimeout, args.verifyRetries, config);
     const store = new RunStore(join(home, "runs"));
+    const printer = new ToolPrinter();
+    // 缺口 20 的前置修复：onEvent 先挂再建 recorder（同 runJson，见该处注释）。
+    agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); printer.call(kind, data); };
     const recorder = new RunRecorder(store, agent, args.task, {
       verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
     });
-    const printer = new ToolPrinter();
-    agent.onEvent = (kind, data) => printer.call(kind, data);
     const result = await recorder.run(args.task);
+    flusher.flushNow(agent);
     const final = store.load(recorder.runId);
     // P1-1：未验证通过的运行，不得在输出里宣称"已完成"。
     const downgraded = downgradeCompletionClaim(
@@ -1531,8 +1639,11 @@ async function runRepl(args: CliArgs): Promise<number> {
   const trustExit = await ensureWorkspaceTrusted(workdir, args, config, home);
   if (trustExit !== null) return trustExit;
   let built: BuiltAgent;
+  // 缺口 20：429 冷却回调的落点——spinner 在 buildAgent 之后才创建，
+  // 先用 holder 占位，spinner 建好后再把真正的显示函数挂上去。
+  let retryNotify: ((r: RetryRecord) => void) | null = null;
   try {
-    built = await buildAgent(args, { interactive: true });
+    built = await buildAgent(args, { interactive: true, onRetry: (r) => retryNotify?.(r) });
   } catch (err: unknown) {
     if (err instanceof AgentError && (err as Error).message === "__NO_CREDENTIALS__") return 1;
     process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
@@ -1652,7 +1763,41 @@ async function runRepl(args: CliArgs): Promise<number> {
   const printer = new ToolPrinter(undefined, undefined, { level: uiLevel, unicode: uiUnicode });
   printer.onBeforeWrite = () => spinner.pause();
   printer.onAfterWrite = () => { if (spinning) spinner.resume(); };
+  const flusher = makeUsageFlusher(built);
+  // 缺口 20：429 冷却倒计时——重试要等多久，直接显示在 spinner 行上、
+  // 每秒减一；非 TTY 时只写一行。等待时间就是本次重试计划的 delayMs
+  //（服务端 Retry-After 与客户端退避取最大值的那一位），不是现编的。
+  let cooldownTimer: ReturnType<typeof setInterval> | null = null;
+  let cooldownTimeout: ReturnType<typeof setTimeout> | null = null;
+  const clearCooldown = (restoreLabel: boolean): void => {
+    if (cooldownTimer) { clearInterval(cooldownTimer); cooldownTimer = null; }
+    if (cooldownTimeout) { clearTimeout(cooldownTimeout); cooldownTimeout = null; }
+    if (restoreLabel && spinning) spinner.setLabel(t("spinner.thinking"));
+  };
+  retryNotify = (r: RetryRecord): void => {
+    clearCooldown(false);
+    const seconds = Math.max(1, Math.ceil(r.delayMs / 1000));
+    if (!framed()) {
+      process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds }) + "\n");
+      return;
+    }
+    let remaining = seconds;
+    const label = () => t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: remaining });
+    spinner.setLabel(label());
+    cooldownTimer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) clearCooldown(true);
+      else spinner.setLabel(label());
+    }, 1000);
+    (cooldownTimer as { unref?: () => void }).unref?.();
+    cooldownTimeout = setTimeout(() => clearCooldown(true), r.delayMs + 500);
+    (cooldownTimeout as { unref?: () => void }).unref?.();
+  };
   agent.onEvent = (kind, data) => {
+    flusher.flush(agent, kind, data);
+    if (kind === "tool_start" || kind === "tool_result" || kind === "usage" || kind === "cost_update" || kind === "final") {
+      clearCooldown(false);
+    }
     if (kind === "tool_start") spinner.setLabel(t("spinner.running", { tool: String(data.name ?? t("spinner.tool")) }));
     else if (kind === "tool_result") spinner.setLabel(t("spinner.thinking"));
     printer.call(kind, data);
@@ -1748,6 +1893,22 @@ async function runRepl(args: CliArgs): Promise<number> {
     // /compact focus（分发走 parseCompactCommand，见该函数注释）。
     if (text === "/context") {
       process.stdout.write(formatContextUsage(agent.contextUsage()) + "\n");
+      continue;
+    }
+    // 缺口 20：/stats 看本次会话用量与本月累计；/stats heatmap 看每日热力图。
+    if (text === "/stats" || text.startsWith("/stats ")) {
+      const arg = text.slice("/stats".length).trim();
+      if (arg === "" ) {
+        process.stdout.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + "\n");
+      } else if (arg === "heatmap" || arg.startsWith("heatmap ")) {
+        const weeksRaw = parseInt(arg.split(/\s+/)[1] ?? "8", 10);
+        const weeks = Number.isFinite(weeksRaw) && weeksRaw >= 1 && weeksRaw <= 52 ? weeksRaw : 8;
+        flusher.flushNow(agent);
+        const ledger = new UsageLedger(home);
+        process.stdout.write(formatHeatmap(ledger.dailyTotals(weeks * 7), { weeks }) + "\n");
+      } else {
+        process.stderr.write("用法：/stats；/stats heatmap [周数]\n");
+      }
       continue;
     }
     if (text === "/compact" || text.startsWith("/compact ")) {
@@ -1893,9 +2054,11 @@ async function runRepl(args: CliArgs): Promise<number> {
       try { result = await agent.run(text); } finally {
         spinning = false;
         approvalOpen = false;
+        clearCooldown(false);
         spinner.stop();
         for (const u of unguard) u();
       }
+      flusher.flushNow(agent);
       try { store.record(agent.sessionId, "assistant", result); } catch { /* ignore */ }
       store.close();
       process.stdout.write((framed() ? renderReply(result, ui) : result) + "\n");
@@ -1912,6 +2075,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     agent.ctx.approvedShellCommands?.clear();
   }
   } finally {
+    clearCooldown(false);
     spinner.stop();
     pet.stop();
     approvalHooks.before = undefined;
@@ -1920,7 +2084,8 @@ async function runRepl(args: CliArgs): Promise<number> {
     await endSessionHooks();
     process.removeListener("SIGINT", onReplSigint);
   }
-  process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n");
+  flusher.flushNow(agent);
+  process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + "\n");
   return 0;
 }
 
@@ -2094,8 +2259,9 @@ export async function main(argv: string[]): Promise<number> {
         recalledCount = undefined;
       }
     }
-    return handleCost(sub, cfgCost, (cfgCost.model as string) ?? null, { recalledCount });
+    return handleCost(sub, cfgCost, (cfgCost.model as string) ?? null, { recalledCount, home });
   }
+  if (args.subcommand === "stats") return handleStats(args.subArgs ?? [], home);
   if (args.subcommand === "models") return handleModels(args.subArgs ?? [], home);
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));

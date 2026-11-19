@@ -62,6 +62,24 @@ export class McpCostTracker {
     return total;
   }
 
+  /** 某本地自然月（YYYY-MM）的 MCP 花费合计（只计 status=called 的）。 */
+  monthTotalUsd(month: string): number {
+    if (!existsSync(this.file)) return 0;
+    let total = 0;
+    for (const line of readFileSync(this.file, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const rec = JSON.parse(line) as McpSpendRecord;
+        if (rec.status !== "called") continue;
+        const d = new Date(rec.ts);
+        if (Number.isNaN(d.getTime())) continue;
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        if (key === month) total += Number(rec.estimate_usd) || 0;
+      } catch { /* 坏行跳过 */ }
+    }
+    return total;
+  }
+
   /** 调用前检查：返回 null 表示可调用；返回字符串表示停手原因。 */
   checkBeforeCall(config: Record<string, unknown>, server: string, tool: string): { estimate_usd: number; priced: boolean; source: string; blocked: string | null } {
     const est = estimateToolCost(config, server, tool);

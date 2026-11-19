@@ -148,6 +148,57 @@ export function formatCost(e: CostEstimate): string {
   return `成本：${spent} / 上限 $${e.limitUsd.toFixed(2)}（剩余 $${(e.remainingUsd ?? 0).toFixed(4)}）`;
 }
 
+// ---- 缺口 29：月度支出硬顶（Zed 式月度上限的直接延伸）----
+// 与 --max-cost 同一级的硬停语义，进 checkCost 同口径，不另起一套计数：
+// 月度累计 = 本月已落盘的 LLM 花费（usageLedger，与本次运行同口径）
+//          + 本月 MCP 花费（mcp_spend.jsonl）+ 本次运行进行中的花费。
+//
+// “默认最严”的语义（本批定夺，见 docs/cost.md）：
+//   - 配置默认值是不设上限（null）。Nyra 没有 Zed 那种“$10 订阅含 $5 额度”
+//     的价格锚，任何默认美元数都是凭空编的；默认开启低限额会挡住从没配过
+//     月度上限的老用户——所以默认不挡人。
+//   - “最严”落在机制上：一旦配了（config.monthly_cost_limit_usd 或
+//     --monthly-max-cost），就是硬停，没有豁免口子、不因 --max-cost 更大
+//     而放宽、子任务同样受限；0 美元即“锁死一切计价花费”。
+//   - 未配单价 / provider 未报用量时算不出金额，不抛错、不假装封顶，
+//     与 --max-cost 同一条诚实边界；月度累计里有未计价记录时，本月合计
+//     只是下界（checkMonthlyCap 按下界判定，只会晚触发、不会误触发）。
+
+/** 解析月度上限：CLI 显式值优先于配置；无效值（负数/NaN/非数字）按未设处理。 */
+export function resolveMonthlyLimit(config: Record<string, unknown>, cliValue?: number | null): number | null {
+  const v = cliValue ?? config.monthly_cost_limit_usd;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return null;
+  return v;
+}
+
+export interface MonthlyCapCheck {
+  /** 是否已超月度上限（只有三个数都齐全时才可能为 true）。 */
+  exceeded: boolean;
+  /** 本月已花（含本次运行进行中的部分）；算不出时为 null。 */
+  monthSpentUsd: number | null;
+}
+
+/**
+ * 月度硬顶判定（纯函数）：spentBeforeUsd 是本月已花（不含本次运行）、
+ * spentThisRunUsd 是本次运行进行中的已花；任一算不出就返回不超限，
+ * 不假装封顶。
+ */
+export function checkMonthlyCap(
+  spentBeforeUsd: number | null,
+  spentThisRunUsd: number | null,
+  limitUsd: number | null,
+): MonthlyCapCheck {
+  if (limitUsd === null || spentBeforeUsd === null || spentThisRunUsd === null) {
+    return {
+      exceeded: false,
+      monthSpentUsd:
+        spentBeforeUsd !== null && spentThisRunUsd !== null ? spentBeforeUsd + spentThisRunUsd : null,
+    };
+  }
+  const monthSpent = spentBeforeUsd + spentThisRunUsd;
+  return { exceeded: monthSpent > limitUsd, monthSpentUsd: monthSpent };
+}
+
 // ---- P2-1：运行前成本预估 ----
 // 纪律：估算必须**明说假设**，且给区间而不是一个精确数字。任何"精确预估"都是骗人：
 // 实际花多少取决于模型实际吐多少 token 与工具返回多长。
