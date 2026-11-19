@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal 回退路径符号链接探测拒绝诊断）
+
+- Windows/path 回退读取在事件文件 `Path.is_symlink()` 元数据探测遭遇 `OSError` 时，现在保留异常链并统一抛出 `JournalError`，避免原始权限错误逃逸安全诊断；新增模拟拒绝的回归测试源码，未运行。不声称 Windows ACL、稳定句柄或跨进程事务已完成。
+
 ## 未发布（2026-11-19，ToolJournal 路径回退枚举拒绝诊断）
 
 - Windows/path 回退读取的首次及末次 `iterdir()` 枚举若遭遇 `OSError`（含权限拒绝），统一转为 `JournalError` 并保留异常链，避免原始文件系统异常泄漏到调用者且不能误报空日志。新增两项模拟回归测试源码，未运行；未实现 Windows ACL、稳定句柄或跨进程事务。
