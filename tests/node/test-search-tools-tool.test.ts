@@ -20,10 +20,10 @@ function ctxWith(revealed: string[] = []): ToolContext {
   } as unknown as ToolContext;
 }
 
-test("search_tools 已注册进工具集（否则模型看不到它）", () => {
+test("默认不注册（不改变既有工具契约）；开启延迟加载才加进去", () => {
   const names = TOOL_SCHEMAS.map((s) => (s as { function: { name: string } }).function.name);
-  expect(names).toContain("search_tools");
-  expect(names[0]).toBe("search_tools"); // 永远可见，不受检索筛选影响
+  expect(names).not.toContain("search_tools");
+  expect((SEARCH_TOOLS_SCHEMA as { function: { name: string } }).function.name).toBe("search_tools");
 });
 
 test("schema 有自己的描述与必填参数", () => {

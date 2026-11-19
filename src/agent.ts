@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import { ProviderError, type ProviderLike } from "./providers.ts";
 import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
-  TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
+  TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA, SEARCH_TOOLS_SCHEMA,
   newToolContext, executeTool, executeToolIdempotent, resumeWriteAlreadyDone, ToolError, checkApproval,
   type ToolContext, type DelegateOptions, type ApproveResult,
 } from "./tools.ts";
@@ -331,6 +331,8 @@ export class Agent {
       if (this.backend !== null && name === "apply_patch") return false;
       return true;
     });
+    // search_tools 只在延迟加载开启时注册：不改变默认工具契约，也不白占 schema 体积。
+    if (this.toolSearchCfg.enabled) schemas.push(SEARCH_TOOLS_SCHEMA);
     if (this.poppyEnabled) schemas.push(POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA);
     if (this.mcpManager?.hasTools()) schemas.push(...this.mcpManager.toolSchemas);
     return schemas;

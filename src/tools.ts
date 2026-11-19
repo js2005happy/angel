@@ -238,7 +238,6 @@ export function toolSearchTools(ctx: ToolContext, query: string, limit = 8): str
   return lines.join("\n");
 }
 export const TOOL_SCHEMAS: Record<string, unknown>[] = [
-  SEARCH_TOOLS_SCHEMA,
   schema("read_file", "读取文件内容", { path: { type: "string" } }, ["path"]),
   schema("write_file", "创建或覆盖写入文件", { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
   schema("edit_file", "精确替换文件中的一段文本", { path: { type: "string" }, old_text: { type: "string" }, new_text: { type: "string" } }, ["path", "old_text", "new_text"]),
