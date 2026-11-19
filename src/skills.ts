@@ -1,4 +1,5 @@
 // src/skills.ts — Markdown 技能加载/匹配/保存，与 Python 版 nyra/skills.py 同语义。
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -11,6 +12,13 @@ export interface Skill {
   // 可选：逗号分隔的 glob（如 `src/**/*.ts, docs/*.md`，写在 frontmatter 的 paths: 行）。
   // agent 触碰到匹配的文件时，该技能全文才被确定性注入；平时只占索引里约 100 字。
   paths?: string[];
+  // 学 Claude Code 的 allowed-tools：技能激活期间的工具白名单（逗号分隔）。
+  // 语义是"声明"而非"强制"：声明的工具视为技能自带能力，未声明的高风险工具
+  // 仍走常规审批。真正按技能放行工具留到权限规则层（S5）再做。
+  allowedTools?: string[];
+  // 学 Claude Code 的 model：该技能建议使用的模型（如便宜模型跑搜索类技能）。
+  // 声明式字段：提示词里告知 agent，实际切换由调用方决定，不在这里偷偷改模型。
+  model?: string;
   instructions: string;
   path: string;
 }
@@ -64,7 +72,8 @@ export function parseSkillText(text: string, path: string): Skill {
     if (idx !== -1) {
       const key = line.slice(0, idx).trim();
       // 调研报告第 2 项：技能渐进披露——frontmatter 新增可选 paths 字段（逗号分隔的 glob）。
-      if (["name", "description", "when", "keywords", "paths"].includes(key)) {
+      // S3：新增 allowed-tools / allowed_tools（工具白名单）与 model（建议模型）。
+      if (["name", "description", "when", "keywords", "paths", "allowed-tools", "allowed_tools", "model"].includes(key)) {
         metadata[key] = line.slice(idx + 1).trim();
       }
     }
@@ -82,6 +91,13 @@ export function parseSkillText(text: string, path: string): Skill {
     .split(",")
     .map((p) => p.trim().replace(/^\[/, "").replace(/\]$/, "").replace(/^["']|["']$/g, "").trim())
     .filter(Boolean);
+  // 学 Claude Code：allowed-tools 与 paths 同样是逗号分隔，也接受 `[a, b]` 与引号。
+  const allowedRaw = metadata["allowed-tools"] ?? metadata["allowed_tools"] ?? "";
+  const allowedTools = allowedRaw
+    .split(",")
+    .map((t) => t.trim().replace(/^\[/, "").replace(/\]$/, "").replace(/^["']|["']$/g, "").trim())
+    .filter(Boolean);
+  const model = (metadata.model ?? "").trim() || undefined;
   const bodyLines = lines.slice(closingIndex + 1);
   let start = 0;
   let end = bodyLines.length;
@@ -94,6 +110,8 @@ export function parseSkillText(text: string, path: string): Skill {
     keywords,
     // 调研报告第 2 项：技能渐进披露——没写 paths 的旧技能保持 undefined，行为与以前一致。
     ...(paths.length ? { paths } : {}),
+    ...(allowedTools.length ? { allowedTools } : {}),
+    ...(model ? { model } : {}),
     instructions: bodyLines.slice(start, end).join("\n"),
     path,
   };
@@ -172,12 +190,144 @@ export function matchSkills(task: string, skills: Skill[], topN = 2): Skill[] {
   return scored.slice(0, topN).map(([, s]) => s);
 }
 
-export function renderSkill(skill: Skill): string {
+// ---- S3：技能内联命令（学 Claude Code 的 !`cmd` 动态上下文注入）----
+// 技能正文里写 !`gh pr diff` 这类片段，渲染时执行并把输出替换进去，模型看到的是
+// 真实仓库状态而不是它猜的状态。
+//
+// **信任模型（审阅意见第 1 条）**：内联命令跑在宿主机上、不进沙箱、不经过审批，
+// 所以只有"用户自己的"技能才允许自动执行——即位于 trustedRoots（默认
+// `<nyra home>/skills`）下的技能。项目里随仓库带的技能（`<workdir>/skills`、
+// `<workdir>/.nyra/skills`）和插件技能默认**不执行**，只留占位：
+// 克隆一个带恶意技能的仓库时，技能一匹配上就会执行命令，这条必须默认关死。
+// 需要放开时用 NYRA_ALLOW_UNTRUSTED_SKILL_COMMANDS=1（全进程开关，自担风险）。
+export interface SkillRenderOptions {
+  /** 执行内联命令的工作目录；缺省 process.cwd()。 */
+  workdir?: string;
+  /** 总开关：是否允许执行内联命令。默认 false。 */
+  execute?: boolean;
+  /** 受信任的技能根目录（只有落在这些目录下的技能才会真的执行命令）。 */
+  trustedRoots?: string[];
+  timeoutMs?: number;
+  maxOutputChars?: number;
+}
+
+const INLINE_CMD_RE = /!`([^`\n]+)`/g;
+
+// 危险命令黑名单。黑名单只能挡"一眼就知道要命"的命令，挡不住 curl | sh 这类；
+// 真正的边界是上面的信任模型，不是这张表。Windows 与 Unix 都要覆盖。
+const BLOCKED_INLINE_CMD: [RegExp, string][] = [
+  // Unix
+  [/\bsudo\b/i, "禁止 sudo"],
+  [/\bmkfs(\.\w+)?\b/i, "禁止 mkfs"],
+  [/\b(shutdown|reboot|poweroff|halt)\b/i, "禁止关机/重启"],
+  [/rm\s+(-[a-zA-Z]+\s+)*\/(\s|$)/, "禁止删除根目录"],
+  [/rm\s+-[a-zA-Z]*r[a-zA-Z]*f/i, "禁止 rm -rf"],
+  [/>\s*\/dev\/(sd|hd|nvme|vd)/i, "禁止写磁盘设备"],
+  [/:\(\)\s*\{\s*:\s*\|/, "禁止 fork 炸弹"],
+  [/\bdd\s+if=.*of=\/dev\//i, "禁止 dd 写设备"],
+  // Windows / PowerShell
+  [/\bdel\s+\/[a-z]*[sfq]/i, "禁止 del /s /q"],
+  [/\b(rd|rmdir)\s+\/[a-z]*s/i, "禁止 rd /s"],
+  [/\bformat\s+[a-z]:/i, "禁止 format 磁盘"],
+  [/\bdiskpart\b/i, "禁止 diskpart"],
+  [/\bbcdedit\b/i, "禁止 bcdedit"],
+  [/\bvssadmin\s+delete\b/i, "禁止删除卷影副本"],
+  [/\bRemove-Item\b[^\n]*-Recurse/i, "禁止 Remove-Item -Recurse"],
+  [/\b(Format-Volume|Clear-Disk|Initialize-Disk)\b/i, "禁止格式化/清除磁盘"],
+  [/\bStop-Computer\b/i, "禁止关机"],
+  [/\bcipher\s+\/w/i, "禁止擦除空闲空间"],
+  [/\breg\s+delete\s+HK(LM|CR|U|CC)\b/i, "禁止删注册表"],
+  [/\bsc(\.exe)?\s+delete\b/i, "禁止删服务"],
+  [/\btaskkill\b[^\n]*\/f/i, "禁止强杀进程"],
+];
+
+function blockedInlineReason(cmd: string): string | null {
+  for (const [re, reason] of BLOCKED_INLINE_CMD) if (re.test(cmd)) return reason;
+  return null;
+}
+
+/** 技能文件是否位于受信任根目录下（路径规范化后按前缀比较）。 */
+export function isTrustedSkillPath(skillPath: string, trustedRoots: string[]): boolean {
+  if (!skillPath || !trustedRoots.length) return false;
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const sp = norm(skillPath);
+  return trustedRoots.some((root) => {
+    const r = norm(root);
+    return Boolean(r) && (sp === r || sp.startsWith(r + "/"));
+  });
+}
+
+function untrustedCommandsAllowed(): boolean {
+  const v = (process.env.NYRA_ALLOW_UNTRUSTED_SKILL_COMMANDS ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/** 把正文里的 !`cmd` 展开成命令输出；未开启执行或技能不受信任时保留占位说明。 */
+export function expandInlineCommands(
+  text: string,
+  skillName: string,
+  opts: SkillRenderOptions = {},
+  skillPath = "",
+): string {
+  if (!text.includes("!`")) return text;
+  const timeout = opts.timeoutMs ?? 5000;
+  const maxChars = opts.maxOutputChars ?? 4000;
+  const cwd = opts.workdir ?? process.cwd();
+  const trusted = isTrustedSkillPath(skillPath, opts.trustedRoots ?? []) || untrustedCommandsAllowed();
+  return text.replace(INLINE_CMD_RE, (_m, raw: string) => {
+    const cmd = String(raw).trim();
+    if (!cmd) return "";
+    if (!opts.execute) return `（未执行：${cmd} —— 计划模式或未开启技能命令执行）`;
+    if (!trusted) {
+      return `（未执行：${cmd} —— 项目/插件技能默认不自动执行内联命令；把它放到 ~/.nyra/skills 下，或设 NYRA_ALLOW_UNTRUSTED_SKILL_COMMANDS=1）`;
+    }
+    const blocked = blockedInlineReason(cmd);
+    if (blocked) return `（已拒绝执行：${cmd} —— ${blocked}）`;
+    try {
+      // 审计：每条技能内联命令都留痕，方便排查"谁跑过什么"。
+      console.error(`[skill:${skillName}] 执行内联命令：${cmd}`);
+      const out = execSync(cmd, {
+        cwd,
+        timeout,
+        maxBuffer: 1024 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        encoding: "utf-8",
+      });
+      const trimmed = (out ?? "").trim();
+      if (!trimmed) return `（命令无输出：${cmd}）`;
+      return trimmed.length > maxChars
+        ? trimmed.slice(0, maxChars) + `\n…（输出已截断，共 ${trimmed.length} 字符）`
+        : trimmed;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `（命令失败：${cmd} —— ${msg.slice(0, 200)}）`;
+    }
+  });
+}
+
+export function renderSkill(skill: Skill, opts: SkillRenderOptions = {}): string {
   const lines = [`## Skill: ${skill.name}`];
   if (skill.description) lines.push(skill.description);
   if (skill.when) lines.push(`何时使用：${skill.when}`);
-  lines.push(skill.instructions);
+  if (skill.allowedTools?.length) {
+    lines.push(`本技能声明的可用工具：${skill.allowedTools.join(", ")}（未声明的工具照常走审批）`);
+  }
+  if (skill.model) lines.push(`建议模型：${skill.model}`);
+  lines.push(expandInlineCommands(skill.instructions, skill.name, opts, skill.path));
   return lines.join("\n");
+}
+
+/**
+ * 由 agent 侧状态算出渲染选项（把"计划模式不执行"这条接线变成可测的纯函数）。
+ * trustedRoots 默认只含用户自己的技能目录：项目/插件技能不自动执行内联命令。
+ */
+export function skillRenderOptionsFor(args: { mode: string; workdir: string; home: string }): SkillRenderOptions {
+  return {
+    workdir: args.workdir,
+    execute: args.mode !== "plan",
+    trustedRoots: [join(args.home, "skills")],
+  };
 }
 
 // 调研报告第 2 项：技能渐进披露（学 Claude Code + OpenHands）——常驻提示词用的技能索引。
