@@ -22,6 +22,68 @@ export interface HookResult {
   output?: string;
   /** 拦截（或最后一次产出）时命中的钩子脚本绝对路径，便于报错时写明是谁拦的。 */
   hook?: string;
+  /** P0-4：钩子在 stdout 里给出的决策（退出码 0 时的结构化约定）。 */
+  decision?: HookDecision;
+  /** P0-4：钩子要求改写本次工具入参（已合并后的结果）。 */
+  updatedInput?: Record<string, unknown>;
+}
+
+/** P0-4：钩子的结构化决策，与 Claude Code 的 PreToolUse 输出契约对齐。 */
+export type HookDecisionValue = "allow" | "deny" | "ask";
+
+export interface HookDecision {
+  decision: HookDecisionValue;
+  reason?: string;
+  /** 决策来自哪个钩子脚本（报错时回显）。 */
+  hook?: string;
+}
+
+/** 优先级 deny > ask > allow —— 与 permissionRules 的求值次序保持一致。 */
+const DECISION_RANK: Record<HookDecisionValue, number> = { deny: 3, ask: 2, allow: 1 };
+
+/**
+ * P0-4：解析钩子 stdout 的结构化决策。
+ *
+ * 约定（与 Claude Code 对齐）：
+ * ```json
+ * {"permissionDecision":"allow|deny|ask","permissionDecisionReason":"...","updatedInput":{"path":"..."}}
+ * ```
+ * 也接受平铺写法 `{"decision":...}`。任何解析失败（非 JSON、未知决策值、updatedInput
+ * 不是对象）一律返回 null —— 钩子写错格式不能影响主流程，更不能被当成"放行"。
+ */
+export function parseHookStdout(stdout: string): {
+  decision?: HookDecisionValue;
+  reason?: string;
+  updatedInput?: Record<string, unknown>;
+} | null {
+  const text = (stdout ?? "").trim();
+  if (!text || (text[0] !== "{" && text[0] !== "[")) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const decisionRaw = obj.permissionDecision ?? obj.decision;
+  const decision = typeof decisionRaw === "string" && decisionRaw in DECISION_RANK
+    ? (decisionRaw as HookDecisionValue)
+    : undefined;
+  const reasonRaw = obj.permissionDecisionReason ?? obj.reason;
+  const reason = typeof reasonRaw === "string" ? reasonRaw : undefined;
+  const updatedRaw = obj.updatedInput ?? obj.updated_input;
+  const updatedInput = updatedRaw && typeof updatedRaw === "object" && !Array.isArray(updatedRaw)
+    ? (updatedRaw as Record<string, unknown>)
+    : undefined;
+  if (!decision && !updatedInput) return null;
+  return { ...(decision ? { decision } : {}), ...(reason ? { reason } : {}), ...(updatedInput ? { updatedInput } : {}) };
+}
+
+/** P0-4：多次决策按 deny > ask > allow 取最严；平级保留先到者（先声明者优先）。 */
+export function pickStricter(current: HookDecision | undefined, next: HookDecision): HookDecision {
+  if (!current) return next;
+  return DECISION_RANK[next.decision] > DECISION_RANK[current.decision] ? next : current;
 }
 
 export interface RunHooksContext {
@@ -247,6 +309,8 @@ export async function runHooks(event: HookEvent, ctx: RunHooksContext): Promise<
   if (hooks.length === 0) return { blocked: false };
   const timeoutMs = clampTimeout(ctx.timeoutMs ?? config.timeoutMs);
   const payload = JSON.stringify({ event, tool: ctx.tool ?? null, args: ctx.args ?? {}, workdir: ctx.workdir });
+  let decision: HookDecision | undefined;
+  let updatedInput: Record<string, unknown> | undefined;
   for (const { path } of hooks) {
     const outcome = await runOneHook(path, payload, event, ctx.tool, timeoutMs);
     if (outcome.spawnError !== undefined) {
@@ -261,7 +325,7 @@ export async function runHooks(event: HookEvent, ctx: RunHooksContext): Promise<
       const reason = firstLine(outcome.stdout) || firstLine(outcome.stderr) || "钩子未说明原因";
       const output = outcome.stdout.slice(0, MAX_OUTPUT_CHARS) || undefined;
       if (event === "PreToolUse") {
-        return { blocked: true, reason, output, hook: path };
+        return { blocked: true, reason, output, hook: path, decision: { decision: "deny", reason, hook: path } };
       }
       // 非 PreToolUse 事件只通知、不拦截：记一条警告并继续跑后面的钩子。
       warn(`钩子 ${path} 在 ${event} 返回退出码 2（${reason}），该事件不拦截，主流程继续`);
@@ -271,6 +335,25 @@ export async function runHooks(event: HookEvent, ctx: RunHooksContext): Promise<
       warn(`钩子 ${path} 退出码 ${outcome.code ?? "?"}（钩子自身出错），已跳过，主流程继续`);
       continue;
     }
+    // P0-4：退出码 0 时允许钩子用 stdout JSON 表达决策与参数改写。
+    // 只有 PreToolUse 的决策有意义（其余事件没有"入参"可改，也不该放行/拦截）。
+    if (event !== "PreToolUse") continue;
+    const parsed = parseHookStdout(outcome.stdout);
+    if (!parsed) continue;
+    if (parsed.decision) {
+      decision = pickStricter(decision, { decision: parsed.decision, reason: parsed.reason, hook: path });
+    }
+    if (parsed.updatedInput) {
+      updatedInput = { ...(updatedInput ?? {}), ...parsed.updatedInput };
+    }
   }
-  return { blocked: false };
+  if (decision?.decision === "deny") {
+    // 结构化 deny 与退出码 2 等价：阻止这次调用，并把原因带给模型。
+    return { blocked: true, reason: decision.reason, hook: decision.hook, decision };
+  }
+  return {
+    blocked: false,
+    ...(decision ? { decision } : {}),
+    ...(updatedInput ? { updatedInput } : {}),
+  };
 }
