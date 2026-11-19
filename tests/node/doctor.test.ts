@@ -24,6 +24,8 @@ test("无 Key：模型配置项失败，给出 export 指引", async () => {
 });
 
 test("配置目录权限不对：755 时失败，给出 chmod 700 指引；修好后通过", async () => {
+  // Windows 没有 POSIX 权限位，doctor 本身也不检查，整个用例跳过。
+  if (process.platform === "win32") return;
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
   saveConfig(home, {});
@@ -81,6 +83,8 @@ test("runtimeVersionOk：Bun < 1.4 与 Node < 24 不通过，够新的通过", (
 });
 
 test("vault.json 存在且权限不对时报出 0600 指引", async () => {
+  // Windows 没有 POSIX 权限位，doctor 对 vault.json 直接报通过，整个用例跳过。
+  if (process.platform === "win32") return;
   const home = tmpHome();
   process.env.DEEPSEEK_API_KEY = "sk-test";
   try {
