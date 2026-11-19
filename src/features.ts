@@ -10,6 +10,7 @@
 //   - 每个开关都有默认值与一句话说明，`nyra features` 能直接列出
 //   - 纯函数，便于单测；不读文件、不 spawn
 
+import { t } from "./i18n.ts";
 export interface FeatureSpec {
   name: string;
   /** 默认值。默认关的开关意味着"实验性/可能省 token 但改变行为"。 */
@@ -109,15 +110,15 @@ export function featureOn(resolution: FeatureResolution, name: string): boolean 
 
 /** 人类可读列表（`nyra features` 用）。 */
 export function formatFeatures(resolution: FeatureResolution): string {
-  const lines = ["功能开关（CLI 覆盖 > config.features > 默认值）：", ""];
+  const lines = [t("features.title"), ""];
   for (const f of resolution.features) {
     const mark = f.enabled ? "✅" : "⬜";
-    const src = f.source === "cli" ? "（CLI 覆盖）" : f.source === "config" ? "（配置文件）" : "（默认）";
+    const src = f.source === "cli" ? t("features.srcCli") : f.source === "config" ? t("features.srcConfig") : t("features.srcDefault");
     lines.push(`${mark} ${f.name}${src}`);
     lines.push(`     ${f.description}`);
   }
   if (resolution.warnings.length) {
-    lines.push("", "警告：");
+    lines.push("", t("features.warnHead"));
     for (const w of resolution.warnings) lines.push(`  ⚠️  ${w}`);
   }
   return lines.join("\n");

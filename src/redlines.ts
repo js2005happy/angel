@@ -10,6 +10,7 @@
 //   - 缺省配置在本地开发是合理的，所以大部分红线是 **warn** 而不是 fail；
 //     只有"明确危险"的才 fail（例如 permissions 把 deny 全放开、沙箱与审批同时关闭）
 import type { PermissionRule } from "./permissionRules.ts";
+import { t } from "./i18n.ts";
 
 export type RedlineLevel = "ok" | "warn" | "fail";
 
@@ -206,10 +207,10 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
 /** CLI 用：格式化成文本。 */
 export function formatRedlines(result: RedlineResult): string {
   const icon = (l: RedlineLevel) => (l === "ok" ? "✅" : l === "warn" ? "⚠️ " : "❌");
-  const lines = [`上线红线自检：${result.verdict}`, ""];
+  const lines = [t("redlines.title", { verdict: result.verdict }), ""];
   for (const f of result.findings) {
     lines.push(`${icon(f.level)} [${f.code}] ${f.title}：${f.detail}`);
-    if (f.fix) lines.push(`    修复：${f.fix}`);
+    if (f.fix) lines.push(t("redlines.fix", { fix: f.fix }));
   }
   return lines.join("\n");
 }
