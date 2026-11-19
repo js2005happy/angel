@@ -1,3 +1,8 @@
+## 未发布（2026-11-20，ToolJournal 人工对账状态信号）
+
+- `inspect()` 增加只读布尔字段 `manual_review_required`：当日志有未知结果或歧义时为 true；干净配对时为 false，但 `execution_verified` 与 `safe_to_auto_resume` 仍始终为 false。该字段不证明外部副作用已完成，也不提供跨进程锁或自动重放。
+- 新增源码回归用例覆盖空日志、未决 intent 和已配对结果；仅静态审阅，未运行测试或 CI，无新增依赖。
+
 ## 未发布（2026-11-19，ToolJournal 孤立结果守卫源码换行修复）
 
 - 修复上一轮孤立结果全局歧义保护在提交时误将实际换行写成字面量 `\n` 的源码错误；恢复有效的 Python 注释及 `invalid` / `pending` 赋值语句。未改变预期 fail-closed 规则。仅静态核对，未运行 Python、测试或 CI。
