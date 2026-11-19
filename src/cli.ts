@@ -2424,7 +2424,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "recall") {
     // 回忆是隐式注入的，出问题时只能猜。这条命令把"这次任务能复用哪些历史"摊开给人看。
     const cfgRecall = loadConfig(home);
-    const taskArg = (args.subArgs ?? []).join(" ").trim() || (args.task ?? "").trim();
+    const taskArg = (args.subArgs ?? []).filter((a) => a !== "--cross-dir").join(" ").trim() || (args.task ?? "").trim();
     if (!taskArg) {
       process.stderr.write("用法：nyra recall \"<任务文本>\"\n");
       return EXIT_ARGUMENT;
@@ -2433,7 +2433,9 @@ export async function main(argv: string[]): Promise<number> {
     const enabled = featureOn(feats, "run_recall");
     const store = new RunStore(join(home, "runs"));
     const runs = store.list();
-    const picked = selectRecalledRuns(runs, taskArg, { workdir: resolve(args.workdir), limit: 5, maxAgeDays: 30 });
+    // 跨目录弱复用：任务文本里带 --cross-dir 时把别的项目的历史也算进来（降权 + 标注来源）
+    const crossDir = (args.subArgs ?? []).some((a) => a === "--cross-dir");
+    const picked = selectRecalledRuns(runs, taskArg, { workdir: resolve(args.workdir), limit: 5, maxAgeDays: 30, allowCrossDir: crossDir });
     process.stdout.write(`回忆开关：${enabled ? "已开启" : "已关闭"}（features.run_recall）\n`);
     process.stdout.write(`历史运行：共 ${runs.length} 条，本目录 ${runs.filter((r) => (r as unknown as Record<string, unknown>).workdir === resolve(args.workdir)).length} 条\n`);
     if (!picked.length) {

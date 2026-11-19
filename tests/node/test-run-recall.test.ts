@@ -116,3 +116,33 @@ test("新鲜度：输出里带年龄，过期历史不出现", () => {
   expect(note).toContain("10 天前");
   expect(note).not.toContain("90 天前");
 });
+
+test("跨目录：默认排除（别的项目历史没参考价值）", () => {
+  const { selectRecalledRuns: sel, CROSS_DIR_SCORE_FACTOR: _f } = { selectRecalledRuns, CROSS_DIR_SCORE_FACTOR: 0 };
+  void _f;
+  const runs = [run({ run_id: "same", workdir: "/proj" }), run({ run_id: "other", workdir: "/other" })];
+  const got = sel(runs, "重构 auth 模块", { workdir: "/proj", maxAgeDays: 0 });
+  expect(got.map((r) => r.run_id)).toEqual(["same"]);
+});
+
+test("跨目录弱复用：开启后包含，打上 crossDir 与来源目录", async () => {
+  const { selectRecalledRuns: sel, CROSS_DIR_SCORE_FACTOR } = await import("../../src/runRecall.ts");
+  const runs = [run({ run_id: "same", workdir: "/proj" }), run({ run_id: "other", workdir: "/other" })];
+  const got = sel(runs, "重构 auth 模块", { workdir: "/proj", maxAgeDays: 0, allowCrossDir: true });
+  expect(got.length).toBe(2);
+  const cross = got.find((r) => r.run_id === "other")!;
+  expect(cross.crossDir).toBe(true);
+  expect(cross.workdir).toBe("/other");
+  const same = got.find((r) => r.run_id === "same")!;
+  expect(same.crossDir).toBe(false);
+  expect(cross.score).toBeLessThanOrEqual(same.score);
+  expect(CROSS_DIR_SCORE_FACTOR).toBeGreaterThan(0);
+});
+
+test("跨目录：输出里标注来源目录与「仅供参考」", async () => {
+  const { selectRecalledRuns: sel } = await import("../../src/runRecall.ts");
+  const runs = [run({ run_id: "other", workdir: "/other" })];
+  const note = formatRecallNote(sel(runs, "重构 auth 模块", { workdir: "/proj", maxAgeDays: 0, allowCrossDir: true }))!;
+  expect(note).toContain("来自 /other");
+  expect(note).toContain("仅供参考");
+});
