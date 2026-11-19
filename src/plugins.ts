@@ -101,7 +101,16 @@ export function pluginDir(home: string, name: string): string {
 export function loadLock(home: string): PluginLock {
   try {
     const data = JSON.parse(readFileSync(lockPath(home), "utf-8")) as PluginLock;
-    if (data && data.version === 1 && data.plugins && typeof data.plugins === "object") return data;
+    if (data && data.version === 1 && data.plugins && typeof data.plugins === "object") {
+      // 旧锁定文件里的文件键名可能是 Windows 反斜杠：读入时统一成正斜杠，
+      // 否则升级/校验/卸载的键名比对会在跨平台后失效。
+      for (const rec of Object.values(data.plugins)) {
+        const norm: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rec.files ?? {})) norm[k.split(/[\\/]/).join("/")] = v;
+        rec.files = norm;
+      }
+      return data;
+    }
   } catch { /* 损坏或不存在都当成空锁，安装时重建 */ }
   return { version: 1, plugins: {} };
 }
@@ -173,14 +182,16 @@ function listPluginFiles(dir: string): string[] {
   const skillsDir = join(dir, "skills");
   if (existsSync(skillsDir)) {
     for (const f of readdirSync(skillsDir).sort()) {
-      if (f.endsWith(".md")) out.push(join("skills", f));
+      // 锁定文件里的键名一律用正斜杠：join() 在 Windows 上会写反斜杠，
+      // 跨平台比对（verify/uninstall/upgrade）与测试期望都会失败。
+      if (f.endsWith(".md")) out.push(`skills/${f}`);
     }
   }
   // 面板资源（创造模式的番茄钟面板等）：仅允许自包含的 .html，随哈希锁定一起安装。
   const panelDir = join(dir, "panel");
   if (existsSync(panelDir)) {
     for (const f of readdirSync(panelDir).sort()) {
-      if (f.endsWith(".html")) out.push(join("panel", f));
+      if (f.endsWith(".html")) out.push(`panel/${f}`);
     }
   }
   return out;
@@ -364,8 +375,11 @@ export function uninstallPlugin(home: string, name: string): UninstallResult {
   const removed: string[] = [];
   const keptModified: string[] = [];
   const missing: string[] = [];
-  for (const [rel, hash] of Object.entries(rec.files)) {
-    const target = join(dest, rel);
+  for (const [rawRel, hash] of Object.entries(rec.files)) {
+    // 旧锁定文件里的键名可能是 Windows 反斜杠：统一成正斜杠再用，
+    // 否则 removed/keptModified/missing 里会出现 "skills\\x.md"。
+    const rel = rawRel.split(/[\\/]/).join("/");
+    const target = join(dest, ...rel.split("/"));
     if (!existsSync(target)) { missing.push(rel); continue; }
     if (sha256File(target) === hash) {
       try { rmSync(target, { force: true }); removed.push(rel); } catch { /* ignore */ }
