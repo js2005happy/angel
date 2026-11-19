@@ -3,21 +3,30 @@
 // 现状：所有工具 schema 每轮全量发送。MCP 接进来以后工具数会到几十个，光 schema 就
 // 吃掉可观上下文，而且模型在这一轮里根本用不到其中绝大多数。
 //
-// 做法（分两步，本文件只做第一步）：
+// 做法（分两步）：
 //   1. **选择器**：给定当前任务文本，挑出最相关的 K 个工具 + 常驻核心工具（本文件）
-//   2. **检索工具**：暴露一个 `search_tools` 元工具，模型能按需把没发的工具拉回来
+//   2. **检索工具**：`search_tools` 元工具（SEARCH_TOOLS_SCHEMA + searchDeferredTools +
+//      formatSearchResults，本文件）+ Agent 里的延迟加载接线（src/agent.ts）：MCP 工具
+//      超过 8 个时只发最相关的前 8 个，其余进 deferredTools，模型调 search_tools
+//      拉回来；命中工具的完整定义以 JSON 返回并追加进本轮 schemas。
 //
 // 本文件是纯函数：不读文件、不 spawn、不改状态。排序必须可解释——每个入选/落选都要
 // 说得出理由，否则出问题时没法排查"为什么这个工具没发给模型"。
 import type { ToolSchemaLike } from "./toolBudget.ts";
 
 export interface ToolSearchOptions {
-  /** 最多保留多少个（不含 always 列表）。默认 12。 */
+  /** 最多保留多少个（含 always 列表的总数——实现是 kept = always + 前 K，见 selectTools）。默认 12。 */
   topK?: number;
   /** 永远保留的工具名（核心工具：读文件、shell、搜索等）。 */
   always?: readonly string[];
   /** 低于该分数直接丢弃（0 = 只要命中一点就留）。默认 1。 */
   minScore?: number;
+  /**
+   * 无命中时是否全量回退。默认 true：宁可多发也不让模型手里没有工具。
+   * 只检索时关掉（searchDeferredTools 传 false）：无命中返回空列表，
+   * 如实告诉模型"没匹配到"，不把全量工具都塞回去。
+   */
+  fallbackAll?: boolean;
 }
 
 export interface ToolScore {
@@ -95,6 +104,7 @@ function scoreOne(schema: ToolSchemaLike, queryTokens: string[], queryLower: str
  *   - 其余按分数排序取前 K；分数 < minScore 的丢弃
  *   - 一个都没命中时（例如刚开会话、任务还没描述清楚）**回退为全量发送**——
  *     宁可多花 token，也不能让模型手里没有工具
+ *   - fallbackAll: false 时无命中返回空列表（只检索时用，见 searchDeferredTools）
  */
 export function selectTools(
   schemas: readonly ToolSchemaLike[],
@@ -121,6 +131,11 @@ export function selectTools(
   const kept = [...alwaysNames, ...picked.map((s) => s.name)];
 
   if (kept.length === 0) {
+    if (opts.fallbackAll === false) {
+      // 检索路径：无命中就是无命中，返回空列表，不全量回退。
+      const all = schemas.map((s) => s?.function?.name ?? "").filter(Boolean);
+      return { kept: [], dropped: all, scores: scored, suggestions: [] };
+    }
     // 无命中：全量回退，绝不让模型手里没有工具
     const all = schemas.map((s) => s?.function?.name ?? "").filter(Boolean);
     return { kept: all, dropped: [], scores: scored, suggestions: [] };
@@ -145,4 +160,56 @@ export function explainSelection(selection: ToolSelection): string {
   const top = selection.scores.filter((s) => s.score > 0).slice(0, 8);
   if (!top.length) return "本轮无关键词命中，已全量发送（避免模型手里没有工具）";
   return top.map((s) => `${s.name}(${s.score}${s.matched.length ? `: ${s.matched.join(",")}` : ""})`).join("；");
+}
+
+// ---- 延迟加载第二步：search_tools 元工具 ----
+//
+// 只返回命中工具的完整定义（JSON），不返回全部 schema——检索本身不能
+// 又把上下文撑大。schema 与检索/格式化是纯函数（本文件）；接线（把命中
+// 工具追加进本轮 schemas）由 Agent 在分派循环里做（src/agent.ts）。
+
+/** search_tools 的 schema：只发名字 + 描述，完整定义由检索命中后返回。 */
+export const SEARCH_TOOLS_SCHEMA: Record<string, unknown> = {
+  type: "function",
+  function: {
+    name: "search_tools",
+    description: "检索工具。当前只发送了核心工具；需要其他能力（MCP、生图、浏览器等）时先用它按关键词检索，命中的工具会在下一轮可用。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "要做什么，例如「读取.env」「调用浏览器截图」「检索记忆库」" },
+        limit: { type: "number", description: "最多返回几个，默认 8" },
+      },
+      required: ["query"],
+    },
+  },
+};
+
+/**
+ * 在延迟加载剩下的工具里检索。无命中返回空列表（fallbackAll: false），
+ * 不全量回退——检索的回答是"没匹配到"，不是"把所有工具都放开"。
+ */
+export function searchDeferredTools(
+  deferred: readonly ToolSchemaLike[],
+  query: string,
+  limit = 8,
+): ToolSelection {
+  return selectTools(deferred, query, {
+    topK: Math.max(1, Math.min(20, Math.floor(limit) || 8)),
+    fallbackAll: false,
+  });
+}
+
+/**
+ * 检索结果格式化：命中工具的完整定义以 JSON 返回（模型下一轮直接按
+ * 定义调用）。无命中时如实说没匹配到，不编造工具名。
+ */
+export function formatSearchResults(
+  selection: ToolSelection,
+  deferred: readonly ToolSchemaLike[],
+): string {
+  if (!selection.kept.length) return "没有匹配到工具：换个关键词再试，或直接描述要做的事。";
+  const byName = new Map(deferred.map((s) => [s?.function?.name ?? "", s]));
+  const defs = selection.kept.map((n) => byName.get(n)).filter((d): d is ToolSchemaLike => d !== undefined);
+  return JSON.stringify(defs, null, 2);
 }

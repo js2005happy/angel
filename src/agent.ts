@@ -6,8 +6,10 @@
 // 压缩分层（2.6 第 7 条）：先剪旧工具结果 → 选边界 → LLM 摘要；
 // 只压缩已完成轮次，绝不碰当前用户请求及其工具往返。
 // 提示词缓存不变式（2.6 第 8 条）：一次运行内 system prompt 与工具
-// schema 只构建一次、逐轮不变；可变内容只出现在消息尾部。测试覆盖见
-// tests/node/test-agent.test.ts（缓存不变式专项）。
+// schema 只构建一次、逐轮不变；可变内容只出现在消息尾部。唯一例外是
+// 延迟加载（P3）：模型调 search_tools 拉回的工具追加进本轮 schemas，
+// 后续轮次直接发给模型。测试覆盖见 tests/node/test-agent.test.ts
+// （缓存不变式专项）与 tests/node/test-lazy-tools.test.ts。
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { ProviderError, type ProviderLike } from "./providers.ts";
 import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
-  TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA, SEARCH_TOOLS_SCHEMA,
+  TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
   newToolContext, executeTool, executeToolIdempotent, resumeWriteAlreadyDone, ToolError, checkApproval,
   type ToolContext, type DelegateOptions, type ApproveResult,
 } from "./tools.ts";
@@ -34,7 +36,7 @@ import { UsageTracker } from "./usage.ts";
 import type { WindowSource } from "./modelCatalog.ts";
 import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
 import type { AuxTask } from "./modelRouting.ts";
-import { selectTools } from "./toolSearch.ts";
+import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { randomBytes } from "node:crypto";
@@ -48,6 +50,9 @@ export class AgentError extends Error {
 export const MAX_DELEGATE_DEPTH = 3;
 export const MAX_DELEGATE_CALLS = 8;
 export const MAX_DELEGATE_TURNS = 12;
+
+// P3 延迟加载：MCP 工具超过这个数时只发最相关的前 8 个，其余靠 search_tools 拉回。
+export const MCP_LAZY_LOAD_THRESHOLD = 8;
 
 // 调研报告第 2 项：技能渐进披露——带 path 参数、算“触碰文件”的工具。
 // shell 不在内：命令文本里的路径不可靠解析，不做路径触发。
@@ -132,7 +137,13 @@ export interface AgentOptions {
   maxCostUsd?: number | null;
   /** P2-2：该模型的单价；null = 未配置，金额未知（不编造）。 */
   pricing?: Pricing | null;
-  /** 工具检索（延迟加载）：只发核心工具 + 命中工具，其余靠 search_tools 拉回。 */
+  /**
+   * 工具检索（延迟加载）：仅接受、不使用。延迟加载已改为 MCP 工具 > 8 个时
+   * 自动开启（见 toolSchemas），不再走这项配置；保留字段是因为 cli.ts
+   * 的 Agent 构造字面量里传了它，删掉 tsc 会报 excess property 错误。
+   * 另见已知遗留：config.tool_search.enabled / --enable-feature tool_search
+   * 目前对延迟加载不起作用。
+   */
   toolSearch?: { enabled?: boolean; topK?: number; always?: string[] } | null;
   /** --add-dir：额外可写根（写路径校验与沙箱同时放开）。 */
   extraDirs?: string[] | null;
@@ -185,9 +196,10 @@ export class Agent {
   private pricing: Pricing | null;
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
-  private toolSearchCfg: { enabled: boolean; topK: number; always: string[] };
-  /** 模型通过 search_tools 拉回来的工具；这些工具在后续轮次必须继续发送。 */
-  private revealedTools = new Set<string>();
+  /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
+  private deferredTools: Record<string, unknown>[] = [];
+  /** 延迟加载（P3）：本轮未发送工具的说明，拼进 system prompt 告诉模型怎么拿回来。 */
+  private deferredNote = "";
   /** 最近一次成本估算；超支时由 checkCost 抛错前写入，供 CLI 汇报。 */
   lastCost: CostEstimate | null = null;
   onEvent: AgentEventHandler | null;
@@ -225,11 +237,6 @@ export class Agent {
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
     this.pricing = opts.pricing ?? null;
     this.auxModels = opts.auxModels ?? {};
-    this.toolSearchCfg = {
-      enabled: opts.toolSearch?.enabled === true,
-      topK: typeof opts.toolSearch?.topK === "number" ? opts.toolSearch.topK : 12,
-      always: Array.isArray(opts.toolSearch?.always) ? opts.toolSearch.always : ["read_file", "write_file", "edit_file", "shell", "list_dir", "search_tools"],
-    };
     this.onEvent = opts.onEvent ?? null;
     this.workdir = opts.workdir ?? ".";
     this.mode = opts.mode ?? "auto";
@@ -325,43 +332,70 @@ export class Agent {
     try { this.onEvent(kind, data); } catch { /* 观察器故障绝不破坏主循环 */ }
   }
 
-  /** 全部可用工具（减去禁用），不做检索筛选——search_tools 要在这份全集里查。 */
-  allToolSchemas(): Record<string, unknown>[] {
+  /**
+   * 发给 provider 的工具集。
+   *
+   * 延迟加载（P3，第二步）：MCP 工具超过 8 个且未用 NYRA_LAZY_TOOLS=0
+   * 关闭时，按任务文本挑最相关的前 8 个 MCP 工具发出去，其余进
+   * deferredTools（模型调 search_tools 拉回来），并把 search_tools
+   * schema 与 describeDeferred 说明拼进本轮 system prompt。
+   * MCP 工具不多时行为与原来完全一致（全量发送、不挂 search_tools）。
+   *
+   * 注意：#52 的旧接线已回退——它用 lastUserText() 读 this.messages
+   * 里的上一轮任务当 query（当前任务此时还没进 this.messages），
+   * 且 runLoop 只构建一次 schemas，揭示的工具本轮根本发不出去。
+   * 这里直接拿 runLoop 传进来的当前任务文本当 query，不读历史。
+   */
+  toolSchemas(task = ""): Record<string, unknown>[] {
     const schemas = TOOL_SCHEMAS.filter((s) => {
       const name = (s.function as Record<string, unknown>).name as string;
       if (this.disabledTools.has(name)) return false;
       if (this.backend !== null && name === "apply_patch") return false;
       return true;
     });
-    // search_tools 只在延迟加载开启时注册：不改变默认工具契约，也不白占 schema 体积。
-    if (this.toolSearchCfg.enabled) schemas.push(SEARCH_TOOLS_SCHEMA);
     if (this.poppyEnabled) schemas.push(POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA);
-    if (this.mcpManager?.hasTools()) schemas.push(...this.mcpManager.toolSchemas);
-    return schemas;
-  }
-
-  /** 最近一条用户消息，用作工具检索的 query（没有就用空串 → 全量回退）。 */
-  private lastUserText(): string {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const m = this.messages[i] as Record<string, unknown>;
-      if (m?.role === "user" && typeof m.content === "string") return m.content;
+    const mcpSchemas = this.mcpManager?.hasTools() ? [...this.mcpManager.toolSchemas] : [];
+    // 延迟加载的开关：默认开，NYRA_LAZY_TOOLS=0 显式关闭（逃生口）。
+    const lazyOn = (process.env.NYRA_LAZY_TOOLS ?? "").trim() !== "0";
+    if (!lazyOn || mcpSchemas.length <= MCP_LAZY_LOAD_THRESHOLD) {
+      this.deferredTools = [];
+      this.deferredNote = "";
+      return [...schemas, ...mcpSchemas];
     }
-    return "";
+    const selection = selectTools(mcpSchemas as never, task, { topK: MCP_LAZY_LOAD_THRESHOLD, always: [] });
+    const kept = new Set(selection.kept);
+    const keptMcp = mcpSchemas.filter((s) => kept.has((s.function as Record<string, unknown>).name as string));
+    this.deferredTools = mcpSchemas.filter((s) => !kept.has((s.function as Record<string, unknown>).name as string));
+    this.deferredNote = describeDeferred(selection, mcpSchemas.length);
+    // 无命中时 selectTools 默认全量回退：deferred 为空就不挂 search_tools。
+    if (!this.deferredTools.length) return [...schemas, ...mcpSchemas];
+    return [...schemas, ...keptMcp, SEARCH_TOOLS_SCHEMA];
   }
 
-  /** 发给 provider 的工具集：默认全量；开了 tool_search 就只发核心 + 已揭示的。 */
-  toolSchemas(): Record<string, unknown>[] {
-    const all = this.allToolSchemas();
-    if (!this.toolSearchCfg.enabled) return all;
-
-    const selection = selectTools(all as never, this.lastUserText(), {
-      topK: this.toolSearchCfg.topK,
-      always: this.toolSearchCfg.always,
-    });
-    const keep = new Set<string>([...selection.kept, ...this.revealedTools, ...this.toolSearchCfg.always]);
-    const filtered = all.filter((s) => keep.has((s.function as Record<string, unknown>).name as string));
-    // 兜底：筛选后一个工具都不剩就全量（绝不让模型手里没有工具）
-    return filtered.length ? filtered : all;
+  /**
+   * search_tools 的分派（延迟加载第二步）：只读、无副作用、不走审批。
+   * 命中工具的完整定义以 JSON 返回，并追加进本轮 schemas（runLoop 每轮
+   * 原样传同一个 schemas 数组，后续轮次直接发给模型）；命中工具同时从
+   * deferredTools 里移除。deferredTools 为空时如实说没有可检索的工具。
+   */
+  private handleSearchTools(args: Record<string, unknown>, schemas: Record<string, unknown>[]): string {
+    const query = typeof args.query === "string" ? args.query : "";
+    const limit = typeof args.limit === "number" && Number.isFinite(args.limit) ? args.limit : 8;
+    if (!this.deferredTools.length) return "当前没有可检索的工具：本轮已发送全部工具。";
+    const selection = searchDeferredTools(this.deferredTools as never, query, limit);
+    const result = formatSearchResults(selection, this.deferredTools as never);
+    if (selection.kept.length) {
+      const byName = new Map(this.deferredTools.map((s) => [(s.function as Record<string, unknown>).name as string, s]));
+      for (const name of selection.kept) {
+        const def = byName.get(name);
+        if (def && !schemas.some((s) => (s.function as Record<string, unknown>).name as string === name)) {
+          schemas.push(def);
+        }
+      }
+      const revealed = new Set(selection.kept);
+      this.deferredTools = this.deferredTools.filter((s) => !revealed.has((s.function as Record<string, unknown>).name as string));
+    }
+    return result;
   }
 
   // 调研报告第 3 项：上下文补齐（学 Claude Code）——压缩后重读的备注正文：
@@ -471,7 +505,7 @@ export class Agent {
     }
   }
 
-  buildSystemPrompt(task: string, touchedPaths: string[] = []): string {
+  buildSystemPrompt(task: string, touchedPaths: string[] = [], deferredNote = ""): string {
     const sections = [SYSTEM_PROMPT_BASE, MODE_NOTES[this.mode] ?? ""];
     if (this.poppyEnabled) {
       sections.push(
@@ -515,6 +549,10 @@ export class Agent {
     if (full.length) sections.push("## 相关技能\n" + full.map((s) => renderSkill(s, skillRenderOpts)).join("\n\n"));
     const memory = loadMemorySummary(40, this.memoryPath, this.home);
     if (memory) sections.push("## 长期记忆\n" + memory);
+    // 延迟加载（P3）：本轮没发出去的工具告诉模型一声，附上怎么拿回来
+    // （调 search_tools 检索）。deferredNote 由 toolSchemas(task) 算出，
+    // runLoop 先调 toolSchemas 再调这里；不经 runLoop 的调用不带这段。
+    if (deferredNote) sections.push("## 未发送的工具\n" + deferredNote);
     return sections.join("\n\n");
   }
 
@@ -533,9 +571,12 @@ export class Agent {
       this.checkpoints?.beginTurn();
     }
     // 提示词缓存不变式：system prompt 与工具 schema 在本次运行内只构建
-    // 一次、逐轮不变；可变内容只出现在消息尾部。
-    const system = this.buildSystemPrompt(task);
-    const schemas = this.toolSchemas();
+    // 一次、逐轮不变；可变内容只出现在消息尾部。唯一例外是延迟加载：
+    // search_tools 拉回的工具追加进 schemas 数组（同一个数组对象，
+    // 后续轮次直接发给模型）；system prompt 本身不再重建。
+    // 顺序有讲究：先 toolSchemas(task) 算出 deferredNote，再拼进 system prompt。
+    const schemas = this.toolSchemas(task);
+    const system = this.buildSystemPrompt(task, [], this.deferredNote);
     // OpenMausBot B 项：循环检测守卫——同一失败调用 3 次拒执行、同一成功
     // 答案 3 次提醒 10 次停轮；停轮与耗尽时用诚实失败文案。
     const repeatGuard = new RepeatGuard();
@@ -629,6 +670,9 @@ export class Agent {
         } else if (refusal !== null) {
           // 被拒的调用不执行，直接把纸条当工具结果回填给模型。
           result = refusal;
+        } else if (fnName === "search_tools") {
+          // 延迟加载的检索：只读、无副作用、不走审批（也不进 executeTool）。
+          result = this.handleSearchTools(args, schemas);
         } else if (fnName.startsWith("mcp_")) {
           const mcp = this.mcpManager;
           if (mcp === null || mcp === undefined) {

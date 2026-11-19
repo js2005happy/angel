@@ -35,8 +35,6 @@ export interface RedlineInput {
   platform?: string;
   /** 工具集体检结果（由调用方用 toolBudget.measureToolBudget 算好传入）。 */
   toolBudget?: { totalTools: number; tokensPerTurn: number; contextRatio: number | null } | null;
-  /** 延迟加载是否开启（features.tool_search 或 config.tool_search.enabled）。 */
-  toolSearchEnabled?: boolean;
 }
 
 export interface RedlineResult {
@@ -175,20 +173,21 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
     });
   }
 
-  // 8) 工具集常驻成本：每轮都发一遍 schema，工具多 + 不开延迟加载 = 每轮白烧 token
+  // 8) 工具集常驻成本：原生工具每轮都发一遍 schema，工具多就是每轮白烧 token。
+  // 注意：延迟加载只覆盖 MCP 工具（MCP > 8 个时自动开启，NYRA_LAZY_TOOLS=0
+  // 可关），原生工具集的体积只能靠裁剪控制；features.tool_search /
+  // config.tool_search.enabled 目前不控制延迟加载，不要在这里把它当开关用。
   const tb = input.toolBudget;
   if (tb) {
     const heavy = tb.totalTools >= 25 || tb.tokensPerTurn >= 2500 || (tb.contextRatio !== null && tb.contextRatio >= 0.05);
-    if (!input.toolSearchEnabled && heavy) {
+    if (heavy) {
       add({
         code: "tools-bloat",
         level: "warn",
         title: "工具集体积",
-        detail: `${tb.totalTools} 个工具、每轮约 ${tb.tokensPerTurn} token${tb.contextRatio !== null ? `（占上下文 ${(tb.contextRatio * 100).toFixed(1)}%）` : ""}；未开延迟加载，每轮都会完整发送`,
-        fix: '开 features.tool_search（或 config.tool_search.enabled=true），或用 --disable-tool / config.disabled_tools 裁掉用不到的',
+        detail: `${tb.totalTools} 个工具、每轮约 ${tb.tokensPerTurn} token${tb.contextRatio !== null ? `（占上下文 ${(tb.contextRatio * 100).toFixed(1)}%）` : ""}；原生工具每轮都会完整发送`,
+        fix: "用 --disable-tool / config.disabled_tools 裁掉用不到的工具",
       });
-    } else if (input.toolSearchEnabled) {
-      add({ code: "tools-deferred", level: "ok", title: "工具集体积", detail: `已开延迟加载：只发核心 + 命中工具（全集 ${tb.totalTools} 个）` });
     } else {
       add({ code: "tools-lean", level: "ok", title: "工具集体积", detail: `${tb.totalTools} 个工具、每轮约 ${tb.tokensPerTurn} token，在可接受范围内` });
     }
