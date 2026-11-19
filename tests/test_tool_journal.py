@@ -11,6 +11,37 @@ from angel.tool_journal import JournalError, ToolJournal, MAX_EVENTS
 
 
 class JournalTests(unittest.TestCase):
+    def test_finish_postcommit_rejects_competing_reported_error(self):
+        # Simulate a different process reporting failure after our result
+        # was persisted. No external tool is invoked by this regression.
+        journal = ToolJournal("finish-postcommit-error", root=self.root)
+        cid = journal.begin("shell")
+        original_inspect = journal.inspect
+        inspections = 0
+
+        def competing_error_status():
+            nonlocal inspections
+            inspections += 1
+            status = original_inspect()
+            if inspections == 2:
+                status["reported_errors"] += 1
+            return status
+
+        with mock.patch.object(journal, "inspect", side_effect=competing_error_status):
+            with self.assertRaisesRegex(JournalError, "结果写入后发现其他工具报告失败"):
+                journal.finish(cid, "shell", success=True)
+        self.assertEqual(journal.inspect()["reported_ok"], 1)
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
+    def test_finish_own_reported_error_is_not_competing_error(self):
+        journal = ToolJournal("finish-own-error", root=self.root)
+        cid = journal.begin("shell")
+        journal.finish(cid, "shell", success=False)
+        status = journal.inspect()
+        self.assertEqual(status["reported_errors"], 1)
+        self.assertTrue(status["manual_review_required"])
+        self.assertFalse(status["safe_to_auto_resume"])
+
     def test_manual_review_signal_is_read_only_and_conservative(self):
         journal = ToolJournal("review-signal", root=self.root)
         empty = journal.inspect()
