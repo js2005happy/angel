@@ -49,7 +49,8 @@ function okProbe(output = "EigenFlux v1.0.2\nextra\n"): ProbeResult {
 }
 
 async function deadPid(): Promise<number> {
-  const child = spawn("true", []);
+  // Windows 没有 true 命令：用当前运行时自身（bun/node）跑 --version 立即退出取死 pid。
+  const child = spawn(process.execPath, ["--version"]);
   const pid = child.pid!;
   await new Promise<void>((resolve) => child.on("exit", () => resolve()));
   return pid;
@@ -230,9 +231,18 @@ test("EigenFluxDoctorTest.test_timeout_probe_does_not_claim_success", () => {
 
 // --- defaultRunProbe：只对临时假脚本做真实 spawn ---
 
-function writeFakeEigenflux(root: string, body: string): string {
+// 假 CLI：POSIX 写 .sh，Windows 写 .cmd（Windows 不能直接执行 .sh；
+// .cmd/.bat 由 defaultRunProbe 经 cmd.exe /d /c 调用）。
+// 注意超时用例的 cmd 版用 ping 计时：timeout.exe 在 stdin 重定向时会立即返回，
+// 造不出超时；ping -n 11 约等 10 秒，超过 8 秒探针超时。
+function writeFakeEigenflux(root: string, shBody: string, cmdBody: string): string {
+  if (process.platform === "win32") {
+    const path = join(root, "fake-eigenflux.cmd");
+    writeFileSync(path, `${cmdBody}\r\n`, "utf-8");
+    return path;
+  }
   const path = join(root, "fake-eigenflux.sh");
-  writeFileSync(path, `#!/bin/sh\n${body}\n`, "utf-8");
+  writeFileSync(path, `#!/bin/sh\n${shBody}\n`, "utf-8");
   chmodSync(path, 0o755);
   return path;
 }
@@ -246,7 +256,18 @@ test("EigenFluxProbeTest.test_default_probe_minimal_env_and_version", () => {
     "if [ \"$3\" = \"version\" ]; then echo \"EigenFlux v1.2.3\"; echo \"extra line\"; exit 0; fi",
     "echo \"/somewhere/.eigenflux/skills\"",
     "exit 0",
-  ].join("\n"));
+  ].join("\n"), [
+    "@echo off",
+    "mkdir \"%~2\" 2>nul",
+    "set > \"%~2\\env-dump.txt\"",
+    "if \"%~3\"==\"version\" (",
+    "echo EigenFlux v1.2.3",
+    "echo extra line",
+    "exit /b 0",
+    ")",
+    "echo /somewhere/.eigenflux/skills",
+    "exit /b 0",
+  ].join("\r\n"));
   process.env.OPENAI_API_KEY = "SECRET";
   process.env.EIGENFLUX_TOKEN = "ANOTHER_SECRET";
   try {
@@ -278,7 +299,7 @@ test("EigenFluxProbeTest.test_default_probe_missing_binary_fails_closed", () => 
 test("EigenFluxProbeTest.test_default_probe_nonzero_exit_is_failed", () => {
   const root = makeRoot();
   const home = homeForAgent({ root });
-  const fake = writeFakeEigenflux(root, "exit 3");
+  const fake = writeFakeEigenflux(root, "exit 3", "@echo off\r\nexit /b 3");
   const result = defaultRunProbe(fake, home, ["version"]);
   expect(result.status).toBe("failed");
   expect(result.exitCode).toBe(3);
@@ -288,7 +309,7 @@ test("EigenFluxProbeTest.test_default_probe_nonzero_exit_is_failed", () => {
 test("EigenFluxProbeTest.test_default_probe_timeout_maps_to_timeout_expired", () => {
   const root = makeRoot();
   const home = homeForAgent({ root });
-  const fake = writeFakeEigenflux(root, "sleep 10; echo \"EigenFlux v1.0.0\"");
+  const fake = writeFakeEigenflux(root, "sleep 10; echo \"EigenFlux v1.0.0\"", "@echo off\r\nping -n 11 127.0.0.1 >nul\r\necho EigenFlux v1.0.0");
   const result = defaultRunProbe(fake, home, ["version"]);
   expect(result.status).toBe("failed");
   expect(result.exitCode).toBeNull();
