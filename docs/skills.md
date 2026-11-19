@@ -84,3 +84,62 @@ paths: docs/*.md
 ```
 
 模型侧约定：系统提示的技能索引里只有约 100 字描述，不要凭描述猜步骤；需要完整步骤时先调 `read_skill` 再动手。
+
+---
+
+## frontmatter 扩展字段（llowed-tools / model）
+
+```yaml
+---
+name: pr-summary
+allowed-tools: Read, Grep, Bash(git *)   # 也接受 allowed_tools
+model: deepseek-v4-flash
+---
+```
+
+**两个都是"声明式"字段，当前没有强制执行。**
+
+| 字段 | 现在的作用 | 没有做到的事 |
+|---|---|---|
+| `allowed-tools` | 渲染进技能头部，告诉 agent"这个技能自带哪些能力" | 不会自动放行这些工具的审批，也不会限制技能只能用这些工具 |
+| `model` | 渲染进技能头部，作为建议 | 不会真的切换运行时模型 |
+
+强制执留在 **S5（权限规则层 `Tool(specifier)`）**：那时 `allowed-tools` 才会变成真正的放行规则，`model` 才会接到 provider 选择上。在那之前，**不要把它当成安全边界**。
+
+## 内联命令 `!cmd ` 与信任模型
+
+技能正文可以写：
+
+```markdown
+- 分支: !git rev-parse --abbrev-ref HEAD
+```
+
+渲染时执行命令、把输出替换进去，模型看到的是真实现场而不是它猜的状态。
+
+**这些命令跑在宿主机上、不进沙箱、不经过审批**，所以默认只对"你自己的"技能开放：
+
+| 技能来源 | 是否自动执行内联命令 |
+|---|---|
+| `~/.nyra/skills/`（用户自己的） | ✅ 执行 |
+| `<workdir>/skills/`、`<workdir>/.nyra/skills/`（仓库随带的） | ❌ 只留占位 |
+| 插件目录（`plugins/…`） | ❌ 只留占位 |
+
+理由：克隆一个带恶意技能的仓库，技能一匹配上就会跑命令。这条默认必须关死。
+
+放开方式（全进程开关，自担风险）：
+
+```bash
+NYRA_ALLOW_UNTRUSTED_SKILL_COMMANDS=1 nyra "<task>"
+```
+
+### 三道闸门
+
+1. **默认不执行**：`renderSkill(skill)` 不传 `execute` 时只留占位。因为 `contextUsage()` 也会调它估 token，那里执行命令等于凭空产生副作用。
+2. **计划模式不执行**：`skillRenderOptionsFor({ mode })` 在 `plan` 下把 `execute` 置 false。
+3. **危险命令黑名单**：sudo / mkfs / 关机 / `rm -rf` / 写磁盘设备 / fork 炸弹 / `del /s` / `rd /s` / `format` / `diskpart` / `bcdedit` / `vssadmin delete` / `Remove-Item -Recurse` / `Stop-Computer` / `reg delete` / `sc delete` / `taskkill /f`。
+
+> 黑名单只能挡"一眼就知道要命"的命令，**挡不住 `curl … | sh` 这类**。真正的边界是上面的信任模型。
+
+### 已知代价
+
+每轮对话都会重拼系统提示词，匹配上的技能命令**每轮重跑一遍**。技能里塞太多 `!cmd ` 会拖慢首字延迟；建议只放 1–2 条最关键的现场信息（如当前分支、当前 diff 概要）。

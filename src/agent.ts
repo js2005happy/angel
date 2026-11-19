@@ -17,7 +17,7 @@ import {
   type ToolContext,
 } from "./tools.ts";
 import { RepeatGuard } from "./repeatGuard.ts";
-import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, type Skill } from "./skills.ts";
+import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, skillRenderOptionsFor, type Skill } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession } from "./memory.ts";
 import {
@@ -436,7 +436,8 @@ export class Agent {
     }
     const full = this.fullSkills(task, touchedPaths);
     // S3：非计划模式下展开技能里的 !`cmd` 动态上下文注入（计划模式禁止副作用）。
-    const skillRenderOpts = { workdir: this.workdir, execute: this.mode !== "plan" };
+    // 信任模型：只有 ~/.nyra/skills 下的技能会自动执行，项目/插件技能只留占位。
+    const skillRenderOpts = skillRenderOptionsFor({ mode: this.mode, workdir: this.workdir, home: this.home });
     if (full.length) sections.push("## 相关技能\n" + full.map((s) => renderSkill(s, skillRenderOpts)).join("\n\n"));
     const memory = loadMemorySummary(40, this.memoryPath, this.home);
     if (memory) sections.push("## 长期记忆\n" + memory);
@@ -576,7 +577,7 @@ export class Agent {
           if (newly.length) {
             for (const s of newly) injectedPathSkills.add(s.name);
             result += "\n\n## 路径触发的技能（你刚触碰了匹配文件，按以下技能执行）\n" +
-              newly.map((s) => renderSkill(s, { workdir: this.workdir, execute: this.mode !== "plan" })).join("\n\n");
+              newly.map((s) => renderSkill(s, skillRenderOptionsFor({ mode: this.mode, workdir: this.workdir, home: this.home }))).join("\n\n");
           }
         }
         this.emit("tool_result", { id: (tc.id as string) ?? "", name: fnName, result });
