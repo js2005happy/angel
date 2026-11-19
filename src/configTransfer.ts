@@ -9,6 +9,7 @@
 //      custom_providers 里的 env_key 名字保留（那是变量名，不是密钥本身）
 //   2. **导入不静默覆盖**：逐键报告"将覆盖 / 新增 / 忽略"，支持 --dry-run 先看后写
 import { DANGEROUS_KEYS, SECRET_KEY_RE } from "./configSecurity.ts";
+import { resolveEnforced } from "./enforcedConfig.ts";
 
 export interface ExportResult {
   payload: { format: string; version: number; exported_at: string; config: Record<string, unknown> };
@@ -112,10 +113,16 @@ export function previewImport(raw: unknown, current: Record<string, unknown>, op
     return { ok: false, errors: ["config 字段缺失或不是对象"], warnings, willOverwrite, willAdd, merged: {} };
   }
 
+  // 管理员锁定段（config.enforced）优先：被锁的键不接受导入覆盖。
+  const enforcedKeys = new Set(Object.keys(resolveEnforced(current).values));
   const merged: Record<string, unknown> = { ...current };
   for (const [k, v] of Object.entries(incoming)) {
     if (SECRET_KEY_RE.test(k)) {
       warnings.push(`忽略密钥字段 ${k}（导入不覆盖本机凭据）`);
+      continue;
+    }
+    if (enforcedKeys.has(k)) {
+      warnings.push(`忽略被管理员锁定的字段 ${k}（config.enforced）`);
       continue;
     }
     if (DANGEROUS_KEYS.includes(k) && !opts.allowDangerous) {

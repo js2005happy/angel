@@ -11,6 +11,7 @@
 //     只有"明确危险"的才 fail（例如 permissions 把 deny 全放开、沙箱与审批同时关闭）
 import type { PermissionRule } from "./permissionRules.ts";
 import { t } from "./i18n.ts";
+import { resolveEnforced } from "./enforcedConfig.ts";
 
 export type RedlineLevel = "ok" | "warn" | "fail";
 
@@ -263,7 +264,35 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
   const kept = ignore.size ? findings.filter((f) => !ignore.has(f.code)) : findings;
     // 全部被忽略时给一条说明，而不是返回空列表——空列表会让人以为"没检查"。
     if (!kept.length) kept.push({ level: "ok", code: "consistent", title: "红线自检", detail: "没有需要报告的检查项（全部通过或被显式忽略）" });
-    const fails = kept.filter((f) => f.level === "fail").length;
+    // 10) 管理员锁定段：没有锁定 = 红线全靠自觉（agent 能改 config 就没硬顶）
+  const enf = resolveEnforced((input.config ?? {}) as Record<string, unknown>);
+  const enfKeys = Object.keys(enf.values);
+  if (!enfKeys.length) {
+    add({
+      code: "enforced-empty",
+      level: "warn",
+      title: "管理员锁定",
+      detail: "config.enforced 未配置：cost 上限 / 沙箱 / 禁读清单都能被改配置绕过",
+      fix: "把安全相关的键写进 config.enforced（如 max_cost_usd、sandbox、deny_read_globs），它们将优先于 CLI 与 config import",
+    });
+  } else {
+    add({
+      code: "enforced-active",
+      level: "ok",
+      title: "管理员锁定",
+      detail: `已锁定 ${enfKeys.length} 项：${enfKeys.join("、")}`,
+    });
+  }
+  if (enf.rejectedKeys.length) {
+    add({
+      code: "enforced-rejected",
+      level: "warn",
+      title: "管理员锁定",
+      detail: `${enf.rejectedKeys.join("、")} 不在可锁名单内，已被忽略`,
+      fix: "只锁安全相关的键（见 ENFORCEABLE_KEYS），防止 enforced 变成第二份配置",
+    });
+  }
+  const fails = kept.filter((f) => f.level === "fail").length;
     const warns = kept.filter((f) => f.level === "warn").length;
   const verdict = fails > 0
     ? `不宜上生产：${fails} 条红线被踩${warns ? `，另有 ${warns} 条提醒` : ""}`

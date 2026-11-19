@@ -32,6 +32,7 @@ import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlines
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
+import { resolveEnforced, applyEnforced, formatEnforced } from "./enforcedConfig.ts";
 import { buildRecallNote, selectRecalledRuns } from "./runRecall.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
@@ -562,7 +563,12 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     poppyEnabled: args.poppy,
     home,
     // P2-2：成本硬顶。单价从 config.pricing 按模型名解析；未配置时金额未知（不编造）。
-    maxCostUsd: args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null),
+    // 管理员锁定（config.enforced）优先于 CLI 与 config：被锁的键改不动。
+    maxCostUsd: (() => {
+      const enf = resolveEnforced(config).values;
+      if (typeof enf.max_cost_usd === "number") return enf.max_cost_usd;
+      return args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null);
+    })(),
     pricing: resolvePricing(config.pricing, provider.model),
     // 缺口 29：月度支出硬顶（与 --max-cost 同级硬停；默认不设上限，见 docs/cost.md）。
     monthlyCostLimitUsd: monthlyLimit,

@@ -11,7 +11,8 @@ function rules(allow: string[] = [], deny: string[] = [], ask: string[] = []) {
 
 function good() {
   return {
-    config: { max_cost_usd: 5, pricing: { m: { input_per_1m: 1, output_per_1m: 2 } }, verify_command: "npm test" },
+    // enforced 段：不锁的话 redlines 会报 enforced-empty（红线靠自觉），"全绿"就不成立了。
+    config: { max_cost_usd: 5, pricing: { m: { input_per_1m: 1, output_per_1m: 2 } }, verify_command: "npm test", enforced: { max_cost_usd: 5 } },
     sandbox: { level: "bwrap", backend: "bwrap" },
     permissions: rules(["Bash(git *)"], ["Bash(rm -rf *)"]),
     hasCostLimit: true,
