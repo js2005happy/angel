@@ -7,7 +7,6 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,6 +27,7 @@ import {
   type ProviderLike,
 } from "../../src/providers.ts";
 import { Vault } from "../../src/vault.ts";
+import { expectPerms } from "./fsPerms.ts";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "nyra-groups-"));
@@ -127,8 +127,8 @@ test("create 默认 4 机器人并可 get/list 往返", () => {
     expect(typeof stored.instance_id).toBe("string");
     // 文件 0600、目录 0700（Windows 没有 POSIX 权限位，不断言）。
     if (process.platform !== "win32") {
-      expect(statSync(join(root, "groups", "dev", "room.json")).mode & 0o777).toBe(0o600);
-      expect(statSync(join(root, "groups", "dev")).mode & 0o777).toBe(0o700);
+      expectPerms(join(root, "groups", "dev", "room.json"), 0o600);
+      expectPerms(join(root, "groups", "dev"), 0o700);
     }
   } finally {
     cleanup(root);

@@ -1,6 +1,6 @@
 // tests/node/wizard.test.ts — 向导的提问队列（管道输入不丢行）与 Key 绝不落盘。
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { createAsker, runWizard, detectShellRc, maskKey, findRcKey, removeRcKey, readSecret } from "../../src/wizard.ts";
 import { loadConfig, resolveProvider } from "../../src/config.ts";
 import { Vault, getCredential } from "../../src/vault.ts";
+import { expectPerms } from "./fsPerms.ts";
 
 test("createAsker：管道式一次性到齐的行不丢，按序回答", async () => {
   const input = new PassThrough();
@@ -172,7 +173,7 @@ test("Wizard041Test.test_wizard_append_rc_chmod_600", async () => {
     expect(readFileSync(rc, "utf-8")).toContain("export DEEPSEEK_API_KEY=sk-test-fake-key-999");
     expect(readFileSync(join(home, "config.json"), "utf-8")).not.toContain("sk-test-fake-key-999");
     if (process.platform !== "win32") {
-      expect(statSync(rc).mode & 0o777).toBe(0o600);
+      expectPerms(rc, 0o600);
     }
   } finally {
     process.env.HOME = origHome;

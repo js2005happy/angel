@@ -1,7 +1,7 @@
 // tests/node/test-cli.test.ts — 对应 tests/test_cli_providers.py（35 唯一）+ test_commands.py（19 唯一）的核心项，
 // 外加 vault 子命令、信任、自定义命令与 --json/--plan 冒烟。
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -10,6 +10,7 @@ import {
   parseCompactCommand, formatContextUsage, contextSuggestion,
 } from "../../src/cli.ts";
 import { VERSION } from "../../src/config.ts";
+import { expectPerms } from "./fsPerms.ts";
 
 test("CliTest.test_version_string", () => {
   expect(VERSION).toBe("0.5.1");
@@ -114,7 +115,7 @@ test("CliTest.test_trust_reads_python_dict_format", () => {
   expect((parsed as string[]).length).toBe(2);
   // Windows 没有 POSIX 权限位，写盘默认 0666，不断言 0600。
   if (process.platform !== "win32") {
-    expect(statSync(join(home, "trusted_workspaces.json")).mode & 0o777).toBe(0o600);
+    expectPerms(join(home, "trusted_workspaces.json"), 0o600);
   }
 });
 
