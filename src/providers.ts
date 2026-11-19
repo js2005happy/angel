@@ -329,8 +329,14 @@ export class Provider implements ProviderLike {
       messages: normalizeMessages(messages as Record<string, unknown>[]),
     };
     if (tools !== null && tools !== undefined) payload.tools = tools;
+    // 推理档位 / 冗长度（config.reasoning_effort / verbosity）。未配置时这里是空对象，
+    // payload 与改动前逐字节一致——零配置零影响。
+    Object.assign(payload, this.extraBody ?? {});
     return this.postJson(`${this.baseUrl}/chat/completions`, payload, timeout, "API 请求");
   }
+
+  /** 附加到每次 chat 请求体的字段（推理档位等）。未设置则不加任何键。 */
+  extraBody?: Record<string, unknown>;
 
   async listModels(timeout = 30): Promise<string[]> {
     const err = plaintextHttpError(this.name, this.baseUrl);
@@ -726,6 +732,9 @@ export class FallbackProvider implements ProviderLike {
     return this.providers[0].hasCredentials();
   }
 
+  /** 附加到每次 chat 请求体的字段（推理档位等）。未设置则不加任何键。 */
+  extraBody?: Record<string, unknown>;
+
   async listModels(timeout = 30): Promise<string[]> {
     return this.providers[this.activeIndex].listModels(timeout);
   }
@@ -826,6 +835,9 @@ export class KeyRotatingProvider implements ProviderLike {
   hasCredentials(): boolean {
     return this.providers[0].hasCredentials();
   }
+
+  /** 附加到每次 chat 请求体的字段（推理档位等）。未设置则不加任何键。 */
+  extraBody?: Record<string, unknown>;
 
   async listModels(timeout = 30): Promise<string[]> {
     return this.providers[this.activeIndex].listModels(timeout);

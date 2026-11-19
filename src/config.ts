@@ -58,6 +58,9 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 与主模型相同时会被忽略（等于没配）。
   compact_model: null,
   delegate_model: null,
+  // 推理档位与输出冗长度（对齐 Codex）：minimal/low/medium/high/xhigh；null = 用 provider 默认。
+  reasoning_effort: null,
+  verbosity: null,
   pricing: {},
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},

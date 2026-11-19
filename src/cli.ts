@@ -24,6 +24,7 @@ import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
+import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import {
@@ -434,6 +435,9 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   // 解析：显式 bwrap 缺失、e2b 等直接抛错（main 入口已先拦一道，这里是纵深，
   // 覆盖 --compact 这类先调 buildAgent 的路径；auto 回落不报错）。
   resolveSandboxBackend(config, args.sandbox ?? null);
+  // 推理档位 / 冗长度：未配置时 toRequestBody 返回空对象，provider payload 不变。
+  const reasoningOpts = resolveReasoningOptions(config);
+  (provider as { extraBody?: Record<string, unknown> }).extraBody = toRequestBody(reasoningOpts);
   const agent = new Agent(provider, {
     workdir: resolve(args.workdir),
     mode,
