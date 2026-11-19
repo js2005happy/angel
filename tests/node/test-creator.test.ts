@@ -27,7 +27,9 @@ function workdir(): string {
 
 test("CreatorTest.test_builtin_skill_matches_file", () => {
   const file = readFileSync(resolve(import.meta.dir, "../../skills/creator-mode.md"), "utf-8");
-  expect(CREATOR_SKILL_TEXT).toBe(file);
+  // 模板字符串在解析时会被规范化为 LF；磁盘文件在 CRLF 检出下是 \r\n，
+  // 比对前先归一化（仓库另有 .gitattributes 强制 LF，这里是双保险）。
+  expect(CREATOR_SKILL_TEXT).toBe(file.replace(/\r\n/g, "\n"));
   expect(CREATOR_SKILL_NAME).toBe("creator-mode");
   const parsed = parseSkillText(CREATOR_SKILL_TEXT, "builtin:creator-mode");
   expect(parsed.name).toBe("creator-mode");
