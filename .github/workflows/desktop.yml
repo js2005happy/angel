@@ -10,8 +10,9 @@
 # (signingIdentity "-"), which is not a developer identity and is not
 # notarized. See docs/desktop.md for how users open them.
 #
-# The app does not bundle Python: it starts `nyra ui` with the user's own
-# Python 3.10+ (or nyra.exe on PATH) and shows a guide page if none is found.
+# The app does not bundle a runtime: it starts the installed `nyra` binary
+# (`nyra ui --host 127.0.0.1 --port 0 --print-url-json`) and shows a guide
+# page if none is found.
 
 name: Build desktop app
 
@@ -67,16 +68,18 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
-      - name: Check versions match nyra/__init__.py
+      - name: Check versions match
         # Runs after Set up Node on purpose: the check itself uses `node -p`.
+        # Source of truth is the root package.json (Node version); the Python
+        # package (nyra/__init__.py) was removed in 0.4.0.
         run: |
-          py=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' nyra/__init__.py)
+          pkg=$(node -p "require('./package.json').version")
           conf=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
           cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -1)
-          pkg=$(node -p "require('./desktop/package.json').version")
-          echo "nyra=$py tauri.conf=$conf Cargo.toml=$cargo package.json=$pkg"
-          if [ "$py" != "$conf" ] || [ "$py" != "$cargo" ] || [ "$py" != "$pkg" ]; then
-            echo "::error::desktop version must match nyra/__init__.py ($py)"; exit 1
+          desk=$(node -p "require('./desktop/package.json').version")
+          echo "package.json=$pkg tauri.conf=$conf Cargo.toml=$cargo desktop/package.json=$desk"
+          if [ "$pkg" != "$conf" ] || [ "$pkg" != "$cargo" ] || [ "$pkg" != "$desk" ]; then
+            echo "::error::desktop version must match package.json ($pkg)"; exit 1
           fi
 
       - name: Set up Rust
