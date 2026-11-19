@@ -126,3 +126,31 @@ sudo pacman -S bubblewrap
   不会直接影响：文件工具仍走工作区 containment + 审批；沙箱目前只隔离
   `shell` 工具的命令执行（工具级沙箱，学 Gemini CLI 的做法，不隔离整个
   CLI 进程）。
+
+---
+
+## 受保护写入路径（与沙箱互补，但不是同一件事）
+
+workspaceWritePath 上挂了一层受保护判定：工作目录内的以下路径**默认拒写**。
+
+| 类型 | 路径 |
+|---|---|
+| 目录 | `.git` / `.nyra` / `commands` / `skills`（均为**顶层**目录） |
+| 单文件（仅根级） | `AGENTS.md` / `CLAUDE.md` / `nyra.json` / `.nyra.json` |
+
+判定按"工作目录内的相对路径"做，大小写不敏感；子目录里的同名文件**不拦**（`docs/AGENTS.md`、`src/skills/a.md` 都能写）。
+
+### 三个必须知道的边界
+
+1. **只覆盖文件工具**：`write_file` / `edit_file` / `apply_patch` / `plan` 走 `workspaceWritePath`，被拦；**`shell` 不在覆盖范围内**——`echo x >> AGENTS.md` 照样成功，即使进了 bwrap（AGENTS.md 就在工作目录内）。要封死 shell 的写操作得靠权限规则层（S5）。
+2. **顶层同名目录会被一刀切**：如果你的项目自己就有顶层 `commands/` 或 `skills/`（例如前端的技能组件目录），agent 将无法写入这些目录。这是刻意的取舍，用下面的环境变量放开。
+3. **放开方式**：`NYRA_ALLOW_PROTECTED_WRITES=1`（也接受 `true` / `yes`，大小写不敏感）。它是全进程开关，不区分路径——放开就是全部放开。
+
+```bash
+# 确需让 agent 维护自己的规则文件时（例如让它在 skills/ 下生成新技能）
+NYRA_ALLOW_PROTECTED_WRITES=1 nyra "<task>"
+```
+
+### 为什么默认拦
+
+agent 的指令来源就是 `AGENTS.md` / `commands/*.md` / `skills/*.md`。允许它改这些，等于允许它给自己放权——在一次被污染的会话里，这是最直接的持久化路径。`.git` 则是回滚与审计的底线。
