@@ -16,7 +16,7 @@ import {
 } from "./config.ts";
 import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
-import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, formatRunReport } from "./runs.ts";
+import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport } from "./runs.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { renderBanner } from "./banner.ts";
@@ -1001,7 +1001,15 @@ async function runJson(args: CliArgs): Promise<number> {
     const result = await recorder.run(args.task);
     const final = store.load(recorder.runId);
     lines.emit("run_completed", { run_id: recorder.runId, status: final.status });
-    lines.emit("final", { content: result });
+    // P1-1：未验证通过的运行，不得在输出里宣称"已完成"。
+    const note = final.status === "verify_failed"
+      ? "验证命令未通过"
+      : "未配置或未执行验证命令";
+    const downgraded = downgradeCompletionClaim(result, final.status, note);
+    if (downgraded.downgraded) {
+      lines.emit("completion_downgraded", { status: final.status, claim: downgraded.claim ?? "" });
+    }
+    lines.emit("final", { content: downgraded.text });
     if (final.status === "verified" || final.status === "completed_unverified") return EXIT_SUCCESS;
     if (final.status === "verify_failed") return EXIT_VERIFY;
     if (final.status === "incomplete") return EXIT_INCOMPLETE;
@@ -1118,8 +1126,14 @@ async function runOneShot(args: CliArgs): Promise<number> {
     const printer = new ToolPrinter();
     agent.onEvent = (kind, data) => printer.call(kind, data);
     const result = await recorder.run(args.task);
-    process.stdout.write(result + "\n");
     const final = store.load(recorder.runId);
+    // P1-1：未验证通过的运行，不得在输出里宣称"已完成"。
+    const downgraded = downgradeCompletionClaim(
+      result,
+      final.status,
+      final.status === "verify_failed" ? "验证命令未通过" : "未配置或未执行验证命令",
+    );
+    process.stdout.write(downgraded.text + "\n");
     process.stderr.write("本次运行用量：\n" + formatUsage(agent.usage.snapshot()) + "\n");
     return final.status === "verify_failed" ? EXIT_VERIFY : EXIT_SUCCESS;
   } catch (err: unknown) {
