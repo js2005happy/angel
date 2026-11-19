@@ -282,6 +282,37 @@ h2{font-size:18px;margin:4px 0 12px}
 .composer button{width:auto;min-width:76px}
 .rewind-row{display:flex;gap:6px;align-self:stretch}.rewind-row button{min-height:44px;font-size:14px;padding:8px}
 .status{font-size:13px;color:var(--muted);margin:0 0 8px}
+/* 入场动画：只在主屏幕独立窗口里播，约 3.4 秒，点一下跳过；减少动态效果时只淡入 */
+#splash{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px;transition:opacity .22s ease}
+#splash.out{opacity:0}
+#splash svg{width:136px;height:136px;overflow:visible}
+#splash .sw{font-weight:800;font-size:42px;letter-spacing:.08em;background:linear-gradient(90deg,var(--sage),var(--mist));-webkit-background-clip:text;background-clip:text;color:transparent}
+#splash .skip{position:absolute;bottom:calc(28px + env(safe-area-inset-bottom));color:var(--muted);font-size:13px}
+#splash .disc{transform-box:view-box;transform-origin:50px 50px}
+#splash .cur{transform-box:view-box;transform-origin:38px 32px}
+#splash .ring{transform-box:fill-box;transform-origin:center;opacity:0}
+#splash.play .disc{animation:sp-grow .8s cubic-bezier(.2,.9,.3,1.25) .15s both}
+#splash.play .cur{animation:sp-fly .85s cubic-bezier(.2,.8,.2,1) 1s both,sp-press .3s ease-in-out 1.9s}
+#splash.play .ring{animation:sp-click .55s ease-out 1.95s both}
+#splash.play .sw{animation:sp-word .6s ease-out 2.35s both}
+#splash.play{animation:sp-out .35s ease-in 3.05s both}
+#splash.reduce svg,#splash.reduce .sw{animation:sp-fade .5s ease-out both}
+@keyframes sp-grow{from{transform:scale(0)}to{transform:scale(1)}}
+@keyframes sp-fly{from{transform:translate(70px,90px);opacity:0}to{transform:none;opacity:1}}
+@keyframes sp-press{50%{transform:scale(.88)}}
+@keyframes sp-click{0%{transform:scale(.2);opacity:.9}100%{transform:scale(1.8);opacity:0}}
+@keyframes sp-word{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes sp-out{to{opacity:0}}
+@keyframes sp-fade{from{opacity:0}to{opacity:1}}
+.setting-row{display:flex;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--border)}
+.setting-row:first-of-type{border-top:0}
+.setting-row .t{flex:1;word-break:break-word}
+.setting-row button{width:auto;min-width:76px}
+.scope-tag{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
+.modes{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.modes button{background:var(--bg);border:1px solid var(--border);min-height:56px}
+.modes button.on{border:2px solid var(--mist);background:var(--panel);font-weight:700}
+.warn{border:2px solid var(--danger);border-radius:14px;padding:12px;margin-top:12px}
 .hidden{display:none!important}#fatal:empty{display:none}
 .toast{position:fixed;left:50%;bottom:calc(150px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--panel);border:1px solid var(--border);padding:10px 16px;border-radius:12px;font-size:14px;z-index:20}
 `;
@@ -307,8 +338,9 @@ async function api(path, opts){
 function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
 function toast(text){ const t = el('div', 'toast', text); document.body.appendChild(t); setTimeout(() => t.remove(), 2200); }
 function show(view){
-  ['pair-view','home-view','chat-view'].forEach(v => $(v).classList.toggle('hidden', v !== view));
-  $('back').classList.toggle('hidden', view !== 'chat-view');
+  ['pair-view','home-view','chat-view','settings-view'].forEach(v => $(v).classList.toggle('hidden', v !== view));
+  $('back').classList.toggle('hidden', view !== 'chat-view' && view !== 'settings-view');
+  $('gear').classList.toggle('hidden', view === 'pair-view');
 }
 function lostDevice(){
   try { localStorage.removeItem('nyra-device-token'); } catch(e){}
@@ -342,8 +374,10 @@ async function pair(){
   } catch (e) { $('pair-error').textContent = '连不上电脑：' + e.message; }
   finally { $('pair-btn').disabled = false; }
 }
+let lastInfo = null, fullStep = 0;
 async function loadInfo(){
   const info = await api('/api/info');
+  lastInfo = info;
   const b = $('mode-badge'); b.className = 'badge ' + (MODE_LABELS[info.mode] ? info.mode : 'auto');
   b.classList.remove('hidden');
   b.textContent = MODE_LABELS[info.mode] || info.mode;
@@ -525,6 +559,103 @@ async function sendMsg(){
   catch (e) { toast(e.message); input.value = text; }
   await tick();
 }
+async function openSettings(){
+  currentSession = null; approvalKey = ''; fullStep = 0;
+  show('settings-view');
+  await loadInfo().catch(() => {});
+  renderModes();
+  $('provider-line').textContent = lastInfo && lastInfo.provider_desc ? ('当前模型：' + lastInfo.provider_desc) : '当前模型：未配置';
+  await loadRules();
+}
+function renderModes(){
+  const box = $('modes'); box.innerHTML = '';
+  const cur = lastInfo ? lastInfo.mode : '';
+  const modes = ['readonly', 'auto', 'full'];
+  if (cur === 'creator') modes.push('creator');
+  modes.forEach(m => {
+    const b = el('button', m === cur ? 'on' : '', MODE_LABELS[m] || m); b.dataset.mode = m;
+    b.onclick = () => chooseMode(m);
+    box.appendChild(b);
+  });
+  const c = $('mode-confirm'); c.innerHTML = '';
+  if (fullStep === 1) {
+    const w = el('div', 'warn stack');
+    w.appendChild(el('b', '', '全权模式有风险'));
+    w.appendChild(el('div', '', '切到全权后，Nyra 写文件、执行命令都不再问你，包括删除和联网。只在你信任当前任务、并且人在电脑旁时打开。'));
+    const go = el('button', 'btn-danger', '我明白风险，继续'); go.dataset.act = 'full-step1'; go.onclick = () => { fullStep = 2; renderModes(); };
+    const no = el('button', 'btn-ghost', '取消'); no.onclick = () => { fullStep = 0; renderModes(); };
+    w.appendChild(go); w.appendChild(no); c.appendChild(w);
+  } else if (fullStep === 2) {
+    const w = el('div', 'warn stack');
+    w.appendChild(el('b', '', '再确认一次：切换到全权模式？'));
+    const go = el('button', 'btn-danger solid', '确认切换到全权'); go.dataset.act = 'full-step2'; go.onclick = () => setMode('full');
+    const no = el('button', 'btn-ghost', '取消'); no.onclick = () => { fullStep = 0; renderModes(); };
+    w.appendChild(go); w.appendChild(no); c.appendChild(w);
+  }
+}
+function chooseMode(m){
+  if (lastInfo && m === lastInfo.mode) return;
+  if (m === 'full') { fullStep = 1; renderModes(); return; }
+  setMode(m);
+}
+async function setMode(m){
+  try {
+    await api('/api/mode', { method: 'POST', body: JSON.stringify(m === 'full' ? { mode: m, confirm: 'full' } : { mode: m }) });
+    fullStep = 0; await loadInfo(); renderModes();
+    toast('已切换到' + (MODE_LABELS[m] || m) + '模式');
+  } catch (e) { toast('切换失败：' + e.message); }
+}
+async function loadRules(){
+  const data = await api('/api/rules');
+  const box = $('rules'); box.innerHTML = '';
+  const list = data.rules || [];
+  if (!list.length) { box.appendChild(el('p', 'muted', '还没有记下的规则。')); return; }
+  list.forEach(r => {
+    const row = el('div', 'setting-row');
+    row.appendChild(el('span', 't', r.label));
+    row.appendChild(el('span', 'scope-tag', r.scope === 'project' ? '本项目' : '本会话'));
+    const b = el('button', 'btn-danger', '撤销'); b.dataset.act = 'revoke-rule';
+    b.onclick = async () => {
+      try { await api('/api/rules/' + encodeURIComponent(r.id) + '/revoke', { method: 'POST', body: '{}' }); toast('已撤销'); await loadRules(); }
+      catch (e) { toast('撤销失败：' + e.message); }
+    };
+    row.appendChild(b); box.appendChild(row);
+  });
+}
+function forgetDevice(){
+  if (!confirm('断开这台手机？之后需要重新配对。')) return;
+  try { localStorage.removeItem('nyra-device-token'); localStorage.removeItem('nyra-token'); } catch(e){}
+  clearInterval(poll); poll = null; show('pair-view');
+}
+// ---- 入场动画 ----
+function isStandalone(){
+  try { return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true; } catch(e){ return false; }
+}
+function isPhone(){
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPod/.test(ua)) return true;
+  try { return matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600; } catch(e){ return false; }
+}
+function shouldSplash(){
+  if (!isStandalone() || !isPhone()) return false;
+  try { if (sessionStorage.getItem('nyra-splash-shown')) return false; sessionStorage.setItem('nyra-splash-shown', '1'); } catch(e){}
+  return true;
+}
+function runSplash(){
+  const s = $('splash');
+  if (!shouldSplash()) { s.remove(); return; }
+  let reduce = false; try { reduce = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch(e){}
+  s.classList.remove('hidden'); s.classList.add(reduce ? 'reduce' : 'play'); s.dataset.state = 'playing';
+  let finished = false;
+  const finish = (why) => {
+    if (finished) return; finished = true; s.dataset.state = why;
+    s.classList.add('out'); setTimeout(() => s.remove(), 260);
+  };
+  s.addEventListener('click', () => finish('skipped'));
+  s.addEventListener('touchstart', () => finish('skipped'), { passive: true });
+  setTimeout(() => finish('done'), reduce ? 1100 : 3400);
+}
+function goBack(){ goHome(); }
 async function boot(){
   await loadInfo();
   show('home-view');
@@ -533,6 +664,7 @@ async function boot(){
   clearInterval(poll); poll = setInterval(tick, 1500);
 }
 window.addEventListener('load', async () => {
+  runSplash();
   const hash = location.hash || '';
   const m = /^#pair=(\\d{6})$/.exec(hash);
   if (m) {
@@ -560,10 +692,19 @@ export const MOBILE_V2_HTML = `<!doctype html><html lang="zh-CN"><head><meta cha
 <link rel="icon" type="image/png" sizes="32x32" href="/m/favicon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/m/apple-touch-icon.png">
 <style>${CSS}</style></head><body>
+<div id="splash" class="hidden" aria-hidden="true">
+<svg viewBox="0 0 100 100"><defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${C.sage}"/><stop offset="1" stop-color="${C.mist}"/></linearGradient></defs>
+<circle class="disc" cx="${MARK_CIRCLE.cx}" cy="${MARK_CIRCLE.cy}" r="${MARK_CIRCLE.r}" fill="url(#sg)"/>
+<circle class="ring" cx="38.1" cy="32.2" r="12" fill="none" stroke="#fff" stroke-width="2.5"/>
+<g class="cur"><path d="M${MARK_CURSOR.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(" L")} Z" fill="#fff" stroke="${C.bg}" stroke-width="${MARK_STROKE}" stroke-linejoin="round" paint-order="stroke" transform="rotate(${MARK_ROTATE_DEG} 50 50)"/></g>
+</svg>
+<div class="sw">Nyra</div><div class="skip">轻点跳过</div>
+</div>
 <header>
-<button id="back" class="icon-btn hidden" onclick="goHome()" aria-label="返回">‹</button>
+<button id="back" class="icon-btn hidden" onclick="goBack()" aria-label="返回">‹</button>
 <span class="wordmark">Nyra</span><span id="mode-badge" class="badge auto hidden"></span>
-<span class="sp"></span><span id="approval-count" class="pill hidden"></span>
+<span class="sp"></span><span id="approval-count" class="pill hidden" role="button" onclick="goHome()"></span>
+<button id="gear" class="icon-btn hidden" onclick="openSettings()" aria-label="设置">设置</button>
 </header>
 <main>
 <p id="fatal" class="err"></p>
@@ -588,6 +729,16 @@ export const MOBILE_V2_HTML = `<!doctype html><html lang="zh-CN"><head><meta cha
 <div id="feed" class="feed"></div>
 <div id="chat-approvals"></div>
 <div class="composer"><textarea id="input" rows="2" placeholder="给 Nyra 发消息…"></textarea><button class="btn-primary" onclick="sendMsg()">发送</button></div>
+</section>
+<section id="settings-view" class="hidden">
+<div class="card"><h2>模式</h2><div id="modes" class="modes"></div><div id="mode-confirm"></div>
+<p class="muted" id="mode-help">只读：只看不改；自动确认：写文件、跑命令前在这里问你；全权：都不再问（需要二次确认）。</p></div>
+<div class="card"><h2>已允许的规则</h2><div id="rules"></div>
+<p class="muted">这些是你点过“允许并不再询问”记下的规则。撤销后，同类操作会重新来问你。</p></div>
+<div class="card"><h2>API Key</h2><p id="provider-line" class="muted"></p>
+<p>为了安全，API Key 请在电脑上输入：在终端运行 <b>nyra setup</b>，或在电脑网页的设置里填写。手机上不显示、也不接收 Key。</p></div>
+<div class="card"><h2>这台手机</h2><p class="muted">断开只清掉这台手机上保存的 token；要彻底撤销，请在电脑网页“设置 → 手机”里点撤销。</p>
+<button class="btn-danger" onclick="forgetDevice()">断开这台手机</button></div>
 </section>
 </main>
 <script>${JS}</script>

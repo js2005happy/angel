@@ -338,3 +338,42 @@ test("icons: manifest 192/512 any + maskable、apple 180、favicon；几何与 n
     expect(page).not.toMatch(/angel/i);
   } finally { await gw.stop(); }
 });
+
+// ---------------------------------------------------------- 第 2 阶段 ---
+test("settings: 手机切全权要二次确认标记，电脑端不受影响；规则可在手机上撤销", async () => {
+  const home = tmp("nyra-gw4-");
+  const gw = new Gateway({ home, workdir: tmp("nyra-gw4-wd-"), host: "0.0.0.0", port: 0, mode: "auto", config: { mcp_enabled: false } });
+  const info = await gw.start();
+  try {
+    const base = `http://127.0.0.1:${info.port}`;
+    const started = gw.startPairing() as { code: string };
+    const dev = await (await fetch(`${base}/api/pair`, { method: "POST", body: JSON.stringify({ code: started.code, name: "Pixel 7" }) })).json() as { token: string };
+    const h = { "X-Nyra-Token": dev.token };
+    expect((await fetch(`${base}/api/mode`, { method: "POST", headers: h, body: JSON.stringify({ mode: "full" }) })).status).toBe(400);
+    expect(gw.mode).toBe("auto");
+    expect((await fetch(`${base}/api/mode`, { method: "POST", headers: h, body: JSON.stringify({ mode: "full", confirm: "full" }) })).status).toBe(200);
+    expect(gw.mode).toBe("full");
+    expect((await fetch(`${base}/api/mode`, { method: "POST", headers: h, body: JSON.stringify({ mode: "readonly" }) })).status).toBe(200);
+    expect((await fetch(`${base}/api/mode`, { method: "POST", headers: { "X-Nyra-Token": gw.token }, body: JSON.stringify({ mode: "full" }) })).status).toBe(200);
+    const rule = new RuleStore(home).add(gw.workdir, { kind: "prefix", prefix: ["make", "test"] });
+    const list = await (await fetch(`${base}/api/rules`, { headers: h })).json() as { rules: { id: string; scope: string }[] };
+    expect(list.rules.map((r) => r.id)).toEqual([rule.id]);
+    expect((await fetch(`${base}/api/rules/${rule.id}/revoke`, { method: "POST", headers: h, body: "{}" })).status).toBe(200);
+    expect((await fetch(`${base}/api/rules/${rule.id}/revoke`, { method: "POST", headers: h, body: "{}" })).status).toBe(404);
+  } finally { await gw.stop(); }
+});
+
+test("splash: 只在手机主屏幕独立窗口播放，可跳过，减少动态效果时只淡入", async () => {
+  const gw = new Gateway({ home: tmp("nyra-splash-"), workdir: "/tmp", host: "127.0.0.1", port: 0, config: { mcp_enabled: false } });
+  const info = await gw.start();
+  try {
+    const page = await (await fetch(`http://127.0.0.1:${info.port}/m`)).text();
+    expect(page).toContain("(display-mode: standalone)");
+    expect(page).toContain("navigator.standalone");
+    expect(page).toContain("prefers-reduced-motion: reduce");
+    expect(page).toContain("finish('skipped')");
+    expect(page).toContain("reduce ? 1100 : 3400");
+    expect(page).toContain("sessionStorage");
+    expect(page).toContain("API Key 请在电脑上输入");
+  } finally { await gw.stop(); }
+});

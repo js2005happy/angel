@@ -1349,6 +1349,11 @@ export class Gateway {
         return;
       }
       if (path === "/api/mode") {
+        // 手机切到全权模式要带二次确认标记（手机设置页两步确认后才发）；电脑端不变。
+        if (!isOwner && String(body.mode ?? "") === "full" && body.confirm !== "full") {
+          this.sendError(res, 400, "手机切换到全权模式需要二次确认");
+          return;
+        }
         try {
           const mode = this.setMode(String(body.mode ?? ""));
           this.sendJson(res, 200, { mode });

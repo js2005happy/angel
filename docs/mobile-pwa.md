@@ -20,8 +20,7 @@ Nyra 的手机版是电脑上 `nyra ui` 顺带提供的一个手机页面
 
 > Node 版（2026-11-19）：手机页已移植到 Node/TypeScript 的 gateway（`nyra ui`），
 > 见文末“Node 版实现”。在电脑上用 Playwright 模拟 Pixel 7 跑过：配对 → 审批
-> （允许并不再询问）→ 拒绝并反馈；真机验证仍是待办。入场动画与手机设置页
-> 尚未移植到 Node 版。
+> （允许并不再询问）→ 拒绝并反馈，以及入场动画与手机设置页；真机验证仍是待办。
 
 ## 第 1 步：在电脑上开启配对
 
@@ -156,4 +155,9 @@ nyra ui --pair
 - API：`GET /api/approvals` 每项带 `command` 与 `suggestion`；`POST /api/approvals/<id>`
   接受 `{approve, scope: "session"|"project"}` 或 `{approve: false, feedback}`；
   `GET /api/rules[?session=<id>]` 列规则，`POST /api/rules/<id>/revoke` 撤销（手机也可撤销，只会收紧）。
+- 入场动画：只在手机主屏幕独立窗口（`display-mode: standalone` / iOS `navigator.standalone`）里播，
+  一次冷启动只播一次（sessionStorage），约 3.4 秒，轻点跳过；“减少动态效果”时只淡入。
+- 手机设置页（右上角“设置”）：已允许规则列表与撤销；模式切换，切到全权要两步确认，
+  服务端也要求手机请求带 `confirm: "full"`；API Key 只提示在电脑上输入，手机不显示、不接收 Key；
+  “断开这台手机”只清本机 token，彻底撤销仍在电脑上做。
 - 测试：`tests/node/test-mobile-pwa-v2.test.ts`。
