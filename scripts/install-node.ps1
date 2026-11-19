@@ -2,9 +2,12 @@
 # 用法：在 PowerShell 里运行：
 #   irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 | iex
 # 或下载后双击 / 右键“使用 PowerShell 运行”。
+# 卸载：.\install-node.ps1 -Uninstall（删安装目录、两个桌面快捷方式、
+# 从用户级 PATH 摘掉安装目录；~/.nyra 数据保留）。
 # 作用：从 GitHub Releases 下载 nyra-windows-x64.exe 到 ~/nyra，
 # 把 ~/nyra 加进当前用户的 PATH，在桌面建两个快捷方式
 # （Nyra 终端 / Nyra 网页界面，带 Nyra 图标），不写注册表、不装服务。
+# 网页界面快捷方式调的是真实命令 `nyra ui --open`（0.4.0 起有 ui 子命令）。
 #
 # 注意（诚实写，不编造）：
 #   - exe 未签名：首次运行 SmartScreen 会弹警告，点“更多信息”→“仍要运行”；
@@ -15,7 +18,8 @@
 param(
     [string]$Version = "latest",
     [string]$InstallDir = "$env:USERPROFILE\nyra",
-    [string]$FromFile = ""
+    [string]$FromFile = "",
+    [switch]$Uninstall
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +28,25 @@ $Asset = "nyra-windows-x64.exe"
 
 function Write-Info($msg) { Write-Host "nyra-install: $msg" }
 function Write-ErrAndExit($msg) { Write-Host "nyra-install: 错误：$msg" -ForegroundColor Red; exit 1 }
+
+if ($Uninstall) {
+    # 卸载：删安装目录、两个桌面快捷方式、从用户级 PATH 摘掉安装目录；保留 ~/.nyra 数据。
+    $Desktop = [Environment]::GetFolderPath("Desktop")
+    foreach ($name in @("Nyra 终端.lnk", "Nyra 网页界面.lnk")) {
+        $lnk = Join-Path $Desktop $name
+        if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Info "已删除快捷方式：$lnk" }
+    }
+    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($UserPath -like "*$InstallDir*") {
+        $norm = $InstallDir.TrimEnd("\")
+        $parts = $UserPath -split ";" | Where-Object { $_ -ne "" -and $_.TrimEnd("\") -ne $norm }
+        [Environment]::SetEnvironmentVariable("Path", ($parts -join ";"), "User")
+        Write-Info "已把 $InstallDir 从用户 PATH 摘掉（新开终端生效）。"
+    }
+    if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force; Write-Info "已删除安装目录：$InstallDir" }
+    Write-Info "已卸载。数据目录 $env:USERPROFILE\.nyra 已保留（如需彻底清除请手动删除）。"
+    exit 0
+}
 
 if ($Version -eq "latest") {
     $Url = "https://github.com/$Repo/releases/latest/download/$Asset"
