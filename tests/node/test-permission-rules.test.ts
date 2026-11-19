@@ -6,7 +6,7 @@
 //   4) 空规则集 = 零影响（返回 null，走默认审批）
 import { test, expect } from "bun:test";
 import {
-  parseRule, parseRules, ruleMatches, evaluate, isEmpty, describeRules,
+  parseRule, parseRules, ruleMatches, evaluate, isEmpty, describeRules, normalizeToolName,
 } from "../../src/permissionRules.ts";
 
 test("解析：各种合法形态", () => {
@@ -92,4 +92,25 @@ test("求值次序 deny > ask > allow（安全关键）", () => {
 test("ruleMatches：specifier 与 target 都为空时不误命中", () => {
   const rs = parseRules({ allow: ["Bash(git *)"] });
   expect(ruleMatches(rs.allow[0], { tool: "Bash", target: "" })).toBe(false);
+});
+
+test("缺口 19：Claude 风格工具名与 Nyra 工具名归一化（Bash→shell、Edit→edit_file）", () => {
+  // 之前按文档写的 Bash/Edit 规则传进 checkApproval 的 shell/edit_file 时永远
+  // 匹配不上、静默失效；归一化后双向都能命中。
+  const rs = parseRules({ allow: ["Bash(git *)", "Edit(src/**)"] });
+  expect(evaluate(rs, { tool: "shell", target: "git status" })?.action).toBe("allow");
+  expect(evaluate(rs, { tool: "shell", target: "rm -rf /" })).toBeNull();
+  expect(evaluate(rs, { tool: "edit_file", target: "src/a.ts" })?.action).toBe("allow");
+  expect(evaluate(rs, { tool: "edit_file", target: "lib/b.ts" })).toBeNull();
+  // 反向：规则写 Nyra 名、调用方传 Claude 名，同样命中。
+  const rs2 = parseRules({ deny: ["shell(rm *)"] });
+  expect(evaluate(rs2, { tool: "Bash", target: "rm -rf /" })?.action).toBe("deny");
+});
+
+test("缺口 19：normalizeToolName 只归一化已知别名，未知名字原样保留", () => {
+  expect(normalizeToolName("Bash")).toBe("shell");
+  expect(normalizeToolName("Write")).toBe("write_file");
+  expect(normalizeToolName("Read")).toBe("read_file");
+  expect(normalizeToolName("mcp__memory__search")).toBe("mcp__memory__search");
+  expect(normalizeToolName("Frobnicate")).toBe("Frobnicate");
 });

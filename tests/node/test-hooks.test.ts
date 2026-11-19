@@ -61,17 +61,21 @@ test("HooksTest.test_exit_2_blocks_with_reason", async () => {
   expect(result.hook).toContain("block.sh");
 });
 
-test("HooksTest.test_exit_1_does_not_block", async () => {
+test("HooksTest.test_exit_1_blocks_fail_closed", async () => {
+  // 缺口 19：fail-closed——阻塞型事件上钩子自身出错即拦截，不再静默放行。
   writeHook("PreToolUse", "broken.sh", "#!/bin/sh\necho '钩子自己挂了' >&2\nexit 1\n");
   const result = await runHooks("PreToolUse", { tool: "shell", args: { command: "echo hi" }, home, workdir });
-  expect(result.blocked).toBe(false);
+  expect(result.blocked).toBe(true);
+  expect(result.reason).toContain("退出码 1");
 });
 
-test("HooksTest.test_timeout_does_not_block", async () => {
+test("HooksTest.test_timeout_blocks_fail_closed", async () => {
+  // 缺口 19：fail-closed——超时同样拦截。
   writeHook("PreToolUse", "slow.sh", "#!/bin/sh\nsleep 5\nexit 0\n");
   const started = Date.now();
   const result = await runHooks("PreToolUse", { tool: "shell", args: { command: "echo hi" }, home, workdir, timeoutMs: 1000 });
-  expect(result.blocked).toBe(false);
+  expect(result.blocked).toBe(true);
+  expect(result.reason).toContain("超时");
   // 1 秒超时 + 最多 1 秒收尾宽限：远小于脚本的 5 秒。
   expect(Date.now() - started).toBeLessThan(4000);
 });
