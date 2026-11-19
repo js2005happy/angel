@@ -818,6 +818,13 @@ export class Gateway {
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
           home: this.home,
+          // 单技能启停：网关起的 agent 与 CLI 同口径（config.skills.disabled）。
+          skillsDisabled: (() => {
+            const sk = (this.config as Record<string, unknown>).skills;
+            if (!sk || typeof sk !== "object") return [];
+            const d = (sk as Record<string, unknown>).disabled;
+            return Array.isArray(d) ? d.filter((x): x is string => typeof x === "string") : [];
+          })(),
           // 缺口 30：成本硬顶与单价（与 CLI 同语义；Web UI 入口不再绕过 --max-cost）。
           ...this.costOptions(),
           // 调研报告第 9 项：OS 级分级沙箱（网关接线）——与 CLI buildAgent 同语义：

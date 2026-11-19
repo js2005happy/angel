@@ -542,6 +542,13 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     maxTurns,
     interactive: opts?.interactive ?? true,
     skillsDirs: opts?.skillsDirs,
+      // 单技能启停（对齐 Codex `[[skills.config]] enabled=false`）：config.skills.disabled
+      skillsDisabled: (() => {
+        const sk = (config as Record<string, unknown>).skills;
+        if (!sk || typeof sk !== "object") return [];
+        const d = (sk as Record<string, unknown>).disabled;
+        return Array.isArray(d) ? d.filter((x): x is string => typeof x === "string") : [];
+      })(),
     contextWindowTokens: windowResolved.window,
     contextWindowSource: windowResolved.source,
     contextWindowModel: windowResolved.model,

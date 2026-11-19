@@ -25,8 +25,8 @@
 | 设置 | 出处 | Nyra 现状 | 决策 |
 |---|---|---|---|
 | `model` | 三家都有 | ✅ `config.model` | — |
-| `model_reasoning_effort`（minimal/low/medium/high/xhigh） | Codex | ⬜ | **做**：透传给支持的 provider，未知 provider 忽略 |
-| `model_verbosity` | Codex | ⬜ | 做（同类透传） |
+| `model_reasoning_effort`（minimal/low/medium/high/xhigh） | Codex | ✅ **已做** | **做**：透传给支持的 provider，未知 provider 忽略 |
+| `model_verbosity` | Codex | ✅ **已做** | 做（同类透传） |
 | `model_reasoning_summary` | Codex | ⬜ | 观察，暂不做 |
 | **Tool Model（工具用便宜模型）** | Alma | ⬜ | **优先做**：`tool_model` 配置，工具轮/摘要走它 |
 | 多模型 fallback 链 | 三家 | ✅ `fallback_providers` | — |
@@ -38,7 +38,7 @@
 |---|---|---|---|
 | `approval_policy`（untrusted/on-request/never/granular） | Codex | 部分（`--approve`/交互式） | **做 granular**：`approval_policy` 字符串 + `[approval_policy.granular]` 等价物 |
 | `sandbox_mode`（read-only/workspace-write/danger-full-access） | Codex | ✅ | — |
-| `sandbox_workspace_write.writable_roots` | Codex | ⬜ | 做：`--add-dir` 等价物 |
+| `sandbox_workspace_write.writable_roots` | Codex | ✅ **已做**（`--add-dir` / `extra_writable_dirs`） | 做：`--add-dir` 等价物 |
 | `network_access` | Codex | ✅ `sandbox_allow_net` | — |
 | **`deny_read_globs`** | Codex | 🔧 **本轮已做** | 读侧禁读清单 |
 | **Rules（prefix_rule allow/prompt/forbidden）** | Codex | 🔧 权限规则已有，**本轮补复合命令拆分** | 继续补 `prompt` 动作与 `--rules` 文件 |
@@ -59,7 +59,7 @@
 | 设置 | 出处 | Nyra 现状 | 决策 |
 |---|---|---|---|
 | 技能搜索路径（项目 → 用户 → 系统） | Codex | ✅ | — |
-| 单技能启停（`[[skills.config]] enabled=false`） | Codex | ⬜ | 做：`config.skills.disabled` |
+| 单技能启停（`[[skills.config]] enabled=false`） | Codex | ✅ **本轮已做**（`config.skills.disabled`） | 做：`config.skills.disabled` |
 | 钩子事件 + matcher + timeout | Codex | ✅ #32/#36 | — |
 | 钩子 `updatedInput` | Codex | ✅ #36 | — |
 | 记忆系统开关与检索参数 | Alma | 部分（memory） | 观察 |
@@ -70,8 +70,8 @@
 
 | 设置 | 出处 | Nyra 现状 | 决策 |
 |---|---|---|---|
-| **设置导出/导入 JSON** | Alma | ⬜ | 做：`nyra config export/import`（团队可共享一套红线） |
-| Feature flags（`[features]` + `--enable`） | Codex | ⬜ | 做轻量版：`config.features` + `--enable/--disable` |
+| **设置导出/导入 JSON** | Alma | ✅ **已做**（`nyra config export/import`） | 做：`nyra config export/import`（团队可共享一套红线） |
+| Feature flags（`[features]` + `--enable`） | Codex | ✅ **已做**（`config.features` + `--enable/--disable-feature`） | 做轻量版：`config.features` + `--enable/--disable` |
 | Profiles（命名预设） | Codex | ✅ `profiles` | 补：`--profile` 覆盖 model/effort/sandbox 一套 |
 | 键位自定义 | Alma | ❌ | TUI 键位固定即可，收益低 |
 | 主题/字体/Whisper | Alma | ❌ | 桌面端范畴，非核心 |

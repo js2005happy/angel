@@ -143,3 +143,18 @@ NYRA_ALLOW_UNTRUSTED_SKILL_COMMANDS=1 nyra "<task>"
 ### 已知代价
 
 每轮对话都会重拼系统提示词，匹配上的技能命令**每轮重跑一遍**。技能里塞太多 `!cmd ` 会拖慢首字延迟；建议只放 1–2 条最关键的现场信息（如当前分支、当前 diff 概要）。
+
+## 单技能启停（`config.skills.disabled`）
+
+对齐 Codex 的 `[[skills.config]] enabled=false`：不动文件，只按名字从加载结果里剔除。
+
+```json
+{ "skills": { "disabled": ["deploy-helper", "legacy-runbook"] } }
+```
+
+- 名字**大小写不敏感**（写 `BETA` 也能关掉 `beta`）。
+- 被关掉的 skill **仍会被解析**：文件坏了照样报错、照样打印「跳过无效 skill 文件」。
+  「关掉」不等于「假装文件不存在」——否则配置里名字写错了，你永远发现不了。
+- 空数组或只有空白项时不过滤任何东西。
+- CLI 与网关两个入口都读同一份配置（`Agent` 的 `skillsDisabled`），不存在「命令行关了、
+  网页没关」这种分叉。

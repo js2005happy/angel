@@ -173,6 +173,8 @@ export interface AgentOptions {
    * - NYRA_LAZY_TOOLS=0 仍然一票否决（排障用）
    */
   toolSearch?: { enabled?: boolean; topK?: number; always?: string[] } | null;
+  /** config.skills.disabled：按名字关掉的 skill（大小写不敏感）。 */
+  skillsDisabled?: readonly string[] | null;
   /** 跨会话回忆：上次同类任务的结论（由 CLI 从 runs/ 里挑好传入）。 */
   recallNote?: string | null;
   /** --add-dir：额外可写根（写路径校验与沙箱同时放开）。 */
@@ -290,6 +292,8 @@ export class Agent {
   /** 缺口 5：对话中途手动换模型的允许列表（provider 名）；见 AgentOptions。 */
   private modelSwitchAllowlist: string[] | null;
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
+  /** config.skills.disabled：按名字关掉的 skill（对齐 Codex `[[skills.config]] enabled=false`）。 */
+  private skillsDisabled: readonly string[] = [];
   /** 跨会话回忆：上次同类任务的结论（历史，需复核）。 */
   private recallNote: string | null = null;
   /** tool_search 开关是否被显式要求。 */
@@ -346,6 +350,7 @@ export class Agent {
     this.auxModels = opts.auxModels ?? {};
     this.modelSwitchAllowlist = opts.modelSwitchAllowlist ?? null;
     this.recallNote = opts.recallNote ?? null;
+    this.skillsDisabled = Array.isArray(opts.skillsDisabled) ? opts.skillsDisabled : [];
     this.toolSearchRequested = opts.toolSearch?.enabled === true;
     this.toolSearchTopK = typeof opts.toolSearch?.topK === "number" ? opts.toolSearch.topK : MCP_LAZY_LOAD_THRESHOLD;
     this.onEvent = opts.onEvent ?? null;
@@ -363,7 +368,7 @@ export class Agent {
     // 正好反过来——先出现者胜，不要按字面把全局放最前。loadSkills 的
     // 去重语义本身未改。
     this.skillsDirs = opts.skillsDirs ?? canonicalSkillDirs(this.workdir, this.home, pluginSkillDirs(this.home));
-    this.skills = loadSkills(this.skillsDirs);
+    this.skills = loadSkills(this.skillsDirs, { disabled: this.skillsDisabled });
     this.syncCreatorSkill();
     this.mcpManager = opts.mcpManager ?? null;
     this.backend = opts.backend ?? null;
