@@ -238,8 +238,12 @@ Job Object 只管**进程生命周期与资源**，不管文件与网络：
 ### 三个边界（别高估它）
 
 1. **拦不住文件与网络**：工作目录外的写与联网靠工具级规则拦，不靠 Job Object。
-2. PowerShell 启动失败、建作业失败、接不进作业时一律 fail-closed：报错说
-   "命令未执行"并**不会退化成裸奔**；要裸奔必须显式 `--sandbox local`。
+2. PowerShell 启动失败、建作业失败时一律 fail-closed；**接不进作业分两种**：
+   子进程已在父作业中（例如 CI runner 的作业，Windows 规定一个进程只能属于
+   一个作业）或在接管前已退出时，降级为直接执行并在 stderr 告警（Job Object
+   限制不生效，工具级规则兜底）——否则 CI 上永远跑不通（CI #92 根因）；其余
+   接管失败仍 fail-closed，报错说"命令未执行"并**不会退化成裸奔**；要裸奔必须
+   显式 `--sandbox local`。
 3. `danger-full-access` 与 Job Object 互斥（与 bwrap/Seatbelt 同款规则）。
 
 ### 验证状态
