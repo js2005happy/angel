@@ -135,6 +135,26 @@ function firstLine(text: string): string {
   return "";
 }
 
+/** Windows 不能直接执行 .sh 脚本（CreateProcess 不认 shebang）：走 Git Bash 的 sh
+ * （GitHub Windows 运行器自带；用户机器没装 Git Bash 时 spawn 失败，按 fail-open
+ * 跳过并警告——钩子本就是 best-effort，见 runHooks 的约定）。
+ * 非 .sh 的显式钩子（如 .bat/.cmd）仍直接 spawn，Node 在 Windows 上会走 cmd.exe。
+ * POSIX 下直接执行，shebang 生效。 */
+function hookSpawnCommand(script: string): { command: string; args: string[] } {
+  if (process.platform === "win32" && /\.sh$/i.test(script)) {
+    return { command: "sh", args: [toPosixPath(script)] };
+  }
+  return { command: script, args: [] };
+}
+
+/** C:\Users\x\y.sh → /c/Users/x/y.sh（MSYS/Git Bash 路径）；POSIX 路径原样返回。 */
+export function toPosixPath(p: string): string {
+  const slashed = p.replace(/\\/g, "/");
+  const m = /^([A-Za-z]):\/(.*)$/.exec(slashed);
+  if (m) return `/${m[1].toLowerCase()}/${m[2]}`;
+  return slashed;
+}
+
 /** 跑单个钩子脚本：stdin 收一份 JSON，只注入两个只读环境变量，不透传进程环境（含密钥）。 */
 function runOneHook(script: string, payload: string, event: HookEvent, tool: string | undefined, timeoutMs: number): Promise<HookRunOutcome> {
   return new Promise((resolvePromise) => {
@@ -148,7 +168,8 @@ function runOneHook(script: string, payload: string, event: HookEvent, tool: str
     };
     let child;
     try {
-      child = spawn(script, [], { env, stdio: ["pipe", "pipe", "pipe"] });
+      const { command, args } = hookSpawnCommand(script);
+      child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     } catch (err: unknown) {
       resolvePromise({ code: null, stdout: "", stderr: "", timedOut: false, spawnError: err instanceof Error ? err.message : String(err) });
       return;
