@@ -13,7 +13,7 @@ import {
 } from "../../src/providers.ts";
 import {
   executeTool, executeToolIdempotent, verifyWriteApplied, READONLY_TOOLS,
-  newToolContext,
+  newToolContext, workspaceShellCwd,
 } from "../../src/tools.ts";
 
 function fakeProvider(name: string, chat: (msgs: unknown[]) => Promise<Record<string, unknown>>): ProviderLike {
@@ -286,6 +286,25 @@ test("IdempotentRetry.test_retry_calls_carry_idempotent_retry_flag", async () =>
   // 首次调用不带标记，两次重试带标记；结束后标记恢复，不泄漏到下次调用。
   expect(seen).toEqual([undefined, true, true]);
   expect(ctx.idempotentRetry).toBeUndefined();
+});
+
+test("IdempotentRetry.test_shell_cwd_backend_accepts_windows_workdir", () => {
+  // 回归：Node CI #113——workspaceShellCwd 的后端分支曾用 startsWith("/")
+  // 判定绝对路径，Windows 工作目录（C:/...）被误判为“工作目录之外”，带
+  // 后端的 shell 调用在 Windows 上全部被拒。后端分支不做存在性检查，
+  // Windows 风格路径在 Linux 上也能断言。
+  const ctx = newToolContext({
+    workdir: "C:/Users/test/work",
+    mode: "full",
+    interactive: false,
+    memoryPath: "C:/Users/test/work/MEMORY.md",
+    skillsDir: "C:/Users/test/work/skills",
+    backend: { runCommand: () => "ok" },
+  });
+  expect(workspaceShellCwd(ctx, null)).toBe("C:/Users/test/work");
+  expect(workspaceShellCwd(ctx, "sub")).toBe("C:/Users/test/work/sub");
+  // 工作目录之外的绝对路径仍拒绝：重试只能跳过人工弹窗，不能绕过 containment。
+  expect(() => workspaceShellCwd(ctx, "/etc")).toThrow("禁止在工作目录之外启动 shell");
 });
 
 test("IdempotentRetry.test_retry_skips_approval", async () => {

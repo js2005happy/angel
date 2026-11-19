@@ -185,7 +185,10 @@ test("WindowsSandbox.run_echo_on_windows", async () => {
   expect(ok.stdout).toContain("hello-job");
   const fail = await runWindowsSandboxed("exit 3", { workdir, mode: "workspace-write", timeout: 60 });
   expect(fail.code).toBe(3);
-});
+  // 两次顺序起 PowerShell + Job Object：CI 的 Windows runner 偏慢时 5 秒
+  // 默认超时不够（Node CI #113：5001.67ms 超时；#73 同款做法放宽到 15 秒）。
+  // 若 15 秒仍超时，说明是真挂起而不是慢，需另查，不要再放宽。
+}, 15000);
 
 test("WindowsSandbox.run_missing_powershell_throws", async () => {
   if (process.platform === "win32") { console.log("跳过：Windows 上 PowerShell 一定存在"); return; }

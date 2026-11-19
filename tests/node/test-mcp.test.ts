@@ -210,7 +210,10 @@ test("McpSandbox.test_seatbelt_argv", () => {
   );
   expect(cmd).toBe("sandbox-exec");
   expect(args[0]).toBe("-p");
-  expect(args[1]).toContain(workdir);
+  // profile 里的路径是 SBPL 转义过的：Windows 上反斜杠会翻倍，断言要按
+  // 转义后的形式比，否则 raw workdir 在 profile 里永远找不到（Node CI #113）。
+  const expectedInProfile = process.platform === "win32" ? workdir.replace(/\\/g, "\\\\") : workdir;
+  expect(args[1]).toContain(expectedInProfile);
   expect(args.slice(2)).toEqual(["node", "/tmp/fake.mjs"]);
 });
 
@@ -247,7 +250,13 @@ test("McpSandbox.test_find_on_path", () => {
   expect(findOnPath("mycmd", dir)).toBe(fakeBin);
   expect(findOnPath("mycmd", "/nonexistent")).toBeNull();
   expect(findOnPath("node")).not.toBeNull();
-  expect(findOnPath("/bin/sh")).toBe("/bin/sh");
+  // 绝对路径直通：/bin/sh 只在 POSIX 上存在；Windows 上用本机可执行文件
+  // 断言同款行为（Node CI #113：Windows 上 /bin/sh 不存在，返回 null 是对的）。
+  if (process.platform === "win32") {
+    expect(findOnPath(process.execPath)).toBe(process.execPath);
+  } else {
+    expect(findOnPath("/bin/sh")).toBe("/bin/sh");
+  }
 });
 
 test("McpSandbox.test_manager_start_all_refuses_unavailable_backend", async () => {
