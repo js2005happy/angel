@@ -1,3 +1,8 @@
+## 未发布（2026-11-20，ToolJournal 工具报告失败需人工核查）
+
+- 修正只读人工对账信号：即使没有未决 intent 或日志歧义，存在 `result_error` 也必须返回 `manual_review_required=true`、`review_reason=reported_errors`。工具报告失败可能已经产生部分外部副作用，不应被界面误判为无需核查。
+- 保留原因优先级：日志歧义 > 未知结果 > 报告错误 > none；不修改执行门禁，不自动重试。新增回归测试源码，未经授权未运行测试或 CI，无新增依赖。
+
 ## 未发布（2026-11-20，ToolJournal 人工对账原因分类）
 
 - `inspect()` 新增只读 `review_reason`：`journal_ambiguous`、`unknown_outcomes`、`none`；优先报告日志歧义，不暴露调用 ID、参数或结果。与 `manual_review_required` 配套供人工对账界面区分原因，不授予自动恢复或执行权限。新增静态回归测试源码，未运行测试或 CI，无新依赖。
