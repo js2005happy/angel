@@ -86,7 +86,7 @@ test("deny_read_globs：没配就是不限制（零配置零影响）", () => {
   expect(() => workspaceReadPath(ctx(), ".env")).not.toThrow();
 });
 
-test("deny_read_globs：配置损坏时按"不限制"处理，不把 agent 卡死", () => {
+test("deny_read_globs：配置损坏时按「不限制」处理，不把 agent 卡死", () => {
   writeFileSync(join(home, "config.json"), "{ 坏 json", "utf-8");
   writeFileSync(join(workdir, "a.txt"), "x", "utf-8");
   expect(() => workspaceReadPath(ctx(), "a.txt")).not.toThrow();
