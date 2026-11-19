@@ -67,9 +67,9 @@ test("McpClientTest.test_legacy_initialize_fallback", async () => {
 });
 
 test("McpClientTest.test_input_required_reports_clearly", async () => {
-  // 客户端请求超时是 10 秒，测试默认超时只有 5 秒：传输一慢就只剩
-  // 光秃秃的测试超时，看不到客户端自己的报错。放宽到 15 秒，让
-  // 10 秒的请求超时先触发、报出可诊断的原因。
+  // 客户端请求超时是 10 秒；零字节丢失时会再重试一次（最长又 10 秒），
+  // 测试超时放宽到 25 秒，让客户端自己的报错先出来，不要只剩光秃秃
+  // 的测试超时。
   const server = fakeServerPath();
   const client = new MCPClient(new MCPServerConfig("fake", "node", [server]), 10);
   try {
@@ -80,7 +80,7 @@ test("McpClientTest.test_input_required_reports_clearly", async () => {
     client.stop();
     await new Promise((r) => setTimeout(r, 300));
   }
-}, 15000);
+}, 25000);
 
 test("McpManagerTest.test_start_all_routes_and_execute", async () => {
   const server = fakeServerPath();
