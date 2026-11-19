@@ -103,6 +103,24 @@ test("工作目录之外仍然拒写（原有护栏不被削弱）", () => {
   expect(() => workspaceWritePath(ctx(), "a/../../outside.txt")).toThrow(/禁止写入工作目录之外的路径/);
 });
 
+// Windows 风格工作目录 + 后端：与 workspaceShellCwd 同款误判（Node CI #113）。
+// 后端分支曾用 !base.startsWith("/") 判定绝对路径，C:/... 一律被误拒。
+function backendCtx(workdir: string): ToolContext {
+  return { workdir, mode: "auto", interactive: false, backend: { name: "test" } } as unknown as ToolContext;
+}
+
+test("workspaceWritePath：Windows 风格 workdir + backend 不误拒", () => {
+  const ctx = backendCtx("C:/Users/test/work");
+  expect(workspaceWritePath(ctx, "src/app.ts")).toBe("C:/Users/test/work/src/app.ts");
+  expect(workspaceWritePath(ctx, "docs/note.md")).toBe("C:/Users/test/work/docs/note.md");
+});
+
+test("workspaceWritePath：后端分支工作目录外绝对路径仍拒绝", () => {
+  const ctx = backendCtx("C:/Users/test/work");
+  expect(() => workspaceWritePath(ctx, "/etc/passwd")).toThrow(/禁止写入工作目录之外的路径/);
+  expect(() => workspaceWritePath(ctx, "../outside.txt")).toThrow(/禁止写入工作目录之外的路径/);
+});
+
 test("环境变量未设置时，原有的 envIs 助手不受影响（防止误用全局状态）", () => {
   expect(envIs("NYRA_ALLOW_PROTECTED_WRITES")).toBeUndefined();
 });

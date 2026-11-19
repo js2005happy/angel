@@ -85,6 +85,25 @@ test("explainSelection：给出可解释的入选理由", () => {
   expect(text).toMatch(/\d+/);
 });
 
+test("fallbackAll: false 时无命中返回空列表（只检索时用，不全量回退）", () => {
+  const s = selectTools(TOOLS, "zzz", { topK: 2, fallbackAll: false });
+  expect(s.kept).toEqual([]);
+  expect(s.dropped.length).toBe(TOOLS.length);
+});
+
+test("fallbackAll: true 时无命中仍全量回退（与默认一致）", () => {
+  const s = selectTools(TOOLS, "zzz", { topK: 2, fallbackAll: true });
+  expect(s.kept.length).toBe(TOOLS.length);
+  expect(s.dropped).toEqual([]);
+});
+
+test("fallbackAll: false 时有命中照常按 topK 选（不影响正常选择）", () => {
+  const s = selectTools(TOOLS, "用 read_file 看一下 src/app.ts 的实现", { topK: 3, always: ["shell"], fallbackAll: false });
+  expect(s.kept).toContain("read_file");
+  expect(s.kept).toContain("shell");
+  expect(s.kept.length).toBeLessThanOrEqual(3);
+});
+
 test("结果稳定：同样的输入两次排序一致（便于测试与排障）", () => {
   const a = selectTools(TOOLS, "file read", { topK: 3 });
   const b = selectTools(TOOLS, "file read", { topK: 3 });
