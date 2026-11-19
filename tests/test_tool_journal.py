@@ -286,6 +286,18 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "无法核验"):
                 journal.inspect()
 
+    def test_begin_reserves_capacity_for_result_event(self):
+        # Pure metadata stub: do not create thousands of event files.
+        journal = ToolJournal("capacity-reservation", root=self.root)
+        with mock.patch.object(journal, "inspect", return_value={
+            "journal_ambiguous": False, "unknown_outcomes": 0,
+            "event_count": MAX_EVENTS - 1,
+        }):
+            with mock.patch.object(journal, "_write") as writer:
+                with self.assertRaisesRegex(JournalError, "事件容量不足"):
+                    journal.begin("shell")
+                writer.assert_not_called()
+
     def test_begin_rejects_pending_unknown_intent(self):
         # An unfinished side effect is not safe to silently run past.
         journal = ToolJournal("pending-before-begin", root=self.root)
