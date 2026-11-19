@@ -11,7 +11,7 @@ import { hostname} from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { pythonJsonDump} from "./pyjson.ts";
 import { ApprovalRequired} from "./tools.ts";
-import { checkApproval, checkShellDenied, defaultShell, workspaceShellCwd, type ToolContext} from "./tools.ts";
+import { checkApproval, checkShellDenied, defaultShell, wrapShellCommand, workspaceShellCwd, type ToolContext} from "./tools.ts";
 import { loadSession, saveSession} from "./memory.ts";
 
 export const RUN_STATUSES = new Set(
@@ -247,7 +247,7 @@ return { exit_code: null, passed: false, output: raw.slice(-4000), timeout: raw.
 return { exit_code: exitCode, passed: exitCode === 0, output: raw.slice(-4000)};
 }
 try {
-const completed = spawnSync(command, { shell: defaultShell(), cwd: String(cwd), encoding: "utf-8", timeout: timeout * 1000});
+const completed = spawnSync(wrapShellCommand(command), { shell: defaultShell(), cwd: String(cwd), encoding: "utf-8", timeout: timeout * 1000});
 if (completed.error && String((completed.error as Error).message).includes("ETIMEDOUT")) {
 return { exit_code: null, passed: false, output: combine(completed.stdout?? "", completed.stderr?? ""), timeout: true};
 }

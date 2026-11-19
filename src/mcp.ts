@@ -102,6 +102,13 @@ export class MCPClient {
   // stdout 按字节攒行：StringDecoder 会缓存被 chunk 边界切断的多字节字符，
   // 避免逐 chunk 转字符串时出现 U+FFFD 导致整行 JSON 解析失败被静默丢弃。
   private stdoutDecoder = new StringDecoder("utf-8");
+  // 传输层诊断计数：行解析失败时不再静默丢弃，而是记下来；请求超时
+  // 时据此判断是“服务器没回”还是“回了但解析失败”（后者曾在 Windows
+  // 上造成 10 秒超时却无任何线索）。
+  private bytesReceived = 0;
+  private linesParsed = 0;
+  private badLineCount = 0;
+  private lastBadLine: string | null = null;
 
   constructor(config: MCPServerConfig, timeout = 30.0) {
     this.config = config;
@@ -133,23 +140,32 @@ export class MCPClient {
     child.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk));
     child.stderr.setEncoding("utf-8");
     child.stderr.on("data", () => { /* MCP 服务端日志不进协议流，丢弃 */ });
+    child.stdin.on("error", (err: Error) => {
+      // stdin 管道断裂时挂起的请求会等满超时才报；直接失败，给出原因。
+      this.failPending(new MCPError(`MCP 服务器 ${this.config.name} 写入失败：${err.message}`));
+    });
     child.on("error", (err: Error) => {
       // spawn 失败（如命令不存在）时只触发 error，不一定有 exit；
       // 不挂监听会变成未处理异常，挂起的请求也要立即失败而不是等超时。
-      const e = new MCPError(`MCP 服务器 ${this.config.name} 启动失败：${err.message}`);
-      for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(e); }
-      this.pending.clear();
+      this.failPending(new MCPError(`MCP 服务器 ${this.config.name} 启动失败：${err.message}`));
     });
     child.on("exit", () => {
-      const err = new MCPError(`MCP 服务器 ${this.config.name} 已退出`);
-      for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
-      this.pending.clear();
+      this.failPending(new MCPError(`MCP 服务器 ${this.config.name} 已退出`));
     });
     this.negotiate();
   }
 
+  /** 传输层已死（stdin 断裂 / 写入失败 / 进程退出）时让挂起的请求
+   * 立即失败，而不是等满超时。重复调用无害：已清空的 pending 不再
+   * 有待拒绝的项，已落定的 promise 再次 reject 也是空操作。 */
+  private failPending(err: Error): void {
+    for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
+    this.pending.clear();
+  }
+
   private onStdout(chunk: Buffer | string): void {
     const text = typeof chunk === "string" ? chunk : this.stdoutDecoder.write(chunk);
+    this.bytesReceived += typeof chunk === "string" ? Buffer.byteLength(chunk, "utf-8") : chunk.length;
     this.buffer += text;
     let idx: number;
     while ((idx = this.buffer.indexOf("\n")) >= 0) {
@@ -157,7 +173,14 @@ export class MCPClient {
       this.buffer = this.buffer.slice(idx + 1);
       if (!line.trim()) continue;
       let msg: Record<string, unknown>;
-      try { msg = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+      try {
+        msg = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        this.badLineCount++;
+        this.lastBadLine = line.length > 200 ? line.slice(0, 200) + "……" : line;
+        continue;
+      }
+      this.linesParsed++;
       this.dispatch(msg);
     }
   }
@@ -198,7 +221,13 @@ export class MCPClient {
     if (!this.process) throw new MCPError("MCP 服务器未启动");
     if (this.process.exitCode !== null) throw new MCPError(`MCP 服务器 ${this.config.name} 已退出`);
     if (!this.process.stdin.writable) throw new MCPError("MCP 服务器未启动");
-    this.process.stdin.write(JSON.stringify(msg) + "\n");
+    this.process.stdin.write(JSON.stringify(msg) + "\n", (err) => {
+      // 写入回调报错且管道已死（如 EPIPE）时，挂起的请求不再等满
+      // 超时，直接失败；管道仍可用时忽略（数据已入队）。
+      if (err && this.process?.stdin && !this.process.stdin.writable) {
+        this.failPending(new MCPError(`MCP 服务器 ${this.config.name} 写入失败：${err.message}`));
+      }
+    });
   }
 
   private modernMeta(version: string): Record<string, unknown> {
@@ -215,11 +244,24 @@ export class MCPClient {
     if (meta !== undefined && meta !== null) body._meta = meta;
     else if (this.era === "modern") body._meta = this.modernMeta(this.negotiatedVersion ?? LATEST_PROTOCOL_VERSION);
     const deadline = (timeout ?? this.timeout) * 1000;
+    // 发送时快照传输计数：超时后据此判断这段时间内服务器到底回了
+    // 什么（没回 / 回了但解析失败 / 回了但 id 对不上），而不是只报
+    // 一句“超时”。
+    const sentBytes = this.bytesReceived;
+    const sentLines = this.linesParsed;
+    const sentBad = this.badLineCount;
     const promise = new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         this.staleIds.add(id);
-        reject(new MCPError(`MCP 请求超时：${method}`));
+        const serverState = this.process === null ? "客户端已停止"
+          : this.process.exitCode === null ? "服务器仍在运行" : "服务器已退出";
+        const detail = `请求发出后已收字节 +${this.bytesReceived - sentBytes}`
+          + `，已解析行 +${this.linesParsed - sentLines}`
+          + `，无法解析行 +${this.badLineCount - sentBad}`
+          + (this.lastBadLine !== null ? `，最后无法解析行：${this.lastBadLine}` : "")
+          + `，${serverState}`;
+        reject(new MCPError(`MCP 请求超时：${method}（${detail}）`));
       }, deadline);
       this.pending.set(id, { resolve, reject, timer });
     });

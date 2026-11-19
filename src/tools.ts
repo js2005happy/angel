@@ -590,10 +590,21 @@ export function defaultShell(): string {
   return "/bin/sh";
 }
 
+/** 发给 shell 的最终命令：Windows 下 cmd 默认回显每条命令（提示符 +
+ * 命令本身），回显行会撑满输出、还会先占满流式行数上限（for 循环
+ * 输出 250 行数字时回显先把结果截断）。命令前加 `@echo off &`
+ * 关闭回显，只留命令本身的输出；POSIX shell 没有回显，原样执行。
+ * 注意：只包 spawn 时的命令串，不包审批文案与 checkShellDenied 的
+ * 入参——拒绝规则看到的仍是用户原命令。 */
+export function wrapShellCommand(command: string): string {
+  if (process.platform === "win32") return `@echo off & ${command}`;
+  return command;
+}
+
 async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd: string, timeout: number): Promise<string> {
   const started = Date.now();
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { shell: defaultShell(), cwd: resolvedCwd, detached: process.platform !== "win32" });
+    const child = spawn(wrapShellCommand(command), { shell: defaultShell(), cwd: resolvedCwd, detached: process.platform !== "win32" });
     const outLines: string[] = [];
     const errLines: string[] = [];
     let shown = 0;
@@ -682,7 +693,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
     return runShellStreaming(ctx, command, resolvedCwd, timeout);
   }
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { shell: defaultShell(), cwd: resolvedCwd, detached: process.platform !== "win32" });
+    const child = spawn(wrapShellCommand(command), { shell: defaultShell(), cwd: resolvedCwd, detached: process.platform !== "win32" });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
