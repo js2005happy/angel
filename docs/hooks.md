@@ -202,3 +202,50 @@ exit 0
   用户机器没装 Git Bash 时钩子无法启动，只警告、不拦截、不阻塞主流程）。
 - 钩子把正常操作拦了：按提示里的脚本路径改脚本，或临时
   `NYRA_HOOKS=0 nyra "任务"` 关掉钩子跑一次（只影响这一次）。
+
+---
+
+---
+
+## 结构化决策：改写参数（P0-4）
+
+退出码只能表达"拦 / 不拦"。钩子还可以用 **stdout 里的 JSON** 表达更细的决策：
+
+```json
+{
+  "permissionDecision": "allow",
+  "permissionDecisionReason": "这条命令在只读清单里",
+  "updatedInput": { "command": "git status --porcelain" }
+}
+```
+
+| 字段 | 作用 |
+|---|---|
+| `permissionDecision` | `allow` / `deny` / `ask`（也接受平铺的 `decision`） |
+| `permissionDecisionReason` | 拦截时写进工具结果给模型看（也接受 `reason`） |
+| `updatedInput` | **改写入参**：合并进本次工具调用的参数后再执行（也接受 `updated_input`） |
+
+### 三个语义
+
+1. **`deny` 等价于退出码 2**：阻止本次调用。多个钩子给出不同决策时按 **deny > ask > allow** 取最严，平级保留先到者。
+2. **`updatedInput` 会真的生效**：合并后按改写后的参数执行，并打一行审计日志 `[hook] <tool> 入参被钩子改写：<keys>`。典型用法是把 `rm -rf build` 改写成 `ls -la build`。
+3. **格式写错 = 什么都不做**：非 JSON、数组、未知决策值、`updatedInput` 不是对象——一律忽略，不拦截、不放行、不报错。钩子写错格式绝不能把危险操作放过去。
+
+### 只有 PreToolUse 支持决策
+
+`PostToolUse` / `SessionStart` / `SessionEnd` 没有"入参"可改，也不该放行/拦截；stdout JSON 在这三个事件里被忽略（退出码 2 也只记警告）。
+
+### 例子：把危险命令改写成只读检查
+
+```bash
+#!/usr/bin/env bash
+# ~/.nyra/hooks/PreToolUse.d/20-rewrite-rm.sh
+# stdin: {"event":"PreToolUse","tool":"shell","args":{"command":"rm -rf build"},...}
+payload=$(cat)
+cmd=$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["args"].get("command",""))')
+if [ "$cmd" = "rm -rf build" ]; then
+  printf '{"permissionDecision":"allow","permissionDecisionReason":"改写为只读检查","updatedInput":{"command":"ls -la build"}}'
+fi
+```
+
+模型以为自己在删目录，实际执行的是一次 `ls`，而钩子把改写写进了审计日志。

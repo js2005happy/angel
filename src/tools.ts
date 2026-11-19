@@ -1532,13 +1532,17 @@ export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "
  * PreToolUse：checkApproval 之前跑，被拦截时抛 ToolError。
  * executeTool 会把 ToolError 转成 `错误：…` 的工具结果，原因写进工具结果给模型看。
  * ctx.home 未传时无法定位钩子目录，直接跳过（不 spawn、不报错）。
+ *
+ * P0-4：返回钩子的 updatedInput（可能为 null）。调用方把它合并进 args 再执行，
+ * 这就是"改写参数后放行"——比只能 allow/deny 强一档。
  */
-async function runPreToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {
-  if (!ctx.home) return;
+async function runPreToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  if (!ctx.home) return null;
   const result = await runHooks("PreToolUse", { tool, args, home: ctx.home, workdir: ctx.workdir });
   if (result.blocked) {
     throw new ToolError(`钩子拦截了 ${tool}：${result.hook ?? "未知钩子"}${result.reason ? `：${result.reason}` : ""}`);
   }
+  return result.updatedInput ?? null;
 }
 
 /** PostToolUse：只通知、不拦截；runHooks 内部对钩子出错/超时已 fail-open，这里再兜一层。 */
@@ -1555,7 +1559,16 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
   try {
     // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
     // 钩子在审批之前跑：钩子先拦下危险操作，省一次人工审批打扰；审批流程本身不变。
-    if (HOOKED_TOOLS.has(name)) await runPreToolHook(ctx, name, args);
+    // P0-4：钩子还可以用 updatedInput 改写入参——合并后按改写后的参数执行。
+    if (HOOKED_TOOLS.has(name)) {
+      const updated = await runPreToolHook(ctx, name, args);
+      if (updated) {
+        // 审计：改写必须留痕，否则"模型说要 A、实际执行 B"无法追查。
+        const keys = Object.keys(updated).join(",");
+        console.error(`[hook] ${name} 入参被钩子改写：${keys}`);
+        Object.assign(args, updated);
+      }
+    }
     const result = await (async (): Promise<string> => {
       switch (name) {
       case "read_file": return await toolReadFile(ctx, String(args.path));
