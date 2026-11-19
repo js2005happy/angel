@@ -1,7 +1,7 @@
 //! Nyra desktop shell.
 //!
 //! A native window (system WebView via Tauri) around the local Nyra web UI.
-//! On start it finds a Python 3.10+ that can run Nyra, starts
+//! On start it finds the Nyra single-file binary (Node runtime), starts
 //! `nyra ui --host 127.0.0.1 --port 0 --print-url-json --exit-on-stdin-close`
 //! in the background, reads the one JSON line it prints (address + random
 //! token) and points the window at it. Closing the app closes the child's
@@ -28,7 +28,6 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
-const MIN_PYTHON: (u32, u32) = (3, 10);
 const START_TIMEOUT: Duration = Duration::from_secs(60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const STDERR_KEEP: usize = 6000;
@@ -76,12 +75,11 @@ struct Backend {
     stopping: Mutex<bool>,
 }
 
-/// How to run Nyra: a program plus the arguments that come before `ui`.
+/// How to run Nyra: the single-file binary (no arguments before `ui`).
 #[derive(Clone, Debug)]
 struct Launcher {
     program: PathBuf,
     prefix: Vec<String>,
-    pythonpath: Option<PathBuf>,
     label: String,
 }
 
@@ -89,13 +87,12 @@ struct Launcher {
 struct GuideInfo {
     state: String,
     detail: String,
-    python: String,
+    binary: String,
 }
 
 enum Discovery {
     Found(Launcher),
-    NoPython { old: Vec<String> },
-    NoNyra { python: String },
+    NoBinary { tried: Vec<String> },
 }
 
 // ---------------------------------------------------------------- env/PATH
@@ -162,7 +159,7 @@ fn child_env() -> HashMap<String, String> {
             env.entry(k.clone()).or_insert_with(|| v.clone());
         }
     }
-    // PATH: current + login shell + common Python locations.
+    // PATH: current + login shell + common install locations.
     let sep = if cfg!(windows) { ';' } else { ':' };
     let mut parts: Vec<String> = Vec::new();
     let mut push = |p: String| {
@@ -179,20 +176,16 @@ fn child_env() -> HashMap<String, String> {
     if !cfg!(windows) {
         if let Some(home) = home_dir() {
             push(home.join(".local/bin").display().to_string());
-            push(home.join(".pyenv/shims").display().to_string());
         }
         for p in [
             "/opt/homebrew/bin",
             "/usr/local/bin",
-            "/Library/Frameworks/Python.framework/Versions/Current/bin",
             "/usr/bin",
         ] {
             push(p.to_string());
         }
     }
     env.insert("PATH".into(), parts.join(&sep.to_string()));
-    env.insert("PYTHONIOENCODING".into(), "utf-8".into());
-    env.insert("PYTHONUTF8".into(), "1".into());
     env
 }
 
@@ -279,174 +272,82 @@ fn launcher_command(l: &Launcher, env: &HashMap<String, String>) -> Command {
     cmd.args(&l.prefix);
     cmd.env_clear();
     cmd.envs(env);
-    if let Some(pp) = &l.pythonpath {
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let joined = match env.get("PYTHONPATH") {
-            Some(old) if !old.is_empty() => format!("{}{}{}", pp.display(), sep, old),
-            _ => pp.display().to_string(),
-        };
-        cmd.env("PYTHONPATH", joined);
-    }
     cmd
 }
 
 // ---------------------------------------------------------------- discovery
 
-fn python_candidates(env: &HashMap<String, String>) -> Vec<(PathBuf, Vec<String>)> {
-    let mut out: Vec<(PathBuf, Vec<String>)> = Vec::new();
-    let mut add = |p: PathBuf, prefix: Vec<String>| {
-        if !out.iter().any(|(q, a)| q == &p && a == &prefix) {
-            out.push((p, prefix));
+// ---------------------------------------------------------------- discovery
+
+/// Where the Node single-file binary can come from, in order:
+/// `NYRA_BIN` (explicit override), `nyra` on PATH, then the install
+/// scripts' locations (~/.local/share/nyra/nyra, ~/.local/bin/nyra,
+/// ~/nyra/nyra[.exe] on Windows).
+fn nyra_binary_candidates(env: &HashMap<String, String>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut add = |p: PathBuf| {
+        if !out.contains(&p) {
+            out.push(p);
         }
     };
-    if let Some(p) = env.get("NYRA_PYTHON").filter(|s| !s.is_empty()) {
-        add(PathBuf::from(p), vec![]);
+    if let Some(p) = env.get("NYRA_BIN").filter(|s| !s.is_empty()) {
+        add(PathBuf::from(p));
     }
-    if cfg!(windows) {
-        if let Some(py) = find_on_path("py", env) {
-            add(py, vec!["-3".into()]);
-        }
-        for name in ["python", "python3"] {
-            if let Some(p) = find_on_path(name, env) {
-                // Skip the Microsoft Store alias stub; it is not a Python.
-                if !p.display().to_string().to_lowercase().contains("windowsapps") {
-                    add(p, vec![]);
-                }
-            }
-        }
-        if let Some(local) = env.get("LOCALAPPDATA") {
-            let base = Path::new(local).join("Programs").join("Python");
-            if let Ok(rd) = std::fs::read_dir(&base) {
-                let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
-                dirs.sort();
-                dirs.reverse();
-                for d in dirs {
-                    let exe = d.join("python.exe");
-                    if exe.is_file() {
-                        add(exe, vec![]);
-                    }
-                }
-            }
-        }
-    } else {
-        for name in ["python3", "python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python"] {
-            if let Some(p) = find_on_path(name, env) {
-                add(p, vec![]);
-            }
-        }
+    if let Some(p) = find_on_path("nyra", env) {
+        add(p);
+    }
+    if let Some(home) = home_dir() {
+        let exe = if cfg!(windows) { "nyra.exe" } else { "nyra" };
+        add(home.join(".local").join("share").join("nyra").join(exe));
+        add(home.join(".local").join("bin").join(exe));
+        add(home.join("nyra").join(exe));
     }
     out
 }
 
-fn python_version(program: &Path, prefix: &[String], env: &HashMap<String, String>) -> Option<(u32, u32)> {
-    let l = Launcher { program: program.into(), prefix: prefix.to_vec(), pythonpath: None, label: String::new() };
+/// Does this `--version` output come from the Node single-file build?
+/// The Node binary reports "(node runtime, ...)"; anything else (a stale
+/// launcher, an unrelated `nyra`) is not usable here.
+fn is_node_version_output(output: &str) -> bool {
+    output.contains("node runtime")
+}
+
+/// Run `<program> --version`; return the first line when it is the Node
+/// binary, else None. A binary that does not run or does not report the
+/// Node runtime is skipped, not treated as found.
+fn probe_node_binary(program: &Path, env: &HashMap<String, String>) -> Option<String> {
+    let l = Launcher { program: program.into(), prefix: vec![], label: String::new() };
     let mut cmd = launcher_command(&l, env);
-    cmd.args(["-c", "import sys;print('%d.%d' % sys.version_info[:2])"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let (ok, out, _) = run_with_timeout(cmd, PROBE_TIMEOUT)?;
-    if !ok {
+    if !ok || !is_node_version_output(&out) {
         return None;
     }
-    let (a, b) = out.trim().split_once('.')?;
-    Some((a.parse().ok()?, b.parse().ok()?))
-}
-
-fn can_import_nyra(l: &Launcher, env: &HashMap<String, String>) -> bool {
-    // Probe with the bare interpreter: drop the trailing `-m nyra`.
-    let mut probe = l.clone();
-    if probe.prefix.ends_with(&["-m".to_string(), "nyra".to_string()]) {
-        probe.prefix.truncate(probe.prefix.len() - 2);
-    }
-    let mut cmd = launcher_command(&probe, env);
-    cmd.args(["-c", "import nyra.webui"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    matches!(run_with_timeout(cmd, PROBE_TIMEOUT), Some((true, _, _)))
-}
-
-/// Folders where the install scripts or a clone put the Nyra source.
-fn source_dirs(env: &HashMap<String, String>) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(s) = env.get("NYRA_SOURCE").filter(|s| !s.is_empty()) {
-        dirs.push(PathBuf::from(s));
-    }
-    if let Some(home) = home_dir() {
-        dirs.push(home.join(".local").join("share").join("nyra")); // install-macos.sh / install.sh
-        dirs.push(home.join("nyra")); // install.ps1, or `git clone` in the home folder
-    }
-    dirs.into_iter().filter(|d| d.join("nyra").join("webui.py").is_file()).collect()
-}
-
-/// The Node single-file build reports "(node runtime, ...)" from
-/// `--version`. It has no `ui` subcommand yet, so it cannot drive the
-/// desktop shell; skip it and keep looking for a Python Nyra instead of
-/// accepting it here and failing later with a misleading "too old" guide.
-fn is_node_runtime(version_output: &str) -> bool {
-    version_output.contains("node runtime")
+    Some(out.lines().next().unwrap_or("").trim().to_string())
 }
 
 fn discover(env: &HashMap<String, String>) -> Discovery {
-    // 1. A `nyra` command on PATH (install scripts' launcher, nyra.exe).
-    if env.get("NYRA_PYTHON").map(|s| s.is_empty()).unwrap_or(true) {
-        if let Some(nyra) = find_on_path("nyra", env) {
-            let l = Launcher { program: nyra.clone(), prefix: vec![], pythonpath: None, label: nyra.display().to_string() };
-            let mut cmd = launcher_command(&l, env);
-            cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-            if let Some((true, out, _)) = run_with_timeout(cmd, PROBE_TIMEOUT) {
-                if !is_node_runtime(&out) {
-                    return Discovery::Found(l);
-                }
-            }
-        }
-    }
-    // 2. A suitable Python that can import nyra (pip/PYTHONPATH, or a known source folder).
-    let mut old = Vec::new();
-    let mut good_python: Option<String> = None;
-    let sources = source_dirs(env);
+    let mut tried = Vec::new();
     // Overall budget: each probe is capped at 15 s, but with several
-    // interpreters and source dirs the total could otherwise stretch to
-    // minutes while the window sits on "starting".
+    // candidates the total could otherwise stretch while the window sits
+    // on "starting".
     let probe_deadline = Instant::now() + Duration::from_secs(90);
-    for (program, prefix) in python_candidates(env) {
+    for program in nyra_binary_candidates(env) {
         if Instant::now() >= probe_deadline {
             break;
         }
-        let Some(ver) = python_version(&program, &prefix, env) else { continue };
-        let shown = format!("{} {} (Python {}.{})", program.display(), prefix.join(" "), ver.0, ver.1)
-            .replace("  ", " ");
-        if ver < MIN_PYTHON {
-            old.push(shown);
-            continue;
-        }
-        if good_python.is_none() {
-            good_python = Some(shown.clone());
-        }
-        let mut base = prefix.clone();
-        base.push("-m".into());
-        base.push("nyra".into());
-        let plain = Launcher { program: program.clone(), prefix: base.clone(), pythonpath: None, label: shown.clone() };
-        if can_import_nyra(&plain, env) {
-            return Discovery::Found(plain);
-        }
-        for dir in &sources {
-            let l = Launcher {
-                program: program.clone(),
-                prefix: base.clone(),
-                pythonpath: Some(dir.clone()),
-                label: format!("{shown} + {}", dir.display()),
-            };
-            if can_import_nyra(&l, env) {
-                return Discovery::Found(l);
+        match probe_node_binary(&program, env) {
+            Some(version) => {
+                return Discovery::Found(Launcher {
+                    program: program.clone(),
+                    prefix: vec![],
+                    label: format!("{} ({})", program.display(), version),
+                });
             }
+            None => tried.push(program.display().to_string()),
         }
     }
-    match good_python {
-        Some(python) => Discovery::NoNyra { python },
-        None => Discovery::NoPython { old },
-    }
+    Discovery::NoBinary { tried }
 }
 
 // ---------------------------------------------------------------- start/stop
@@ -559,11 +460,8 @@ fn start_backend(app: AppHandle) {
         let env = child_env();
         let launcher = match discover(&env) {
             Discovery::Found(l) => l,
-            Discovery::NoPython { old } => {
-                return show_guide(&app, GuideInfo { state: "no-python".into(), detail: old.join("\n"), python: String::new() });
-            }
-            Discovery::NoNyra { python } => {
-                return show_guide(&app, GuideInfo { state: "no-nyra".into(), detail: String::new(), python });
+            Discovery::NoBinary { tried } => {
+                return show_guide(&app, GuideInfo { state: "no-nyra".into(), detail: tried.join("\n"), binary: String::new() });
             }
         };
 
@@ -580,7 +478,7 @@ fn start_backend(app: AppHandle) {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                return show_guide(&app, GuideInfo { state: "failed".into(), detail: format!("{}: {e}", launcher.label), python: launcher.label });
+                return show_guide(&app, GuideInfo { state: "failed".into(), detail: format!("{}: {e}", launcher.label), binary: launcher.label });
             }
         };
 
@@ -658,7 +556,7 @@ fn start_backend(app: AppHandle) {
                 "failed"
             };
             stop_child(&backend);
-            return show_guide(&app, GuideInfo { state: state.into(), detail, python: launcher.label });
+            return show_guide(&app, GuideInfo { state: state.into(), detail, binary: launcher.label });
         };
 
         *backend.origin.lock().unwrap() = Some(origin_of(&url));
@@ -684,7 +582,7 @@ fn start_backend(app: AppHandle) {
                 }
                 let detail = tail(&stderr_buf.lock().map(|b| b.clone()).unwrap_or_default(), 2000);
                 stop_child(&backend);
-                return show_guide(&app, GuideInfo { state: "exited".into(), detail, python: launcher.label });
+                return show_guide(&app, GuideInfo { state: "exited".into(), detail, binary: launcher.label });
             }
         }
     });
@@ -794,8 +692,10 @@ mod tests {
     }
 
     #[test]
-    fn node_runtime_is_skipped() {
-        assert!(is_node_runtime("nyra 0.3.0 (node runtime, phase 1 preview)"));
-        assert!(!is_node_runtime("Nyra 0.3.0"));
+    fn node_version_output_check() {
+        assert!(is_node_version_output("nyra 0.4.0 (node runtime)"));
+        assert!(is_node_version_output("nyra 0.3.0 (node runtime, phase 1 preview)"));
+        assert!(!is_node_version_output("Nyra 0.3.0"));
+        assert!(!is_node_version_output(""));
     }
 }
