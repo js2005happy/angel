@@ -264,3 +264,93 @@ test("ToolsTest.test_http_post_to_closed_port_errors", async () => {
   const out = await executeTool("http_post", { url: "http://127.0.0.1:1/hook", body: "{}" }, ctx);
   expect(out.startsWith("错误：")).toBe(true);
 });
+
+// ---- 第 4 阶段：浏览器 / 电脑 / Poppy 原生接线（注入假后端，不启动真实 Chrome/桌面/网络） ----
+
+function fakeBrowser(overrides: Record<string, unknown> = {}) {
+  return {
+    navigate: async (_url: string) => "ok",
+    click: async (_selector: string) => "ok",
+    screenshot: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    title: async () => "测试页",
+    currentUrl: async () => "https://example.com/",
+    visibleText: async (_limit?: number) => "可见文本内容",
+    close: () => {},
+    ...overrides,
+  } as unknown as ToolContext["browser"];
+}
+
+function fakeComputer(overrides: Record<string, unknown> = {}) {
+  return {
+    backend: "x11",
+    screenshot: async () => Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    click: async (_x: number, _y: number, _button?: string) => {},
+    typeText: async (_text: string) => {},
+    press: async (_key: string) => {},
+    windows: async () => [
+      { id: "1", title: "编辑器", x: 0, y: 0, width: 800, height: 600 },
+      { id: "2", title: "终端" },
+    ],
+    ...overrides,
+  } as unknown as ToolContext["computer"];
+}
+
+test("ToolsTest.test_browser_navigate_native_fake", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
+  const ctx = fullCtx(wd, { browser: fakeBrowser() });
+  const out = await executeTool("browser_navigate", { url: "https://example.com/" }, ctx);
+  expect(out).toContain("页面：https://example.com/");
+  expect(out).toContain("标题：测试页");
+  expect(out).toContain("可见文本内容");
+});
+
+test("ToolsTest.test_browser_click_and_screenshot_native_fake", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
+  const ctx = fullCtx(wd, { browser: fakeBrowser() });
+  const clicked = await executeTool("browser_click", { selector: "#btn" }, ctx);
+  expect(clicked.startsWith("已点击：#btn")).toBe(true);
+  const shot = await executeTool("browser_screenshot", {}, ctx);
+  expect(shot).toContain("已截图并保存：");
+  const match = /已截图并保存：(.+?)（PNG，/.exec(shot);
+  expect(match).not.toBeNull();
+  expect(existsSync(match![1])).toBe(true);
+});
+
+test("ToolsTest.test_computer_tools_native_fake", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
+  const ctx = fullCtx(wd, { computer: fakeComputer() });
+  expect(await executeTool("computer_click", { x: 10, y: 20 }, ctx)).toBe("已点击（10, 20，left键）");
+  expect(await executeTool("computer_type", { text: "abc" }, ctx)).toBe("已输入 3 个字符");
+  expect(await executeTool("computer_key", { key: "Enter" }, ctx)).toBe("已按键：Enter");
+  const wins = await executeTool("computer_windows", {}, ctx);
+  expect(wins).toContain("可见窗口（共 2 个）");
+  expect(wins).toContain("[1] 编辑器");
+  expect(wins).toContain("位置 (0, 0)，大小 800x600");
+  expect(wins).toContain("[2] 终端");
+  const shot = await executeTool("computer_screenshot", {}, ctx);
+  expect(shot).toContain("已截屏并保存：");
+  expect(shot).toContain("模型暂不能直接看图");
+  const match = /已截屏并保存：(.+?)（PNG，/.exec(shot);
+  expect(match).not.toBeNull();
+  expect(existsSync(match![1])).toBe(true);
+});
+
+test("ToolsTest.test_poppy_disabled_and_bad_site_errors", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
+  const off = fullCtx(wd, { poppyEnabled: false });
+  expect(await executeTool("poppy_discover", { site: "https://example.com" }, off))
+    .toBe("错误：Poppy 发现未启用，需要显式设置 --poppy");
+  const on = fullCtx(wd, { poppyEnabled: true });
+  const bad = await executeTool("poppy_discover", { site: "https://invalid.invalid" }, on);
+  expect(bad.startsWith("错误：")).toBe(true);
+});
+
+test("ToolsTest.test_creator_mode_asks_like_auto", async () => {
+  const ctx = newToolContext({ workdir: tmpdir(), mode: "creator", interactive: false });
+  await expect(checkApproval(ctx, "write_file", "写文件")).rejects.toThrow(ToolError);
+  await checkApproval(ctx, "read_file", "读文件");
+  const yesCtx = newToolContext({ workdir: tmpdir(), mode: "creator", interactive: true, approveFn: async () => true });
+  await checkApproval(yesCtx, "write_file", "写文件");
+  const noCtx = newToolContext({ workdir: tmpdir(), mode: "creator", interactive: true, approveFn: async () => false });
+  await expect(checkApproval(noCtx, "write_file", "写文件")).rejects.toThrow(ToolError);
+});

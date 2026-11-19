@@ -4,7 +4,7 @@
 import { test, expect } from "bun:test";
 import {
   ProviderError, isRecoverableProviderError, kindForStatus, httpError,
-  normalizeMessages, Provider, describeProvider,
+  normalizeMessages, Provider, describeProvider, resolveChatTimeout, DEFAULT_CHAT_TIMEOUT,
   CODEX_PROMPT_PREFIX, CODEX_MIN_VERSION, CODEX_DEFAULT_MODEL, CODEX_FORBIDDEN_ARGS,
   findCodexBinary, resetCodexCache, parseCodexVersion, serializeCodexPrompt, classifyCodexError,
   eventMessageText, lastMessageFromJsonl, usageFromJsonl, codexChildEnv,
@@ -331,4 +331,89 @@ test("ProvidersTest.test_describe_provider", () => {
   const p = new Provider(cfg({ name: "ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:7b", apiKey: "sk-ollama-local" }));
   expect(describeProvider(p)).toContain("ollama");
   expect(describeProvider(p)).toContain("qwen2.5:7b");
+});
+
+test("ProvidersTest.test_default_chat_timeout_is_60_and_env_overridable", () => {
+  expect(DEFAULT_CHAT_TIMEOUT).toBe(60);
+  const prev = process.env.NYRA_PROVIDER_TIMEOUT;
+  try {
+    delete process.env.NYRA_PROVIDER_TIMEOUT;
+    expect(resolveChatTimeout()).toBe(60);
+    process.env.NYRA_PROVIDER_TIMEOUT = "90";
+    expect(resolveChatTimeout()).toBe(90);
+    process.env.NYRA_PROVIDER_TIMEOUT = "5";
+    expect(resolveChatTimeout()).toBe(10);
+    process.env.NYRA_PROVIDER_TIMEOUT = "999";
+    expect(resolveChatTimeout()).toBe(600);
+    process.env.NYRA_PROVIDER_TIMEOUT = "abc";
+    expect(resolveChatTimeout()).toBe(60);
+  } finally {
+    if (prev === undefined) delete process.env.NYRA_PROVIDER_TIMEOUT;
+    else process.env.NYRA_PROVIDER_TIMEOUT = prev;
+  }
+});
+
+function hangingProvider(name: string): ProviderLike {
+  return {
+    name, model: "m-" + name, baseUrl: "https://example.invalid",
+    hasCredentials: () => true,
+    chat: (async (_msgs: unknown, _tools?: unknown, timeout = 60) => {
+      await new Promise((r) => setTimeout(r, timeout * 1000));
+      throw new ProviderError("API 请求超时，请稍后重试", { kind: "timeout" });
+    }) as ProviderLike["chat"],
+    listModels: async () => [],
+    redact: (t: string) => t,
+  };
+}
+
+test("ProvidersTest.test_fallback_chain_total_budget_caps_slow_providers", async () => {
+  const chain = new FallbackProvider([
+    hangingProvider("p1"), hangingProvider("p2"), hangingProvider("p3"),
+  ]);
+  const started = Date.now();
+  let err: unknown = null;
+  try {
+    await chain.chat([{ role: "user", content: "hi" }], null, 1);
+  } catch (e: unknown) { err = e; }
+  const elapsed = (Date.now() - started) / 1000;
+  expect(err).toBeInstanceOf(ProviderError);
+  const msg = String((err as Error).message);
+  expect(msg).toContain("p1");
+  expect(msg).toContain("p2");
+  expect(msg).not.toContain("p3");
+  // 旧行为 3×1s=3s；总预算 2×1s，第三个不应再等。
+  expect(elapsed).toBeLessThan(2.8);
+});
+
+test("ProvidersTest.test_key_rotation_total_budget_caps_slow_keys", async () => {
+  const rot = new KeyRotatingProvider([
+    hangingProvider("k1"), hangingProvider("k2"), hangingProvider("k3"),
+  ]);
+  const started = Date.now();
+  let err: unknown = null;
+  try {
+    await rot.chat([{ role: "user", content: "hi" }], null, 1);
+  } catch (e: unknown) { err = e; }
+  const elapsed = (Date.now() - started) / 1000;
+  expect(err).toBeInstanceOf(ProviderError);
+  const msg = String((err as Error).message);
+  expect(msg).toContain("key 1");
+  expect(msg).toContain("key 2");
+  expect(msg).not.toContain("key 3");
+  expect(elapsed).toBeLessThan(2.8);
+});
+
+test("ProvidersTest.test_fast_failures_still_try_every_provider", async () => {
+  const fail = (name: string): ProviderLike => fakeProvider(name, async () => {
+    throw new ProviderError("server boom", { kind: "server" });
+  });
+  const chain = new FallbackProvider([fail("f1"), fail("f2"), fail("f3")]);
+  let err: unknown = null;
+  try {
+    await chain.chat([{ role: "user", content: "hi" }], null, 5);
+  } catch (e: unknown) { err = e; }
+  const msg = String((err as Error).message);
+  expect(msg).toContain("f1");
+  expect(msg).toContain("f2");
+  expect(msg).toContain("f3");
 });

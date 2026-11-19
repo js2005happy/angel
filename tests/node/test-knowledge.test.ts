@@ -130,3 +130,47 @@ test("KnowledgeTest.test_note_size_limits", () => {
   expect(MAX_NOTE_CHARS).toBe(1500);
   expect(MIN_NOTE_CHARS).toBe(200);
 });
+
+test("KnowledgeTest.test_search_async_matches_sync_on_large_library", async () => {
+  const kb = new KnowledgeBase(base());
+  try {
+    kb.create("notes");
+    for (let i = 0; i < 150; i++) {
+      kb.addText("notes", `# 笔记 ${i}\n工业机器人调试内容 ${i} 汽车制造 运维。`, `笔记 ${i}`, "manual");
+    }
+    const sync = kb.search("notes", "工业机器人调试", 5);
+    const asyncRes = await kb.searchAsync("notes", "工业机器人调试", 5);
+    expect(asyncRes.map(([, n]) => n.title)).toEqual(sync.map(([, n]) => n.title));
+    expect(asyncRes.map(([s]) => s)).toEqual(sync.map(([s]) => s));
+  } finally {
+    await kb.closePool();
+  }
+});
+
+test("KnowledgeTest.test_search_async_small_library_uses_sync_path", async () => {
+  const kb = new KnowledgeBase(base());
+  try {
+    kb.create("notes");
+    kb.addText("notes", "# 机器人\n工业机器人用于汽车制造。", "机器人", "manual");
+    const sync = kb.search("notes", "工业机器人", 5);
+    const asyncRes = await kb.searchAsync("notes", "工业机器人", 5);
+    expect(asyncRes).toEqual(sync);
+  } finally {
+    await kb.closePool();
+  }
+});
+
+test("KnowledgeTest.test_ask_uses_pool_on_large_library", async () => {
+  const kb = new KnowledgeBase(base());
+  try {
+    kb.create("notes");
+    for (let i = 0; i < 120; i++) {
+      kb.addText("notes", `# 笔记 ${i}\n工业机器人调试内容 ${i}。`, `笔记 ${i}`, "manual");
+    }
+    const [answer, used] = await kb.ask("notes", "工业机器人怎么调试", async () => "按手册调试。");
+    expect(answer).toContain("按手册调试");
+    expect(used.length).toBeGreaterThan(0);
+  } finally {
+    await kb.closePool();
+  }
+});
