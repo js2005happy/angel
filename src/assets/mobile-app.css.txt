@@ -122,7 +122,14 @@ svg.i.f{fill:currentColor;stroke:none}
 .seg button.on{background:var(--bg);color:var(--fg);font-weight:600;box-shadow:0 1px 3px var(--shadow)}
 @media (prefers-color-scheme:dark){.seg button.on{background:var(--hover)}}
 .note{color:var(--mu);font-size:12.5px;line-height:1.45}
-/* 设置 */
+/* 审阅队列（缺口 3b：手机审批面） */
+.rv{margin:0 16px 12px;border:1px solid var(--line);border-radius:18px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.rv-h{display:flex;align-items:flex-start;gap:10px}
+.rv-h b{flex:1;font-weight:600;font-size:15px;line-height:1.35;word-break:break-word}
+.rv .note{padding:0}
+.note.wrap{white-space:normal;word-break:break-word}
+.note.warn-t{color:var(--rm)}
+.rv .btns{margin-top:4px}
 .grp{margin:0 16px;border:1px solid var(--line);border-radius:18px;overflow:hidden}
 .row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--line);min-height:52px}
 .row:first-child{border-top:0}

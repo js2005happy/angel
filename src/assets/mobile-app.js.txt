@@ -11,7 +11,7 @@ document.documentElement.classList.add(IS_IOS ? 'ios' : 'android');
 document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
 const EDIT_TOOLS = ['write_file', 'edit_file', 'apply_patch'];
 let currentSession = null, currentTab = 'threads', poll = null, lastFeedKey = '', sheetKey = '', cardState = {};
-let pendingText = '', lastInfo = null, fullStep = 0, lastApprovals = [], lastSessions = null, searchQ = '';
+let pendingText = '', lastInfo = null, fullStep = 0, lastApprovals = [], lastSessions = null, searchQ = '', lastReviewJson = '';
 
 function token(){
   const q = new URLSearchParams(location.search).get('token');
@@ -34,7 +34,7 @@ function applyI18n(root){
   (root || document).querySelectorAll('[data-ip]').forEach(n => { n.placeholder = t(n.dataset.ip); });
   (root || document).querySelectorAll('[data-ia]').forEach(n => { n.setAttribute('aria-label', t(n.dataset.ia)); });
 }
-const VIEWS = ['pair-view', 'threads-view', 'chat-view', 'automations-view', 'skills-view', 'settings-view'];
+const VIEWS = ['pair-view', 'threads-view', 'chat-view', 'review-view', 'automations-view', 'skills-view', 'settings-view'];
 function show(view){
   VIEWS.forEach(v => $(v).classList.toggle('hidden', v !== view));
   const tabbed = view !== 'pair-view' && view !== 'chat-view';
@@ -366,6 +366,7 @@ async function tick(){
     document.title = lastApprovals.length ? '(' + lastApprovals.length + ') Nyra' : 'Nyra';
     if (currentSession) { renderFeed(await api('/api/sessions/' + encodeURIComponent(currentSession))); renderSheet(); }
     else if (currentTab === 'threads' && !$('threads-view').classList.contains('hidden')) await loadSessions();
+    else if (currentTab === 'review' && !$('review-view').classList.contains('hidden')) await loadReview();
   } catch (e) { /* 断网时下次再试 */ }
 }
 
@@ -375,6 +376,7 @@ async function setTab(tab){
   show(tab + '-view');
   try {
     if (tab === 'threads') await loadSessions();
+    if (tab === 'review') await loadReview();
     if (tab === 'automations') await loadAutomations();
     if (tab === 'skills') await loadSkills();
     if (tab === 'settings') await openSettings();
@@ -425,6 +427,89 @@ async function loadAutomations(){
       row.appendChild(tx); box.appendChild(row);
     });
   }
+}
+// ---------------------------------------------------------------- 审阅队列 ---
+// 缺口 3b：手机审批面——待审项（diff 统计 + 验证结论 + 成本）逐项批复。
+// fail-closed：只在用户点“批准”后才放行；“应用改动”是单独一步，只接受
+// 已批准的项；超时/断线时本页不改任何状态，下次轮询再读。
+function reviewStatusLabel(item){
+  return t('m.review.' + item.status);
+}
+function reviewVerifyLabel(item){
+  const v = item.verification || {};
+  if (v.status === 'verified') return ['ok', t('m.review.verified')];
+  if (v.status === 'failed') return ['bad', t('m.review.verifyFailed')];
+  return ['', t('m.review.notVerified')];
+}
+function reviewCostLabel(item){
+  return item.spentUsd === null || item.spentUsd === undefined
+    ? t('m.review.costUnknown')
+    : t('m.review.cost', { cost: '$' + Number(item.spentUsd).toFixed(4) });
+}
+async function loadReview(force){
+  const data = await api('/api/review');
+  const json = JSON.stringify(data.items || []);
+  if (!force && json === lastReviewJson) return;
+  lastReviewJson = json;
+  renderReview(data.items || []);
+}
+function renderReview(items){
+  const box = $('reviews'); box.innerHTML = '';
+  if (!items.length) {
+    const e = el('div', 'empty'); e.appendChild(el('b', '', t('m.review.emptyTitle')));
+    e.appendChild(el('code', '', t('m.review.emptyHint'))); box.appendChild(e); return;
+  }
+  const pending = items.filter(x => x.status === 'pending').length;
+  box.appendChild(el('div', 'lh', t('m.review.pending') + ' ' + pending + ' / ' + items.length));
+  items.forEach(item => {
+    const card = el('div', 'rv');
+    const head = el('div', 'rv-h');
+    head.appendChild(el('b', '', item.title || item.id));
+    head.appendChild(el('span', 'tag', reviewStatusLabel(item)));
+    card.appendChild(head);
+    const meta = el('div', 'note');
+    const src = t('m.review.source.' + item.source);
+    meta.appendChild(document.createTextNode(src + ' · '));
+    const [vcls, vlabel] = reviewVerifyLabel(item);
+    const vs = el('span', vcls, vlabel); meta.appendChild(vs);
+    meta.appendChild(document.createTextNode(' · ' + reviewCostLabel(item)));
+    card.appendChild(meta);
+    const files = (item.changedFiles && item.changedFiles.length)
+      ? t('m.review.files', { n: item.changedFiles.length }) + '：' + item.changedFiles.join('、')
+      : t('m.review.noChanges');
+    card.appendChild(el('div', 'note', files));
+    if (item.summary) card.appendChild(el('div', 'note wrap', String(item.summary).slice(0, 500)));
+    if (item.diffStat) {
+      const d = el('div', 'cmd', String(item.diffStat).slice(0, 1500));
+      d.setAttribute('aria-label', t('m.review.diff'));
+      card.appendChild(d);
+    }
+    if (item.status === 'pending' && (!item.verification || item.verification.status !== 'verified')) {
+      card.appendChild(el('div', 'note warn-t', t('m.review.unverifiedWarn')));
+    }
+    if (item.decidedBy) card.appendChild(el('div', 'note', (item.status === 'approved' || item.status === 'rejected' ? t('m.review.decided') + '：' : '') + item.decidedBy));
+    const btns = el('div', 'btns');
+    const mkBtn = (cls, label, act, fn) => {
+      const b = el('button', cls, label); b.dataset.act = act; b.onclick = fn; btns.appendChild(b); return b;
+    };
+    if (item.status === 'pending') {
+      mkBtn('bt', t('m.review.reject'), 'review-reject', () => reviewAction(item.id, 'decide', { approve: false }));
+      mkBtn('bt', t('m.review.verify'), 'review-verify', () => reviewAction(item.id, 'verify', {}));
+      mkBtn('bt p', t('m.review.approve'), 'review-approve', () => reviewAction(item.id, 'decide', { approve: true }));
+    } else if (item.status === 'approved') {
+      mkBtn('bt', t('m.review.verify'), 'review-verify', () => reviewAction(item.id, 'verify', {}));
+      mkBtn('bt p', t('m.review.apply'), 'review-apply', () => reviewAction(item.id, 'apply', {}));
+    }
+    if (btns.childNodes.length) card.appendChild(btns);
+    box.appendChild(card);
+  });
+}
+async function reviewAction(id, action, body){
+  try {
+    await api('/api/review/' + encodeURIComponent(id) + '/' + action, { method: 'POST', body: JSON.stringify(body || {}) });
+    toast(t(action === 'apply' ? 'm.review.appliedOk' : action === 'verify' ? 'm.review.verifyOk' : 'm.review.decided'));
+    await loadReview(true);
+  } catch (e) { toast(t('m.review.actionFailed', { msg: e.message })); }
 }
 async function loadSkills(){
   const info = await loadInfo();
