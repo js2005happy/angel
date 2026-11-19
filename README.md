@@ -110,33 +110,83 @@ chmod +x nyra-linux-x64
 ./nyra-linux-x64 doctor     # 中文自检：Key、网络、目录权限、磁盘
 ```
 
-> 注意：带 Node 二进制的 Release 随 `v*` 标签发布，在第一个这样的 Release 出现之前，上面第 1 步还下不到文件——先本地构建再跑：`bash scripts/build-binaries.sh --only linux-x64`（产物在 `dist/`，Windows/macOS 同理，只编对应目标）。
+> 注意：Release 里已有现成二进制（最新版 v0.5.1，见下文「安装」）：Linux x64/arm64、Windows x64、macOS arm64/x64 各一个。想自己编：`bash scripts/build-binaries.sh --only linux-x64`（产物在 `dist/`，Windows/macOS 同理，只编对应目标）。
 
 还没 Key 也能先跑 `--help` / `--version` / `--list-providers`（不联网、不花钱）。跑模型任务需要 Key：没设 Key 时会直接打印设置说明并退出（退出码 1），不会发请求、不会产生费用。没有 Key 可先用本地模型：`nyra --provider ollama "…"`（需本机装好 Ollama）或 `--provider codex`（复用本机 Codex 登录）。
 
 > 注意：0.5.1 的 Node 二进制是完整版（agent 核心、网页界面、插件市场、创造模式都在内）。Windows/macOS 二进制未签名、未公证，首次运行会有系统提示（见各平台安装文档）。
 
-**源码方式（想自己构建或看代码）：**
+**源码方式（想自己构建或看代码）**：见下文「安装 → 从源码构建」。
+
+各平台的完整安装方式（一键脚本、`.deb`、桌面端、手机 PWA）见下文「安装」。
+
+交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
+
+## 安装
+
+最新版 **v0.5.1**，所有安装方式都不用装 Python、不用装 Node/Bun（Node 单文件二进制自带运行时）。装完先跑验证，再配 Key（配 Key 的方法见上文「快速开始」）：
+
+```bash
+nyra --version   # 应输出 nyra 0.5.1 (node runtime)
+nyra doctor      # 中文自检：Key、网络、目录权限、磁盘
+nyra setup       # 首次启动向导（中文，三步到第一个任务）
+```
+
+> **签名状态（实话）**：Windows/macOS 的 Node 二进制与桌面安装包目前**未签名、未公证**（证书待购买，见 [docs/SIGNING.md](docs/SIGNING.md)）。首次运行时系统会弹警告（Windows SmartScreen 点“更多信息 → 仍要运行”；macOS Gatekeeper 右键点二进制选“打开”放行一次），属正常，不是文件坏了。
+
+### Windows
+
+| 方式 | 怎么做 | 适合谁 |
+| --- | --- | --- |
+| Node 二进制（推荐，命令行） | 到 [Releases](https://github.com/js2005happy/nyra/releases) 下最新版，下载 `nyra-windows-x64.exe`，放到固定文件夹（如 `C:\Tools\nyra\`）并把文件夹加进 PATH | 只用命令行 |
+| 一键脚本 | PowerShell 里跑 `irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 \| iex`（装到 `~\nyra`、加 PATH、建桌面快捷方式） | 想一步到位 |
+| 桌面端（带窗口） | 在 Release 里下载 `Nyra_0.5.1_x64-setup.exe` 或 `Nyra_0.5.1_x64_en-US.msi` | 想要窗口界面 |
+
+验证：`nyra --version` 应输出 `nyra 0.5.1 (node runtime)`。常见问题：exe 双击后窗口一闪而过是正常的（它是控制台程序，在 PowerShell 里跑）；SmartScreen 警告见上文。详见 [docs/windows-install.md](docs/windows-install.md)，桌面端见 [docs/desktop.md](docs/desktop.md)。
+
+> 如实说明：Windows 二进制在 CI 的 `windows-latest` 上跑过 `--version` / `--example` 冒烟，但还没在任何一台真 Windows 电脑上跑过。装不上时把报错原文贴到仓库 issue 里。
+
+### macOS
+
+| 方式 | 怎么做 | 适合谁 |
+| --- | --- | --- |
+| Node 二进制（推荐，命令行） | `bash scripts/install-node-macos.sh`（从 Releases 下载对应架构：arm64 用 `nyra-macos-arm64`，Intel 用 `nyra-macos-x64`；装到 `~/.local/share/nyra`，链接在 `~/.local/bin/nyra`） | 只用命令行 |
+| 手动下载 | 到 [Releases](https://github.com/js2005happy/nyra/releases) 下最新版，按架构下载 `nyra-macos-arm64` 或 `nyra-macos-x64`，`chmod +x` 后直接跑 | 不想跑脚本 |
+| 桌面端（带窗口，`.dmg`） | 只在 GitHub Actions 产物里：仓库 **Actions → Build desktop app** → 选 `v0.5.1` 那次运行 → 底部 Artifacts 下载 `Nyra-macos-universal`（需要登录 GitHub） | 想要窗口界面 |
+
+验证：`nyra --version` 应输出 `nyra 0.5.1 (node runtime)`。常见问题：Gatekeeper 首次运行会拦，右键点二进制选“打开”放行一次；`~/.local/bin` 不在 PATH 里时按脚本提示加到 `~/.zshrc`。`.pkg` 安装器没有。详见 [docs/macos-install.md](docs/macos-install.md)，桌面端见 [docs/desktop.md](docs/desktop.md)。
+
+> 如实说明：macOS 安装脚本是在 Linux 上写好、只做了语法与占位替换检查，**尚未在真 Mac 上跑通过**；桌面 `.dmg` 也没有在真机上手动装过。
+
+### Linux
+
+| 方式 | 怎么做 | 适合谁 |
+| --- | --- | --- |
+| Node 二进制（推荐） | `bash scripts/install-node.sh`（从 Releases 下载对应架构：x64 用 `nyra-linux-x64`，arm64 用 `nyra-linux-arm64`；装到 `~/.local/share/nyra`，链接在 `~/.local/bin/nyra`） | 大多数人 |
+| 手动下载 | 到 [Releases](https://github.com/js2005happy/nyra/releases) 下最新版，按架构下载，`chmod +x` 后直接跑 | 不想跑脚本 |
+| `.deb` / tarball | 自己打出来：`bash scripts/build-binaries.sh --only linux-x64 && bash scripts/build-package-node.sh`，再 `sudo dpkg -i dist/nyra-node_0.5.1_amd64.deb`（`.deb` / tarball 不在 Release 里） | Debian/Ubuntu，想装进系统目录 |
+| 调度器常驻 | 安装时加 `--with-systemd`，再 `systemctl --user enable --now nyra-scheduler.service`（只装服务文件、不自动启动；不需要 root） | 想让定时任务后台一直跑 |
+
+验证：`nyra --version` 应输出 `nyra 0.5.1 (node runtime)`。常见问题：`nyra: command not found` 是 `~/.local/bin` 不在 PATH 里，加 `export PATH="$HOME/.local/bin:$PATH"` 到 `~/.bashrc`；没用户 systemd 总线的机器（容器、WSL 默认配置）用 `nyra schedule daemon` 在终端里跑。详见 [docs/linux-install.md](docs/linux-install.md)、[docs/linux-packaging.md](docs/linux-packaging.md)、[docs/linux-systemd.md](docs/linux-systemd.md)。
+
+### 手机 PWA（不用应用商店）
+
+手机版是电脑上 `nyra ui` 顺带提供的手机页面（`/m`），装到主屏幕就能当 App 用：电脑上跑 `nyra ui --pair`，手机和电脑连同一个 Wi-Fi，扫终端里的二维码配对，再在浏览器里点“添加到主屏幕”（安卓 Chrome 右上角 ⋮，iPhone Safari 点分享）。没有 APK / IPA，手机直接连你电脑上的 Nyra，工具仍在电脑上执行。详见 [docs/mobile-pwa.md](docs/mobile-pwa.md)。
+
+> 如实说明：没有在真手机上验证过（只在电脑上用 Playwright 模拟 iPhone 14 与 Pixel 7 跑过）；真机上的“添加到主屏幕”菜单、系统启动屏、iOS 独立窗口的存储行为都还没亲手试过。
+
+### 从源码构建
 
 ```bash
 git clone https://github.com/js2005happy/nyra.git nyra && cd nyra
-export DEEPSEEK_API_KEY=sk-...          # 或任意已支持的模型 Key
-
 bun run src/cli.ts "解释一下这个项目的结构"   # 一次性任务（需先装 Bun）
 bun run src/cli.ts                          # 交互模式
 bun run src/cli.ts ui --open                # 本地网页界面
 ```
 
+只编单文件二进制：`bash scripts/build-binaries.sh --only linux-x64`（产物在 `dist/`；5 个目标：`linux-x64` / `linux-arm64` / `windows-x64` / `macos-arm64` / `macos-x64`）。Linux 桌面端（Tauri）本地编不了（缺系统库），靠 CI 构建，见 [docs/desktop.md](docs/desktop.md)。
+
 > 0.4.0 已移除 Python 版：仓库里不再有 Python 代码，`python3 -m nyra` 不可用；唯一运行方式是 Node 单文件二进制（或上面这样用 Bun 跑源码）。
-
-想一键装到 `~/.local/bin`（可选 systemd 服务）：用 `./scripts/install-node.sh`，见 [docs/linux-install.md](docs/linux-install.md)。
-
-想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
-想拿现成的发布包（tarball / .deb）：见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build-package-node.sh`。
-
-Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚本，见 [docs/windows-install.md](docs/windows-install.md)。
-
-交互模式里输入 `/help` 查看全部命令，`/status` 看 Token 用量，`/diff` 看最近一次改动。
 
 ## 断点续跑与结果验证
 
@@ -154,7 +204,7 @@ Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚�
 - **多机器人群聊**：一个房间里组长、架构师、开发者、审查员分工讨论，各自记忆与权限独立（默认只读）。
 - **插件市场**：只装带来源、可审计的技能包（`nyra plugin install <本地目录|git URL>`），哈希锁定、升级不覆盖你改过的文件。
 - **创造模式**：一句话搓出专属插件，先验证、你确认后才安装（[手册](GUIDE.md#创造模式一句话搓出插件)）。
-- **隔离执行**：0.3.0 的 `--sandbox e2b`（E2B 云沙盒）已在 0.4.0 移除，Node 版 E2B 后端尚未移植；当前只支持 `--sandbox local`。
+- **隔离执行**：`--sandbox` 支持 `auto`（默认）/ `local` / `bwrap`（Linux）/ `seatbelt`（macOS）/ `jobobject`（Windows）；`auto` 在 Linux 且有 bwrap 时用 bwrap，否则退回工具级限制并明确告诉你，不会悄悄裸奔。0.3.0 的 `--sandbox e2b`（E2B 云沙盒）已在 0.4.0 移除，Node 版 E2B 后端尚未移植，显式 `--sandbox e2b` 会直接报错。
 - **配对码协作**：两个 Nyra 用 6 位配对码配对，宿主以只读模式跑任务、只传任务文本与结果（[手册](GUIDE.md#审批模式)）。
 - **本地密码箱**：API Key 加密存在本机，不写进配置文件或聊天记录（[手册](GUIDE.md#审批模式)）。
 - **本地知识库**：把文本、文件、网页收进知识库再提问，只按库内内容回答并注明依据（[手册](GUIDE.md#审批模式)）。
@@ -205,14 +255,14 @@ nyra ui --open
 
 ### 桌面 App（预览，macOS / Windows）
 
-`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Nyra 二进制时显示安装引导。安装包（`.dmg`、`.msi` / NSIS `.exe`）由 Actions 的 “Build desktop app” 工作流手动构建，**未签名**。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
+`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Nyra 二进制时显示安装引导。Windows 安装包（`.msi` / NSIS `.exe`）在 Release v0.5.1 里直接下载；macOS `.dmg` 只在 Actions 的 “Build desktop app” 工作流产物里（需要登录 GitHub）。两个包都**未签名**。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
 
 ## 安全边界
 
 - 默认逐项审批；`a`（本会话始终允许）只对同一文件、或完全相同的命令与目录生效。
 - 文件工具不能写出工作目录；MCP 子进程默认拿不到你的 API Key。
 - 检查点能撤销本地文件改动，但撤销不了 shell、网络请求等外部副作用。
-- 这些都不是操作系统级沙箱：运行不可信代码请用 `--sandbox e2b` 或隔离环境。
+- 命令默认走沙箱（见上文“隔离执行”）；但沙箱不是万能的，运行不可信代码请再加一层隔离环境。
 
 ## 文档
 
@@ -222,6 +272,10 @@ nyra ui --open
 - [VERIFICATION.md](VERIFICATION.md)：真实环境验证记录
 - [CHANGELOG.md](CHANGELOG.md)：版本变更
 - [docs/desktop.md](docs/desktop.md)：桌面 App（macOS / Windows，预览）
+- [docs/windows-install.md](docs/windows-install.md)、[docs/macos-install.md](docs/macos-install.md)、[docs/linux-install.md](docs/linux-install.md)：各平台安装
+- [docs/linux-packaging.md](docs/linux-packaging.md)：tarball 与 `.deb` 打包
+- [docs/linux-systemd.md](docs/linux-systemd.md)：systemd 调度器服务
+- [docs/mobile-pwa.md](docs/mobile-pwa.md)：手机 PWA
 
 ## 测试
 
