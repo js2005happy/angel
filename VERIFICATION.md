@@ -1,3 +1,8 @@
+## 2026-11-19 — ToolJournal 孤立结果全局歧义（仅静态审查）
+
+- 审阅 `inspect()` 的 orphan_results 计算：旧逻辑 orphan_results > 0 但 invalid 仍为 False，导致其它已配对成功被计入 reported_ok。现设置 invalid = invalid or orphan_results > 0，并保守归零成功/错误汇总。
+- 新增 test_orphan_result_suppresses_other_reported_successes；仅阅读和编写源码，未运行测试、安装、CI 或 Windows 实机验证。日志可能被同权限主体篡改，仍缺跨进程执行所有权与外部副作用对账。
+
 ## 2026-11-19 静态核验：ToolJournal 结果容量预留
 
 - 静态检查 `begin()` 的事件上限与 `finish()` 的事件上限：旧逻辑在已有 `MAX_EVENTS-1` 个事件时仍允许新增 intent，导致后续结果无法记录。本轮在 begin 预留一个结果槽位，增加 mock 测试源码，未运行。
