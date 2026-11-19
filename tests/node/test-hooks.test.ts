@@ -3,8 +3,8 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { runHooks, listHooks, type HookEvent } from "../../src/hooks.ts";
+import { join, basename } from "node:path";
+import { runHooks, listHooks, toPosixPath, type HookEvent } from "../../src/hooks.ts";
 import { executeTool, newToolContext, type ToolContext } from "../../src/tools.ts";
 
 let home: string;
@@ -87,11 +87,19 @@ test("HooksTest.test_list_hooks_from_directory", () => {
   writeHook("PreToolUse", "a-check.sh", "#!/bin/sh\nexit 0\n");
   writeHook("SessionStart", "hello.sh", "#!/bin/sh\nexit 0\n");
   const listed = listHooks(home);
-  expect(listed.map((h) => `${h.event}:${h.path.split("/").pop()}`)).toEqual([
+  // 路径分隔符按平台来：Windows 上 join 出的是反斜杠，split("/") 会取不到文件名。
+  expect(listed.map((h) => `${h.event}:${basename(h.path)}`)).toEqual([
     "PreToolUse:a-check.sh",
     "PreToolUse:b-check.sh",
     "SessionStart:hello.sh",
   ]);
+});
+
+test("HooksTest.test_to_posix_path_windows_drive", () => {
+  // Windows 钩子走 Git Bash 的 sh：驱动器路径要转成 /c/... 形式；POSIX 路径原样返回。
+  expect(toPosixPath("C:\\Users\\x\\hooks\\block.sh")).toBe("/c/Users/x/hooks/block.sh");
+  expect(toPosixPath("D:/a/b.sh")).toBe("/d/a/b.sh");
+  expect(toPosixPath("/home/x/hooks/block.sh")).toBe("/home/x/hooks/block.sh");
 });
 
 test("HooksTest.test_list_hooks_from_config", () => {

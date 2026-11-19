@@ -52,8 +52,11 @@ sh -c "$last"
   return { dir, log };
 }
 
-test("detectBwrap：本机无 bwrap 返回 false；不存在的 PATH 目录也返回 false", () => {
-  expect(detectBwrap()).toBe(false);
+test("detectBwrap：空目录 PATH 返回 false；不存在的 PATH 目录也返回 false", () => {
+  // 不直接断言本机真实 PATH：GitHub Ubuntu 运行器上实际装有 bwrap，
+  // detectBwrap() 会返回 true——那是正确行为，不是测试能假定的环境。
+  // 受控 PATH（空目录）下一定是 false，才是与环境无关的断言。
+  expect(detectBwrap(tmpDir("nyra-empty-path-"))).toBe(false);
   expect(detectBwrap("/definitely/not/a/real/dir")).toBe(false);
 });
 
@@ -70,12 +73,16 @@ test("buildBwrapArgs：含 --bind 工作目录、--ro-bind 系统目录、默认
   expect(args[0]).toBe("bwrap");
   expect(args).toContain("--bind");
   expect(args).toContain(wd);
-  expect(args).toContain("--ro-bind");
-  expect(args).toContain("/usr");
   expect(args).toContain("--unshare-net");
   expect(args).toContain("--die-with-parent");
   expect(args).toContain("--chdir");
   expect(args.slice(-3)).toEqual(["/bin/sh", "-c", "echo hi"]);
+  // 系统目录只读挂载：实现只挂真实存在的目录，/usr 等在 Windows 上不存在时
+  // 按设计跳过（不是实现漏了）。只在 Linux 断言完整参数。
+  if (process.platform === "linux") {
+    expect(args).toContain("--ro-bind");
+    expect(args).toContain("/usr");
+  }
 });
 
 test("buildBwrapArgs：allowNet 时无 --unshare-net；read-only 时工作目录只读", () => {
@@ -116,7 +123,10 @@ test("resolveSandbox：NYRA_SANDBOX_ALLOW_NET=1 放开网络；非法 mode 报�
 });
 
 test("auto 在无 bwrap 时解析为 tool-level（本机即是），并给出工具级提示文案", async () => {
-  await withEnv(cleanSandboxEnv(), () => {
+  // PATH 换成空目录再解析：GitHub Ubuntu 运行器上有真 bwrap，不控 PATH 时
+  // auto 会解析为 bwrap——那是正确行为，测试不能假定运行器没装 bwrap。
+  const emptyPath = tmpDir("nyra-empty-path-");
+  await withEnv({ ...cleanSandboxEnv(), PATH: emptyPath }, () => {
     const r = resolveSandboxBackend({}, "auto");
     expect(r.backend).toBe("local");
     expect(r.level).toBe("tool-level");
@@ -148,7 +158,16 @@ test("auto：PATH 里有 bwrap 时解析为 bwrap", async () => {
 });
 
 test("bwrap 强制缺失时报错信息清楚：点名缺 bwrap、给安装方法、给回退选项", async () => {
-  await withEnv(cleanSandboxEnv(), () => {
+  if (process.platform !== "linux") {
+    // 非 Linux 上实现先报平台不支持（Linux-only），不是“找不到 bwrap”——以实现为准。
+    await withEnv(cleanSandboxEnv(), () => {
+      expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("只支持 Linux");
+    });
+    return;
+  }
+  // Linux 上 PATH 换成空目录：运行器有真 bwrap 时不控 PATH 根本不会抛错。
+  const emptyPath = tmpDir("nyra-empty-path-");
+  await withEnv({ ...cleanSandboxEnv(), PATH: emptyPath }, () => {
     expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("找不到 bwrap");
     expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("apt install bubblewrap");
     expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("auto");
@@ -196,20 +215,27 @@ test("runSandboxed：假 bwrap shim 端到端跑通一次，参数里含工作�
 });
 
 test("getSandboxStatus：auto 无 bwrap 时 level 为 tool-level；显式 bwrap 缺失时 level 为 none 且不抛错", async () => {
-  await withEnv(cleanSandboxEnv(), () => {
+  // PATH 换成空目录：运行器有真 bwrap 时 auto 会是 bwrap、forced 不会是 none。
+  const emptyPath = tmpDir("nyra-empty-path-");
+  await withEnv({ ...cleanSandboxEnv(), PATH: emptyPath }, () => {
     const auto = getSandboxStatus({});
     expect(auto.level).toBe("tool-level");
     expect(auto.bwrapAvailable).toBe(false);
     expect(auto.detail).toMatch("工具级");
     const forced = getSandboxStatus({}, "bwrap");
     expect(forced.level).toBe("none");
-    expect(forced.detail).toMatch("bubblewrap");
+    // 显式 bwrap 缺失的原因按平台分：Linux 是“找不到 bwrap”，非 Linux 是平台不支持——以实现为准。
+    if (process.platform === "linux") expect(forced.detail).toMatch("bubblewrap");
+    else expect(forced.detail).toMatch("只支持 Linux");
   });
 });
 
 test("toolShell 接线：auto 无 bwrap 时走现有路径跑通；首次执行给一次工具级提示", async () => {
   const wd = tmpDir("nyra-shell-wd-");
-  await withEnv(cleanSandboxEnv(), async () => {
+  // PATH 换成空目录：运行器有真 bwrap 时 auto 会进 bwrap 分支，不会打印工具级提示。
+  // shell 本身走绝对路径 /bin/sh（POSIX）/ ComSpec（Windows），空 PATH 不影响执行。
+  const emptyPath = tmpDir("nyra-empty-path-");
+  await withEnv({ ...cleanSandboxEnv(), PATH: emptyPath }, async () => {
     const errors: string[] = [];
     const origError = console.error;
     console.error = (...args: unknown[]) => { errors.push(String(args[0])); };
@@ -233,14 +259,18 @@ test("toolShell 接线：auto 无 bwrap 时走现有路径跑通；首次执行�
 
 test("toolShell 接线：显式 bwrap 但无 bwrap 时命令不跑、返回清楚的报错", async () => {
   const wd = tmpDir("nyra-shell-wd-");
-  await withEnv(cleanSandboxEnv(), async () => {
+  // PATH 换成空目录：运行器有真 bwrap 时命令真会跑，touch 文件就建出来了。
+  const emptyPath = tmpDir("nyra-empty-path-");
+  await withEnv({ ...cleanSandboxEnv(), PATH: emptyPath }, async () => {
     const ctx = newToolContext({
       workdir: wd, mode: "full", interactive: false,
       sandbox: { backend: "bwrap", mode: "workspace-write", allowNet: false },
     });
     const out = await executeTool("shell", { command: "touch should-not-exist.txt", timeout: 10 }, ctx);
     expect(out).toMatch("沙箱配置有问题");
-    expect(out).toMatch("bubblewrap");
+    // 报错原因按平台分：Linux 是“找不到 bwrap”，非 Linux 是平台不支持——以实现为准。
+    if (process.platform === "linux") expect(out).toMatch("bubblewrap");
+    else expect(out).toMatch("只支持 Linux");
     expect(existsSync(join(wd, "should-not-exist.txt"))).toBe(false);
   });
 });
