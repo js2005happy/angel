@@ -1,0 +1,4 @@
+# 统一 LF：Windows 检出也不转 CRLF。
+# 内嵌模板字符串在解析时会被规范化为 LF，若磁盘上的 .md 文件是 CRLF，
+# 与模板字符串的内容比对就会在 Windows CI 上失败（肉眼看不出差异）。
+* text=auto eol=lf
