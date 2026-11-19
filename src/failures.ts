@@ -40,7 +40,10 @@ function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === "string") return err;
   try {
-    return JSON.stringify(err);
+    // JSON.stringify(undefined) 返回 undefined（不是字符串），这里必须兜住，
+    // 否则 FailureInfo.message 会变成 undefined，下游拼字符串时炸掉。
+    const s = JSON.stringify(err);
+    return typeof s === "string" ? s : String(err);
   } catch {
     return String(err);
   }
