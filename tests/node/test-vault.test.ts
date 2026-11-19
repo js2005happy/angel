@@ -1,7 +1,8 @@
 // tests/node/test-vault.test.ts — 对应 tests/test_vault.py（35 个唯一测试）。
 // 密码箱字节级兼容已在验收里双向验证（见 docs/node-migration-phase2.md）。
 import { test, expect } from "bun:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -85,7 +86,7 @@ test("VaultCoreTest.test_tampered_verifier_unlock_fails", () => {
 test("VaultCoreTest.test_new_file_permissions_0600", () => {
   const { home } = makeVault();
   if (process.platform === "win32") return;
-  expect(statSync(join(home, "vault.json")).mode & 0o777).toBe(0o600);
+  expectPerms(join(home, "vault.json"), 0o600);
 });
 
 test("VaultCoreTest.test_list_does_not_leak_secret", () => {

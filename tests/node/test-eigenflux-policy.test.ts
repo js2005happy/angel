@@ -7,6 +7,7 @@ import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
   readdirSync, rmSync, statSync, symlinkSync, writeFileSync,
 } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -106,8 +107,8 @@ test("NetworkPolicyTest.test_ledger_file_mode_and_no_temp_leftovers", () => {
   const policy = new NetworkPolicy({ root });
   policy.change("allow", "feed_read", { confirmed: true });
   if (process.platform !== "win32") {
-    expect(statSync(policy.path).mode & 0o777).toBe(0o600);
-    expect(statSync(join(root, "eigenflux")).mode & 0o777).toBe(0o700);
+    expectPerms(policy.path, 0o600);
+    expectPerms(join(root, "eigenflux"), 0o700);
   }
   const leftovers = readdirSync(join(root, "eigenflux")).filter((n) => n.startsWith(".network-policy-"));
   expect(leftovers).toEqual([]);

@@ -1,6 +1,7 @@
 // tests/node/test-migration.test.ts — spec 07 行为项（方案第 5 节）在 Node 版一次做完。
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlinkSync, statSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -103,8 +104,8 @@ test("MigrationTest.test_permissions_0700_0600", () => {
   mkdirSync(join(home, ".angel"));
   writeFileSync(join(home, ".angel", "MEMORY.md"), "x\n");
   migrateLegacyHome(home);
-  expect(statSync(join(home, ".nyra")).mode & 0o777).toBe(0o700);
-  expect(statSync(join(home, ".nyra", "MEMORY.md")).mode & 0o777).toBe(0o600);
+  expectPerms(join(home, ".nyra"), 0o700);
+  expectPerms(join(home, ".nyra", "MEMORY.md"), 0o600);
 });
 
 test("MigrationTest.test_ensure_nyra_home_creates_0700", () => {
@@ -113,7 +114,7 @@ test("MigrationTest.test_ensure_nyra_home_creates_0700", () => {
   const target = ensureNyraHome(home);
   expect(target).toBe(join(home, ".nyra"));
   expect(existsSync(target)).toBe(true);
-  expect(statSync(target).mode & 0o777).toBe(0o700);
+  expectPerms(target, 0o700);
 });
 
 test("MigrationTest.test_auth_token_nyra_wins", () => {

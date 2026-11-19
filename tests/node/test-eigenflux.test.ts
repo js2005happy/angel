@@ -8,8 +8,9 @@
 import { test, expect, afterEach } from "bun:test";
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
-  rmSync, statSync, symlinkSync, writeFileSync,
+  rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -342,7 +343,7 @@ test("EigenFluxPolicyLockTest.test_acquire_and_release", () => {
   expect(first.holder?.owner).toBe("test-1");
   expect(existsSync(lockPath)).toBe(true);
   if (process.platform !== "win32") {
-    expect(statSync(lockPath).mode & 0o777).toBe(0o600);
+    expectPerms(lockPath, 0o600);
   }
   const second = acquirePolicyLock(root, { owner: "test-2" });
   expect(second.acquired).toBe(false);
