@@ -8,8 +8,8 @@
 #   - 建 ~/.nyra（0700，Nyra 的配置与数据目录）；
 #   - 装完跑 `nyra --version` 自检（doctor 等配好 Key 后再跑，见下）；
 #   - 加 --with-systemd 时，再把 systemd/nyra-scheduler.service 装到
-#     ~/.config/systemd/user/（第 1 阶段只装文件、不 enable/start：
-#     二进制还没有 schedule daemon，见 docs/linux-systemd.md）。
+#     ~/.config/systemd/user/（只装文件、不 enable/start：用户确认后再启用，
+#     见 docs/linux-systemd.md）。
 #
 # 用法：
 #   ./scripts/install-node.sh [--version TAG] [--from-file PATH]
@@ -165,15 +165,11 @@ if [ "$WITH_SYSTEMD" -eq 1 ]; then
     if [ -f "$SERVICE_SRC" ] && command -v systemctl >/dev/null 2>&1; then
         mkdir -p "$(dirname "$SERVICE_DST")"
         cp "$SERVICE_SRC" "$SERVICE_DST"
-        # systemd 服务原来调 python3 -m nyra、WorkingDirectory 指仓库：
-        # Node 版改调二进制，工作目录改回 $HOME（不需要仓库检出）。
+        # 服务文件已是 Node 版（调二进制）；这里只把路径换成真实安装位置。
         sed -i "s|^ExecStart=.*|ExecStart=$BIN_DIR/nyra schedule daemon|" "$SERVICE_DST"
         sed -i "s|^WorkingDirectory=.*|WorkingDirectory=%h|" "$SERVICE_DST"
-        sed -i "/^Environment=PYTHONUNBUFFERED=1$/d" "$SERVICE_DST"
-        # 第 1 阶段的二进制还没有 `schedule daemon`（第 2–3 阶段才有）：
-        # 现在 enable 的话服务会每 10 秒重启失败一次，只装文件、不启动；
-        # 等装了带 schedule 的版本后，再跑 systemctl --user enable --now。
-        log "警告：第 1 阶段二进制还没有 schedule daemon，服务文件已装到 $SERVICE_DST，但这次不 enable/start；带 schedule 的版本发布后，再跑：systemctl --user enable --now nyra-scheduler.service"
+        # 只装文件、不启动：用户确认后再跑 systemctl --user enable --now。
+        log "服务文件已装到 $SERVICE_DST（未启动）；启用请跑：systemctl --user enable --now nyra-scheduler.service"
     else
         log "警告：没装 systemd 服务（缺文件或缺 systemctl），只装了二进制。"
     fi

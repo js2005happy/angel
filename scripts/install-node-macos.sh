@@ -8,8 +8,8 @@
 #   - 建 ~/.nyra（0700，Nyra 的配置与数据目录）；
 #   - 装完跑 `nyra --version` 自检；
 #   - 加 --with-launchd 时，再把 launchd/ai.nyra.scheduler.plist 装到
-#     ~/Library/LaunchAgents/（第 1 阶段只装文件、不 load：二进制还没有
-#     schedule daemon，见 docs/macos-install.md）。
+#     ~/Library/LaunchAgents/（只装文件、不 load：用户确认后再加载，
+#     见 docs/macos-install.md）。
 #
 # 用法：
 #   ./scripts/install-node-macos.sh [--version TAG] [--from-file PATH]
@@ -152,19 +152,13 @@ log "已装到 $PREFIX/nyra，链接在 $BIN_DIR/nyra"
 if [ "$WITH_LAUNCHD" -eq 1 ]; then
     if [ -f "$PLIST_SRC" ] && command -v launchctl >/dev/null 2>&1; then
         mkdir -p "$(dirname "$PLIST_DST")"
-        # plist 原来调 __NYRA_PYTHON__ -m nyra schedule daemon：
-        # Node 版把 ProgramArguments 的第一项换成二进制路径，删掉 -m / nyra 两行。
-        sed -e "s|__NYRA_PYTHON__|$BIN_DIR/nyra|g" \
-            -e "s|__NYRA_PREFIX__|$PREFIX|g" \
+        # plist 里 __NYRA_BIN__ / __NYRA_HOME__ 是占位符，换成真实路径。
+        sed -e "s|__NYRA_BIN__|$BIN_DIR/nyra|g" \
             -e "s|__NYRA_HOME__|$HOME|g" \
-            -e "/<string>-m<\/string>/d" \
-            -e "/<string>nyra<\/string>/d" \
             "$PLIST_SRC" > "$PLIST_DST"
         chmod 644 "$PLIST_DST"
-        # 第 1 阶段的二进制还没有 `schedule daemon`（第 2–3 阶段才有）：
-        # 现在 load 的话 agent 会反复重启失败，只装文件、不 load；
-        # 等装了带 schedule 的版本后，再跑 launchctl load。
-        log "警告：第 1 阶段二进制还没有 schedule daemon，plist 已装到 $PLIST_DST，但这次不 launchctl load；带 schedule 的版本发布后，再跑：launchctl load $PLIST_DST"
+        # 只装文件、不 load：用户确认后再跑 launchctl load。
+        log "plist 已装到 $PLIST_DST（未加载）；加载请跑：launchctl load $PLIST_DST"
     else
         log "警告：没装 launchd 服务（缺文件或缺 launchctl），只装了二进制。"
     fi
