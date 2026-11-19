@@ -392,9 +392,12 @@ export function workspaceShellCwd(ctx: ToolContext, cwd?: string | null): string
     throw new ToolError("shell 工作目录无效");
   }
   if (ctx.backend) {
-    const base = posix.normalize(ctx.workdir.replace(/\\/g, "/"));
+    // 后端路径按 POSIX 归一化比较；Windows 工作目录（C:/...）同样是绝对
+    // 路径，不能用 startsWith("/") 判定——否则 Windows 上任何带后端的
+    // shell 调用都会被误拒（Node CI #113：5 失败之其二）。
+    const base = posix.normalize(ctx.workdir.replace(/\\/g, "/")).replace(/\/$/, "");
     const target = resolveBackendPath(ctx, cwd || ".");
-    if (!base.startsWith("/") || !(target === base || target.startsWith(base.replace(/\/$/, "") + "/"))) {
+    if (!(target === base || target.startsWith(base + "/"))) {
       throw new ToolError("禁止在工作目录之外启动 shell");
     }
     return target;
