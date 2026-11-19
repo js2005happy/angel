@@ -9,7 +9,7 @@
 bash scripts/install-node.sh
 
 # 指定版本 / 顺手装 systemd 用户服务
-bash scripts/install-node.sh --version v0.4.0 --with-systemd
+bash scripts/install-node.sh --version v0.4.1 --with-systemd
 
 # 已编好二进制时从本地安装（不联网下载）
 bash scripts/build-binaries.sh --only linux-x64
@@ -20,7 +20,7 @@ bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 
 前置条件：`curl` 或 `wget`（二选一）；`--with-systemd` 时还要 `systemctl --user`。
 
-> 0.4.0 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
+> 0.4.1 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
 > 都在内）。`--with-systemd` 只装服务文件、不启动（`schedule daemon`
 > 已存在）；确认无误后自己跑 `systemctl --user enable --now nyra-scheduler.service`
 > 再启用，见 [docs/linux-systemd.md](linux-systemd.md)。
@@ -70,7 +70,7 @@ bash scripts/install-node.sh --from-file dist/nyra-linux-x64 --with-systemd
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-然后新开一个终端，跑 `nyra --version`，看到 `nyra 0.4.0 (node runtime)` 就装好了。
+然后新开一个终端，跑 `nyra --version`，看到 `nyra 0.4.1 (node runtime)` 就装好了。
 第一次用先配 Key（以 DeepSeek 为例）：
 
 ```bash
@@ -82,7 +82,7 @@ nyra "解释一下这个项目的结构"
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--version TAG` | latest | 从 GitHub Releases 下载的版本（带 `v` 前缀，如 `v0.4.0`；不带 `v` 也行，脚本会补上） |
+| `--version TAG` | latest | 从 GitHub Releases 下载的版本（带 `v` 前缀，如 `v0.4.1`；不带 `v` 也行，脚本会补上） |
 | `--from-file PATH` | — | 从本地已编好的二进制安装（不联网下载） |
 | `--prefix DIR` | `~/.local/share/nyra` | 安装位置（不能是 `/`、不能就是 `$HOME`、不能含空格） |
 | `--bin-dir DIR` | `~/.local/bin` | 启动器位置 |

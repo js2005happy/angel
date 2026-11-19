@@ -14,14 +14,14 @@
 
 ```bash
 bash scripts/install-node-macos.sh
-bash scripts/install-node-macos.sh --version v0.4.0 --with-launchd
+bash scripts/install-node-macos.sh --version v0.4.1 --with-launchd
 ```
 
 注意：二进制未签名、未公证，macOS Gatekeeper 首次运行会拦，需右键点
 二进制选“打开”放行一次。`.dmg` / `.pkg` 安装包本机做不了，是待办
 （见下），不要假装已提供。
 
-> 0.4.0 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
+> 0.4.1 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
 > 都在内）。`--with-launchd` 只装 plist 文件、不 `launchctl load`；
 > 确认无误后自己跑 `launchctl load ~/Library/LaunchAgents/ai.nyra.scheduler.plist`
 > 再启用（见“调度器”一节）。
@@ -76,7 +76,7 @@ shell 是 zsh，永久生效这样加到 `~/.zshrc`：
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ```
 
-然后新开一个终端，跑 `nyra --version`，看到 `nyra 0.4.0 (node runtime)` 就装好了。
+然后新开一个终端，跑 `nyra --version`，看到 `nyra 0.4.1 (node runtime)` 就装好了。
 第一次用先配 Key（以 DeepSeek 为例）：
 
 ```bash
@@ -88,7 +88,7 @@ nyra "解释一下这个项目的结构"
 
 | 选项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `--version TAG` | latest | 从 GitHub Releases 下载的版本（带 `v` 前缀，如 `v0.4.0`；不带 `v` 也行，脚本会补上） |
+| `--version TAG` | latest | 从 GitHub Releases 下载的版本（带 `v` 前缀，如 `v0.4.1`；不带 `v` 也行，脚本会补上） |
 | `--from-file PATH` | — | 从本地已编好的二进制安装（不联网下载） |
 | `--prefix DIR` | `~/.local/share/nyra` | 安装位置（不能是 `/`、不能就是 `$HOME`、不能含空格） |
 | `--bin-dir DIR` | `~/.local/bin` | 启动器位置 |

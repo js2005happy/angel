@@ -1,6 +1,6 @@
 # Linux 打包（tarball 与 .deb）
 
-## Node 二进制版（0.4.0 唯一方式）
+## Node 二进制版（0.4.1 唯一方式）
 
 `scripts/build-package-node.sh` 把已编好的 Linux 二进制打成发布物，版本号只从 `package.json` 的 `version` 读。
 
@@ -26,9 +26,9 @@ bash scripts/build-package-node.sh --out-dir /tmp/nyra-pkg
 ## 核对
 
 ```bash
-tar -tzf dist/nyra-node-0.4.0.tar.gz | head        # 看归档内容
-dpkg-deb --info dist/nyra-node_0.4.0_amd64.deb     # 看版本、依赖
-dpkg-deb --contents dist/nyra-node_0.4.0_amd64.deb # 看安装路径
+tar -tzf dist/nyra-node-0.4.1.tar.gz | head        # 看归档内容
+dpkg-deb --info dist/nyra-node_0.4.1_amd64.deb     # 看版本、依赖
+dpkg-deb --contents dist/nyra-node_0.4.1_amd64.deb # 看安装路径
 ```
 
 ## 安装
@@ -36,8 +36,8 @@ dpkg-deb --contents dist/nyra-node_0.4.0_amd64.deb # 看安装路径
 ### .deb（Debian / Ubuntu，需要 root）
 
 ```bash
-sudo dpkg -i nyra-node_0.4.0_amd64.deb
-nyra --version            # 应输出 Nyra 0.4.0 (node runtime)
+sudo dpkg -i nyra-node_0.4.1_amd64.deb
+nyra --version            # 应输出 Nyra 0.4.1 (node runtime)
 ```
 
 `.deb` 不装 maintainer 脚本：不碰用户 systemd、不动 `~/.nyra`。
@@ -50,8 +50,8 @@ nyra --version            # 应输出 Nyra 0.4.0 (node runtime)
 ### tarball（任意 Linux 发行版，不需要 root）
 
 ```bash
-tar -xzf nyra-node-0.4.0.tar.gz
-./nyra-node-0.4.0/nyra --version   # 直接跑解压出的二进制
+tar -xzf nyra-node-0.4.1.tar.gz
+./nyra-node-0.4.1/nyra --version   # 直接跑解压出的二进制
 ```
 
 想装进 `~/.local/bin`（并可选 systemd 服务），用 [Linux 安装](linux-install.md)
