@@ -178,17 +178,64 @@ export function ruleMatches(rule: PermissionRule, ctx: PermissionContext): boole
   return matchCommandGlob(rule.specifier, target) || target === rule.specifier;
 }
 
+/** 把工具名归到"命令类"——只有命令类需要做复合命令拆分。 */
+const SHELL_TOOLS = new Set(["Bash", "shell", "sh", "zsh", "powershell"]);
+
 /**
- * 求值：deny > ask > allow。返回 null 表示"没规则命中，走默认审批"。
- * 这是本模块唯一的安全关键入口，改动前先看测试。
+ * 拆分复合命令：`a && b`、`a || b`、`a ; b`、`a | b`、换行。
+ *
+ * **已知边界**：不做引号解析。`echo "a && b"` 会被误拆——这会**偏严**（把不该拦的
+ * 拦下来），不会偏松。规则引擎宁可多问一次，也不能把 `git status && rm -rf /`
+ * 当成一条 `git *` 放过。
  */
-export function evaluate(rules: RuleSet, ctx: PermissionContext): { action: PermissionAction; rule: PermissionRule } | null {
+export function splitCompound(command: string): string[] {
+  return command
+    .split(/\r?\n|&&|\|\||;|\|/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+function evaluateSingle(rules: RuleSet, ctx: PermissionContext): { action: PermissionAction; rule: PermissionRule } | null {
   for (const action of ["deny", "ask", "allow"] as const) {
     for (const rule of rules[action]) {
       if (ruleMatches(rule, ctx)) return { action, rule };
     }
   }
   return null;
+}
+
+/**
+ * 求值：deny > ask > allow。返回 null 表示"没规则命中，走默认审批"。
+ * 这是本模块唯一的安全关键入口，改动前先看测试。
+ *
+ * 命令类工具的 target 会先按 `&& || ; |` 拆成多段，**逐段判定后取最严结论**：
+ *   - 任一段 deny → deny
+ *   - 任一段 ask  → ask
+ *   - **全部段都 allow 才允许**；只要有一段没有规则命中 → null（走默认审批）
+ *
+ * 最后这条是防绕过的关键：`Bash(git *)` 命中 `git status`，但同一串里的
+ * `rm -rf /` 不会被任何规则命中，于是整串不放行——修复"用白名单规则夹带私货"。
+ */
+export function evaluate(rules: RuleSet, ctx: PermissionContext): { action: PermissionAction; rule: PermissionRule } | null {
+  const isShell = SHELL_TOOLS.has(ctx.tool);
+  const target = ctx.target ?? "";
+  if (!isShell || !target) return evaluateSingle(rules, ctx);
+
+  const segments = splitCompound(target);
+  if (segments.length <= 1) return evaluateSingle(rules, ctx);
+
+  let sawAllow: { action: PermissionAction; rule: PermissionRule } | null = null;
+  for (const segment of segments) {
+    const decision = evaluateSingle(rules, { ...ctx, target: segment });
+    if (!decision) {
+      // 有一段没规则覆盖 → 整串不享受 allow，交回默认审批
+      return null;
+    }
+    if (decision.action === "deny") return decision;
+    if (decision.action === "ask") return decision;
+    sawAllow = decision;
+  }
+  return sawAllow;
 }
 
 /** 规则集是否为空（用于"零规则 = 零影响"的快速路径与提示）。 */

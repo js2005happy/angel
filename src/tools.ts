@@ -1,4 +1,4 @@
-// src/tools.ts — 25 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
+﻿// src/tools.ts — 25 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
 // 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
 // src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
@@ -12,7 +12,7 @@ import { join, resolve, relative, dirname, sep, posix } from "node:path";
 import { appendMemory } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
-import { evaluate, parseRules, type RuleSet } from "./permissionRules.ts";
+import { evaluate, parseRules, matchPathGlob, type RuleSet } from "./permissionRules.ts";
 import { runSeatbelt, SeatbeltUnavailableError } from "./seatbelt.ts";
 import { runWindowsSandboxed, WindowsSandboxUnavailableError } from "./windowsSandbox.ts";
 import { EvidenceStore } from "./evidence.ts";
@@ -291,6 +291,43 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
 // 本地分支 resolve 后必须在 workdir 内；后端分支不动（后端沙盒本身就是隔离）。
 // 越界时给清楚提示并允许显式放开（NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1），
 // 不静默拒绝、不直接砍功能。
+// ---- 读侧禁读清单（学 Codex 的 requirements.toml deny_read_globs）----
+// 写侧有受保护路径，读侧原来什么都没有：`.env`、`secrets/`、私钥在"只读"模式下
+// 照样能被读走并发到模型。这里补同一层：命中 glob 直接拒读，并说明怎么放开。
+const denyReadCache = new Map<string, string[]>();
+
+function denyReadGlobsFor(home: string | undefined): string[] {
+  if (!home) return [];
+  const cached = denyReadCache.get(home);
+  if (cached) return cached;
+  let globs: string[] = [];
+  try {
+    const raw = JSON.parse(readFileSync(join(home, "config.json"), "utf-8")) as Record<string, unknown>;
+    const list = raw.deny_read_globs;
+    if (Array.isArray(list)) globs = list.filter((g): g is string => typeof g === "string" && g.trim().length > 0);
+  } catch {
+    globs = [];
+  }
+  denyReadCache.set(home, globs);
+  return globs;
+}
+
+/** 测试与 doctor 用：清空禁读清单缓存（改配置后不必重启进程）。 */
+export function resetDenyReadCache(): void {
+  denyReadCache.clear();
+}
+
+/** 相对工作目录的路径是否命中禁读清单。 */
+export function isDenyReadPath(ctx: ToolContext, absPath: string): string | null {
+  const globs = denyReadGlobsFor(ctx.home);
+  if (!globs.length) return null;
+  const root = resolve(ctx.workdir);
+  const rel = (absPath.startsWith(root + sep) ? absPath.slice(root.length + 1) : absPath).replace(/\\/g, "/");
+  for (const glob of globs) {
+    if (matchPathGlob(glob, rel) || matchPathGlob(glob, rel.split("/").pop() ?? rel)) return glob;
+  }
+  return null;
+}
 export function workspaceReadPath(ctx: ToolContext, path: string): string {
   if (typeof path !== "string" || !path || path.includes("\x00")) {
     throw new ToolError("读取文件路径无效");
@@ -305,6 +342,15 @@ export function workspaceReadPath(ctx: ToolContext, path: string): string {
   if (!(target === root || target.startsWith(root + sep))) {
     throw new ToolError(`只读工具只能访问工作目录内的路径：${path}（如需读取工作目录外的内容，请设 NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1）`);
   }
+    // 读侧禁读清单：命中即拒，不把敏感内容送进模型上下文。
+    const denied = isDenyReadPath(ctx, target);
+    if (denied) {
+      throw new ToolError(
+        `拒绝读取敏感路径：${path}（命中 deny_read_globs 规则 ${denied}）\n` +
+          "这类文件通常含凭据/密钥，读进上下文等于发给了模型。\n" +
+          "确需读取请先由人类确认，并从 config.json 的 deny_read_globs 里移除该条。",
+      );
+    }
   return target;
 }
 
@@ -518,11 +564,11 @@ export function checkShellDenied(command: string): string | null {
           continue;
         }
         targets.push(arg);
-      }
+    }
       // 只拦“递归 + 强制 + 危险目标”同时满足：rm -rf /tmp/my-project 照常放行。
       if (recursive && force && targets.some(isDangerousRmTarget)) {
         return "禁止 rm -rf 删除根目录、家目录或通配路径";
-      }
+    }
     }
     // dd：of=/dev/... 写在 dd 前面还是后面都拦。
     if (seg.some((t) => t === "dd" || t.endsWith("/dd")) && seg.some((t) => /^of=\/dev\//.test(t))) {
@@ -654,13 +700,13 @@ export function applyUnifiedPatch(original: string, patch: string, relPath: stri
       const expectedFrom = `a/${relPath}`;
       if (from !== expectedFrom && from !== relPath) {
         throw new PatchError(`补丁源路径与目标不符：${from}`);
-      }
+    }
       const next = lines[i + 1] ?? "";
       if (!next.startsWith("+++ ")) throw new PatchError("补丁缺少 +++ 头");
       const to = next.slice(4).trim();
       if (to !== `b/${relPath}` && to !== relPath) {
         throw new PatchError(`补丁目标路径与目标不符：${to}`);
-      }
+    }
       if (from === "/dev/null" || to === "/dev/null") throw new PatchError("补丁不得新建或删除文件");
       seenHeader = true;
       i += 2;
@@ -686,24 +732,24 @@ export function applyUnifiedPatch(original: string, patch: string, relPath: stri
         }
         hunkLines.push({ kind: l[0], text: l.slice(1) });
         i++;
-      }
+    }
       const oldLines = hunkLines.filter((h) => h.kind !== "+").map((h) => h.text);
       if (oldLines.length !== oldCount) {
         throw new PatchError(`hunk 行数与 @@ 声明不符（声明 ${oldCount}，实际 ${oldLines.length}）`);
-      }
+    }
       const at = oldStart - 1;
       if (at < 0 || at + oldLines.length > result.length) {
         throw new PatchError("hunk 位置超出文件范围（上下文已过期）");
-      }
+    }
       for (let k = 0; k < oldLines.length; k++) {
         if (result[at + k] !== oldLines[k]) {
           throw new PatchError(`hunk 上下文不匹配（第 ${at + k + 1} 行已变化，补丁已过期）`);
         }
-      }
+    }
       const newLines: string[] = [];
       for (const h of hunkLines) {
         if (h.kind !== "-") newLines.push(h.text);
-      }
+    }
       result = [...result.slice(0, at), ...newLines, ...result.slice(at + oldLines.length)];
       continue;
     }
@@ -818,7 +864,7 @@ async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd:
         try { ctx.onEvent?.("tool_stream", { name: "shell", stream, text }); } catch { /* ignore */ }
       } else {
         omitted++;
-      }
+    }
     };
     let outBuf = "";
     let errBuf = "";
@@ -866,7 +912,7 @@ async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd:
         if (partial.trim()) message += "\n已输出：\n" + truncate(partial);
         resolvePromise(message);
         return;
-      }
+    }
       if (omitted) emit(`…（已省略 ${omitted} 行实时显示，完整输出见结果）`, "stdout");
       const elapsed = (Date.now() - started) / 1000;
       if (elapsed >= 2) emit(`（用时 ${elapsed.toFixed(1)} 秒）`, "stdout");
@@ -874,7 +920,7 @@ async function runShellStreaming(ctx: ToolContext, command: string, resolvedCwd:
       if (errLines.length) {
         if (combined && !combined.endsWith("\n")) combined += "\n";
         combined += "标准错误：\n" + errLines.join("");
-      }
+    }
       resolvePromise(truncate(combined) || "（无输出）");
     });
     child.on("error", (err: Error) => {
@@ -943,7 +989,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
     } catch (err) {
       if (err instanceof SeatbeltUnavailableError) {
         return `错误：Seatbelt 启动失败，命令未执行（未降级为裸奔）：${err.message}`;
-      }
+    }
       return `错误：Seatbelt 执行失败，命令未完成：${err instanceof Error ? err.message : String(err)}（未降级为裸奔；改用 --sandbox local 可显式退出 OS 沙箱）`;
     }
   }
@@ -982,7 +1028,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
     } catch (err) {
       if (err instanceof SandboxUnavailableError) {
         return `错误：沙箱启动失败，命令未执行（未降级为裸奔）：${err.message}`;
-      }
+    }
       return `错误：沙箱执行失败，命令未完成：${err instanceof Error ? err.message : String(err)}（未降级为裸奔；改用 --sandbox local 可显式退出 OS 沙箱）`;
     }
   }
@@ -1005,7 +1051,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
       if (stderr) {
         if (partial && !partial.endsWith("\n")) partial += "\n";
         partial += "标准错误：\n" + stderr;
-      }
+    }
       let message = `错误：命令超时（${timeout} 秒）`;
       if (partial.trim()) message += "\n已输出：\n" + truncate(partial);
       return message;
@@ -1033,7 +1079,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
       if (stderr) {
         if (combined && !combined.endsWith("\n")) combined += "\n";
         combined += "标准错误：\n" + stderr;
-      }
+    }
       finish(truncate(combined) || "（无输出）");
     });
     child.on("error", (err: Error) => {
@@ -1073,7 +1119,7 @@ async function fetchChecked(url: string, init: RequestInit, timeoutMs?: number):
         body = undefined;
         delete headers["Content-Type"];
         delete headers["content-type"];
-      }
+    }
       continue;
     }
     return res;
@@ -1162,7 +1208,7 @@ async function toolWebSearch(ctx: ToolContext, query: string, count = 8): Promis
           body += `\n\n[证据已保存：${path}]`;
         }
         return body;
-      }
+    }
       errors.push(`${name}：未返回可解析的结果`);
     } catch (err: unknown) {
       errors.push(`${name}：${err instanceof ToolError ? err.message : `请求失败（${err instanceof Error ? err.message : String(err)}）`}`);
@@ -1411,7 +1457,7 @@ async function toolGrepSearch(ctx: ToolContext, pattern: string, path = ".", reg
     if (regex) {
       try { new RegExp(pattern, caseSensitive ? "" : "i"); } catch (err: unknown) {
         return `错误：正则表达式无效：${err instanceof Error ? err.message : String(err)}`;
-      }
+    }
     }
     const flags = ["-rn"];
     if (regex) flags.push("-E");
@@ -1453,7 +1499,7 @@ async function toolGrepSearch(ctx: ToolContext, pattern: string, path = ".", reg
         walk(full);
       } else {
         files.push(full);
-      }
+    }
     }
   };
   if (statSync(root).isFile()) files.push(root);
@@ -1477,7 +1523,7 @@ async function toolGrepSearch(ctx: ToolContext, pattern: string, path = ".", reg
         })();
         found.push(`${rel.split(sep).join("/")}:${lineno + 1}: ${lines[lineno].trim().slice(0, 200)}`);
         if (found.length >= maxResults) break;
-      }
+    }
     }
   }
   if (!found.length) return "未找到匹配内容";
@@ -1604,7 +1650,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         const keys = Object.keys(updated).join(",");
         console.error(`[hook] ${name} 入参被钩子改写：${keys}`);
         Object.assign(args, updated);
-      }
+    }
     }
     const result = await (async (): Promise<string> => {
       switch (name) {
@@ -1646,7 +1692,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         return await toolPoppy(ctx, name, args);
       default:
         return `错误：未知工具 ${name}`;
-      }
+    }
     })();
     // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
     // 工具执行成功后跑 PostToolUse：只通知、不拦截，失败只警告（runHooks 内部已 fail-open）。
@@ -1734,7 +1780,7 @@ export async function verifyWriteApplied(
         return content.includes(String(args.text));
       } catch {
         return false;
-      }
+    }
     }
     if (name === "save_skill") {
       const target = join(ctx.skillsDir, `${String(args.name)}.md`);
@@ -1744,7 +1790,7 @@ export async function verifyWriteApplied(
         return content.includes(String(args.instructions));
       } catch {
         return false;
-      }
+    }
     }
     return null;
   } catch {
@@ -1846,7 +1892,7 @@ export async function executeToolIdempotent(
         if ((await verifyWriteApplied(name, args, ctx)) === true) {
           return `（注：${name} 重试后核查发现写入已生效，未重复执行。）`;
         }
-      }
+    }
     }
     // applied === null：无法核查，不盲目重试。
     return result;
