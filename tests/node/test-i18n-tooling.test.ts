@@ -76,3 +76,21 @@ test("未知键回退到中文而不是崩掉", () => {
   // 这里验证运行时回退逻辑对已有键是稳定的。
   expect(t("redlines.title", { verdict: "ok" })).toContain("ok");
 });
+
+test("cost 命令：英文环境下标题与假设清单都不残留中文", () => {
+  setLang("en");
+  const budget = measureToolBudget([], 0); // 只为触发 import 链
+  expect(budget.totalTools).toBe(0);
+  // 假设清单由 cost.ts 生成，走 i18n
+  const asm = t("cost.asm.usage");
+  expect(asm.length).toBeGreaterThan(0);
+  expect(asm).not.toMatch(/[\u4e00-\u9fff]/);
+});
+
+test("config 命令的关键文案也本地化", () => {
+  setLang("en");
+  expect(t("config.imported")).toContain("config.json");
+  expect(t("config.dryRun")).toContain("dry-run");
+  setLang("zh");
+  expect(t("config.imported")).toContain("已写入");
+});

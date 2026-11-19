@@ -13,6 +13,7 @@
 // 超支判定只在 priced 状态下成立；unpriced/missing 一律返回"无法判定"，
 // 由调用方决定是提示还是继续（默认继续，不假装封顶）。
 import type { UsageSnapshot } from "./usage.ts";
+import { t } from "./i18n.ts";
 
 export interface Pricing {
   /** 每 100 万输入 token 的美元单价。 */
@@ -207,11 +208,11 @@ export function estimateRunCost(input: EstimateRunInput): RunCostEstimate {
     pessimisticUsd: pessimistic,
     tokens: { prompt: sumPrompt(turns), completion: turns * outPerTurn },
     assumptions: [
-      `字符→token 按 ${CHARS_PER_TOKEN} 字符/token 粗算（中英混排经验值）`,
-      `每轮助手输出按 ${outPerTurn} token、每轮工具结果按 ${toolPerTurn} token`,
-      `轮次：乐观 ${Math.min(2, turns)} 轮 / 典型 ${Math.max(1, Math.ceil(turns / 2))} 轮 / 悲观 ${turns} 轮（= max_turns）`,
-      "上下文按轮次线性累积，未计入压缩带来的节省",
-      "实际花费以 provider 上报的 usage 为准；未上报时本工具不猜",
+      t("cost.asm.chars", { c: CHARS_PER_TOKEN }),
+      t("cost.asm.perTurn", { out: outPerTurn, tool: toolPerTurn }),
+      t("cost.asm.turns", { opt: Math.min(2, turns), typ: Math.max(1, Math.ceil(turns / 2)), pes: turns }),
+      t("cost.asm.context"),
+      t("cost.asm.usage"),
     ],
   };
 }

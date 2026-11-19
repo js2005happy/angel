@@ -6,6 +6,7 @@
 // 退出码：0 成功；1 导入被拒绝/写入失败；2 用法错误。
 import { readFileSync, writeFileSync } from "node:fs";
 import { loadConfig, saveConfig } from "./config.ts";
+import { t } from "./i18n.ts";
 import { exportConfig, previewImport, formatImportPreview } from "./configTransfer.ts";
 
 interface Args {
@@ -48,12 +49,12 @@ export function handleConfig(argv: string[], home: string): number {
         process.stderr.write(`写文件失败：${err instanceof Error ? err.message : String(err)}\n`);
         return 1;
       }
-      process.stdout.write(`已导出到 ${args.out}\n`);
+      process.stdout.write(t("config.exportedTo", { file: args.out }) + "\n");
     } else {
       process.stdout.write(json);
     }
     if (redacted.length) {
-      process.stderr.write(`注意：已剔除 ${redacted.length} 个密钥字段（要包含它们请加 --include-secrets）：${redacted.join("、")}\n`);
+      process.stderr.write(t("config.redactedNote", { n: redacted.length, list: redacted.join("、") }) + "\n");
     }
     return 0;
   }
@@ -74,7 +75,7 @@ export function handleConfig(argv: string[], home: string): number {
     process.stdout.write(formatImportPreview(preview, args.file) + "\n");
     if (!preview.ok) return 1;
     if (args.dryRun) {
-      process.stdout.write("（--dry-run：未写入任何文件）\n");
+      process.stdout.write(t("config.dryRun") + "\n");
       return 0;
     }
     try {
@@ -83,7 +84,7 @@ export function handleConfig(argv: string[], home: string): number {
       process.stderr.write(`写入配置失败：${err instanceof Error ? err.message : String(err)}\n`);
       return 1;
     }
-    process.stdout.write("已写入 config.json\n");
+    process.stdout.write(t("config.imported") + "\n");
     return 0;
   }
 
