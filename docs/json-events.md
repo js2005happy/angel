@@ -88,3 +88,26 @@ esac
 1. **失败必有 `class`**：`run_failed.error.class` 一定在四分类里。
 2. **`verified` 才有资格说"已验证"**：未验证运行若模型宣称完成，会先发 `completion_downgraded`，`final.content` 里带 `【未验证】` 横幅。
 3. **金额算不出就写不出数**：`cost` 事件只在 `priced` 状态发；`unpriced`/`missing` 不发假数字。
+
+---
+
+## 证据审计（P1-2）
+
+`nyra evidence verify <run-id>` 只读落盘证据，判断"这次运行到底算不算完成"——不重跑命令（重跑结果会因环境变化而不同，不能用来否定当时的结论）。
+
+| 检查 | 级别 | 抓什么 |
+|---|---|---|
+| `verified_without_cmd` | fail | 自称 verified 却没记录验证命令 |
+| `verified_without_pass` | fail | 自称 verified 但退出码非 0 |
+| `verified_without_flag` | fail | 自称 verified 但 `passed` 不是 true |
+| `failed_but_pass` | fail | 状态 verify_failed 但记录里退出码是 0 |
+| `status_unknown` / `status_missing` | fail | 记录损坏或被手改 |
+| `tests_modified` | warn | 验证通过但测试文件被改动（怀疑改测试凑绿灯） |
+| `unverified_but_pass` | warn | 状态未验证却带着通过记录 |
+| `time_inverted` | warn | `updated_at` 早于 `created_at` |
+
+退出码：`0` 自洽（可能有 warn）、`1` 发现矛盾、`2` 找不到运行。
+
+### 为什么先做"自洽"而不是"重放"
+
+重放验证命令只能证明"现在还能过"，证明不了"当时过了"。而自洽审计能抓住伪造与状态漂移——这是"不可自证即不算完成"最便宜也最硬的一道门。重放留到 `--replay`（未实现，需显式指定）。
