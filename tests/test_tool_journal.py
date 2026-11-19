@@ -271,6 +271,18 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "元数据不安全"):
                     journal.begin("shell")
 
+    def test_windows_writer_rejects_opened_reparse_handle_before_path_check(self):
+        # A clean pathname cannot certify an unsafe opened write handle.
+        from angel import tool_journal as module
+        from types import SimpleNamespace
+        written = SimpleNamespace(
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+        with mock.patch.object(module.os, "name", "nt"):
+            with mock.patch.object(module.os, "lstat", side_effect=AssertionError("path checked first")):
+                with self.assertRaisesRegex(JournalError, "重解析点"):
+                    module._verify_written_windows_entry(self.root / "event.json", written)
+
     def test_opened_windows_event_handle_reparse_is_rejected(self):
         # Simulate a Windows handle whose fstat reports a reparse point,
         # even when path-based checks appeared ordinary before open.
