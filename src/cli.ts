@@ -3,12 +3,12 @@
 // schedule 子命令 / task 子命令 / --plan / --execute-plan / --resume /
 // --resume-run / --verify / --list-providers / --list-skills / --json / --mode。
 // 终端交互按方案 2.6 末尾：审核选择器默认是、REPL 状态行、命令实时流式输出。
-// 未移植的 permissions / eigenflux 走 worker 桥（第 4 阶段），
-// 此处如实告知并指到仍可用的 Python 版，不假装跑成功。
+// permissions / eigenflux 在第 4 阶段已原生化（src/poppy.ts、src/eigenflux.ts、
+// src/eigenfluxPolicy.ts）；worker 桥与 Python 运行时已移除。
 // ui（gateway）与 MCP 客户端在第 3 阶段已原生化。
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, realpathSync, chmodSync, renameSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   loadConfig, resolveHome, resolveProvider, resolveProfile, resolveFallbackChain,
@@ -28,6 +28,9 @@ import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTas
 import { handleTask } from "./tasks.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
 import { knowledgeMain } from "./knowledge.ts";
+import { PermissionLedger, PermissionConflict } from "./poppy.ts";
+import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
+import { NetworkPolicy } from "./eigenfluxPolicy.ts";
 import { printDoctorResult, runDoctor } from "./doctor.ts";
 import { runExampleTask } from "./exampleTask.ts";
 import { printNoKeyAndExitCode } from "./noKey.ts";
@@ -35,17 +38,23 @@ import { defaultExampleFile, runWizard } from "./wizard.ts";
 import { ensureNyraHome } from "./migration.ts";
 import { ApprovalRequired, TOOL_SCHEMAS } from "./tools.ts";
 import { Vault, vaultUsage, VaultError } from "./vault.ts";
+import { runCreator, verifyStagedPlugin, installStagedPlugin, describePlannedChanges, CreatorError } from "./creator.ts";
 import { Gateway } from "./gateway.ts";
 import { GatewayClient } from "./gatewayClient.ts";
 import { ConversationStore } from "./conversations.ts";
 import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from "./rewind.ts";
 import { loadMcpServers } from "./mcp.ts";
 import { listPresets } from "./mcpPresets.ts";
+import {
+  PluginError, installPlugin, uninstallPlugin, listPlugins, verifyPlugin,
+  setPluginStatus, setPluginPinned, pluginSkillDirs, auditPlugins, searchRegistry,
+  STALE_AFTER_DAYS,
+} from "./plugins.ts";
 
 export const USAGE = `Nyra ${VERSION}（Node 运行时）
 
 用法：
-  nyra "任务" [--provider 名字] [--mode readonly|auto|full]   一次性执行任务
+  nyra "任务" [--provider 名字] [--mode readonly|auto|full|creator]   一次性执行任务
   nyra                                                        进入交互模式（REPL）
   nyra --help                    显示帮助（不用 Key、不联网）
   nyra --version                 显示版本
@@ -68,13 +77,15 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra schedule <list|add|remove|run|daemon>   管理定时任务
   nyra task <add|list|show|cancel|worker|approve>   管理后台任务队列
   nyra kb <create|list|add|search|ask|remove>  本地知识库
+  nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
+  nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
   nyra memory <export|export-prompt|import|local|import-zip>  记忆交换
   nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
   nyra setup                     首次启动向导
   nyra --example [文件]          本地示例任务（不调模型、不花钱）
-  nyra ui                        网页界面（第 3 阶段，暂走 Python 版）
-  nyra permissions ...           Poppy 站点授权（第 3 阶段，暂走 Python 版）
-  nyra eigenflux ...             EigenFlux 接入（第 3 阶段，暂走 Python 版）
+  nyra ui                        网页界面（本地网页，含模式切换与创造模式）
+  nyra permissions ...           Poppy 站点授权意向（本地账本，只记录不授权）
+  nyra eigenflux ...             EigenFlux 接入检测与本地网络限制（第 4 阶段已原生化）
 
 模型兜底默认关闭（只用户开启、只切允许列表内服务商）。`;
 
@@ -120,7 +131,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
   ]);
-  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "memory", "doctor", "setup", "vault"]);
+  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -220,21 +231,50 @@ const TRUSTED_FILE = "trusted_workspaces.json";
 
 function trustedPath(home: string): string { return join(home, TRUSTED_FILE); }
 
+/** 与 Python trust.normalize 同口径：绝对路径 + 解析符号链接，Windows 下小写。 */
+function normalizeTrustPath(p: string): string {
+  let abs = resolve(p);
+  try { abs = realpathSync(abs); } catch { /* 路径不存在时用 resolve 结果 */ }
+  return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
+/**
+ * 读信任列表，双格式兼容：Node 数组格式 ["<路径>", ...] 与 Python 字典格式
+ * {"version": 1, "folders": {"<路径>": {"trusted_at": ...}}}。损坏文件按全不信任。
+ */
+function readTrustedList(home: string): string[] {
+  let data: unknown;
+  try { data = JSON.parse(readFileSync(trustedPath(home), "utf-8")); } catch { return []; }
+  let raw: unknown[] = [];
+  if (Array.isArray(data)) raw = data;
+  else if (data && typeof data === "object") {
+    const folders = (data as Record<string, unknown>).folders;
+    if (folders && typeof folders === "object" && !Array.isArray(folders)) raw = Object.keys(folders);
+  }
+  return raw.filter((x): x is string => typeof x === "string").map((x) => normalizeTrustPath(x));
+}
+
 export function isTrusted(workdir: string, home: string): boolean {
-  try {
-    const data = JSON.parse(readFileSync(trustedPath(home), "utf-8")) as string[];
-    return Array.isArray(data) && data.includes(resolve(workdir));
-  } catch { return false; }
+  return readTrustedList(home).includes(normalizeTrustPath(workdir));
 }
 
 export function addTrusted(workdir: string, home: string): void {
   const path = trustedPath(home);
-  let list: string[] = [];
-  try { list = JSON.parse(readFileSync(path, "utf-8")) as string[]; } catch { list = []; }
-  const abs = resolve(workdir);
-  if (!list.includes(abs)) list.push(abs);
+  const list = readTrustedList(home);
+  const key = normalizeTrustPath(workdir);
+  if (!list.includes(key)) list.push(key);
   mkdirSync(home, { recursive: true });
-  writeFileSync(path, JSON.stringify(list, null, 2) + "\n", "utf-8");
+  try { chmodSync(home, 0o700); } catch { /* 忽略（如文件系统不支持） */ }
+  // 原子写 + 0600（与 Python add_trusted 同口径；旧 Python 字典格式首次写入时转为数组格式）。
+  const tmp = join(home, `.trust-${process.pid}-${Date.now()}.tmp`);
+  try {
+    writeFileSync(tmp, JSON.stringify(list, null, 2) + "\n", "utf-8");
+    try { chmodSync(tmp, 0o600); } catch { /* 忽略 */ }
+    renameSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* 清理失败不掩盖原错 */ }
+    throw err;
+  }
 }
 
 async function ensureWorkspaceTrusted(workdir: string, args: CliArgs, config: Record<string, unknown>, home: string): Promise<number | null> {
@@ -544,6 +584,175 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
 }
 
 // ---- 子命令：memory ----
+const PLUGIN_USAGE = `用法：
+  nyra plugin list                    列出已安装插件
+  nyra plugin search [关键词]         在登记表里找插件
+  nyra plugin install <本地目录|git URL>  安装插件（只装显式指定的来源）
+  nyra plugin uninstall <名字>        卸载插件（用户改过的文件保留并报告）
+  nyra plugin enable <名字>           启用插件
+  nyra plugin disable <名字>          停用插件
+  nyra plugin verify [名字]           按锁定文件验哈希（不给名字则验全部）
+  nyra plugin audit                   生命周期 + 全部验哈希
+  nyra plugin pin <名字>              固定插件（不豁免 stale，只是不自动归档）
+  nyra plugin unpin <名字>            取消固定`;
+
+async function handlePlugin(argv: string[], home: string): Promise<number> {
+  const [cmd, arg] = argv;
+  try {
+    if (cmd === "list" || cmd === undefined) {
+      const plugins = listPlugins(home);
+      if (!plugins.length) { process.stdout.write("未安装插件\n"); return 0; }
+      for (const p of plugins) {
+        process.stdout.write(`- ${p.name} ${p.version}（${p.status}${p.pinned ? "，pinned" : ""}，来源：${p.source}）\n`);
+      }
+      return 0;
+    }
+    if (cmd === "search") {
+      const found = searchRegistry(home, arg);
+      if (!found.length) { process.stdout.write("登记表里没有匹配的插件\n"); return 0; }
+      for (const e of found) {
+        process.stdout.write(`- ${e.name} ${e.version}${e.description ? `：${e.description}` : ""}（来源：${e.source}）\n`);
+      }
+      return 0;
+    }
+    if (cmd === "install") {
+      if (!arg) { process.stderr.write("缺少来源：nyra plugin install <本地目录|git URL>\n"); return 2; }
+      const res = installPlugin(home, arg);
+      process.stdout.write(`已安装 ${res.name} ${res.version}${res.upgraded ? "（升级）" : ""}\n`);
+      if (res.keptModified.length) {
+        process.stdout.write(`以下文件你改过，已保留未覆盖：${res.keptModified.join("、")}\n`);
+      }
+      return 0;
+    }
+    if (cmd === "uninstall") {
+      if (!arg) { process.stderr.write("缺少插件名：nyra plugin uninstall <名字>\n"); return 2; }
+      const res = uninstallPlugin(home, arg);
+      process.stdout.write(`已卸载 ${res.name}（删除 ${res.removed.length} 个文件）\n`);
+      if (res.keptModified.length) {
+        process.stdout.write(`以下文件你改过，已保留：${res.keptModified.join("、")}\n`);
+      }
+      return 0;
+    }
+    if (cmd === "enable" || cmd === "disable") {
+      if (!arg) { process.stderr.write(`缺少插件名：nyra plugin ${cmd} <名字>\n`); return 2; }
+      const rec = setPluginStatus(home, arg, cmd === "enable" ? "active" : "disabled");
+      process.stdout.write(`已${cmd === "enable" ? "启用" : "停用"} ${rec.name}\n`);
+      return 0;
+    }
+    if (cmd === "pin" || cmd === "unpin") {
+      if (!arg) { process.stderr.write(`缺少插件名：nyra plugin ${cmd} <名字>\n`); return 2; }
+      const rec = setPluginPinned(home, arg, cmd === "pin");
+      process.stdout.write(`已${cmd === "pin" ? "固定" : "取消固定"} ${rec.name}\n`);
+      return 0;
+    }
+    if (cmd === "verify") {
+      const targets = arg ? [arg] : listPlugins(home).map((p) => p.name);
+      if (!targets.length) { process.stdout.write("未安装插件\n"); return 0; }
+      let allOk = true;
+      for (const name of targets) {
+        const v = verifyPlugin(home, name);
+        if (!v.ok) allOk = false;
+        const bad = v.files.filter((f) => f.state === "modified" || f.state === "missing");
+        const held = v.files.filter((f) => f.state === "held");
+        process.stdout.write(`${name}：${v.ok ? "通过" : "有问题"}${bad.length ? `（${bad.map((f) => `${f.rel}:${f.state === "modified" ? "被改过" : "缺失"}`).join("、")}）` : ""}${held.length ? `（保留用户改过的文件 ${held.length} 个）` : ""}\n`);
+      }
+      return allOk ? 0 : 1;
+    }
+    if (cmd === "audit") {
+      const { staleNow, verified } = auditPlugins(home);
+      if (staleNow.length) process.stdout.write(`已降级为 stale（超过 ${STALE_AFTER_DAYS} 天没用过）：${staleNow.join("、")}\n`);
+      else process.stdout.write("没有新降级的插件\n");
+      for (const v of verified) {
+        process.stdout.write(`${v.name}：${v.ok ? "通过" : "有问题"}\n`);
+      }
+      return verified.every((v) => v.ok) ? 0 : 1;
+    }
+    process.stderr.write(`未知插件子命令：${cmd ?? ""}\n${PLUGIN_USAGE}\n`);
+    return 2;
+  } catch (err: unknown) {
+    if (err instanceof PluginError) {
+      process.stderr.write(`插件操作失败：${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
+async function handleCreator(argv: string[], home: string, workdir: string): Promise<number> {
+  const CREATOR_USAGE = "用法：\n"
+    + "  nyra creator \"<一句话需求>\" [--yes]   对齐 spec → 生成插件 → 验证 → 确认后安装\n"
+    + "  nyra creator verify <staging 目录>     只验证 staging 插件（不安装）\n"
+    + "  nyra creator install <staging 目录> [--yes]  验证后安装 staging 插件\n"
+    + "例子：nyra creator \"做个番茄钟\" --yes；nyra creator \"扫描 TODO\" --yes";
+  try {
+    const cmd = argv[0];
+    if (cmd === "verify") {
+      const dir = argv[1];
+      if (!dir) { process.stderr.write("缺少 staging 目录：nyra creator verify <目录>\n"); return 2; }
+      const report = verifyStagedPlugin(resolve(dir));
+      if (report.ok) {
+        process.stdout.write(`验证通过：${report.manifest?.name ?? "未知插件"} v${report.manifest?.version ?? "?"}\n`);
+        process.stdout.write(describePlannedChanges(report) + "\n");
+        return 0;
+      }
+      process.stderr.write(`验证未通过：\n${report.errors.map((e) => `- ${e}`).join("\n")}\n`);
+      return 1;
+    }
+    if (cmd === "install") {
+      const dir = argv[1];
+      if (!dir) { process.stderr.write("缺少 staging 目录：nyra creator install <目录> [--yes]\n"); return 2; }
+      const yes = argv.includes("--yes");
+      const report = verifyStagedPlugin(resolve(dir));
+      if (!report.ok) {
+        process.stderr.write(`验证未通过，拒绝安装：\n${report.errors.map((e) => `- ${e}`).join("\n")}\n`);
+        return 1;
+      }
+      if (!yes) {
+        process.stdout.write(describePlannedChanges(report) + "\n");
+        const choice = await askApproval("确认安装这个插件吗？");
+        if (choice !== "yes") {
+          process.stdout.write("已取消，未安装任何东西。\n");
+          return 0;
+        }
+      }
+      const { install } = installStagedPlugin(home, resolve(dir));
+      process.stdout.write(`已安装 ${install.name} ${install.version}\n`);
+      process.stdout.write(`停用：nyra plugin disable ${install.name}；卸载：nyra plugin uninstall ${install.name}\n`);
+      return 0;
+    }
+    // 默认：nyra creator "<一句话>" [--yes]
+    const request = argv.filter((a) => a !== "--yes").join(" ").trim();
+    if (!request || cmd === "--help" || cmd === "-h") {
+      process.stdout.write(CREATOR_USAGE + "\n");
+      return cmd === "--help" || cmd === "-h" ? 0 : 2;
+    }
+    const yes = argv.includes("--yes");
+    const result = await runCreator(request, { home, workdir, autoApprove: yes });
+    process.stdout.write(`spec 已存档：${result.specPath}\n`);
+    process.stdout.write(result.changes + "\n");
+    if (result.status === "awaiting-approval") {
+      const choice = await askApproval("确认安装这个插件吗？");
+      if (choice !== "yes") {
+        process.stdout.write("已取消，未安装任何东西。\n");
+        return 0;
+      }
+      const { install } = installStagedPlugin(home, result.stagingDir);
+      process.stdout.write(`已安装 ${install.name} ${install.version}\n`);
+      process.stdout.write(`停用：nyra plugin disable ${install.name}；卸载：nyra plugin uninstall ${install.name}\n`);
+      return 0;
+    }
+    process.stdout.write(`已安装 ${result.install?.name} ${result.install?.version}\n`);
+    process.stdout.write(`停用：nyra plugin disable ${result.install?.name}；卸载：nyra plugin uninstall ${result.install?.name}\n`);
+    return 0;
+  } catch (err: unknown) {
+    if (err instanceof CreatorError || err instanceof PluginError) {
+      process.stderr.write(`${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
 async function handleMemory(argv: string[], home: string): Promise<number> {
   const { exportSnapshot, importSnapshot, importChatZip, readLocalCodex, readLocalClaude, readLocalDir, EXPORT_PROMPT } = await import("./memoryExchange.ts");
   const cmd = argv[0];
@@ -931,7 +1140,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     if (!text) continue;
     if (text === "/exit" || text === "/quit") break;
     if (text === "/help") {
-      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/compact 压缩会话；/mode <readonly|auto|full> 切换模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
+      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/compact 压缩会话；/mode <readonly|auto|full|creator> 切换模式；/creator 进入创造模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
       continue;
     }
     if (text === "/clear") {
@@ -953,11 +1162,20 @@ async function runRepl(args: CliArgs): Promise<number> {
       const next = text.slice(6).trim();
       try {
         mode = validateMode(next);
-        agent.mode = mode;
-        agent.ctx.mode = mode;
+        agent.setMode(mode);
         process.stdout.write(`已切换到 ${mode} 模式。\n`);
       } catch {
-        process.stderr.write("模式必须是 readonly / auto / full。\n");
+        process.stderr.write("模式必须是 readonly / auto / full / creator。\n");
+      }
+      continue;
+    }
+    if (text === "/creator") {
+      try {
+        mode = validateMode("creator");
+        agent.setMode(mode);
+        process.stdout.write("已进入创造模式：一句话描述想要的功能，我来对齐 spec、生成插件、验证后请你确认安装。\n");
+      } catch {
+        process.stderr.write("切换到创造模式失败。\n");
       }
       continue;
     }
@@ -1052,6 +1270,136 @@ async function runRepl(args: CliArgs): Promise<number> {
   return 0;
 }
 
+const PERMISSIONS_USAGE = `用法：nyra permissions <list|check|grant|revoke|audit> [选项]
+  list [--site <站点>]                    列出本地授权意向
+  check --site <站点> --scope <scope> [--account <别名>]
+  grant --site <站点> --scope <scope> [--account <别名>] --confirm [--expect-revision <版本>]
+  revoke --site <站点> --scope <scope> [--account <别名>] [--expect-revision <版本>]
+  audit [--site <站点>] [--limit N]
+只存本地记录，不等于已登录、OAuth 授权或真实远端执行权限。
+`;
+
+const EIGENFLUX_USAGE = `用法：nyra eigenflux <doctor|onboarding|policy> [选项]
+  doctor [--room <群> --bot <机器人>] [--check]   仅做本地准备与可选 CLI 诊断
+  onboarding [--room <群> --bot <机器人>] [--check]  查看入网准备步骤（均需用户前台确认）
+  policy <show|allow|deny|audit> ...            本地网络限制账本（只记录上限，不等于官方授权）
+EigenFlux 本地适配：不负责安装、认证、外发或自动计划任务；网络权限还需独立的 ef-onboarding 前台授权。
+`;
+
+function subFlagValue(argv: string[], name: string): string | null {
+  const idx = argv.indexOf(name);
+  if (idx === -1 || idx + 1 >= argv.length) return null;
+  return argv[idx + 1];
+}
+
+function subHasFlag(argv: string[], name: string): boolean {
+  return argv.includes(name);
+}
+
+/** Poppy 站点授权意向账本（与 Python poppy_permissions_cli.py 同口径）。 */
+function handlePermissions(argv: string[], home: string): number {
+  const cmd = argv[0];
+  const rest = argv.slice(1);
+  const site = subFlagValue(rest, "--site");
+  const scope = subFlagValue(rest, "--scope");
+  const account = subFlagValue(rest, "--account");
+  const limitRaw = subFlagValue(rest, "--limit");
+  const revision = subFlagValue(rest, "--expect-revision");
+  const confirm = subHasFlag(rest, "--confirm");
+  try {
+    if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+      process.stdout.write(PERMISSIONS_USAGE);
+      return 0;
+    }
+    const ledger = new PermissionLedger(null, home);
+    let result: unknown;
+    if (cmd === "list") {
+      result = ledger.list(site);
+    } else if (cmd === "audit") {
+      result = { events: ledger.audit(site, limitRaw === null ? 30 : Number(limitRaw)) };
+    } else if (cmd === "check" || cmd === "grant" || cmd === "revoke") {
+      if (!site || !scope) {
+        process.stderr.write(`用法：nyra permissions ${cmd} --site <站点> --scope <scope> [--account <别名>]\n`);
+        return 2;
+      }
+      if (cmd === "check") result = ledger.check(site, scope, account);
+      else if (cmd === "grant") result = ledger.grant(site, scope, account, { confirmed: confirm, expectedRevision: revision });
+      else result = ledger.revoke(site, scope, account, { expectedRevision: revision });
+    } else {
+      process.stderr.write(`未知 permissions 命令：${cmd}\n`);
+      return 2;
+    }
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    return 0;
+  } catch (err: unknown) {
+    process.stderr.write(`权限账本拒绝操作：${err instanceof Error ? err.message : String(err)}\n`);
+    return err instanceof PermissionConflict ? 2 : 1;
+  }
+}
+
+/** EigenFlux 接入（与 Python eigenflux_adapter.py main() 同口径）。 */
+function handleEigenflux(argv: string[], home: string): number {
+  const cmd = argv[0];
+  const rest = argv.slice(1);
+  const room = subFlagValue(rest, "--room");
+  const bot = subFlagValue(rest, "--bot");
+  const check = subHasFlag(rest, "--check");
+  try {
+    if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+      process.stdout.write(EIGENFLUX_USAGE);
+      return 0;
+    }
+    if (cmd === "doctor") {
+      const report = eigenfluxDoctor({ root: home, room, bot, check });
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      return eigenfluxDoctorExitCode(report.status);
+    }
+    if (cmd === "onboarding") {
+      const report = eigenfluxOnboarding({ root: home, room, bot, check });
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      return 0;
+    }
+    if (cmd === "policy") {
+      const op = rest[0];
+      const capability = subFlagValue(rest, "--capability");
+      const limitRaw = subFlagValue(rest, "--limit");
+      const revision = subFlagValue(rest, "--expect-revision");
+      const confirm = subHasFlag(rest, "--confirm");
+      const gate = new NetworkPolicy({ root: home });
+      let result: unknown;
+      if (op === "allow" || op === "deny") {
+        if (!capability) {
+          process.stderr.write("allow/deny 需要 --capability\n");
+          return 2;
+        }
+        result = gate.change(op, capability, { room, bot, confirmed: confirm, expectedRevision: revision });
+      } else if (op === "show") {
+        if (capability !== null || confirm) {
+          process.stderr.write("show 不接受 --capability 或 --confirm\n");
+          return 2;
+        }
+        result = gate.show({ room, bot });
+      } else if (op === "audit") {
+        if (capability !== null || confirm) {
+          process.stderr.write("audit 不接受 --capability 或 --confirm\n");
+          return 2;
+        }
+        result = gate.audit({ room, bot, limit: limitRaw === null ? 30 : Number(limitRaw) });
+      } else {
+        process.stderr.write(`未知 policy 操作：${op ?? ""}（应为 show|allow|deny|audit）\n`);
+        return 2;
+      }
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      return 0;
+    }
+    process.stderr.write(`未知 eigenflux 命令：${cmd}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`EigenFlux 适配拒绝操作：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
 // ---- 主入口 ----
 export async function main(argv: string[]): Promise<number> {
   // spec 07：首次运行做原子迁移（~/.angel → ~/.nyra），只读 ~/.nyra。
@@ -1070,6 +1418,8 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
+  if (args.subcommand === "plugin") return handlePlugin(args.subArgs ?? [], home);
+  if (args.subcommand === "creator") return handleCreator(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "ui") {
@@ -1078,14 +1428,8 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "gw") {
     return handleGw(args.subArgs ?? []);
   }
-  if (args.subcommand === "permissions") {
-    process.stdout.write("Poppy 站点授权管理在 Node 版第 3 阶段，暂走 Python 版：python3 -m nyra permissions …\n");
-    return 2;
-  }
-  if (args.subcommand === "eigenflux") {
-    process.stdout.write("EigenFlux 接入在 Node 版第 3 阶段，暂走 Python 版：python3 -m nyra eigenflux …\n");
-    return 2;
-  }
+  if (args.subcommand === "permissions") return handlePermissions(args.subArgs ?? [], home);
+  if (args.subcommand === "eigenflux") return handleEigenflux(args.subArgs ?? [], home);
   if (args.subcommand === "doctor") {
     const { checks, allOk } = await runDoctor({ home, providerName: args.provider });
     printDoctorResult({ checks, allOk });
@@ -1180,7 +1524,7 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (args.listSkills) {
-    const skills = loadSkills([join(process.cwd(), "skills"), join(home, "skills")]);
+    const skills = loadSkills([join(process.cwd(), "skills"), join(home, "skills"), ...pluginSkillDirs(home)]);
     if (!skills.length) process.stdout.write("暂无技能\n");
     else for (const s of skills) process.stdout.write(`- ${s.name}：${s.description}\n`);
     return 0;
@@ -1225,7 +1569,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (args.sandbox && args.sandbox !== "local") {
-    process.stderr.write("错误：--sandbox e2b 在 Node 版第 3 阶段，当前只支持 local；E2B 沙盒暂走 Python 版\n");
+    process.stderr.write("错误：--sandbox e2b 在 0.4.0 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植）；当前只支持 local\n");
     return 2;
   }
   if (args.contextWindow !== null && (typeof args.contextWindow !== "number" || !Number.isInteger(args.contextWindow) || args.contextWindow < 1)) {

@@ -10,12 +10,14 @@
 // tests/node/test-agent.test.ts（缓存不变式专项）。
 import { join } from "node:path";
 import { ProviderError, type ProviderLike } from "./providers.ts";
+import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
   TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
   newToolContext, executeTool, ToolError, checkApproval,
   type ToolContext,
 } from "./tools.ts";
-import { loadSkills, matchSkills, renderSkill, type Skill } from "./skills.ts";
+import { loadSkills, matchSkills, parseSkillText, renderSkill, type Skill } from "./skills.ts";
+import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession } from "./memory.ts";
 import {
   compactMessages, shouldAutoCompact, validateAutoCompactThreshold,
@@ -61,6 +63,7 @@ export const MODE_NOTES: Record<string, string> = {
   readonly: "当前为只读模式：你只能读取文件、联网查询，不能写入文件或执行命令；外部 MCP 工具也不可调用。",
   auto: "当前为自动确认模式：写入文件、执行命令或调用外部 MCP 工具前，系统会请用户确认。",
   full: "当前为全权模式：你可以写入文件和执行命令，请谨慎操作。",
+  creator: "当前为创造模式：用户一句话描述想要的功能，你帮他搓出一个 Nyra 插件。按 creator-mode 技能走：先对齐 spec 存档，再生成插件文件，然后验证，最后把要装什么原样展示给用户、用户点头才安装。绝不安装未经验证的插件，插件默认最小权限。",
 };
 
 export type AgentEventHandler = (kind: string, data: Record<string, unknown>) => void;
@@ -97,7 +100,6 @@ export interface AgentOptions {
     execute(name: string, args: Record<string, unknown>): Promise<string> | string;
   } | null;
   multiModelFactory?: ToolContext["multiModelFactory"];
-  bridge?: ToolContext["bridge"];
 }
 
 export class Agent {
@@ -151,8 +153,10 @@ export class Agent {
     this.skillsDirs = opts.skillsDirs ?? [
       join(process.cwd(), "skills"),
       join(this.home, "skills"),
+      ...pluginSkillDirs(this.home),
     ];
     this.skills = loadSkills(this.skillsDirs);
+    this.syncCreatorSkill();
     this.mcpManager = opts.mcpManager ?? null;
     this.backend = opts.backend ?? null;
     this.checkpoints = opts.checkpointStore !== undefined
@@ -175,8 +179,31 @@ export class Agent {
       streamToolOutput: opts.streamToolOutput ?? false,
       onEvent: (kind, data) => this.emit(kind, data),
       multiModelFactory: opts.multiModelFactory,
-      bridge: opts.bridge ?? null,
     });
+  }
+
+  /**
+   * 创造模式技能随二进制走（安装包不复制 skills/ 目录）；切出创造模式时撤下。
+   * 磁盘上已有同名技能时以内嵌版不追加（磁盘版优先），避免同名技能重复出现。
+   */
+  private syncCreatorSkill(): void {
+    const has = this.skills.some((s) => s.name === CREATOR_SKILL_NAME);
+    if (this.mode === "creator") {
+      if (!has) {
+        try {
+          this.skills = [...this.skills, parseSkillText(CREATOR_SKILL_TEXT, "builtin:creator-mode")];
+        } catch { /* 内嵌技能解析失败绝不破坏主循环 */ }
+      }
+    } else if (has) {
+      this.skills = this.skills.filter((s) => s.name !== CREATOR_SKILL_NAME);
+    }
+  }
+
+  /** 切换模式（网关 /api/mode、终端 /mode 与 REPL /creator 共用）：同步模式、工具上下文与创造模式技能。 */
+  setMode(mode: string): void {
+    this.mode = mode;
+    this.ctx.mode = mode;
+    this.syncCreatorSkill();
   }
 
   emit(kind: string, data: Record<string, unknown>): void {
@@ -425,7 +452,6 @@ export class Agent {
       home: this.home,
       disabledTools: [...this.disabledTools],
       multiModelFactory: this.ctx.multiModelFactory,
-      bridge: this.ctx.bridge ?? null,
     });
     try {
       const summary = await child.run(task);
