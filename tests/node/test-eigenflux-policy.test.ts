@@ -53,7 +53,8 @@ function sha256Hex(data: string | Buffer): string {
 }
 
 async function deadPid(): Promise<number> {
-  const child = spawn("true", []);
+  // Windows 没有 true 命令：用当前运行时自身（bun/node）跑 --version 立即退出取死 pid。
+  const child = spawn(process.execPath, ["--version"]);
   const pid = child.pid!;
   await new Promise<void>((resolve) => child.on("exit", () => resolve()));
   return pid;
