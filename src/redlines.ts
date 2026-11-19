@@ -30,12 +30,15 @@ export interface RedlineThresholds {
   maxTokensPerTurn?: number;
   /** 占上下文比例达到多少算"重"。默认 0.05（5%）。 */
   maxContextRatio?: number;
+  /** 回忆超过多少天算过期（与 config.redlines.thresholds 一致）。默认 30。 */
+  recallMaxAgeDays?: number;
 }
 
 export const DEFAULT_THRESHOLDS: Required<RedlineThresholds> = {
   maxTools: 25,
   maxTokensPerTurn: 2500,
   maxContextRatio: 0.05,
+  recallMaxAgeDays: 30,
 };
 export interface RedlineInput {
   config: Record<string, unknown>;
@@ -219,6 +222,7 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
     }
   }
   // 9) 跨会话回忆：开着但没有新鲜历史 = 看起来在省，其实一点没省
+  const recallAge = { ...DEFAULT_THRESHOLDS, ...(input.thresholds ?? {}) }.recallMaxAgeDays;
   const rc = input.recall;
   if (rc) {
     if (!rc.enabled) {
@@ -241,15 +245,15 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
         code: "recall-stale",
         level: "warn",
         title: "跨会话回忆",
-        detail: `已开启，但 ${rc.total} 条历史全部超过 30 天：现值等价于关闭`,
-        fix: "回忆只认 30 天内的运行；要么近期跑一次同类任务积累历史，要么别指望它省 token",
+        detail: `已开启，但 ${rc.total} 条历史全部超过 ${recallAge} 天：现值等价于关闭`,
+        fix: `回忆只认 ${recallAge} 天内的运行；要么近期跑一次同类任务积累历史，要么别指望它省 token`,
       });
     } else {
       add({
         code: "recall-ready",
         level: "ok",
         title: "跨会话回忆",
-        detail: `已开启；${rc.fresh}/${rc.total} 条历史在 30 天内，可复用`,
+        detail: `已开启；${rc.fresh}/${rc.total} 条历史在 ${recallAge} 天内，可复用`,
       });
     }
   }
