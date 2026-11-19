@@ -296,7 +296,7 @@ test("ProvidersTest.test_fallback_does_not_switch_on_auth_error", async () => {
 test("ProvidersTest.test_fallback_all_fail_reports_all", async () => {
   const p1 = fakeProvider("p1", async () => { throw new ProviderError("boom1", { kind: "server" }); });
   const p2 = fakeProvider("p2", async () => { throw new ProviderError("boom2", { kind: "server" }); });
-  const fb = new FallbackProvider([p1, p2]);
+  const fb = new FallbackProvider([p1, p2], null, { retryDelaysMs: [0, 0] }); // 0.5.1：FallbackProvider 同一 provider 先重试（退避 1s/3s），本用例只验切换上报，退避注 0 免得超时
   let caught: unknown = null;
   try { await fb.chat([{ role: "user", content: "hi" }]); } catch (e) { caught = e; }
   expect(String((caught as Error).message)).toContain("boom1");
@@ -426,7 +426,7 @@ test("ProvidersTest.test_fast_failures_still_try_every_provider", async () => {
   const fail = (name: string): ProviderLike => fakeProvider(name, async () => {
     throw new ProviderError("server boom", { kind: "server" });
   });
-  const chain = new FallbackProvider([fail("f1"), fail("f2"), fail("f3")]);
+  const chain = new FallbackProvider([fail("f1"), fail("f2"), fail("f3")], null, { retryDelaysMs: [0, 0] }); // 0.5.1：同上，退避注 0，只验每个 provider 都被试到
   let err: unknown = null;
   try {
     await chain.chat([{ role: "user", content: "hi" }], null, 5);

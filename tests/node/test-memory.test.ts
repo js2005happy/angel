@@ -54,8 +54,12 @@ test("MemoryTest.test_load_agents_md_project_and_global", () => {
 });
 
 test("MemoryTest.test_new_session_id_format", () => {
-  const id = newSessionId(new Date("2026-11-18T12:34:56Z"));
-  expect(id).toMatch(/^20261118-123456-[0-9a-f]{4}$/);
+  // newSessionId 用本地时间分量；期望值也按本地分量算，测试在任何时区都通过。
+  const d = new Date("2026-11-18T12:34:56Z");
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const id = newSessionId(d);
+  expect(id).toMatch(new RegExp(`^${stamp}-[0-9a-f]{4}$`));
   expect(newSessionId()).toMatch(/^\d{8}-\d{6}-[0-9a-f]{4}$/);
 });
 

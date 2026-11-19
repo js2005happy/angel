@@ -174,9 +174,9 @@ test("bwrap 强制缺失时报错信息清楚：点名缺 bwrap、给安装方�
   });
 });
 
-test("e2b 保持不支持报错，文案写目标版本 0.5.0", async () => {
+test("e2b 保持不支持报错，文案写目标版本 0.5.1", async () => {
   await withEnv(cleanSandboxEnv(), () => {
-    expect(() => resolveSandboxBackend({}, "e2b")).toThrow("0.5.0 暂不支持");
+    expect(() => resolveSandboxBackend({}, "e2b")).toThrow("0.5.1 暂不支持");
   });
 });
 

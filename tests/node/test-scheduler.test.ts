@@ -87,12 +87,13 @@ test("SchedulerTest.test_is_due_interval", () => {
 });
 
 test("SchedulerTest.test_is_due_daily_at", () => {
-  const now = new Date("2026-11-18T09:00:00Z");
+  // isDue 按本地时间比较；用本地分量构造日期，测试在任何时区都通过。
+  const now = new Date(2026, 10, 18, 9, 0, 0);
   const task = validateTask({ name: "a", prompt: "x", at: "08:38" });
   expect(isDue(task, now)).toBe(true);
-  const doneToday = { ...task, last_run: new Date("2026-11-18T08:40:00Z").toISOString() };
+  const doneToday = { ...task, last_run: new Date(2026, 10, 18, 8, 40, 0).toISOString() };
   expect(isDue(doneToday, now)).toBe(false);
-  const before = new Date("2026-11-18T08:00:00Z");
+  const before = new Date(2026, 10, 18, 8, 0, 0);
   expect(isDue(task, before)).toBe(false);
 });
 
