@@ -134,6 +134,8 @@ export interface AgentOptions {
   pricing?: Pricing | null;
   /** 工具检索（延迟加载）：只发核心工具 + 命中工具，其余靠 search_tools 拉回。 */
   toolSearch?: { enabled?: boolean; topK?: number; always?: string[] } | null;
+  /** --add-dir：额外可写根（写路径校验与沙箱同时放开）。 */
+  extraDirs?: string[] | null;
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
   auxModels?: { compact?: string; delegate?: string };
   /** 父级禁用的工具名；委派时子级工具集 = 父级减禁用。 */
