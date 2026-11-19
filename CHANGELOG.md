@@ -1,3 +1,8 @@
+## 未发布（2026-11-19，POSIX 末次目录句柄探测拒绝诊断）
+
+- `ToolJournal._records()` 在末次 `os.fstat(directory_fd)` 遭遇权限拒绝等 `OSError` 时，统一抛出保留异常链的 `JournalError`，不将不可核验快照交给调用方。
+- 新增空日志目录第三次 `fstat` 失败的模拟回归测试源码；仅静态检查，未运行测试或 CI。仍不提供原子快照、跨进程锁或 Windows 原生 ACL。
+
 ## 未发布（2026-11-19，POSIX 末次日志枚举拒绝诊断）
 
 - POSIX 目录句柄二次 `os.listdir(fd)` 遭遇权限拒绝等 `OSError` 时，统一转为保留异常链的 `JournalError`，避免向上层泄漏未分类文件系统错误。补充模拟回归测试源码，未运行；不提供原子快照或跨进程锁。
