@@ -205,6 +205,12 @@ jobs:
             npx tauri build ${{ matrix.tauri_args }} --config signing-config.json
           else
             echo "Signing not configured: building unsigned"
+            # 注意：上面 job 级 env 把签名秘密映射成了环境变量，没配秘密时它们是
+            # 空字符串。Tauri 打包器只要检测到 APPLE_CERTIFICATE 存在（即使是空值）
+            # 就会尝试把它当 .p12 导入，空值导致 security import 解码失败
+            # （桌面 #23 macOS 失败的根因；0.5.0 没映射这些变量所以是绿的）。
+            # 无签名构建前必须先 unset，否则“未签名构建”会在打包阶段失败。
+            unset WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID KEYCHAIN_PASSWORD
             npx tauri build ${{ matrix.tauri_args }}
           fi
 
