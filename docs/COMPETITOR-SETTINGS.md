@@ -28,7 +28,7 @@
 | `model_reasoning_effort`（minimal/low/medium/high/xhigh） | Codex | ✅ **已做** | **做**：透传给支持的 provider，未知 provider 忽略 |
 | `model_verbosity` | Codex | ✅ **已做** | 做（同类透传） |
 | `model_reasoning_summary` | Codex | ⬜ | 观察，暂不做 |
-| **Tool Model（工具用便宜模型）** | Alma | ⬜ | **优先做**：`tool_model` 配置，工具轮/摘要走它 |
+| **Tool Model（工具用便宜模型）** | Alma | ✅ **本轮已做（默认关）** | `config.tool_model`；只用于机械续跑轮，最终答复仍走主模型 |
 | 多模型 fallback 链 | 三家 | ✅ `fallback_providers` | — |
 | `model_auto_compact_token_limit` | Codex | ✅ `auto_compact_threshold`（比例式） | 保留比例式，够用 |
 

@@ -28,6 +28,7 @@ import { runHooks } from "./hooks.ts";
   // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
+import { resolveAuxRouting } from "./modelRouting.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome, MemoryDeleteError } from "./memory.ts";
@@ -818,6 +819,8 @@ export class Gateway {
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
           home: this.home,
+          // 辅助模型路由（与 CLI 同口径）：压缩/子任务/工具续跑轮走便宜模型。
+          auxModels: (() => { const r = resolveAuxRouting(this.config, this.provider().model ?? null); return { compact: r.compact, delegate: r.delegate, tool: r.tool }; })(),
           // 单技能启停：网关起的 agent 与 CLI 同口径（config.skills.disabled）。
           skillsDisabled: (() => {
             const sk = (this.config as Record<string, unknown>).skills;

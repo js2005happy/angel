@@ -38,7 +38,7 @@ import type { WindowSource } from "./modelCatalog.ts";
 import { estimateCost, checkMonthlyCap, type CostEstimate, type Pricing } from "./cost.ts";
 import { nextMonthlyResetDate } from "./usageLedger.ts";
 import { t } from "./i18n.ts";
-import type { AuxTask } from "./modelRouting.ts";
+import { shouldUseToolModel, type AuxTask } from "./modelRouting.ts";
 import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import {
@@ -180,7 +180,7 @@ export interface AgentOptions {
   /** --add-dir：额外可写根（写路径校验与沙箱同时放开）。 */
   extraDirs?: string[] | null;
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
-  auxModels?: { compact?: string; delegate?: string };
+  auxModels?: { compact?: string; delegate?: string; tool?: string };
   /**
    * 缺口 5：对话中途手动换模型的允许列表（provider 名）。
    * 只切列表里的服务商；null = 未配置（仅供直接构造 Agent 的嵌入 /
@@ -288,7 +288,7 @@ export class Agent {
   private monthlyCostLimitUsd: number | null;
   private monthlySpentBeforeUsd: AgentOptions["monthlySpentBeforeUsd"];
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
-  private auxModels: { compact?: string; delegate?: string };
+  private auxModels: { compact?: string; delegate?: string; tool?: string };
   /** 缺口 5：对话中途手动换模型的允许列表（provider 名）；见 AgentOptions。 */
   private modelSwitchAllowlist: string[] | null;
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
@@ -852,8 +852,20 @@ export class Agent {
         messages.push(...current);
       }
       let resp: Record<string, unknown>;
+      // 工具轮路由（config.tool_model）：机械续跑走便宜模型；兜底见下。
+      const toolProvider = shouldUseToolModel(current, this.auxModels.tool) ? this.auxProvider("tool") : null;
       try {
-        resp = await this.provider.chat(current as never, schemas as never);
+        resp = await (toolProvider ?? this.provider).chat(current as never, schemas as never);
+        // 兜底：便宜模型产出「无 tool_calls 的答复」→ 用主模型重发一次。
+        // 省下的钱不能拿面向用户的答复质量换。
+        if (toolProvider) {
+          const cheapMsg = (((resp.choices as Record<string, unknown>[]) ?? [])[0]?.message ?? {}) as Record<string, unknown>;
+          const cheapCalls = (cheapMsg.tool_calls as unknown[] | undefined) ?? [];
+          if (cheapCalls.length === 0) {
+            this.emit("tool_model_escalated", { reason: "tool_model 给出最终答复，改用主模型重发" });
+            resp = await this.provider.chat(current as never, schemas as never);
+          }
+        }
       } catch (err: unknown) {
         if (err instanceof ProviderError) throw new AgentError(String(err));
         throw err;
@@ -988,7 +1000,7 @@ export class Agent {
    * **不假装切换成功**：切不过去就明确回退，由调用方把原因写进备注。
    */
   private auxProvider(task: AuxTask): ProviderLike | null {
-    const model = task === "compact" ? this.auxModels.compact : this.auxModels.delegate;
+    const model = task === "compact" ? this.auxModels.compact : task === "delegate" ? this.auxModels.delegate : this.auxModels.tool;
     if (!model) return null;
     const factory = this.ctx.multiModelFactory;
     if (!factory) return null;

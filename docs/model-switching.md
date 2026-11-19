@@ -135,3 +135,33 @@ REPL 里：
   兜底、以及 Web UI 模型卡，属于 desktop/（Hark），不在本批范围。
 - 群聊机器人中途换模型（`room.json` 改 bot 的 provider/model 后）下次
   发言生效，正在跑的那轮不换。
+
+## Tool Model：工具续跑轮走便宜模型（`config.tool_model`，默认关）
+
+一轮 agent 循环里，读工具结果、继续调工具这些**机械续跑**对模型能力要求低，却按主模型价格计费。
+
+```json
+{ "tool_model": "cheap-model" }
+```
+
+判定规则（`shouldUseToolModel`，纯函数）：
+
+| 场景 | 用谁 |
+|---|---|
+| 首轮（还没有 assistant 消息） | 主模型 |
+| 上一条 assistant 有正文（已答过用户） | 主模型 |
+| 上一条 assistant 只有 `tool_calls`、无正文 | **tool_model** |
+| 没配 `tool_model` | 主模型（默认关） |
+
+### 兜底：最终答复不交给便宜模型
+
+模型可能在「续跑轮」里直接给出最终答复。所以 agent 侧有一条硬兜底：
+**便宜模型产出的响应若没有 `tool_calls`，就用主模型重发一次**，并记 `tool_model_escalated` 事件。
+
+这条兜底意味着：最坏情况下你在最后一轮多付一次调用费，但**不会**让用户拿到便宜模型写的答复。
+省下的钱不能拿答复质量换。
+
+### 与 `compact_model` / `delegate_model` 的关系
+
+三者同属辅助路由（`resolveAuxRouting`），都会在配成"与主模型相同"时被忽略并记进 `ignored`——
+配置成同一个值等于没配，不假装优化。

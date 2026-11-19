@@ -11,13 +11,15 @@
 import type { Pricing } from "./cost.ts";
 import { resolvePricing } from "./cost.ts";
 
-export type AuxTask = "compact" | "delegate";
+export type AuxTask = "compact" | "delegate" | "tool";
 
 export interface AuxRoutingConfig {
   /** config.compact_model：压缩摘要用的模型。 */
   compactModel?: string;
   /** config.delegate_model：子 Agent 默认模型。 */
   delegateModel?: string;
+  /** config.tool_model：工具续跑轮用的便宜模型（默认不配 = 不启用）。 */
+  toolModel?: string;
   /** 主模型，用于"配成同一个就忽略"的判定。 */
   mainModel?: string | null;
 }
@@ -25,6 +27,7 @@ export interface AuxRoutingConfig {
 export interface AuxRouting {
   compact?: string;
   delegate?: string;
+  tool?: string;
   /** 被忽略的配置及原因（展示给用户，不静默吞掉）。 */
   ignored: { key: string; value: string; reason: string }[];
 }
@@ -47,15 +50,17 @@ export function resolveAuxRouting(config: Record<string, unknown> | null | undef
 
   const compact = clean(cfg.compact_model);
   const delegate = clean(cfg.delegate_model);
+  const tool = clean(cfg.tool_model);
 
-  for (const [key, value] of [["compact_model", compact], ["delegate_model", delegate]] as const) {
+  for (const [key, value] of [["compact_model", compact], ["delegate_model", delegate], ["tool_model", tool]] as const) {
     if (!value) continue;
     if (main && value === main) {
       out.ignored.push({ key, value, reason: "与主模型相同，等于没配，已忽略" });
       continue;
     }
     if (key === "compact_model") out.compact = value;
-    else out.delegate = value;
+    else if (key === "delegate_model") out.delegate = value;
+    else out.tool = value;
   }
   return out;
 }
@@ -102,4 +107,36 @@ export function describeRouting(routing: AuxRouting): string {
 /** 便捷：给定 pricing 表判断某模型是否有单价（没单价就无法估算节省）。 */
 export function hasPricingFor(pricingTable: unknown, model: string | null | undefined): boolean {
   return resolvePricing(pricingTable, model) !== null;
+}
+
+/**
+ * 工具续跑轮的判定（纯函数）：这一轮该不该用 tool_model。
+ *
+ * 边界（宁可少省，不可写坏答复）：
+ *   - **首轮不用**：第一条用户消息是意图，交给主模型
+ *   - **上一条助手消息带 tool_calls 且没有正文** → 这是机械续跑（读结果、继续调工具），用便宜模型
+ *   - **上一条助手消息有正文** → 已经给过用户答复，新输入回到主模型
+ *   - 没配 tool_model → 永远 false
+ *
+ * 残余风险：模型可能在"续跑轮"里直接给出最终答复。agent 侧对此有兜底——
+ * 便宜模型产出无 tool_calls 的答复时会用主模型重发一次（见 agent.runLoop）。
+ */
+export function shouldUseToolModel(
+  messages: readonly Record<string, unknown>[],
+  toolModel: string | null | undefined,
+): boolean {
+  if (!toolModel) return false;
+  // 找最后一条 assistant 消息
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "assistant") continue;
+    const hasText = typeof m.content === "string" && m.content.trim().length > 0;
+    const calls = Array.isArray(m.tool_calls) ? m.tool_calls.length : 0;
+    // 已经答过用户（有正文）：这轮是新意图，回主模型
+    if (hasText) return false;
+    // 有工具调用没正文：机械续跑
+    return calls > 0;
+  }
+  // 还没有任何 assistant 消息：首轮，主模型
+  return false;
 }
