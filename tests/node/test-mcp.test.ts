@@ -1,4 +1,4 @@
-// tests/node/test-mcp.test.ts — MCP 原生客户端专项（第 3 阶段）。
+﻿// tests/node/test-mcp.test.ts — MCP 原生客户端专项（第 3 阶段）。
 // 假 MCP 服务器（stdio JSON-RPC）：现代版 discover、旧版 initialize 回退、
 // tools/list 分页、tools/call、多轮往返报错；预置清单；成本上限停手。
 import { test, expect } from "bun:test";
@@ -260,12 +260,14 @@ test("McpSandbox.test_find_on_path", () => {
 });
 
 test("McpSandbox.test_manager_start_all_refuses_unavailable_backend", async () => {
+  // 用 jobobject：它在所有平台都确定性拒绝（Job Object 装不下长驻 stdio 进程）；
+  // 原来的 seatbelt 在 macOS 上其实可用，导致这条用例在 mac 上必红。
   await withCleanSandboxEnv(async () => {
     const server = fakeServerPath();
     const manager = new MCPToolManager(
       { fake: new MCPServerConfig("fake", "node", [server]) },
       10,
-      { sandbox: { backend: "seatbelt", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
+      { sandbox: { backend: "jobobject", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
     );
     let caught: unknown = null;
     try { await manager.startAll(); } catch (e) { caught = e; }
