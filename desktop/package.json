@@ -1,12 +1,11 @@
 {
   "name": "nyra-desktop",
   "private": true,
-  "version": "0.3.0",
-  "description": "Nyra desktop app (Tauri shell around `python -m nyra ui`)",
+  "version": "0.4.0",
+  "description": "Nyra desktop app (Tauri shell around the Node `nyra ui` binary)",
   "license": "SEE LICENSE IN ../LICENSE",
   "scripts": {
     "tauri": "tauri",
-    "icons": "python3 scripts/make_icons.py",
     "dev": "tauri dev",
     "build": "tauri build"
   },
