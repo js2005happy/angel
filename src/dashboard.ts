@@ -34,6 +34,13 @@ export interface DashboardSnapshot {
   missing_calls: number;
   context_window_tokens: number | null;
   context_remaining_tokens: number | null;
+  /**
+   * 已完成子任务的计价花费（美元）；没有子任务或算不出时为 null。
+   * 只报 spent_usd 会让人以为整轮才花了这么点——委派花费是旁路。
+   */
+  delegate_usd?: number | null;
+  /** spent_usd + delegate_usd（本次运行合计）；任一缺失则为 null。 */
+  run_total_usd?: number | null;
   /** 算不出金额的原因（unpriced / missing 时有值）。 */
   reason?: string;
 }
@@ -44,6 +51,8 @@ export function buildDashboardSnapshot(input: {
   maxTurns: number;
   snapshot: UsageSnapshot;
   estimate: CostEstimate;
+  /** 已完成子任务的计价花费（agent 的 delegateSpentUsd）；不给则不报这一项。 */
+  delegateUsd?: number | null;
 }): DashboardSnapshot {
   const s = input.snapshot;
   const e = input.estimate;
@@ -61,6 +70,12 @@ export function buildDashboardSnapshot(input: {
     missing_calls: s.missing_calls,
     context_window_tokens: s.context_window_tokens,
     context_remaining_tokens: s.context_remaining_tokens,
+    ...(typeof input.delegateUsd === "number" && Number.isFinite(input.delegateUsd) && input.delegateUsd > 0
+      ? {
+        delegate_usd: input.delegateUsd,
+        run_total_usd: e.spentUsd === null ? null : e.spentUsd + input.delegateUsd,
+      }
+      : {}),
     ...(e.reason ? { reason: e.reason } : {}),
   };
 }
@@ -111,7 +126,14 @@ export function formatDashboardLine(snap: DashboardSnapshot): string {
     const limit = snap.limit_usd === null
       ? t("dash.noLimit")
       : t("dash.limit", { limit: `$${snap.limit_usd.toFixed(2)}`, left: `$${(snap.remaining_usd ?? 0).toFixed(4)}` });
-    return t("dash.priced", { head, spent, limit, tokens, ctx });
+    // 委派花费是单 agent 口径的旁路：不报会让人以为整轮只花了这么多。
+    const delegate = typeof snap.delegate_usd === "number" && snap.delegate_usd > 0
+      ? t("dash.delegate", {
+        delegate: `$${snap.delegate_usd.toFixed(4)}`,
+        total: typeof snap.run_total_usd === "number" ? `$${snap.run_total_usd.toFixed(4)}` : "?",
+      })
+      : "";
+    return t("dash.priced", { head, spent: spent + delegate, limit, tokens, ctx });
   }
   return t("dash.unpriced", { head, reason: snap.reason ? localizeCostReason(snap.reason) : t("dash.noData"), tokens, ctx });
 }

@@ -167,6 +167,7 @@ const zh = {
   "dash.noLimit": "未设上限",
   "dash.limit": "上限 {limit}（剩余 {left}）",
   "dash.priced": "{head} 已花费 {spent} / {limit} · {tokens} · {ctx}",
+  "dash.delegate": "（含子任务 {delegate}，合计 {total}）",
   "dash.unpriced": "{head} 成本：未知（{reason}）· {tokens} · {ctx}",
   "dash.noData": "数据不足",
   // 无 Key / 凭据
@@ -532,6 +533,7 @@ const en: Record<MsgKey, string> = {
   "dash.noLimit": "no limit",
   "dash.limit": "limit {limit} ({left} left)",
   "dash.priced": "{head} spent {spent} / {limit} · {tokens} · {ctx}",
+  "dash.delegate": " (incl. subtasks {delegate}, total {total})",
   "dash.unpriced": "{head} cost: unknown ({reason}) · {tokens} · {ctx}",
   "dash.noData": "not enough data",
   "sum.write": "Write file: {path} ({n} chars)",

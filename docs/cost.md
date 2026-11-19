@@ -103,11 +103,20 @@ nyra stats heatmap [--weeks N]   # 默认 8 周；N 为 1–52
   本批改成先挂 `onEvent` 再建 recorder，事件既显示又落盘；
   统计头的调用数才有真实来源。
 
-## 已知缺口（本批没做）
+## 已知缺口（原「本批没做」两条，现已补齐）
 
-- 网关（`nyra ui`）的运行不进用量账本、月度硬顶也未在网关接线：
-  账本是文件，网关侧复用同一套 `UsageLedger`/`checkCost` 即可接，
-  但需要单独一批改 `src/gateway.ts` 的 agent 创建与事件转发。
-  在此之前，月度累计只覆盖 CLI 入口的运行。
-- 看板（`cost_update` 事件 / REPL 状态行）的成本段仍是单 agent 口径，
-  不含子任务花费；整轮花费以运行报告顶行与 `nyra stats` 为准。
+### 已补：网关入口的成本口径
+
+- 网关（`nyra ui`）的 agent 现在接同一套 `maxCostUsd` / `pricing` /
+  `monthlyCostLimitUsd` / `monthlySpentBeforeUsd`（见 `Gateway.costOptions()`），
+  `send()` 与定时任务两个入口都接；运行中的 `usage` / `cost_update` 事件
+  由 `Gateway.flushUsageToLedger()` 增量写账本。
+- **已知边界**：多会话并发时每个 agent 拿的是创建时刻的本月已花快照，
+  并发会话之间不保证严格互斥（要严格需给账本写入加锁）。
+
+### 已补：看板成本段含委派花费
+
+- `DashboardSnapshot` 新增 `delegate_usd` / `run_total_usd`；
+  `cost_update` 与 REPL 看板行在存在子任务花费时追加
+  `（含子任务 $x，合计 $y）`，单 agent 口径的数字仍然保留。
+- 没有子任务、或金额为 0 / 非有限值时**不加这一项**——不制造噪音，也不编造合计。
