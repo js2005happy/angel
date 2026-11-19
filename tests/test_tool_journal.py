@@ -11,6 +11,21 @@ from angel.tool_journal import JournalError, ToolJournal, MAX_EVENTS
 
 
 class JournalTests(unittest.TestCase):
+    def test_orphan_result_suppresses_other_reported_successes(self):
+        journal = ToolJournal("orphan-global-ambiguity", root=self.root)
+        completed = journal.begin("shell")
+        journal.finish(completed, "shell", success=True)
+        # A result without an intent is not merely an extra unknown call:
+        # it invalidates confidence in all other aggregate success counts.
+        journal._write("result_ok", "f" * 32, "http_post")
+        status = journal.inspect()
+        self.assertTrue(status["journal_ambiguous"])
+        self.assertEqual(status["reported_ok"], 0)
+        self.assertEqual(status["reported_errors"], 0)
+        self.assertEqual(status["unknown_outcomes"], 2)
+        with self.assertRaises(JournalError):
+            journal.begin("shell")
+
     def test_finish_rejects_competing_intent_in_final_snapshot(self):
         journal = ToolJournal("finish-final-snapshot-race", root=self.root)
         cid = journal.begin("shell")
