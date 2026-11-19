@@ -316,6 +316,20 @@ class JournalTests(unittest.TestCase):
             with self.assertRaisesRegex(JournalError, "无法核验"):
                 journal.inspect()
 
+    def test_reported_tool_error_requires_manual_review(self):
+        # An error result may follow a partially completed external effect.
+        journal = ToolJournal("reported-error-review", root=self.root)
+        call_id = journal.begin("http_post")
+        journal.finish(call_id, "http_post", success=False)
+        status = journal.inspect()
+        self.assertEqual(status["reported_errors"], 1)
+        self.assertEqual(status["unknown_outcomes"], 0)
+        self.assertFalse(status["journal_ambiguous"])
+        self.assertTrue(status["manual_review_required"])
+        self.assertEqual(status["review_reason"], "reported_errors")
+        self.assertFalse(status["execution_verified"])
+        self.assertFalse(status["safe_to_auto_resume"])
+
     def test_review_reason_distinguishes_unknown_and_ambiguous(self):
         # Metadata-only reason never authorizes tool replay or execution.
         journal = ToolJournal("review-reason", root=self.root)
