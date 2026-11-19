@@ -25,3 +25,20 @@ CLI 覆盖  >  config.json  >  环境变量（仅个别能力）  >  默认值
 - 环境变量目前只有 `NYRA_LAZY_TOOLS=0`（一票否决延迟加载）与 `NYRA_ALLOW_PROTECTED_WRITES`、`NYRA_ALLOW_READ_OUTSIDE_WORKDIR` 这类显式放开开关
 - `--enable-feature` / `--disable-feature` 对同名开关**disable 优先**
 - 想确认某次运行到底用了什么：`nyra config explain <能力>`
+
+## 管理员锁定段（`config.enforced`）
+
+对齐 Codex `requirements.toml` 的轻量版：写进 `enforced` 的键**优先于 CLI 参数与 `config import`**。
+
+```json
+{ "enforced": { "max_cost_usd": 5, "sandbox": "bwrap", "deny_read_globs": [".env", "**/*.pem"] } }
+```
+
+| 规矩 | 说明 |
+|---|---|
+| 白名单 | 只接受安全相关的键（`ENFORCEABLE_KEYS`）；名单外的写进去会被忽略**并报出来** |
+| 不静默 | 被覆盖的 CLI/配置文件值会列进 `ignoredOverrides`，你能看到自己那行为什么没生效 |
+| 双保险 | `config import` 会跳过被锁的键，导入覆盖不了 |
+| 不是强边界 | 能改文件的人仍能改 `enforced`；它挡的是「agent 顺手改配置绕过硬顶」这条现实路径 |
+
+`nyra redlines` 会报三种状态：`enforced-empty`（warn，没锁 = 红线靠自觉）、`enforced-active`（ok，列出锁了哪些）、`enforced-rejected`（warn，名单外的键被忽略）。

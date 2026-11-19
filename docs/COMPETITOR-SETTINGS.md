@@ -42,7 +42,7 @@
 | `network_access` | Codex | ✅ `sandbox_allow_net` | — |
 | **`deny_read_globs`** | Codex | 🔧 **本轮已做** | 读侧禁读清单 |
 | **Rules（prefix_rule allow/prompt/forbidden）** | Codex | 🔧 权限规则已有，**本轮补复合命令拆分** | 继续补 `prompt` 动作与 `--rules` 文件 |
-| `requirements.toml`（管理员不可覆盖） | Codex | ⬜ | 做轻量版：`nyra.json` 里 `enforced` 段 |
+| `requirements.toml`（管理员不可覆盖） | Codex | ✅ **本轮已做（轻量版）** | `config.enforced`：白名单键优先于 CLI 与 `config import` |
 | 受保护写入路径 | Codex（.git/.codex） | ✅ #31 | — |
 
 ### 子代理
