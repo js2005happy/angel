@@ -548,6 +548,19 @@ class ToolJournal:
             raise JournalError("调用 ID 未找到、已结束或日志有歧义")
         if len(records) >= MAX_EVENTS:
             raise JournalError("事件数量超限")
+        # Reject a competing unresolved intent in the final snapshot.
+        # This is not an atomic cross-process lock.
+        groups: dict[str, list[dict]] = {}
+        for record in records:
+            groups.setdefault(record["call_id"], []).append(record)
+        for other_id, events in groups.items():
+            if other_id == call_id:
+                continue
+            intents = [e for e in events if e["event"] == "intent"]
+            results = [e for e in events if e["event"] != "intent"]
+            if (len(intents) != 1 or len(results) != 1
+                    or intents[0]["tool"] != results[0]["tool"]):
+                raise JournalError("结果提交前发现并发未决调用或歧义；禁止记录结果")
         self._write("result_ok" if success else "result_error", call_id, tool)
 
     def inspect(self) -> dict:
