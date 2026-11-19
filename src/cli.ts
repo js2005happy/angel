@@ -28,6 +28,7 @@ import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
+import { summarizeSavings as summarizeCostSavings, formatSavings } from "./savingsSummary.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
@@ -255,7 +256,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang", "--channel",
   ]);
-  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats"]);
+  const subcommands = new Set(["savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -2605,7 +2606,31 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
-  if (args.subcommand === "recall") {
+  if (args.subcommand === "savings") {
+    // 把散落的省钱机制汇成一张单页：一份运行到底开了哪些、能确定省多少。
+    const cfgSav = loadConfig(home);
+    const feats = resolveFeatures(cfgSav, { enable: args.enableFeatures, disable: args.disableFeatures });
+    const disabled = [
+      ...(Array.isArray(cfgSav.disabled_tools) ? cfgSav.disabled_tools.filter((t): t is string => typeof t === "string") : []),
+      ...args.disableTools,
+    ];
+    let recallCount: number | null = null;
+    try {
+      const store = new RunStore(join(home, "runs"));
+      const taskText = (args.subArgs ?? []).join(" ").trim() || (args.task ?? "").trim();
+      if (taskText) recallCount = selectRecalledRuns(store.list(), taskText, { workdir: resolve(args.workdir), limit: 3 }).length;
+    } catch { /* 历史读不了不影响汇总 */ }
+    const summary = summarizeCostSavings({
+      config: cfgSav,
+      schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
+      disabledTools: disabled,
+      recallCount,
+      toolSearchEnabled: featureOn(feats, "tool_search"),
+      turns: typeof cfgSav.max_turns === "number" ? cfgSav.max_turns : 20,
+    });
+    process.stdout.write(formatSavings(summary) + "\n");
+    return EXIT_SUCCESS;
+  }  if (args.subcommand === "recall") {
     // 回忆是隐式注入的，出问题时只能猜。这条命令把"这次任务能复用哪些历史"摊开给人看。
     const cfgRecall = loadConfig(home);
     const taskArg = (args.subArgs ?? []).filter((a) => a !== "--cross-dir").join(" ").trim() || (args.task ?? "").trim();
