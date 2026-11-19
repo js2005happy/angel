@@ -99,6 +99,15 @@ test("Gap19.test_spawn_failure_blocks_fail_closed", async () => {
   expect(result.reason).toContain("无法启动");
 });
 
+test("Gap19.test_existing_script_exit_127_keeps_exit_code_reason", async () => {
+  // 脚本存在、内部命令缺失同样退 127：这是钩子自身出错，不写成“无法启动”
+  //（只归一化脚本文件本身不存在的那种 127）。
+  writeHook("PreToolUse", "missing-cmd.sh", "#!/bin/sh\nno_such_command_xyz_nyra\n");
+  const result = await runHooks("PreToolUse", { tool: "shell", args: { command: "echo hi" }, home, workdir });
+  expect(result.blocked).toBe(true);
+  expect(result.reason).toContain("退出码 127");
+});
+
 test("Gap19.test_prompt_handler_deny_blocks", async () => {
   writeConfig({ hooks: { PreToolUse: [{ type: "prompt", prompt: "检查调用是否合规", tools: ["shell"] }] } });
   const result = await runHooks("PreToolUse", {
