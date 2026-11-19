@@ -146,3 +146,72 @@ export function formatCost(e: CostEstimate): string {
   if (e.limitUsd === null) return `成本：${spent}（未设上限）`;
   return `成本：${spent} / 上限 $${e.limitUsd.toFixed(2)}（剩余 $${(e.remainingUsd ?? 0).toFixed(4)}）`;
 }
+
+// ---- P2-1：运行前成本预估 ----
+// 纪律：估算必须**明说假设**，且给区间而不是一个精确数字。任何"精确预估"都是骗人：
+// 实际花多少取决于模型实际吐多少 token 与工具返回多长。
+export interface EstimateRunInput {
+  /** 任务文本字符数。 */
+  taskChars: number;
+  /** 系统提示词字符数（技能/记忆/规则都算在内）。 */
+  systemChars?: number;
+  /** 预计轮次（通常是 max_turns）。 */
+  turns: number;
+  pricing: Pricing;
+  /** 每轮助手输出 token 的经验值（默认 400）。 */
+  outputTokensPerTurn?: number;
+  /** 每轮工具结果 token 的经验值（默认 800）。 */
+  toolTokensPerTurn?: number;
+}
+
+export interface RunCostEstimate {
+  optimisticUsd: number;
+  typicalUsd: number;
+  pessimisticUsd: number;
+  /** 估算用到的假设，必须原样展示给用户。 */
+  assumptions: string[];
+  /** 估算用的 token 口径，便于用户自己复核。 */
+  tokens: { prompt: number; completion: number };
+}
+
+/** 字符 → token 的粗略换算。中文按 ~1.6 字符/token，英文按 ~4 字符/token，混排取 2.5。 */
+export const CHARS_PER_TOKEN = 2.5;
+
+export function estimateRunCost(input: EstimateRunInput): RunCostEstimate {
+  const outPerTurn = Math.max(1, input.outputTokensPerTurn ?? 400);
+  const toolPerTurn = Math.max(0, input.toolTokensPerTurn ?? 800);
+  const basePrompt = Math.ceil((Math.max(0, input.taskChars) + Math.max(0, input.systemChars ?? 0)) / CHARS_PER_TOKEN);
+  const turns = Math.max(1, Math.floor(input.turns));
+
+  // 上下文随轮次累积：第 n 轮的 prompt ≈ 基础 + 前 n-1 轮的新增内容
+  const promptAt = (n: number) => basePrompt + (n - 1) * (outPerTurn + toolPerTurn);
+  const sumPrompt = (n: number) => {
+    let total = 0;
+    for (let i = 1; i <= n; i++) total += promptAt(i);
+    return total;
+  };
+
+  const scenario = (n: number) => {
+    const prompt = sumPrompt(n);
+    const completion = n * outPerTurn;
+    return computeCostUsd(prompt, completion, input.pricing) ?? 0;
+  };
+
+  const optimistic = scenario(Math.min(2, turns));
+  const typical = scenario(Math.max(1, Math.ceil(turns / 2)));
+  const pessimistic = scenario(turns);
+
+  return {
+    optimisticUsd: optimistic,
+    typicalUsd: typical,
+    pessimisticUsd: pessimistic,
+    tokens: { prompt: sumPrompt(turns), completion: turns * outPerTurn },
+    assumptions: [
+      `字符→token 按 ${CHARS_PER_TOKEN} 字符/token 粗算（中英混排经验值）`,
+      `每轮助手输出按 ${outPerTurn} token、每轮工具结果按 ${toolPerTurn} token`,
+      `轮次：乐观 ${Math.min(2, turns)} 轮 / 典型 ${Math.max(1, Math.ceil(turns / 2))} 轮 / 悲观 ${turns} 轮（= max_turns）`,
+      "上下文按轮次线性累积，未计入压缩带来的节省",
+      "实际花费以 provider 上报的 usage 为准；未上报时本工具不猜",
+    ],
+  };
+}

@@ -18,6 +18,7 @@ import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport } from "./runs.ts";
 import { resolvePricing } from "./cost.ts";
+import { handleCost } from "./costCli.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
@@ -141,7 +142,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
   ]);
-  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -1593,6 +1594,7 @@ export async function main(argv: string[]): Promise<number> {
   const home = resolveHome();
 
   // 子命令优先。
+  if (args.subcommand === "cost") { const cfgCost = loadConfig(home); return handleCost(args.subArgs ?? [], cfgCost, (cfgCost.model as string) ?? null); }
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
