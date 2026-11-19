@@ -158,7 +158,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          prerelease: true # 第 1 阶段是预览版；0.4.0 正式版在第 4 阶段再去掉
+          prerelease: false # 0.4.1 起是正式版，不再标预发布
           generate_release_notes: true
           body: |
             Nyra Node 运行时第 1 阶段预览：单文件可执行（Bun --compile）。
