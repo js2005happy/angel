@@ -99,6 +99,28 @@ export function parseSkillText(text: string, path: string): Skill {
   };
 }
 
+// 技能顺序的唯一规范来源：分层加载顺序即规范顺序，与 Agent 提示词一致。
+// 目录优先级（先出现者胜，同名只保留第一次出现）：项目 skills → 项目
+// .nyra/skills → 全局 skills → 插件 skills（调用方把 pluginSkillDirs(home)
+// 传进 pluginDirs）；同目录内按文件名排序（loadSkills 的 readdir 排序）。
+// 不按技能名排序：字母序会打乱项目层覆盖全局层的优先级表达，提示词索引、
+// --list-skills 与网关状态三处都以这个顺序为准。
+export function canonicalSkillDirs(workdir: string, home: string, pluginDirs: string[] = []): string[] {
+  return [join(workdir, "skills"), join(workdir, ".nyra", "skills"), join(home, "skills"), ...pluginDirs];
+}
+
+/** 把任意技能列表规范化为规范顺序：同名去重（先出现者胜），其余保持原顺序。 */
+export function canonicalSkillOrder(skills: Skill[]): Skill[] {
+  const seen = new Set<string>();
+  const out: Skill[] = [];
+  for (const skill of skills) {
+    if (seen.has(skill.name)) continue;
+    seen.add(skill.name);
+    out.push(skill);
+  }
+  return out;
+}
+
 export function loadSkills(dirs: string[]): Skill[] {
   const skills: Skill[] = [];
   const seen = new Set<string>();
@@ -158,7 +180,9 @@ export function renderSkill(skill: Skill): string {
 export const SKILL_INDEX_DESC_CHARS = 100;
 
 export function skillIndex(skills: Skill[]): string {
-  return skills.map((skill) => {
+  // 提示词索引同样走规范顺序：先规范化再输出，三处（提示词索引、
+  // --list-skills、网关状态）用同一来源。
+  return canonicalSkillOrder(skills).map((skill) => {
     const chars = [...(skill.description ?? "")];
     const shown = chars.length > SKILL_INDEX_DESC_CHARS
       ? chars.slice(0, SKILL_INDEX_DESC_CHARS).join("") + "…"

@@ -193,6 +193,12 @@ function runOneHook(script: string, payload: string, event: HookEvent, tool: str
       }
       // 进程被杀后 close 事件会到；再宽限 1 秒兜底，避免孤儿管道拖住。
       setTimeout(() => {
+        // 孤儿孙子进程（如钩子里的 `sleep`）可能还攥着管道写端，close 迟迟
+        // 不到：直接销毁管道，让主进程事件循环能排空——否则 /exit 或网关关停后
+        // 进程要等孙子进程退出才退得出（超时本就只取已输出的内容，不再等新输出）。
+        try { child.stdin?.destroy(); } catch { /* ignore */ }
+        try { child.stdout?.destroy(); } catch { /* ignore */ }
+        try { child.stderr?.destroy(); } catch { /* ignore */ }
         finish({ code: null, stdout: stdout.slice(0, MAX_OUTPUT_CHARS), stderr: stderr.slice(0, MAX_OUTPUT_CHARS), timedOut: true });
       }, 1000);
       // 注意：这里不立即 finish，等 close 事件先到可带回已输出的内容。

@@ -13,10 +13,11 @@ import { ProviderError, type ProviderLike } from "./providers.ts";
 import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
   TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
-  newToolContext, executeTool, ToolError, checkApproval,
+  newToolContext, executeTool, executeToolIdempotent, ToolError, checkApproval,
   type ToolContext,
 } from "./tools.ts";
-import { loadSkills, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, type Skill } from "./skills.ts";
+import { RepeatGuard } from "./repeatGuard.ts";
+import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, type Skill } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession } from "./memory.ts";
 import {
@@ -199,12 +200,7 @@ export class Agent {
     // 任务书“全局 → 项目”的写法是优先级由低到高的分层表述，代码里顺序
     // 正好反过来——先出现者胜，不要按字面把全局放最前。loadSkills 的
     // 去重语义本身未改。
-    this.skillsDirs = opts.skillsDirs ?? [
-      join(this.workdir, "skills"),
-      join(this.workdir, ".nyra", "skills"),
-      join(this.home, "skills"),
-      ...pluginSkillDirs(this.home),
-    ];
+    this.skillsDirs = opts.skillsDirs ?? canonicalSkillDirs(this.workdir, this.home, pluginSkillDirs(this.home));
     this.skills = loadSkills(this.skillsDirs);
     this.syncCreatorSkill();
     this.mcpManager = opts.mcpManager ?? null;
@@ -463,6 +459,9 @@ export class Agent {
     // 一次、逐轮不变；可变内容只出现在消息尾部。
     const system = this.buildSystemPrompt(task);
     const schemas = this.toolSchemas();
+    // OpenMausBot B 项：循环检测守卫——同一失败调用 3 次拒执行、同一成功
+    // 答案 3 次提醒 10 次停轮；停轮与耗尽时用诚实失败文案。
+    const repeatGuard = new RepeatGuard();
     const messages: Record<string, unknown>[] = [{ role: "system", content: system }, ...this.messages];
     if (!resume) {
       messages.push({ role: "user", content: task });
@@ -532,8 +531,15 @@ export class Agent {
           arguments: args !== null && typeof args === "object" ? args : argsRaw,
         });
         let result: string;
+        // OpenMausBot B 项：调用前先问守卫——同一失败调用 3 次后拒绝执行。
+        const refusal = args !== null && typeof args === "object" && !Array.isArray(args)
+          ? repeatGuard.refuseCall(fnName, args)
+          : null;
         if (args === null || typeof args !== "object" || Array.isArray(args)) {
           result = "错误：工具参数不是合法的 JSON 对象";
+        } else if (refusal !== null) {
+          // 被拒的调用不执行，直接把纸条当工具结果回填给模型。
+          result = refusal;
         } else if (fnName.startsWith("mcp_")) {
           const mcp = this.mcpManager;
           if (mcp === null || mcp === undefined) {
@@ -548,7 +554,14 @@ export class Agent {
             }
           }
         } else {
-          result = await executeTool(fnName, args, this.ctx);
+          // OpenMausBot C 项：工具失败重试须幂等（只读直接重试、写操作先查状态）。
+          result = await executeToolIdempotent(fnName, args, this.ctx);
+        }
+        // OpenMausBot B 项：调用后记一笔（被拒的不重复记）；成功同答案
+        // 3 次提醒、10 次停轮，提醒纸条附在工具结果后给模型看。
+        if (refusal === null) {
+          const note = repeatGuard.noteAfter(fnName, args ?? argsRaw, result);
+          if (note.warn) result += `\n${note.warn}`;
         }
         // 调研报告第 2 项：技能渐进披露——路径触发（学 OpenHands）：本轮工具刚
         // 触碰的文件命中某技能的 paths 时，把该技能全文确定性地追加到这次工具
@@ -568,11 +581,17 @@ export class Agent {
         messages.push({ role: "tool", tool_call_id: (tc.id as string) ?? "", content: result });
         saveSession(this.sessionId, messages.slice(1), this.home);
       }
+      if (repeatGuard.stopped) {
+        this.messages = messages.slice(1);
+        saveSession(this.sessionId, this.messages, this.home);
+        this.emit("repeat_guard_stop", { reason: "repeated_success" });
+        return repeatGuard.honestFailureText("本轮因同一调用重复返回相同答案被守卫停掉");
+      }
     }
     this.messages = messages.slice(1);
     saveSession(this.sessionId, this.messages, this.home);
     this.emit("max_turns", { max_turns: this.maxTurns });
-    return "（已达到最大轮数，任务未完成，请拆分任务或提高 --max-turns 后重试）";
+    return repeatGuard.honestFailureText("已达到最大轮数");
   }
 
   /**

@@ -18,7 +18,7 @@ import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, formatRunReport } from "./runs.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
-import { loadSkills } from "./skills.ts";
+import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { renderBanner } from "./banner.ts";
 import { formatUsage } from "./usage.ts";
 import { formatReplStatus, ToolPrinter } from "./consoleUi.ts";
@@ -42,7 +42,7 @@ import { ensureNyraHome } from "./migration.ts";
 import { ApprovalRequired, TOOL_SCHEMAS } from "./tools.ts";
 import { Vault, vaultUsage, VaultError } from "./vault.ts";
 import { runCreator, verifyStagedPlugin, installStagedPlugin, describePlannedChanges, CreatorError } from "./creator.ts";
-import { listHooks, HOOK_EVENTS } from "./hooks.ts";
+import { listHooks, runHooks, HOOK_EVENTS } from "./hooks.ts";
 import { Gateway } from "./gateway.ts";
 import { GatewayClient } from "./gatewayClient.ts";
 import { ConversationStore } from "./conversations.ts";
@@ -1223,6 +1223,26 @@ async function runRepl(args: CliArgs): Promise<number> {
     return 1;
   }
   const { agent } = built;
+  // 调研报告第 1 项：Hooks —— REPL 会话开始/结束触发 SessionStart/SessionEnd。
+  // SessionStart 在会话建立后、首个提示前等一次（fail-open：钩子故障/超时只
+  // 警告、不阻止会话开始；无钩子时 runHooks 直接返回、零 spawn）。
+  // SessionEnd 由下面的 try/finally 保证（/exit、EOF 与循环内异常都走 finally）；
+  // Ctrl+C 走 onReplSigint：尽力触发一次 SessionEnd，3 秒宽限后退出（130），
+  // 不等满 10 秒钩子超时；连按两次 Ctrl+C 时第二次走默认行为直接退出。
+  let sessionEnded = false;
+  const endSessionHooks = async (): Promise<void> => {
+    if (sessionEnded) return;
+    sessionEnded = true;
+    try { await runHooks("SessionEnd", { home, workdir }); } catch { /* 钩子通知失败不破坏退出流程 */ }
+  };
+  const onReplSigint = (): void => {
+    void (async () => {
+      await Promise.race([endSessionHooks(), new Promise((r) => setTimeout(r, 3000))]);
+      process.exit(130);
+    })();
+  };
+  process.once("SIGINT", onReplSigint);
+  try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：fail-open */ }
   const printer = new ToolPrinter();
   agent.onEvent = (kind, data) => printer.call(kind, data);
   const providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
@@ -1235,6 +1255,8 @@ async function runRepl(args: CliArgs): Promise<number> {
     rl.question(prompt, (answer) => resolvePromise(answer));
   });
   let mode = agent.mode;
+  // try/finally 只为保证 SessionEnd 一定触发：循环体不重缩进，diff 保持最小。
+  try {
   for (;;) {
     const contextUsage = agent.usage.last_prompt_tokens !== null && agent.usage.configuredWindow
       ? agent.usage.last_prompt_tokens / agent.usage.configuredWindow
@@ -1383,7 +1405,11 @@ async function runRepl(args: CliArgs): Promise<number> {
     }
     agent.ctx.approvedShellCommands?.clear();
   }
-  rl.close();
+  } finally {
+    rl.close();
+    await endSessionHooks();
+    process.removeListener("SIGINT", onReplSigint);
+  }
   process.stderr.write("本次运行用量：\n" + formatUsage(agent.usage.snapshot()) + "\n");
   return 0;
 }
@@ -1643,7 +1669,7 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (args.listSkills) {
-    const skills = loadSkills([join(process.cwd(), "skills"), join(home, "skills"), ...pluginSkillDirs(home)]);
+    const skills = loadSkills(canonicalSkillDirs(process.cwd(), home, pluginSkillDirs(home)));
     if (!skills.length) process.stdout.write("暂无技能\n");
     else for (const s of skills) process.stdout.write(`- ${s.name}：${s.description}\n`);
     return 0;

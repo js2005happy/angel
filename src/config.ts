@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getCredential } from "./vault.ts";
 
-export const VERSION = "0.5.0";
+export const VERSION = "0.5.1";
 
 export interface ProviderPreset {
   baseUrl: string | null;

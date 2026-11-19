@@ -42,13 +42,123 @@ export function kindForStatus(code: number): ProviderErrorKind {
 }
 
 export function httpError(code: number, body: string, action = "API 请求"): ProviderError {
-  const kind = kindForStatus(code);
+  // 用量上限文本优先于状态码：429 措辞像 rate limit 也可能是用量上限。
+  const kind = classifyHttpError(code, body);
   let message: string;
   if (kind === "auth") message = `认证失败 (HTTP ${code})：API Key 无效或无权限，请检查凭证。详情：${body}`;
-  else if (kind === "quota") message = `余额不足 (HTTP 402)：请充值后再试。详情：${body}`;
+  else if (kind === "quota" && code === 402) message = `余额不足 (HTTP 402)：请充值后再试。详情：${body}`;
+  else if (kind === "quota") message = `用量上限 (HTTP ${code})：已达到用量上限，请充值或等额度恢复后再试，不要重复重试。详情：${body}`;
   else if (kind === "rate_limit") message = `请求过于频繁 (HTTP 429)：请稍后再试。详情：${body}`;
   else message = `${action}失败 (HTTP ${code})：${body}`;
   return new ProviderError(message, { status: code, kind });
+}
+
+// ---- 错误分类 + 幂等重试 + 退避（OpenMausBot C 项：retry.ts 的思路，
+// TypeScript 重写，未复制对方代码）----
+
+/**
+ * 用量上限类消息文本（小写子串匹配）。关键细节：用量上限即使措辞像
+ * rate limit（例如 429 + "You've hit your weekly limit"）也判终结——
+ * 终结模式先于瞬时模式匹配，绝不重试、绝不靠重试去烧钱。
+ */
+export const QUOTA_MESSAGE_PATTERNS = [
+  "weekly limit", "monthly limit", "daily limit", "usage limit",
+  "out of usage credits", "out of credits", "credits exhausted",
+  "quota exceeded", "insufficient quota", "exceeded your quota",
+  "you've hit your", "you have hit your", "hit your limit",
+  "billing limit", "insufficient balance",
+  "用量上限", "用量已用完", "额度已用完", "余额不足", "免费额度已用完",
+];
+
+/** 安全拦截类消息文本：provider 安全拦截绝不重放。 */
+export const SAFETY_BLOCK_PATTERNS = [
+  "safety", "content filter", "content_filter", "blocked by safety",
+  "安全拦截", "内容安全", "违反内容政策",
+];
+
+/** 用户中断类消息文本：用户叫停时立即取消，不让重发活过用户的停止。 */
+export const USER_INTERRUPT_PATTERNS = [
+  "aborted by user", "cancelled by user", "canceled by user",
+  "用户已取消", "用户取消", "用户中断",
+];
+
+/** 未知模型类消息文本：换模型修不好，绝不重试。 */
+export const UNKNOWN_MODEL_PATTERNS = [
+  "model_not_found", "unknown model", "model is not supported",
+  "model not found", "模型不存在", "未知模型",
+];
+
+function matchesAnyPattern(text: string, patterns: string[]): boolean {
+  const lowered = (text || "").toLowerCase();
+  return patterns.some((p) => lowered.includes(p));
+}
+
+export function matchesQuotaMessage(text: string): boolean {
+  return matchesAnyPattern(text, QUOTA_MESSAGE_PATTERNS);
+}
+
+export function matchesSafetyBlock(text: string): boolean {
+  return matchesAnyPattern(text, SAFETY_BLOCK_PATTERNS);
+}
+
+/**
+ * HTTP 错误分类：先看消息文本里的用量上限模式，再按状态码。
+ * kindForStatus 本身不动（只按状态码），供只需要状态码的调用方用。
+ */
+export function classifyHttpError(code: number, body: string): ProviderErrorKind {
+  if (matchesQuotaMessage(body)) return "quota";
+  return kindForStatus(code);
+}
+
+/** 可重试的瞬时错误 kind：429 / 过载 / 5xx / 连接重置 / 超时。 */
+export const TRANSIENT_KINDS = ["rate_limit", "server", "timeout", "network"] as const;
+
+/** 同一 provider 失败时先重试的次数上限（不含首次调用）。 */
+export const MAX_SAME_PROVIDER_RETRIES = 2;
+/** 同一 provider 重试的退避基数（毫秒）：1s / 3s，再加 ±25% 抖动。 */
+export const PROVIDER_RETRY_BACKOFF_MS = [1000, 3000] as const;
+
+/**
+ * 只有瞬时错误可重试。终结错误绝不重试：用量上限（即使 kind 是
+ * rate_limit、即使状态码是 429，消息文本优先）、认证、未知模型、
+ * 无效请求、404、用户中断、安全拦截。
+ */
+export function isTransientProviderError(exc: unknown): boolean {
+  if (!(exc instanceof ProviderError)) return false;
+  const text = exc.message ?? "";
+  if (matchesQuotaMessage(text)) return false;
+  if (matchesSafetyBlock(text)) return false;
+  if (matchesAnyPattern(text, USER_INTERRUPT_PATTERNS)) return false;
+  if (matchesAnyPattern(text, UNKNOWN_MODEL_PATTERNS)) return false;
+  return (TRANSIENT_KINDS as readonly string[]).includes(exc.kind);
+}
+
+/** 退避抖动：基数 ±25%（Math.random 可注入，供测试定住）。 */
+export function jitteredDelayMs(baseMs: number, random: () => number = Math.random): number {
+  return baseMs * (0.75 + random() * 0.5);
+}
+
+/** 第 attempt 次重试（0 起）的退避毫秒数。 */
+export function providerRetryDelayMs(attempt: number, random: () => number = Math.random): number {
+  const base = PROVIDER_RETRY_BACKOFF_MS[Math.min(attempt, PROVIDER_RETRY_BACKOFF_MS.length - 1)] ?? 1000;
+  return jitteredDelayMs(base, random);
+}
+
+/** 可中断的睡眠：signal 已 abort 时立即拒绝，不让重发活过用户的停止。 */
+export function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(new Error("已取消"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error("已取消"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** 单次模型调用默认超时（秒）。第 4 阶段由 120 收紧到 60：假 Key/挂起的
@@ -569,16 +679,39 @@ export interface SwitchRecord {
   status: number | null;
 }
 
+export interface RetryRecord {
+  provider: string;
+  attempt: number;
+  kind: ProviderErrorKind;
+  delayMs: number;
+}
+
+export interface FallbackProviderOptions {
+  /** 同一 provider 重试的退避基数（毫秒），默认 PROVIDER_RETRY_BACKOFF_MS。测试可传 [0, 0] 定住。 */
+  retryDelaysMs?: number[];
+  /** 睡眠实现，默认 sleepMs（可中断）；测试可注入立即返回的版本。 */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  onRetry?: ((record: RetryRecord) => void) | null;
+}
+
 export class FallbackProvider implements ProviderLike {
   providers: ProviderLike[];
   onSwitch: ((record: SwitchRecord) => void) | null;
   activeIndex = 0;
   switches: SwitchRecord[] = [];
+  /** 同一 provider 的重试记录（网页端可展示，与 switches 并列）。 */
+  retries: RetryRecord[] = [];
+  retryDelaysMs: number[];
+  private retrySleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  onRetry: ((record: RetryRecord) => void) | null;
 
-  constructor(providers: ProviderLike[], onSwitch?: ((record: SwitchRecord) => void) | null) {
+  constructor(providers: ProviderLike[], onSwitch?: ((record: SwitchRecord) => void) | null, opts: FallbackProviderOptions = {}) {
     if (!providers.length) throw new Error("FallbackProvider needs at least one provider");
     this.providers = [...providers];
     this.onSwitch = onSwitch ?? null;
+    this.retryDelaysMs = opts.retryDelaysMs ?? [...PROVIDER_RETRY_BACKOFF_MS];
+    this.retrySleep = opts.sleep ?? ((ms, signal) => sleepMs(ms, signal));
+    this.onRetry = opts.onRetry ?? null;
   }
 
   get name(): string { return this.providers[this.activeIndex].name; }
@@ -597,30 +730,72 @@ export class FallbackProvider implements ProviderLike {
     return this.providers[this.activeIndex].listModels(timeout);
   }
 
-  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout()): Promise<Record<string, unknown>> {
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout(), opts?: { signal?: AbortSignal }): Promise<Record<string, unknown>> {
     const attempted: [string, string][] = [];
     // 总预算：整条链最多花 2× 单次超时，不让 N 个挂起的 provider 各等满一份超时。
+    // 同一 provider 的重试同样受该预算约束：剩余时间不够“一次退避 + 一次
+    // 重试（重试超时按剩余预算封顶）”时直接改走切换，免得重试吃光预算。
     const started = Date.now();
     const budgetMs = timeout * 2 * 1000;
-    for (let index = 0; index < this.providers.length; index++) {
+    providerLoop: for (let index = 0; index < this.providers.length; index++) {
       const provider = this.providers[index];
       const remainingMs = budgetMs - (Date.now() - started);
       if (index > 0 && remainingMs < 100) break;
-      const attemptTimeout = index === 0 ? timeout : Math.min(timeout, remainingMs / 1000);
-      try {
-        const result = await provider.chat(messages, tools, attemptTimeout);
-        this.activeIndex = index;
-        return result;
-      } catch (exc: unknown) {
-        if (!(exc instanceof ProviderError)) throw exc;
-        attempted.push([provider.name, String(exc.message)]);
-        if (!exc.recoverable) throw exc;
-        if (index + 1 >= this.providers.length) break;
-        const nxt = this.providers[index + 1];
-        const record: SwitchRecord = { from: provider.name, to: nxt.name, error: String(exc.message), kind: exc.kind, status: exc.status };
-        this.switches.push(record);
-        this.activeIndex = index + 1;
-        this.onSwitch?.(record);
+      const attemptTimeout0 = index === 0 ? timeout : Math.min(timeout, remainingMs / 1000);
+      let attemptTimeout = attemptTimeout0;
+      let attempt = 0;
+      let logged = false;
+      while (true) {
+        try {
+          const result = await provider.chat(messages, tools, attemptTimeout);
+          this.activeIndex = index;
+          return result;
+        } catch (exc: unknown) {
+          if (!(exc instanceof ProviderError)) throw exc;
+          if (!logged) {
+            logged = true;
+            attempted.push([provider.name, String(exc.message)]);
+          }
+          // 同一 provider 先重试（至多 2 次，退避 1s/3s + ±25% 抖动，可中断）：
+          // 只有瞬时错误可重试。切换判定不动——quota 仍按现有
+          // RECOVERABLE_KINDS 处理是否切换（见下面的 recoverable 检查）；
+          // 用量上限是否应触发切换，由总协调另定，本处不擅自改。
+          if (isTransientProviderError(exc) && attempt < MAX_SAME_PROVIDER_RETRIES) {
+            const base = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)] ?? 1000;
+            const delay = jitteredDelayMs(base);
+            const leftMs = budgetMs - (Date.now() - started);
+            // 重试还要再花一次 attempt：剩余预算必须够“退避 + 再试一次”，
+            // 再试的超时按剩余预算封顶（太短就没意义，直接改走切换）。
+            // 否则重试一个挂起的 provider 会把本该留给下一个 provider 的
+            // 预算吃光（每次重试都等满一份超时），链上后面的 provider 一次
+            // 都试不到——0.5.1 集成验收抓到的真 bug。
+            const retryTimeout = Math.min(attemptTimeout, (leftMs - delay - 100) / 1000);
+            if (retryTimeout >= 0.2) {
+              const record: RetryRecord = {
+                provider: provider.name, attempt: attempt + 1, kind: exc.kind, delayMs: Math.round(delay),
+              };
+              this.retries.push(record);
+              this.onRetry?.(record);
+              attempt += 1;
+              attemptTimeout = retryTimeout;
+              try {
+                await this.retrySleep(delay, opts?.signal);
+              } catch {
+                // 睡眠被中断（用户叫停）：不再重发，立即按原错抛出。
+                throw exc;
+              }
+              continue;
+            }
+          }
+          if (!exc.recoverable) throw exc;
+          if (index + 1 >= this.providers.length) break providerLoop;
+          const nxt = this.providers[index + 1];
+          const record: SwitchRecord = { from: provider.name, to: nxt.name, error: String(exc.message), kind: exc.kind, status: exc.status };
+          this.switches.push(record);
+          this.activeIndex = index + 1;
+          this.onSwitch?.(record);
+          continue providerLoop;
+        }
       }
     }
     const detail = attempted.map(([n, e]) => `${n}：${e}`).join("；");

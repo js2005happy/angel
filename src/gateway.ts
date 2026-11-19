@@ -17,17 +17,19 @@ import { networkInterfaces } from "node:os";
 import { Agent } from "./agent.ts";
 import {
   loadConfig, resolveProfile, resolveProvider, resolveFallbackChain, validateMode,
-  getProviderPresets, VERSION, VALID_MODES, type ResolvedProvider,
+  getProviderPresets, VERSION, VALID_MODES, resolveSandbox, type ResolvedProvider,
 } from "./config.ts";
 import { Provider, buildProviderChain, type ProviderLike } from "./providers.ts";
 import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS } from "./tools.ts";
+import { runHooks } from "./hooks.ts";
+import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome } from "./memory.ts";
 import { ConversationStore } from "./conversations.ts";
 import { trimOldToolResults, GATEWAY_COMPACT_THRESHOLD, DEFAULT_AUTO_COMPACT_THRESHOLD, validateAutoCompactThreshold } from "./compact.ts";
 import { loadSchedule, saveSchedule, schedulePath, listScheduleTasks, removeScheduleTask, runDueTasks, type ScheduleTask } from "./scheduler.ts";
 import { appendInbox } from "./tasks.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
-import { loadSkills } from "./skills.ts";
+import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { contextLimit } from "./usage.ts";
 import { MCPToolManager, buildMcpManager } from "./mcp.ts";
@@ -97,6 +99,10 @@ export interface SessionRun {
   error: string;
   pending: PendingApproval | null;
   baseMessages: Record<string, unknown>[];
+  /** 会话钩子：SessionStart 是否已触发过（只触发一次，见 fireSessionStart）。 */
+  hooksStarted?: boolean;
+  /** 会话钩子：SessionEnd 是否已触发过（只触发一次，见 fireSessionEnd）。 */
+  hooksEnded?: boolean;
 }
 
 export interface GatewayOptions {
@@ -261,7 +267,8 @@ export class Gateway {
 
   newSession(): string {
     const sid = newSessionId();
-    this.getRun(sid);
+    const run = this.getRun(sid);
+    this.fireSessionStart(run);
     return sid;
   }
 
@@ -452,7 +459,7 @@ export class Gateway {
     });
     out.tool_count = (out.tools as unknown[]).length;
     try {
-      out.skills = loadSkills([join(process.cwd(), "skills"), join(this.home, "skills"), ...pluginSkillDirs(this.home)])
+      out.skills = loadSkills(canonicalSkillDirs(this.workdir, this.home, pluginSkillDirs(this.home)))
         .map((s) => ({ name: s.name, description: s.description }));
     } catch { out.skills = []; }
     out.smart_approvals = { reviewer_enabled: reviewerEnabled(this.config) };
@@ -576,6 +583,55 @@ export class Gateway {
     return true;
   }
 
+  // -- sandbox（调研报告第 9 项，网关接线） -------------------------------
+  /**
+   * 网关沙箱配置：与 CLI buildAgent 同一套来源与优先级——config.json 的
+   * sandbox / sandbox_mode / sandbox_allow_net + NYRA_SANDBOX* 环境变量
+   *（见 config.resolveSandbox / sandbox.resolveSandboxBackend），不另发明配置键。
+   * 这里再做一次 fail-closed 校验（与 CLI 相同）：显式 bwrap 缺失、e2b、
+   * danger-full-access + bwrap 时抛错，会话不启动（send 里转成 error 状态）；
+   * auto 回落到工具级不报错。默认断网（allowNet=false）。
+   * 钩子不在沙箱内跑：PreToolUse/PostToolUse 仍在宿主机上由 tools.ts 触发。
+   */
+  private sandboxSettings(): { backend: string | null; mode: SandboxMode; allowNet: boolean } {
+    const settings = resolveSandbox(this.config);
+    resolveSandboxBackend(this.config);
+    return { backend: settings.backend, mode: settings.mode as SandboxMode, allowNet: settings.allowNet };
+  }
+
+  // -- session hooks（调研报告第 1 项，会话生命周期） ----------------------
+  /**
+   * 会话钩子触发点（网关侧）：SessionStart 在会话新建（newSession）或首次
+   * send 建 Agent 成功后触发；SessionEnd 在网关关停（stop）时为每个已开始
+   * 的会话触发。网关没有逐会话关闭接口，所以没有更细的结束点——会话在
+   * 网关里一直活到关停，见 docs/hooks.md。
+   * 约定与 CLI 侧一致：超时走 config.json hooks.timeout_ms（runHooks 内
+   * clamp 到 1–120 秒，默认 10 秒）、fail-open、退出码 2 只通知不拦截；
+   * 无钩子时 runHooks 直接返回、不 spawn。SessionStart 不阻塞 HTTP 响应，
+   * 以 fire-and-forget 方式触发；SessionEnd 在 stop 里 await，等钩子跑完
+   * （有超时封顶）再关停，避免进程退出把钩子杀在半路。
+   */
+  private fireSessionStart(run: SessionRun): void {
+    if (run.hooksStarted) return;
+    run.hooksStarted = true;
+    void runHooks("SessionStart", { home: this.home, workdir: this.workdir }).catch(() => {
+      // runHooks 本身已 fail-open；这里再兜一层，钩子故障绝不影响会话。
+    });
+  }
+
+  /**
+   * 触发一次 SessionEnd。未开始过（hooksStarted 为假）或已触发过时返回 null；
+   * 否则返回钩子 Promise，由 stop() 统一 await。
+   */
+  private fireSessionEnd(run: SessionRun): Promise<void> | null {
+    if (!run.hooksStarted || run.hooksEnded) return null;
+    run.hooksEnded = true;
+    return runHooks("SessionEnd", { home: this.home, workdir: this.workdir }).then(
+      () => {},
+      () => { /* 同上：钩子故障不破坏关停流程。 */ },
+    );
+  }
+
   // -- running ------------------------------------------------------------
   send(sessionId: string, text: string): SessionRun {
     const run = this.getRun(sessionId);
@@ -597,6 +653,11 @@ export class Gateway {
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
           home: this.home,
+          // 调研报告第 9 项：OS 级分级沙箱（网关接线）——与 CLI buildAgent 同语义：
+          // 配置 + 环境变量解析、fail-closed 校验在 sandboxSettings 里；Agent 再
+          // 透传给 ToolContext，shell 执行时由 toolShell 解析生效（含 auto 回落
+          // 提示一次、默认断网）。钩子仍在宿主机跑，不进沙箱。
+          sandbox: this.sandboxSettings(),
         });
       } else {
         run.agent.setMode(this.mode);
@@ -607,6 +668,9 @@ export class Gateway {
       run.error = `无法启动：${err instanceof Error ? err.message : String(err)}`;
       return run;
     }
+    // 调研报告第 1 项：经 send 隐式建出的会话（未走 newSession）也在这里补
+    // 一次 SessionStart；fireSessionStart 自带去重，只触发一次。
+    this.fireSessionStart(run);
     this.record(run, "user", { content: text });
     try { this.store.record(sessionId, "user", text); } catch { /* 存档失败不阻塞运行 */ }
     this.rememberProject(sessionId);
@@ -806,6 +870,9 @@ export class Gateway {
             workdir: this.workdir, mode: this.mode, maxTurns: this.maxTurns ?? 20,
             sessionId: `schedule-${task.name}`, interactive: false, home: this.home,
             mcpManager: null,
+            // 调研报告第 9 项：定时任务用的 Agent 也接沙箱（与 send 同一套解析；
+            // 配置非法时这里抛错，tick 的 catch 会记日志，任务不裸奔执行）。
+            sandbox: this.sandboxSettings(),
           });
           const out = await agent.run(task.prompt);
           appendInbox(`schedule-${task.name}`, "ok", out.slice(0, 200), this.home);
@@ -1348,6 +1415,12 @@ export class Gateway {
 
   async stop(): Promise<void> {
     this.stopScheduler();
+    // 调研报告第 1 项：网关关停 = 全部 live 会话结束，为每个已开始的会话
+    // 触发一次 SessionEnd（fireSessionEnd 自带去重；无钩子时立即返回）。
+    // 这里 await 是有意的：关停后进程很快退出，不等钩子跑完就可能把它杀在半路。
+    await Promise.allSettled(
+      [...this.runs.values()].map((run) => this.fireSessionEnd(run) ?? Promise.resolve()),
+    );
     if (this.discoverySocket) { try { this.discoverySocket.close(); } catch { /* ignore */ } this.discoverySocket = null; }
     if (this.mcpManager) { try { this.mcpManager.stopAll(); } catch { /* ignore */ } this.mcpManager = null; }
     if (this.server) {

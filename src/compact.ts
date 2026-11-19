@@ -3,7 +3,7 @@
 // 压缩顺序：先剪旧工具结果（不调 LLM）→ 再选边界 → 最后辅助模型结构化摘要。
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadSession, saveSession } from "./memory.ts";
+import { loadSession, saveSession, loadMemorySummary, loadAgentsMd } from "./memory.ts";
 
 export const COMPACT_SYSTEM_INSTRUCTION =
   "你是会话压缩助手。把以下对话压缩成一份要点摘要（中文，不超过 800 字），" +
@@ -183,18 +183,44 @@ export async function compactMessages(
   }
 }
 
+// 调研报告第 3 项：上下文补齐（学 Claude Code）——与 Agent.postCompactReReadNote
+// 同源的文件级重读备注：记忆取 loadMemorySummary 末 40 行，规则取 loadAgentsMd
+// 末尾段落；文件不存在或读失败时返回 null，不追加、不破坏压缩流程。
+export function buildSessionReReadNote(
+  home?: string,
+  workdir?: string,
+  memoryPath?: string,
+): string | null {
+  try {
+    return buildReReadNote(
+      loadMemorySummary(40, memoryPath, home),
+      loadAgentsMd(workdir ?? process.cwd(), home),
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function compactSessionFile(
   sessionId: string,
   provider: { chat(messages: unknown[], tools?: unknown, timeout?: number): Promise<Record<string, unknown>> },
   keepLast = 4,
   sessionsDir?: string,
   home?: string,
+  // 调研报告第 3 项：上下文补齐——与 REPL / Agent.compact() 一致，默认压缩成功后
+  // 自动重读记忆与规则（见 buildSessionReReadNote）；opts.reRead 显式传入时
+  // （含 null）优先于自动计算，null 表示不重读。失败回退时 compactMessages
+  // 本身不追加 reRead，与 REPL 的约定一致。
+  opts?: { workdir?: string; memoryPath?: string; reRead?: string | null },
 ): Promise<Record<string, unknown>> {
   const dir = sessionsDir ?? join(home ?? process.env.NYRA_HOME ?? "", "sessions");
   const path = join(dir, `${sessionId}.jsonl`);
   if (!existsSync(path)) throw new Error(`会话不存在：${sessionId}`);
   const messages = (loadSession(sessionId, home) ?? []) as ChatMessageLike[];
-  const [newMessages, info] = await compactMessages(provider, messages, keepLast);
+  const reRead = opts && "reRead" in opts
+    ? (opts.reRead ?? null)
+    : buildSessionReReadNote(home, opts?.workdir, opts?.memoryPath);
+  const [newMessages, info] = await compactMessages(provider, messages, keepLast, { reRead });
   saveSession(sessionId, newMessages as Record<string, unknown>[], home);
   return info;
 }

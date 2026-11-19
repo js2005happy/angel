@@ -28,6 +28,7 @@ import {
 } from "./sandbox.ts";
 import { discoverPoppy, inspectPoppyIdentity, PermissionLedger } from "./poppy.ts";
 import { assertPublicUrl } from "./net.ts";
+import { isToolErrorResult } from "./repeatGuard.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -1494,5 +1495,153 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     if (err instanceof TypeError) return `错误：工具参数不正确：${err.message}`;
     return `执行失败：${(err as Error)?.name ?? "Error"}: ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+// ---- 幂等重试（OpenMausBot C 项：mayResendTurn 的思路，TypeScript 重写）----
+//
+// 工具调用失败重试须幂等：重试不重复产生副作用。
+//   只读工具：无副作用，可直接重试；
+//   写操作：重试前先读回目标状态核查是否已生效——已生效则不再执行，
+//     未生效才重试，无法核查的不盲目重试（直接返回原错误）。
+// 注意：每次重试都会重新走审批（checkApproval）与钩子（HOOKED_TOOLS）；
+// 会话级“始终允许”授权能覆盖同一目标时不再打扰用户。
+
+/** 可安全直接重试的只读工具（无副作用）。截图类工具不在内：每次执行都会在本地多存一个截图文件。 */
+export const READONLY_TOOLS = new Set([
+  "read_file", "list_dir", "grep_search", "git_status",
+  "web_fetch", "web_search", "read_skill",
+  "poppy_discover", "poppy_identity_check", "poppy_permission_check",
+]);
+
+/** 工具失败后的重试次数上限（不含首次调用）。只读与可核查写操作共用。 */
+export const TOOL_MAX_RETRIES = 2;
+/** 工具重试的退避（毫秒）：短退避，模型侧重试不等 provider 的 1s/3s/8s。 */
+export const TOOL_RETRY_DELAYS_MS = [200, 500] as const;
+
+/** 读回原始文件内容做核查（不走 truncate：长文件截断后比对会误判未生效）。 */
+function readRawForVerify(ctx: ToolContext, path: string): string | null {
+  try {
+    if (ctx.backend?.readFile) {
+      const content = ctx.backend.readFile(resolveBackendPath(ctx, path));
+      return content.startsWith("错误：") ? null : content;
+    }
+    const target = workspaceReadPath(ctx, path);
+    if (!existsSync(target) || !statSync(target).isFile()) return null;
+    return readFileSync(target, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 写操作重试前的状态核查：读回目标状态，确认本次写入是否已生效。
+ * 返回 true = 已生效（不再执行）、false = 未生效（可以重试）、
+ * null = 无法核查（不盲目重试）。只有能确定性读回的写操作才可核查：
+ * write_file / edit_file / plan / memory_append / save_skill；
+ * apply_patch、shell、http_post、浏览器 / 电脑操作、delegate、mcp
+ * 无法通用核查，一律返回 null。
+ */
+export async function verifyWriteApplied(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<boolean | null> {
+  try {
+    if (name === "write_file") {
+      const content = readRawForVerify(ctx, String(args.path));
+      if (content === null) return false;
+      return content === String(args.content);
+    }
+    if (name === "edit_file") {
+      const content = readRawForVerify(ctx, String(args.path));
+      if (content === null) return false;
+      return content.includes(String(args.new_text));
+    }
+    if (name === "plan") {
+      const steps = Array.isArray(args.steps) ? (args.steps as string[]) : [];
+      const expected = `# ${String(args.title)}\n\n` +
+        steps.map((s, i) => `${i + 1}. ${s}`).join("\n") + "\n";
+      const content = readRawForVerify(ctx, args.path === undefined ? "plan.md" : String(args.path));
+      if (content === null) return false;
+      return content === expected;
+    }
+    if (name === "memory_append") {
+      try {
+        const content = readFileSync(ctx.memoryPath, "utf-8");
+        return content.includes(String(args.text));
+      } catch {
+        return false;
+      }
+    }
+    if (name === "save_skill") {
+      const target = join(ctx.skillsDir, `${String(args.name)}.md`);
+      try {
+        if (!existsSync(target) || !statSync(target).isFile()) return false;
+        const content = readFileSync(target, "utf-8");
+        return content.includes(String(args.instructions));
+      } catch {
+        return false;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export interface IdempotentRetryOptions {
+  maxRetries?: number;
+  delaysMs?: number[];
+  sleep?: (ms: number) => Promise<void>;
+  /** 测试注入的执行器，默认 executeTool。 */
+  executor?: (name: string, args: Record<string, unknown>, ctx: ToolContext) => Promise<string>;
+}
+
+/**
+ * 幂等执行一次工具调用：成功直接返回；失败时按工具性质决定是否重试。
+ * 只读工具直接重试；写操作先核查状态（已生效 → 报告已生效、不再执行；
+ * 未生效 → 重试；无法核查 → 返回原错误）。审批拒绝（ApprovalRequired）
+ * 直接冒泡，绝不重试。
+ */
+export async function executeToolIdempotent(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+  opts: IdempotentRetryOptions = {},
+): Promise<string> {
+  const exec = opts.executor ?? executeTool;
+  const maxRetries = opts.maxRetries ?? TOOL_MAX_RETRIES;
+  const delays = opts.delaysMs ?? [...TOOL_RETRY_DELAYS_MS];
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let result = await exec(name, args, ctx);
+  if (!isToolErrorResult(result)) return result;
+  if (READONLY_TOOLS.has(name)) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      await sleep(delays[Math.min(attempt, delays.length - 1)] ?? 0);
+      result = await exec(name, args, ctx);
+      if (!isToolErrorResult(result)) return result;
+    }
+    return result;
+  }
+  if (MUTATING_TOOLS.has(name)) {
+    const applied = await verifyWriteApplied(name, args, ctx);
+    if (applied === true) {
+      return `（注：${name} 首次调用虽返回错误，但重试前核查发现写入已生效，未重复执行。）`;
+    }
+    if (applied === false) {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        await sleep(delays[Math.min(attempt, delays.length - 1)] ?? 0);
+        result = await exec(name, args, ctx);
+        if (!isToolErrorResult(result)) return result;
+        // 重试又失败：再核查一次，期间生效了就不再继续。
+        if ((await verifyWriteApplied(name, args, ctx)) === true) {
+          return `（注：${name} 重试后核查发现写入已生效，未重复执行。）`;
+        }
+      }
+    }
+    // applied === null：无法核查，不盲目重试。
+    return result;
+  }
+  return result;
 }
 
