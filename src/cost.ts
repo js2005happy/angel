@@ -259,7 +259,10 @@ export function adjustEstimateForRecall(
       pricing: opts.pricing,
     });
   };
-  if (recalledCount <= 0) {
+  // NaN / Infinity / 负数 都按"没有历史"处理——否则 Math.min 会传播 NaN，
+  // 算出 savedTurns = NaN、金额 = NaN，比不估算更糟。
+  const count = Number.isFinite(recalledCount) ? Math.max(0, Math.floor(recalledCount)) : 0;
+  if (count <= 0) {
     return {
       savedTurns: 0,
       optimisticUsd: base.optimisticUsd,
@@ -269,7 +272,7 @@ export function adjustEstimateForRecall(
       note: "没有可复用的历史：估算按从零探索计算",
     };
   }
-  const rawSaving = recalledCount * TURNS_SAVED_PER_RECALL;
+  const rawSaving = count * TURNS_SAVED_PER_RECALL;
   const cap = Math.floor(turns * MAX_RECALL_TURN_SAVING_RATIO);
   const savedTurns = Math.max(0, Math.min(rawSaving, cap, turns - 1));
   const adjustedTurns = Math.max(1, turns - savedTurns);
@@ -283,6 +286,6 @@ export function adjustEstimateForRecall(
     typicalUsd: adj.typicalUsd,
     pessimisticUsd: adj.pessimisticUsd,
     savingRatio,
-    note: `有 ${recalledCount} 条历史可复用：按每条省 ${TURNS_SAVED_PER_RECALL} 轮、最多省 ${(MAX_RECALL_TURN_SAVING_RATIO * 100).toFixed(0)}% 轮次估算，预计省 ${savedTurns} 轮（${(savingRatio * 100).toFixed(1)}%）`,
+    note: `有 ${count} 条历史可复用：按每条省 ${TURNS_SAVED_PER_RECALL} 轮、最多省 ${(MAX_RECALL_TURN_SAVING_RATIO * 100).toFixed(0)}% 轮次估算，预计省 ${savedTurns} 轮（${(savingRatio * 100).toFixed(1)}%）`,
   };
 }
