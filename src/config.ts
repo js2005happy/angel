@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getCredential } from "./vault.ts";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export interface ProviderPreset {
   baseUrl: string | null;
@@ -59,7 +59,7 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   e2b_sandbox_id: null,
 };
 
-export const VALID_MODES = ["readonly", "auto", "full"] as const;
+export const VALID_MODES = ["readonly", "auto", "full", "creator"] as const;
 export const VALID_SANDBOXES = ["local", "e2b"] as const;
 export const PLAINTEXT_HTTP_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 

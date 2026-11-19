@@ -28,12 +28,18 @@ import { loadSchedule, saveSchedule, schedulePath, listScheduleTasks, removeSche
 import { appendInbox } from "./tasks.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
 import { loadSkills } from "./skills.ts";
+import { pluginSkillDirs } from "./plugins.ts";
 import { contextLimit } from "./usage.ts";
 import { MCPToolManager, buildMcpManager } from "./mcp.ts";
 import { McpCostTracker, estimateToolCost, costLimitUsd } from "./mcpCost.ts";
 import { DeviceRegistry, defaultDevicesPath, startDiscoveryResponder, PairingError } from "./pairing.ts";
 import { memoryScopes, memoryView, memorySave, MemoryBrowserError } from "./memoryBrowser.ts";
 import { listArtifacts, getArtifact } from "./artifacts.ts";
+import { GroupStore, type BotConfig } from "./groups.ts";
+// 群聊页嵌进二进制（.txt 后缀：bun-types 只给 *.txt 声明了 string 类型；
+// 内容分别是群聊页 HTML 与 JS，原文件在 nyra/ 已随 Python 删除，改这里要同步改 .txt）。
+import GROUP_UI_HTML from "./assets/group_ui.html.txt" with { type: "text" };
+import GROUP_UI_JS from "./assets/group-ui.js.txt" with { type: "text" };
 import { decideSmartApproval, reviewerEnabled, smartApprovalConfig, readAudit } from "./smartApprovals.ts";
 import { rewind as doRewind, storeHistoryToAgentMessages, type RewindAction } from "./rewind.ts";
 import { PAGE_HTML, MOBILE_HTML, MANIFEST, MOBILE_MANIFEST, CSP, solidPng } from "./webuiPage.ts";
@@ -131,7 +137,8 @@ export class Gateway {
   runs: Map<string, SessionRun> = new Map();
   approvals: Map<string, { run: SessionRun; pending: PendingApproval }> = new Map();
   devices: DeviceRegistry;
-  store: ConversationStore;
+  private _store: ConversationStore | null = null;
+  groups: GroupStore;
   mcpManager: MCPToolManager | null = null;
   mcpCost: McpCostTracker;
   private providerInstance: ProviderLike | null = null;
@@ -163,7 +170,7 @@ export class Gateway {
     this.providerFactory = opts.providerFactory;
     this.reviewerFactory = opts.reviewerFactory;
     this.devices = new DeviceRegistry(defaultDevicesPath(this.home));
-    this.store = new ConversationStore(this.home);
+    this.groups = new GroupStore(join(this.home, "groups"));
     this.mcpCost = new McpCostTracker(this.home);
     if (!isLoopbackHost(this.host)) {
       const lan = lanIPv4();
@@ -441,7 +448,7 @@ export class Gateway {
     });
     out.tool_count = (out.tools as unknown[]).length;
     try {
-      out.skills = loadSkills([join(process.cwd(), "skills"), join(this.home, "skills")])
+      out.skills = loadSkills([join(process.cwd(), "skills"), join(this.home, "skills"), ...pluginSkillDirs(this.home)])
         .map((s) => ({ name: s.name, description: s.description }));
     } catch { out.skills = []; }
     out.smart_approvals = { reviewer_enabled: reviewerEnabled(this.config) };
@@ -457,7 +464,7 @@ export class Gateway {
     if (mode === this.mode) return mode;
     if (this.mcpManager) { this.mcpManager.stopAll(); this.mcpManager = null; }
     for (const run of this.runs.values()) {
-      if (run.agent) { run.agent.mode = mode; run.agent.ctx.mode = mode; run.agent.mcpManager = null; }
+      if (run.agent) { run.agent.setMode(mode); run.agent.mcpManager = null; }
     }
     this.mode = mode;
     void this.ensureMcpManager();
@@ -588,8 +595,7 @@ export class Gateway {
           home: this.home,
         });
       } else {
-        run.agent.mode = this.mode;
-        run.agent.ctx.mode = this.mode;
+        run.agent.setMode(this.mode);
       }
       run.baseMessages = [...run.agent.messages];
     } catch (err) {
@@ -855,7 +861,9 @@ export class Gateway {
   urlJson(): Record<string, unknown> {
     const shown = this.host === "0.0.0.0" ? "127.0.0.1" : this.host;
     return {
-      nyra: "nyra", version: VERSION,
+      // nyra 固定为 "ui"：桌面端外壳（desktop/src-tauri/src/lib.rs 的
+      // parse_start_line）只认这个值，Python 版 url_json() 也是 "ui"。
+      nyra: "ui", version: VERSION,
       url: this.gatewayUrl(), host: shown, port: this.port, token: this.token,
     };
   }
@@ -1012,16 +1020,12 @@ export class Gateway {
     }
     if (method === "GET" && path === "/groups") {
       if (!this.pageTokenOk(req)) { this.sendHtml(res, 403, FORBIDDEN_PAGE); return; }
-      const htmlPath = join(process.cwd(), "nyra", "group_ui.html");
-      if (!existsSync(htmlPath)) { this.sendError(res, 404, "未找到"); return; }
-      this.sendHtml(res, 200, readFileSync(htmlPath, "utf-8"));
+      this.sendHtml(res, 200, GROUP_UI_HTML);
       return;
     }
     if (method === "GET" && path === "/group-ui.js") {
-      const jsPath = join(process.cwd(), "nyra", "group-ui.js");
-      if (!existsSync(jsPath)) { this.sendError(res, 404, "未找到"); return; }
       res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
-      res.end(readFileSync(jsPath));
+      res.end(GROUP_UI_JS);
       return;
     }
 
@@ -1129,9 +1133,14 @@ export class Gateway {
       this.sendJson(res, 200, this.sessionView(sid, since));
       return;
     }
-    if (method === "GET" && (path === "/api/groups" || /^\/api\/groups\/[a-z][a-z0-9_-]{0,31}$/.test(path))) {
-      // 群聊仍走 worker 桥（第 4 阶段原生化）：如实报 501，不假装可用。
-      this.sendJson(res, 501, { error: "群聊仍走 worker 桥（Bot 多 Key 轮换未原生化，第 4 阶段做），暂不可用", bridge: "worker" });
+    if (method === "GET" && path === "/api/groups") {
+      this.sendJson(res, 200, { groups: this.groups.listRooms() });
+      return;
+    }
+    const groupMatch = /^\/api\/groups\/([a-z][a-z0-9_-]{0,31})$/.exec(path);
+    if (method === "GET" && groupMatch) {
+      try { this.sendJson(res, 200, this.groups.get(groupMatch[1])); }
+      catch (err) { this.sendError(res, 400, err instanceof Error ? err.message : String(err)); }
       return;
     }
 
@@ -1210,8 +1219,21 @@ export class Gateway {
         } catch (err) { this.sendError(res, 409, err instanceof Error ? err.message : String(err)); }
         return;
       }
-      if (path === "/api/groups" || /^\/api\/groups\/[a-z][a-z0-9_-]{0,31}\/messages$/.test(path)) {
-        this.sendJson(res, 501, { error: "群聊仍走 worker 桥（Bot 多 Key 轮换未原生化，第 4 阶段做），暂不可用", bridge: "worker" });
+      if (path === "/api/groups") {
+        try {
+          const bots = (body.bots as BotConfig[] | null | undefined) ?? null;
+          const room = this.groups.create(String(body.id ?? ""), String(body.name ?? ""), bots);
+          this.sendJson(res, 201, room);
+        } catch (err) { this.sendError(res, 400, err instanceof Error ? err.message : String(err)); }
+        return;
+      }
+      const groupMsgMatch = /^\/api\/groups\/([a-z][a-z0-9_-]{0,31})\/messages$/.exec(path);
+      if (groupMsgMatch) {
+        try {
+          const rounds = body.rounds === undefined ? 1 : Number(body.rounds);
+          const result = await this.groups.send(groupMsgMatch[1], String(body.text ?? ""), rounds);
+          this.sendJson(res, 200, result);
+        } catch (err) { this.sendError(res, 400, err instanceof Error ? err.message : String(err)); }
         return;
       }
       const sendMatch = /^\/api\/sessions\/([^/]+)\/messages$/.exec(path);
@@ -1328,6 +1350,15 @@ export class Gateway {
       await new Promise<void>((resolve) => { this.server!.close(() => resolve()); });
       this.server = null;
     }
-    try { this.store.close(); } catch { /* ignore */ }
+    try { this._store?.close(); } catch { /* ignore */ }
+  }
+
+  /**
+   * 对话存档懒加载：构造/启动时不开 SQLite 库，首次访问会话历史时才建库
+   * （第 4 阶段性能收尾：空闲 RSS 不为还没用到的存档付 SQLite 的页成本）。
+   */
+  get store(): ConversationStore {
+    if (!this._store) this._store = new ConversationStore(this.home);
+    return this._store;
   }
 }

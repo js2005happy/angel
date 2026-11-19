@@ -4,9 +4,12 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync, fsyncSync } from "node:fs";
 import { join, basename, extname } from "node:path";
 import { randomBytes } from "node:crypto";
+import { ToolPool, type Bm25Payload } from "./toolPool.ts";
 
 export const MAX_NOTE_CHARS = 1500;
 export const MIN_NOTE_CHARS = 200;
+/** 笔记数达到该值时 searchAsync 把评分挪到 worker 池（低于则同步算）。 */
+export const POOL_MIN_NOTES = 100;
 export const ASK_SYSTEM_PROMPT =
   "你是 Nyra 的知识库问答助手。只根据下面提供的库内笔记回答问题；" +
   "回答末尾注明依据了哪几条笔记（写笔记标题）；如果库内笔记没有" +
@@ -163,8 +166,40 @@ function atomicWrite(path: string, data: string | Buffer): void {
   try { renameSync(tmp, path); } catch (err) { try { rmSync(tmp, { force: true }); } catch { /* ignore */ } throw err; }
 }
 
+/** 纯 BM25 评分（与 KnowledgeBase.search 同一套公式），供 worker 池调用。
+ * 返回 [分数, 文档下标][]（分数 > 0，按分数降序，取前 topK）。 */
+export function scoreBm25(queryTokens: string[], docTokens: string[][], topK: number): [number, number][] {
+  if (!docTokens.length || !queryTokens.length) return [];
+  const docLen = docTokens.map((t) => t.length);
+  const avgLen = docLen.reduce((a, b) => a + b, 0) / docLen.length || 1.0;
+  const docCount = docTokens.length;
+  const docFreq = new Map<string, number>();
+  for (const tokens of docTokens) {
+    for (const t of new Set(tokens)) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
+  }
+  const k1 = 1.5; const b = 0.75;
+  const scored: [number, number][] = [];
+  for (let i = 0; i < docTokens.length; i++) {
+    const tokens = docTokens[i];
+    const counts = new Map<string, number>();
+    for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+    let score = 0;
+    for (const token of new Set(queryTokens)) {
+      const df = docFreq.get(token) ?? 0;
+      if (!df) continue;
+      const idf = Math.log(1 + (docCount - df + 0.5) / (df + 0.5));
+      const tf = counts.get(token) ?? 0;
+      score += idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * docLen[i] / avgLen));
+    }
+    if (score > 0) scored.push([score, i]);
+  }
+  scored.sort((a, b) => b[0] - a[0]);
+  return scored.slice(0, Math.max(topK, 0));
+}
+
 export class KnowledgeBase {
   base: string;
+  private pool: ToolPool | null = null;
 
   constructor(base?: string | null) {
     this.base = base ?? join(process.env.NYRA_HOME ?? join(process.env.HOME ?? "", ".nyra"), "knowledge");
@@ -306,31 +341,27 @@ export class KnowledgeBase {
     const queryTokens = tokenize(query || "");
     if (!notes.length || !queryTokens.length) return [];
     const docTokens = notes.map((n) => tokenize(n.text ?? ""));
-    const docLen = docTokens.map((t) => t.length);
-    const avgLen = docLen.reduce((a, b) => a + b, 0) / docLen.length || 1.0;
-    const docCount = notes.length;
-    const docFreq = new Map<string, number>();
-    for (const tokens of docTokens) {
-      for (const t of new Set(tokens)) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
-    }
-    const k1 = 1.5; const b = 0.75;
-    const scored: [number, Note][] = [];
-    for (let i = 0; i < notes.length; i++) {
-      const tokens = docTokens[i];
-      const counts = new Map<string, number>();
-      for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
-      let score = 0;
-      for (const token of new Set(queryTokens)) {
-        const df = docFreq.get(token) ?? 0;
-        if (!df) continue;
-        const idf = Math.log(1 + (docCount - df + 0.5) / (df + 0.5));
-        const tf = counts.get(token) ?? 0;
-        score += idf * tf * (k1 + 1) / (tf + k1 * (1 - b + b * docLen[i] / avgLen));
-      }
-      if (score > 0) scored.push([score, notes[i]]);
-    }
-    scored.sort((a, b) => b[0] - a[0]);
-    return scored.slice(0, Math.max(topK, 0));
+    return scoreBm25(queryTokens, docTokens, topK).map(([score, i]) => [score, notes[i]] as [number, Note]);
+  }
+
+  /** 笔记数达到阈值时把评分挪到 worker 池，主线程不被 BM25 拖住；
+   * 小库直接走同步 search，不付 worker 启动开销。结果与 search() 一致。 */
+  async searchAsync(name: string, query: string, topK = 5): Promise<[number, Note][]> {
+    const notes = this.loadNotes(name);
+    const queryTokens = tokenize(query || "");
+    if (!notes.length || !queryTokens.length) return [];
+    if (notes.length < POOL_MIN_NOTES) return this.search(name, query, topK);
+    const pool = this.pool ?? (this.pool = new ToolPool());
+    const docTokens = notes.map((n) => tokenize(n.text ?? ""));
+    const result = (await pool.run("bm25", { queryTokens, docTokens, topK } satisfies Bm25Payload)) as [number, number][];
+    return result.map(([score, i]) => [score, notes[i]] as [number, Note]);
+  }
+
+  /** 关闭本实例的 worker 池（CLI 进程退出时不需要调，worker 已 unref）。 */
+  async closePool(): Promise<void> {
+    const pool = this.pool;
+    this.pool = null;
+    if (pool) await pool.close();
   }
 
   async ask(
@@ -338,7 +369,7 @@ export class KnowledgeBase {
     question: string,
     chatFn?: (messages: Record<string, unknown>[]) => Promise<string> | string,
   ): Promise<[string, Note[]]> {
-    const results = this.search(name, question, 5);
+    const results = await this.searchAsync(name, question, 5);
     const used = results.map(([, n]) => n);
     let userContent: string;
     if (used.length) {

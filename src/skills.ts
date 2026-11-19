@@ -12,7 +12,12 @@ export interface Skill {
 }
 
 export function parseSkillFile(path: string): Skill {
-  const lines = readFileSync(path, "utf-8").split("\n");
+  return parseSkillText(readFileSync(path, "utf-8"), path);
+}
+
+/** 从文本解析技能（与 parseSkillFile 同格式；创造模式的内置技能由此加载）。 */
+export function parseSkillText(text: string, path: string): Skill {
+  const lines = text.split("\n");
   const formatError = `Skill 文件格式错误（缺少 frontmatter）: ${path}`;
   if (!lines.length || lines[0] !== "---") throw new Error(formatError);
   const closingIndex = lines.indexOf("---", 1);

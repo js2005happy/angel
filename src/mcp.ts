@@ -183,7 +183,9 @@ export class MCPClient {
   }
 
   private writeMessage(msg: Record<string, unknown>): void {
-    if (!this.process || !this.process.stdin.writable) throw new MCPError("MCP 服务器未启动");
+    if (!this.process) throw new MCPError("MCP 服务器未启动");
+    if (this.process.exitCode !== null) throw new MCPError(`MCP 服务器 ${this.config.name} 已退出`);
+    if (!this.process.stdin.writable) throw new MCPError("MCP 服务器未启动");
     this.process.stdin.write(JSON.stringify(msg) + "\n");
   }
 
@@ -293,13 +295,21 @@ export class MCPClient {
       if (err instanceof MCPRequestError && err.code === UNSUPPORTED_PROTOCOL_VERSION_CODE) {
         const picked = this.pickModernVersion(err.data);
         if (picked) {
-          const result = await this.discover(picked);
-          this.useModern(result, picked);
-          return;
+          try {
+            const result = await this.discover(picked);
+            this.useModern(result, picked);
+            return;
+          } catch { /* 挑版本重试失败，落到旧版握手 */ }
         }
       }
       // 其他 discover 失败（方法不存在、超时等）→ 旧版握手。
-      await this.initializeLegacy();
+      try {
+        await this.initializeLegacy();
+      } catch (legacyErr) {
+        // 协商彻底失败：子进程已无用，按 Python 口径清理（否则静默子进程泄漏）。
+        this.stop();
+        throw legacyErr;
+      }
     }
   }
 

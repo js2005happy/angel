@@ -1,7 +1,7 @@
 // src/tools.ts — 24 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
-// 浏览器 / 电脑 / Poppy 工具在第 2 阶段走 worker 桥（见 src/workerBridge.ts）；
-// 桥未接时明确报错，不假装执行。
+// 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
+// src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
 import { spawn, execFileSync } from "node:child_process";
 import {
   existsSync, mkdirSync, readFileSync, readdirSync,
@@ -16,6 +16,9 @@ import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untruste
 import { CheckpointStore, CheckpointError } from "./checkpoints.ts";
 import { research as multiModelResearch } from "./multiModel.ts";
 import type { ProviderLike } from "./providers.ts";
+import { CDPBrowser } from "./cdpBrowser.ts";
+import { ComputerControl, computerErrorMessage } from "./computer.ts";
+import { discoverPoppy, inspectPoppyIdentity, PermissionLedger } from "./poppy.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -57,10 +60,6 @@ export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan"]);
 export const SESSION_GRANT_TOOLS = new Set([...SESSION_FILE_TOOLS, "shell"]);
 export const APPROVE_ALWAYS = "always";
 
-export interface BridgeCall {
-  call(tool: string, args: Record<string, unknown>): Promise<string>;
-}
-
 export interface ToolContext {
   workdir: string;
   mode: string;
@@ -79,10 +78,9 @@ export interface ToolContext {
   poppyEnabled?: boolean;
   streamToolOutput?: boolean;
   onEvent?: ((kind: string, data: Record<string, unknown>) => void) | null;
-  bridge?: BridgeCall | null;
   multiModelFactory?: (name: string, model: string | null) => ProviderLike;
-  browser?: unknown;
-  computer?: unknown;
+  browser?: CDPBrowser | null;
+  computer?: ComputerControl | null;
 }
 
 export function newToolContext(partial: Partial<ToolContext> & { workdir: string }): ToolContext {
@@ -264,7 +262,7 @@ export async function checkApproval(
   if (ctx.mode === "readonly") {
     throw new ToolError(`只读模式下不允许执行 ${toolName}，请用 --mode auto 或 --mode full`);
   }
-  if (ctx.mode === "auto") {
+  if (ctx.mode === "auto" || ctx.mode === "creator") {
     if (!ctx.interactive) {
       throw new ToolError("非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行");
     }
@@ -390,7 +388,7 @@ async function toolReadFile(ctx: ToolContext, path: string): Promise<string> {
 async function toolWriteFile(ctx: ToolContext, path: string, content: string): Promise<string> {
   const target = workspaceWritePath(ctx, path);
   let summary = `写入文件：${path}（${content.length} 字符）`;
-  if (ctx.mode === "auto" && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
+  if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
   await checkApproval(ctx, "write_file", summary, { fileTarget: target });
   if (ctx.backend?.writeFile) return ctx.backend.writeFile(String(target), content);
   writeLocalText(ctx, target, content);
@@ -416,7 +414,7 @@ async function toolEditFile(ctx: ToolContext, path: string, oldText: string, new
   if (count > 1) return `错误：找到 ${count} 处匹配，请提供更精确的 old_text`;
   const changed = content.replace(oldText, newText);
   let summary = `编辑文件：${path}`;
-  if (ctx.mode === "auto" && ctx.interactive) {
+  if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) {
     summary += "\n" + unifiedPreview(relative(resolve(ctx.workdir), resolve(target)).split(sep).join("/"), Buffer.from(content, "utf-8"), Buffer.from(changed, "utf-8"));
   }
   await checkApproval(ctx, "edit_file", summary, { fileTarget: target });
@@ -534,7 +532,7 @@ export function unifiedPreview(rel: string, oldBytes: Buffer | null, newBytes: B
 }
 
 async function toolApplyPatch(ctx: ToolContext, path: string, patch: string): Promise<string> {
-  if (ctx.backend) throw new ToolError("apply_patch 当前只支持本地工作目录，不支持 E2B");
+  if (ctx.backend) throw new ToolError("apply_patch 当前只支持本地工作目录");
   const target = workspaceWritePath(ctx, path);
   if (!existsSync(target) || !statSync(target).isFile()) {
     throw new ToolError("补丁目标必须是已存在的普通本地文件");
@@ -823,10 +821,66 @@ async function toolWebSearch(ctx: ToolContext, query: string, count = 8): Promis
   return "错误：搜索失败（" + errors.join("；") + "），请稍后重试或换个网络";
 }
 
-// ---- 浏览器 / 电脑 / Poppy：走 worker 桥 ----
-async function bridgeOrError(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<string> {
-  if (ctx.bridge) return ctx.bridge.call(tool, args);
-  return `错误：${tool} 未连接（需要本机 Chrome/桌面环境或 worker 桥，第 2 阶段走 worker 协议 v1）`;
+// ---- 浏览器 / 电脑：原生实现（第 4 阶段；worker 桥已移除） ----
+
+/** 懒连接本机 Chrome（CDP 只连 127.0.0.1）；失败时按 Python 口径报 ToolError。 */
+async function getBrowser(ctx: ToolContext): Promise<CDPBrowser> {
+  if (ctx.browser) return ctx.browser;
+  try {
+    const browser = await CDPBrowser.connectToChrome();
+    ctx.browser = browser;
+    return browser;
+  } catch (err: unknown) {
+    throw new ToolError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** 懒创建桌面控制；无后端时按 Python 口径报 ToolError。 */
+function getComputer(ctx: ToolContext): ComputerControl {
+  if (ctx.computer) return ctx.computer;
+  try {
+    const computer = new ComputerControl();
+    ctx.computer = computer;
+    return computer;
+  } catch (err: unknown) {
+    throw new ToolError(computerErrorMessage(err));
+  }
+}
+
+/** 与 Python _browser_snapshot 同语义：标题 + URL + 可见文本（untrusted 标记，证据留存）。 */
+async function browserSnapshot(ctx: ToolContext, browser: CDPBrowser, url: string, kind: string): Promise<string> {
+  let title = "";
+  try { title = await browser.title(); } catch { title = ""; }
+  let current = url;
+  try { current = (await browser.currentUrl()) || url; } catch { current = url; }
+  let text = "";
+  try { text = await browser.visibleText(); } catch { text = ""; }
+  let body = text.trim() ? wrapUntrusted(truncate(text), current) : "（页面无可见文本）";
+  if (ctx.evidence && text.trim()) {
+    const path = ctx.evidence.save(kind, current, text);
+    body += `\n\n[证据已保存：${path}]`;
+  }
+  const lines = [`页面：${current}`];
+  if (title) lines.push(`标题：${title}`);
+  lines.push(body);
+  return lines.join("\n");
+}
+
+/** 截图保存路径（证据目录优先，其次 workdir），与 Python _save_*_screenshot 同名规则。 */
+function saveScreenshotPng(ctx: ToolContext, prefix: string, png: Buffer): string {
+  const directory = ctx.evidence ? ctx.evidence.dir : ctx.workdir;
+  mkdirSync(directory, { recursive: true });
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  let path = join(directory, `${prefix}_${stamp}.png`);
+  let serial = 1;
+  while (existsSync(path)) {
+    serial += 1;
+    path = join(directory, `${prefix}_${stamp}_${serial}.png`);
+  }
+  writeFileSync(path, png);
+  return path;
 }
 
 async function toolBrowserNavigate(ctx: ToolContext, url: string): Promise<string> {
@@ -836,42 +890,93 @@ async function toolBrowserNavigate(ctx: ToolContext, url: string): Promise<strin
   if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
     throw new ToolError(`只支持打开 http/https 网址：${url}`);
   }
-  return bridgeOrError(ctx, "browser_navigate", { url });
+  const browser = await getBrowser(ctx);
+  try { await browser.navigate(url); }
+  catch (err: unknown) { throw new ToolError(err instanceof Error ? err.message : String(err)); }
+  return browserSnapshot(ctx, browser, url, "browser_navigate");
 }
 
 async function toolBrowserClick(ctx: ToolContext, selector: string): Promise<string> {
   await checkApproval(ctx, "browser_click", `浏览器点击：${selector}`);
-  return bridgeOrError(ctx, "browser_click", { selector });
+  const browser = await getBrowser(ctx);
+  try { await browser.click(selector); }
+  catch (err: unknown) { throw new ToolError(err instanceof Error ? err.message : String(err)); }
+  return `已点击：${selector}\n` + await browserSnapshot(ctx, browser, "", "browser_click");
 }
 
 async function toolBrowserScreenshot(ctx: ToolContext): Promise<string> {
   await checkApproval(ctx, "browser_screenshot", "浏览器截图");
-  return bridgeOrError(ctx, "browser_screenshot", {});
+  const browser = await getBrowser(ctx);
+  let png: Buffer;
+  try { png = await browser.screenshot(); }
+  catch (err: unknown) { throw new ToolError(err instanceof Error ? err.message : String(err)); }
+  let title = "";
+  try { title = await browser.title(); } catch { title = ""; }
+  let current = "";
+  try { current = await browser.currentUrl(); } catch { current = ""; }
+  const path = saveScreenshotPng(ctx, "browser_screenshot", png);
+  const lines = [`已截图并保存：${path}（PNG，${png.length} 字节）`];
+  if (title) lines.push(`标题：${title}`);
+  if (current) lines.push(`页面：${current}`);
+  return lines.join("\n");
 }
 
 async function toolComputerScreenshot(ctx: ToolContext): Promise<string> {
   await checkApproval(ctx, "computer_screenshot", "电脑截屏");
-  return bridgeOrError(ctx, "computer_screenshot", {});
+  const computer = getComputer(ctx);
+  let png: Buffer;
+  try { png = await computer.screenshot(); }
+  catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
+  const path = saveScreenshotPng(ctx, "computer_screenshot", png);
+  return (
+    `已截屏并保存：${path}（PNG，${png.length} 字节）。`
+    + "模型暂不能直接看图（视觉接线待接），坐标请来自用户或 "
+    + "computer_windows 的窗口几何。"
+  );
 }
 
 async function toolComputerClick(ctx: ToolContext, x: number, y: number, button = "left"): Promise<string> {
   await checkApproval(ctx, "computer_click", `电脑点击（${x}, ${y}，${button}键）`);
-  return bridgeOrError(ctx, "computer_click", { x, y, button });
+  const computer = getComputer(ctx);
+  try { await computer.click(x, y, button); }
+  catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
+  return `已点击（${x}, ${y}，${button}键）`;
 }
 
 async function toolComputerType(ctx: ToolContext, text: string): Promise<string> {
   await checkApproval(ctx, "computer_type", `电脑输入：${text.slice(0, 60)}`);
-  return bridgeOrError(ctx, "computer_type", { text });
+  const computer = getComputer(ctx);
+  try { await computer.typeText(text); }
+  catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
+  return `已输入 ${text.length} 个字符`;
 }
 
 async function toolComputerKey(ctx: ToolContext, key: string): Promise<string> {
   await checkApproval(ctx, "computer_key", `电脑按键：${key}`);
-  return bridgeOrError(ctx, "computer_key", { key });
+  const computer = getComputer(ctx);
+  try { await computer.press(key); }
+  catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
+  return `已按键：${key}`;
 }
 
 async function toolComputerWindows(ctx: ToolContext): Promise<string> {
   await checkApproval(ctx, "computer_windows", "电脑列窗口");
-  return bridgeOrError(ctx, "computer_windows", {});
+  const computer = getComputer(ctx);
+  let found: { id: string; title: string; x?: number; y?: number; width?: number; height?: number }[];
+  try { found = await computer.windows(); }
+  catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
+  if (!found.length) return "当前没有可见窗口";
+  const lines = found.map((item) => {
+    const parts = [`[${item.id}] ${item.title}`];
+    if (item.x !== undefined && item.y !== undefined && item.width !== undefined && item.height !== undefined) {
+      parts.push(`位置 (${item.x}, ${item.y})，大小 ${item.width}x${item.height}`);
+    }
+    return parts.join(" ");
+  });
+  return wrapUntrusted(
+    `可见窗口（共 ${found.length} 个）：\n` + lines.join("\n"),
+    `desktop:${computer.backend}`,
+  );
 }
 
 // ---- 其余工具 ----
@@ -923,7 +1028,7 @@ async function toolPlan(ctx: ToolContext, title: string, steps: string[], path =
   const target = workspaceWritePath(ctx, path);
   const content = `# ${title}\n\n` + steps.map((s, i) => `${i + 1}. ${s}`).join("\n") + "\n";
   let summary = `写入计划文件：${path}`;
-  if (ctx.mode === "auto" && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
+  if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
   await checkApproval(ctx, "plan", summary, { fileTarget: target });
   if (ctx.backend?.writeFile) {
     ctx.backend.writeFile(String(target), content);
@@ -1072,10 +1177,21 @@ async function toolPoppy(ctx: ToolContext, tool: string, args: Record<string, un
         : "Poppy 发现和权限检查未启用，请显式设置 --poppy";
     throw new ToolError(msg);
   }
-  return bridgeOrError(ctx, tool, args);
+  try {
+    if (tool === "poppy_discover") return JSON.stringify(await discoverPoppy(String(args.site)));
+    if (tool === "poppy_identity_check") return JSON.stringify(await inspectPoppyIdentity(String(args.site)));
+    return JSON.stringify(new PermissionLedger().check(
+      String(args.site),
+      String(args.scope),
+      args.account === null || args.account === undefined ? null : String(args.account),
+    ));
+  } catch (err: unknown) {
+    throw new ToolError(err instanceof Error ? err.message : String(err));
+  }
 }
 
 export function disconnectBrowser(ctx: ToolContext): void {
+  try { ctx.browser?.close(); } catch { /* 关闭失败不破坏调用方 */ }
   ctx.browser = null;
 }
 

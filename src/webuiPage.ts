@@ -69,6 +69,20 @@ async function api(path, opts){
   return data;
 }
 function esc(s){ return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+const MODE_LABELS = { readonly: '只读', auto: '自动确认', full: '全权', creator: '创造模式' };
+function renderModeSelector(info){
+  const modes = info.modes || ['readonly', 'auto', 'full'];
+  const sel = '<p><label>模式 <select onchange="setMode(this.value)">' + modes.map(m => '<option value="' + esc(m) + '"' + (m === info.mode ? ' selected' : '') + '>' + esc(MODE_LABELS[m] || m) + '</option>').join('') + '</select></label></p>';
+  const card = info.mode === 'creator'
+    ? '<div class="card"><b>创造模式</b><p class="muted">一句话描述想要的功能：先对齐 spec（存 .nyra/creator/），再生成插件，验证通过、你确认后才安装。插件默认最小权限，装完可在插件列表停用或卸载。试试：做个番茄钟 / 扫描 TODO。</p></div>'
+    : '';
+  return sel + card;
+}
+async function setMode(mode){
+  await api('/api/mode', { method: 'POST', body: JSON.stringify({ mode }) });
+  if (typeof loadInfo === 'function') await loadInfo();
+  else if (typeof loadSettings === 'function') await loadSettings();
+}
 function showTab(name){
   document.querySelectorAll('[data-tab]').forEach(el => { el.style.display = el.dataset.tab === name ? '' : 'none'; });
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.nav === name));
@@ -191,7 +205,8 @@ async function loadInfo(){
   document.getElementById('info').innerHTML =
     '<p>版本 ' + esc(info.version) + ' · 模式 ' + esc(info.mode) + ' · ' + esc(info.provider || '') + ' / ' + esc(info.model || '') + '</p>' +
     '<p class="muted">兜底链：' + esc((info.fallback_chain || []).join(' → ')) + '；评审模型：' + (info.smart_approvals && info.smart_approvals.reviewer_enabled ? '已开启' : '默认关闭') + '</p>' +
-    '<p class="muted">MCP 工具 ' + (info.mcp_tools || 0) + ' 个；成本上限 ' + esc(info.mcp_cost ? String(info.mcp_cost.limit_usd ?? '未设') : '未设') + '，已用 $' + esc(info.mcp_cost ? String(info.mcp_cost.spent_usd ?? 0) : '0') + '</p>';
+    '<p class="muted">MCP 工具 ' + (info.mcp_tools || 0) + ' 个；成本上限 ' + esc(info.mcp_cost ? String(info.mcp_cost.limit_usd ?? '未设') : '未设') + '，已用 $' + esc(info.mcp_cost ? String(info.mcp_cost.spent_usd ?? 0) : '0') + '</p>' +
+    renderModeSelector(info);
   const mcp = await api('/api/mcp/tools').catch(() => ({ tools: [] }));
   document.getElementById('mcp-tools').innerHTML = (mcp.tools || []).map(t =>
     '<div class="card"><b>' + esc(t.name) + '</b> <span class="cost">' + esc(t.estimate_line || '') + '</span><p class="muted">' + esc(t.description || '') + '</p></div>').join('') || '<p class="muted">暂无 MCP 工具。</p>';
@@ -369,7 +384,8 @@ async function loadSettings(){
   const info = await api('/api/info');
   document.getElementById('info').innerHTML =
     '<p>版本 ' + esc(info.version) + ' · 模式 ' + esc(info.mode) + ' · ' + esc(info.provider || '') + ' / ' + esc(info.model || '') + '</p>' +
-    '<p class="muted">评审模型：' + (info.smart_approvals && info.smart_approvals.reviewer_enabled ? '已开启' : '默认关闭') + '；MCP 成本上限 ' + esc(info.mcp_cost ? String(info.mcp_cost.limit_usd ?? '未设') : '未设') + '</p>';
+    '<p class="muted">评审模型：' + (info.smart_approvals && info.smart_approvals.reviewer_enabled ? '已开启' : '默认关闭') + '；MCP 成本上限 ' + esc(info.mcp_cost ? String(info.mcp_cost.limit_usd ?? '未设') : '未设') + '</p>' +
+    renderModeSelector(info);
 }
 window.addEventListener('load', async () => {
   showTab('chat');

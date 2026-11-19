@@ -51,6 +51,20 @@ export function httpError(code: number, body: string, action = "API 请求"): Pr
   return new ProviderError(message, { status: code, kind });
 }
 
+/** 单次模型调用默认超时（秒）。第 4 阶段由 120 收紧到 60：假 Key/挂起的
+ * 端点不再等满 120 秒才报错；推理模型一次调用超过 60 秒时用
+ * NYRA_PROVIDER_TIMEOUT 调大（10–600 秒）。 */
+export const DEFAULT_CHAT_TIMEOUT = 60;
+export const DEFAULT_LIST_TIMEOUT = 30;
+
+export function resolveChatTimeout(): number {
+  const raw = process.env.NYRA_PROVIDER_TIMEOUT;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_CHAT_TIMEOUT;
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return DEFAULT_CHAT_TIMEOUT;
+  return Math.min(600, Math.max(10, n));
+}
+
 export function normalizeMessages(messages: Record<string, unknown>[]): Record<string, unknown>[] {
   return messages.map((message) => {
     if (!message || typeof message !== "object") return message;
@@ -199,7 +213,7 @@ export class Provider implements ProviderLike {
     return result as Record<string, unknown>;
   }
 
-  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout()): Promise<Record<string, unknown>> {
     const payload: Record<string, unknown> = {
       model: this.model,
       messages: normalizeMessages(messages as Record<string, unknown>[]),
@@ -479,7 +493,7 @@ export class CliProvider implements ProviderLike {
     return [this.model];
   }
 
-  async chat(messages: ChatMessage[], _tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+  async chat(messages: ChatMessage[], _tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout()): Promise<Record<string, unknown>> {
     const binary = findCodexBinary();
     if (!codexAvailable()) {
       const minimum = CODEX_MIN_VERSION.join(".");
@@ -583,12 +597,18 @@ export class FallbackProvider implements ProviderLike {
     return this.providers[this.activeIndex].listModels(timeout);
   }
 
-  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout()): Promise<Record<string, unknown>> {
     const attempted: [string, string][] = [];
+    // 总预算：整条链最多花 2× 单次超时，不让 N 个挂起的 provider 各等满一份超时。
+    const started = Date.now();
+    const budgetMs = timeout * 2 * 1000;
     for (let index = 0; index < this.providers.length; index++) {
       const provider = this.providers[index];
+      const remainingMs = budgetMs - (Date.now() - started);
+      if (index > 0 && remainingMs < 100) break;
+      const attemptTimeout = index === 0 ? timeout : Math.min(timeout, remainingMs / 1000);
       try {
-        const result = await provider.chat(messages, tools, timeout);
+        const result = await provider.chat(messages, tools, attemptTimeout);
         this.activeIndex = index;
         return result;
       } catch (exc: unknown) {
@@ -648,13 +668,19 @@ export class KeyRotatingProvider implements ProviderLike {
     }
   }
 
-  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = 120): Promise<Record<string, unknown>> {
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout()): Promise<Record<string, unknown>> {
     const attempted: [number, string][] = [];
     let lastExc: ProviderError | null = null;
+    // 总预算：整条链最多花 2× 单次超时，不让 N 把 Key 各等满一份超时。
+    const started = Date.now();
+    const budgetMs = timeout * 2 * 1000;
     for (let index = 0; index < this.providers.length; index++) {
       const provider = this.providers[index];
+      const remainingMs = budgetMs - (Date.now() - started);
+      if (index > 0 && remainingMs < 100) break;
+      const attemptTimeout = index === 0 ? timeout : Math.min(timeout, remainingMs / 1000);
       try {
-        const result = await provider.chat(messages, tools, timeout);
+        const result = await provider.chat(messages, tools, attemptTimeout);
         this.activeIndex = index;
         return result;
       } catch (exc: unknown) {

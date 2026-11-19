@@ -42,6 +42,83 @@ export function oneLine(value: unknown, limit = 80): string {
   return text;
 }
 
+// ---- CJK 宽度助手（与 Python nyra/tui.py 的 char_width/text_width/truncate/wrap 同语义） ----
+// CJK 与全角字符占 2 列、结合符占 0 列、其余 1 列；unicodedata.east_asian_width
+// 的 W/F 档用标准宽字符区段近似（与 wcwidth 一致）。
+
+const WIDE_RANGES: [number, number][] = [
+  [0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf],
+  [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff],
+  [0xfe10, 0xfe1f], [0xfe30, 0xfe6f], [0xff00, 0xff60], [0xffe0, 0xffe6],
+  [0x20000, 0x2fffd], [0x30000, 0x3fffd],
+];
+const COMBINING_RANGES: [number, number][] = [
+  [0x0300, 0x036f], [0x1ab0, 0x1aff], [0x1dc0, 0x1dff], [0x20d0, 0x20ff], [0xfe20, 0xfe2f],
+];
+
+function inRanges(code: number, ranges: [number, number][]): boolean {
+  for (const [lo, hi] of ranges) if (code >= lo && code <= hi) return true;
+  return false;
+}
+
+/** 单个字符的终端列宽：结合符 0、宽字符 2、其余 1。 */
+export function charWidth(ch: string): number {
+  const code = ch.codePointAt(0) ?? 0;
+  if (inRanges(code, COMBINING_RANGES)) return 0;
+  return inRanges(code, WIDE_RANGES) ? 2 : 1;
+}
+
+/** 整段文本的终端列宽（按码点求和，代理对只算一次）。 */
+export function textWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) width += charWidth(ch);
+  return width;
+}
+
+/** 按列宽截断，超限补省略号（与 Python tui.truncate 同语义）。 */
+export function truncateWidth(text: string, width: number, ellipsis = "…"): string {
+  if (width <= 0) return "";
+  if (textWidth(text) <= width) return text;
+  const out: string[] = [];
+  let used = 0;
+  const limit = width - textWidth(ellipsis);
+  for (const ch of text) {
+    const w = charWidth(ch);
+    if (used + w > limit) break;
+    out.push(ch);
+    used += w;
+  }
+  return out.join("") + ellipsis;
+}
+
+/** 按列宽换行：能断空格就断空格，否则在 CJK 内任意断开（与 Python tui.wrap 同语义）。 */
+export function wrapText(text: string, width: number): string[] {
+  width = Math.max(1, width);
+  const lines: string[] = [];
+  let line = "";
+  let used = 0;
+  for (const ch of text) {
+    const w = charWidth(ch);
+    if (used + w > width) {
+      const cut = line.lastIndexOf(" ");
+      if (cut > 0 && ch !== " " && ![...line.slice(cut)].some((c) => charWidth(c) === 2)) {
+        lines.push(line.slice(0, cut));
+        line = line.slice(cut + 1);
+        used = textWidth(line);
+      } else {
+        lines.push(line.trimEnd());
+        line = "";
+        used = 0;
+      }
+      if (ch === " " && !line) continue;
+    }
+    line += ch;
+    used += w;
+  }
+  if (line || !lines.length) lines.push(line);
+  return lines;
+}
+
 export class ToolPrinter {
   stream: NodeJS.WriteStream;
   color: boolean;
