@@ -1,3 +1,8 @@
+## 2026-11-19 ToolJournal 最终快照并发复核（仅静态）
+
+- begin() 原先最后一次 _records() 仅过滤自己的 call_id，未检查其他新增 intent；现在在同一最终快照要求其他调用均为一条 intent 与一条同工具 result。
+- 新增模拟竞争 intent 插入的回归测试源码；未运行测试、CI 或实机验证。最后读取与工具派发之间仍有 TOCTOU。
+
 ## 2026-11-19 ToolJournal 本次意图身份复核（仅静态审阅）
 
 - 静态审阅 `begin()`：确认二次 `inspect()` 的全局 unknown=1 不足以证明本次 call_id 未完成；加入按 call_id 读取并核验仅有 intent 的守卫。
