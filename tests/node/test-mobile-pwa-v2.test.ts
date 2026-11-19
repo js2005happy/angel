@@ -58,7 +58,7 @@ test("pairing: 设备 token 只存哈希，可撤销", () => {
   const disk = readFileSync(path, "utf-8");
   expect(disk).not.toContain(dev.token);
   expect(disk).toContain("token_sha256");
-  expect((statSync(path).mode & 0o777).toString(8)).toBe("600");
+  if (process.platform !== "win32") expect((statSync(path).mode & 0o777).toString(8)).toBe("600"); // Windows 没有 POSIX 权限位
   expect(reg.authenticate(dev.token)?.id).toBe(dev.id);
   expect(reg.revoke(dev.id)).toBe(true);
   expect(reg.authenticate(dev.token)).toBeNull();
@@ -133,7 +133,7 @@ test("rules: 项目规则存在 NYRA_HOME（0600），按项目隔离，可撤�
   expect(store.add(a, { kind: "prefix", prefix: ["git", "status"] }).id).toBe(rule.id); // 去重
   expect(store.find(a, "shell", "git status -s")?.id).toBe(rule.id);
   expect(store.find(b, "shell", "git status -s")).toBeNull();
-  expect((statSync(join(home, RULES_FILENAME)).mode & 0o777).toString(8)).toBe("600");
+  if (process.platform !== "win32") expect((statSync(join(home, RULES_FILENAME)).mode & 0o777).toString(8)).toBe("600");
   expect(() => store.add(a, { kind: "prefix", prefix: ["rm"] })).toThrow();
   expect(store.remove(rule.id)).toBe(true);
   expect(store.find(a, "shell", "git status")).toBeNull();
