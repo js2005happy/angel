@@ -1,3 +1,9 @@
+## 2026-11-19 — POSIX 末次目录句柄拒绝诊断与 Agent 反馈
+
+- **仓库事实（静态审查）**：`ToolJournal._records()` 的最终目录 `os.fstat(fd)` 遇到 `OSError` 时原先直接传播底层异常。本轮改为 `JournalError` 失败关闭并保留异常链，增加空目录模拟回归测试（价值中高／难度低／安全风险低／依赖已有 POSIX dir_fd；已提交，未运行测试）。
+- **外部用户反馈（2026-11-19 查阅）**：[Codex #61154](https://github.com/openai/codex/issues/61154) 在 2026-11-12 有关于 Windows `WRITE_DAC` 权限拒绝的讨论；[Codex #60192](https://github.com/openai/codex/issues/60192) 于 2026-11-08 创建，报告 Windows 沙箱初始化阻断工具调用。它们是其他产品的个案，不是 Angel POSIX 缺陷复现，也不能据此估计普遍发生率。
+- **工程推断／后续优先级（价值／实现难度／安全风险／依赖）**：① Windows 原生 ACL 与稳定目录句柄（高／高／高／Win32 API 设计及实机验证）；② 跨进程日志事务（高／高／高／锁与崩溃协议）；③ 工具外部副作用独立凭证（高／高／高／可信适配器与对账）；④ 人工审批安全续跑（高／中高／高／前述凭证及审批）；⑤ 成本预算硬停止（高／中／中／可信 usage 数据）。默认不自动重试未知结果、不增加强制依赖、不合并 main。
+
 ## 2026-11-19 — POSIX 日志枚举错误分类与用户反馈
 
 - **仓库事实（静态审查）**：POSIX `ToolJournal._records()` 的末次 `os.listdir(directory_fd)` 发生 `OSError` 时直接传播未分类错误；本轮增加 `JournalError` 失败关闭和模拟测试（价值中高 / 难度低 / 风险低 / 依赖现有 dir_fd；已提交待验证）。
