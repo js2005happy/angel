@@ -13,6 +13,7 @@
 | `cost` | 成本可计算时（P2-2） | `spent_usd`, `limit_usd`, `remaining_usd` |
 | `cost_update` | 每轮一次（P2-3） | `turn`, `max_turns`, `status`, `spent_usd`, `remaining_usd`, `limit_usd`, `prompt_tokens`, `completion_tokens`, `calls`, `missing_calls`, `reason` |
 | `model_switch` | 模型切换时（缺口 5：触顶自动换或 REPL `/model` 手动换） | `from`, `to`, `reason`, `trigger`（`quota` / `rate_limit` / `server` / `timeout` / `network` / `other` / `manual`）, `spent_usd`（未计价时为 `null`） |
+| `parallel_delegate` | 并行委派结束时（缺口 3a） | `succeeded`, `failed`, `total_spent_usd`（已计价部分合计；超时线程事后花的钱不进合计，未计价时为 `null`）, `max_concurrency` |
 | `verify_started` / `verify_result` | 验证命令执行 | `command` / `exit_code`, `passed`, `attempt` |
 | `run_completed` | 运行结束 | `run_id`, `status` |
 | `completion_downgraded` | 未验证却宣称完成（P1-1） | `status`, `claim` |
