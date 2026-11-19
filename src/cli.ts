@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join, resolve } from "node:path";
 import {
   loadConfig, resolveHome, resolveProvider, resolveProfile, resolveFallbackChain,
-  listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets,
+  listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets, saveConfig,
 } from "./config.ts";
 import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
@@ -24,11 +24,19 @@ import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
-import { renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing } from "./banner.ts";
+import {
+  renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing, renderTips, renderEcho,
+  renderReply, renderOk, renderError, gitBranch, stripAnsi,
+} from "./banner.ts";
+import { detectColorLevel, type ColorLevel } from "./theme.ts";
+import {
+  PetController, PET_WIDTH, petVisible, petEnabledFromConfig, parsePetCommand, renderPet, renderBubble, petFace,
+} from "./pet.ts";
+import { Spinner } from "./spinner.ts";
 import { formatUsage } from "./usage.ts";
-import { formatReplStatus, ToolPrinter, useColor, styleEnabled, truncateWidth } from "./consoleUi.ts";
+import { formatReplStatus, ToolPrinter, useColor, textWidth } from "./consoleUi.ts";
 import { dashboardCostSegment } from "./dashboard.ts";
-import { askApproval } from "./approvalUi.ts";
+import { askApproval, approvalHooks } from "./approvalUi.ts";
 import { JsonLines, invalidArguments, EXIT_SUCCESS, EXIT_RUNTIME, EXIT_ARGUMENT, EXIT_INCOMPLETE, EXIT_VERIFY, EXIT_INTERRUPTED, EXIT_COST } from "./jsonMode.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
 import { handleTask } from "./tasks.ts";
@@ -304,7 +312,8 @@ async function ensureWorkspaceTrusted(workdir: string, args: CliArgs, config: Re
   if (!(process.stdin.isTTY && process.stdout.isTTY)) return null;
   if (isTrusted(workdir, home)) return null;
   const trust = renderTrustPrompt(resolve(workdir), {
-    width: process.stdout.columns || 80, color: useColor(process.stdout), unicode: supportsBoxDrawing(),
+    width: process.stdout.columns || 80, color: useColor(process.stdout),
+    level: useColor(process.stdout) ? detectColorLevel(process.env, true) : 0, unicode: supportsBoxDrawing(),
   });
   process.stdout.write(trust.lines.join("\n") + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -1317,27 +1326,125 @@ async function runRepl(args: CliArgs): Promise<number> {
   };
   process.once("SIGINT", onReplSigint);
   try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：fail-open */ }
-  const printer = new ToolPrinter();
-  agent.onEvent = (kind, data) => printer.call(kind, data);
   const providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
-  // 终端外观：TTY 且宽度够时用 Claude Code 风格的框式头部 + 横线输入区 + 状态栏；
-  // 非 TTY / TERM=dumb / 太窄时退回纯文本状态行 + "> "（管道与脚本不受影响）。
+  // 终端外观 v2：TTY 且宽度够时是品牌化欢迎屏（渐变块字 + 信息卡 + Tips）、横线输入区、
+  // 彩色状态栏、spinner 与右侧小伙伴；非 TTY / TERM=dumb / 太窄时退回纯文本状态行 + "> "
+  // （管道与脚本不受影响）。颜色：truecolor → 256 → 16 → NO_COLOR 无色。
   const uiColor = useColor(process.stdout);
+  const uiLevel: ColorLevel = uiColor ? detectColorLevel(process.env, true) : 0;
   const uiUnicode = supportsBoxDrawing();
+  const ui = { color: uiColor, level: uiLevel, unicode: uiUnicode };
+  const errColor = useColor(process.stderr);
+  const errUi = { color: errColor, level: (errColor ? detectColorLevel(process.env, true) : 0) as ColorLevel, unicode: uiUnicode };
+  const isTty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const termCols = (): number => process.stdout.columns || 80;
-  const framed = (): boolean => Boolean(process.stdin.isTTY && process.stdout.isTTY)
-    && process.env.TERM !== "dumb" && termCols() >= 20;
+  const framed = (): boolean => isTty && process.env.TERM !== "dumb" && termCols() >= 20;
+  const ok = (msg: string): string => (framed() ? renderOk(msg, ui) : msg);
+  const fail = (msg: string): string => (framed() ? renderError(msg, errUi) : msg);
+  const branch = gitBranch(workdir);
+  let petOn = petEnabledFromConfig(built.config);
+  const showPet = (): boolean => framed() && petVisible({ enabled: petOn, tty: isTty, cols: termCols(), unicode: uiUnicode });
   process.stdout.write(renderHeader(
-    { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir },
-    { width: termCols(), color: uiColor, unicode: uiUnicode },
+    { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir, branch },
+    { width: termCols(), ...ui, compact: !framed() },
   ).join("\n") + "\n");
-  process.stdout.write(styleEnabled(truncateWidth("  输入 /help 查看命令，/exit 退出。", Math.max(1, termCols() - 1)), ["dim"], uiColor) + "\n");
+  process.stdout.write((framed()
+    ? renderTips({ width: termCols(), ...ui, pet: showPet() })
+    : "  输入 /help 查看命令，/exit 退出。") + "\n");
   const unread = (await import("./tasks.ts")).formatUnreadInbox(home);
   if (unread) process.stdout.write(unread + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const ask = (prompt: string): Promise<string | null> => new Promise((resolvePromise) => {
     rl.question(prompt, (answer) => resolvePromise(answer));
   });
+  // 小伙伴：只在输入框可见时画在右侧固定列（保存/恢复光标，不动 readline 的光标）。
+  let frameActive = false;
+  let frameCols = 0;
+  const pet = new PetController(() => { if (frameActive) process.stdout.write(petSeq()); });
+  const petSeq = (): string => {
+    if (!frameActive) return "";
+    const cols = frameCols;
+    const typed = (rl as unknown as { line?: string }).line ?? "";
+    if (inputRows(typed, cols) > 1) return "";
+    const col = cols - PET_WIDTH + 1; // 1 起算的列号
+    const rows = renderPet(pet.state, { level: uiLevel });
+    let seq = "\x1b7\x1b[2A\r\x1b[2K";
+    if (pet.bubble) {
+      const bubble = renderBubble(pet.bubble, uiLevel);
+      const bw = textWidth(stripAnsi(bubble));
+      if (bw + 4 < cols) seq += `\x1b[${Math.max(1, cols - bw - 2)}G` + bubble;
+    }
+    seq += "\x1b8";
+    rows.forEach((row, i) => {
+      const d = i - 1; // 行偏移：上横线 -1、输入行 0、下横线 +1、状态栏 +2
+      if (d === 0 && 2 + textWidth(typed) >= col - 1) return; // 输入快碰到小伙伴时让位
+      seq += "\x1b7" + (d < 0 ? `\x1b[${-d}A` : d > 0 ? `\x1b[${d}B` : "") + `\x1b[${col}G` + row + "\x1b8";
+    });
+    return seq;
+  };
+  // spinner：只在 TTY 上转；小伙伴开着时右侧带一张同步转眼珠的小脸。
+  // 它用原始的 stdout.write；agent.run 期间别处（工具、审批）的输出先收起 spinner 再写，
+  // 写完整行后再恢复，避免 spinner 和别的输出挤在同一行。
+  const rawOut = process.stdout.write.bind(process.stdout) as (chunk: string) => boolean;
+  const spinner = new Spinner({
+    write: (t) => rawOut(t), tty: framed(), level: uiLevel, unicode: uiUnicode, width: termCols,
+    face: (tick) => (showPet() ? petFace("thinking", tick, uiLevel) : null),
+    faceCol: () => termCols() - PET_WIDTH + 2,
+  });
+  let spinning = false;
+  let approvalOpen = false;
+  const guardStream = (stream: NodeJS.WriteStream): (() => void) => {
+    const original = stream.write;
+    stream.write = function (this: NodeJS.WriteStream, chunk: unknown, ...rest: unknown[]): boolean {
+      if (!spinning) return (original as (...a: unknown[]) => boolean).call(this, chunk, ...rest);
+      spinner.pause();
+      const ok2 = (original as (...a: unknown[]) => boolean).call(this, chunk, ...rest);
+      const text = typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf-8") : "";
+      if (!approvalOpen && text.endsWith("\n")) spinner.resume();
+      return ok2;
+    } as typeof stream.write;
+    return () => { stream.write = original; };
+  };
+  // Bun 的 console.log 不走 process.stdout.write，单独包一层（工具的审批摘要用它打印）。
+  const guardConsole = (name: "log" | "error" | "warn"): (() => void) => {
+    const original = console[name];
+    console[name] = (...a: unknown[]) => {
+      if (!spinning) return original.apply(console, a);
+      spinner.pause();
+      original.apply(console, a);
+      if (!approvalOpen) spinner.resume();
+    };
+    return () => { console[name] = original; };
+  };
+  const printer = new ToolPrinter(undefined, undefined, { level: uiLevel, unicode: uiUnicode });
+  printer.onBeforeWrite = () => spinner.pause();
+  printer.onAfterWrite = () => { if (spinning) spinner.resume(); };
+  agent.onEvent = (kind, data) => {
+    if (kind === "tool_start") spinner.setLabel(`运行 ${String(data.name ?? "工具")}…`);
+    else if (kind === "tool_result") spinner.setLabel("思考中…");
+    printer.call(kind, data);
+  };
+  // 审批：提问前收起 spinner，小伙伴举手；回答后恢复。
+  approvalHooks.before = () => {
+    approvalOpen = true;
+    spinner.pause();
+    pet.setMood("approval");
+    if (!showPet()) return;
+    const cols = termCols();
+    const rows = renderPet("approval", { level: uiLevel });
+    const bubble = renderBubble(pet.bubble ?? "这步要你点个头。", uiLevel);
+    const bw = textWidth(stripAnsi(bubble));
+    const lines = rows.map((r, i) => {
+      const left = i === 1 && bw + PET_WIDTH + 3 < cols ? " ".repeat(cols - PET_WIDTH - bw - 2) + bubble + " " : " ".repeat(cols - PET_WIDTH - 1);
+      return left + r;
+    });
+    process.stdout.write(lines.join("\n") + "\n");
+  };
+  approvalHooks.after = () => {
+    approvalOpen = false;
+    pet.setMood("thinking");
+    if (spinning) spinner.resume();
+  };
   let mode = agent.mode;
   // try/finally 只为保证 SessionEnd 一定触发：循环体不重缩进，diff 保持最小。
   try {
@@ -1348,21 +1455,24 @@ async function runRepl(args: CliArgs): Promise<number> {
     let line: string | null;
     if (framed()) {
       const cols = termCols();
+      const petShown = showPet();
       // Node 版暂不支持 shift+tab 切换模式（用 /mode），所以不显示该提示。
       const frame = renderInputFrame(
         // P2-3：框式状态栏同样追加成本段（上一轮算出的 lastCost；没配单价/没跑过一轮时不显示）。
-        { model: providerDesc, mode, contextUsage, modeSwitchKey: false, cost: dashboardCostSegment(agent.lastCost) },
-        { width: cols, color: uiColor, unicode: uiUnicode },
+        { model: providerDesc, mode, contextUsage, modeSwitchKey: false, branch, cost: dashboardCostSegment(agent.lastCost) },
+        { width: cols, ...ui, reserveRight: petShown ? PET_WIDTH : 0 },
       );
       // 先画上横线并在下面预留几行（避免之后滚屏），光标回到输入行；
       // readline 显示提示符后再把下横线和状态栏画到输入行下面。readline 在
       // 退格、移动光标时会清掉光标以下的内容，所以每次按键后补画一次（只在
-      // 输入还是单行时画，多行时跳过，避免和折行的输入抢位置）。
+      // 输入还是单行时画，多行时跳过，避免和折行的输入抢位置）。小伙伴随同一次写入补画。
       process.stdout.write("\n" + frame.above.join("\n") + "\n" + "\n".repeat(frame.below.length) + `\x1b[${frame.below.length}A\r`);
+      frameActive = petShown;
+      frameCols = cols;
       const drawBelow = (): void => {
         const typed = (rl as unknown as { line?: string }).line ?? "";
         if (inputRows(typed, cols) > 1) return;
-        process.stdout.write("\x1b7" + frame.below.map((l) => `\x1b[1B\r\x1b[2K${l}`).join("") + "\x1b8");
+        process.stdout.write("\x1b7" + frame.below.map((l) => `\x1b[1B\r\x1b[2K${l}`).join("") + "\x1b8" + petSeq());
       };
       const onKey = (_s: unknown, key?: { name?: string }): void => {
         if (key && (key.name === "return" || key.name === "enter")) return;
@@ -1370,12 +1480,17 @@ async function runRepl(args: CliArgs): Promise<number> {
       };
       const pending = ask(frame.prompt);
       drawBelow();
+      if (petShown) pet.start();
       process.stdin.on("keypress", onKey);
-      try { line = await pending; } finally { process.stdin.off("keypress", onKey); }
+      try { line = await pending; } finally {
+        process.stdin.off("keypress", onKey);
+        frameActive = false;
+        pet.stop();
+      }
       if (line !== null) {
-        // 提交后：回到上横线，清掉输入框，留下一行暗色回显，界面像 Claude Code 一样干净。
+        // 提交后：回到上横线，清掉输入框（连同上方的气泡行），留下一行暗色回显。
         const up = inputRows(line, cols) + frame.above.length;
-        process.stdout.write(`\x1b[${up}A\r\x1b[J` + styleEnabled(`> ${line}`, ["dim"], uiColor) + "\n");
+        process.stdout.write(`\x1b[${up + 1}A\r\x1b[2K\x1b[1B\r\x1b[J` + renderEcho(line, ui) + "\n");
       }
     } else {
       // P2-3：纯文本状态行同样追加成本段（与框式状态栏同一份 lastCost）。
@@ -1387,13 +1502,13 @@ async function runRepl(args: CliArgs): Promise<number> {
     if (!text) continue;
     if (text === "/exit" || text === "/quit") break;
     if (text === "/help") {
-      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/context 查看上下文占用；/compact 压缩会话；/compact focus <关键词> 按重点压缩会话（重点保留与关键词相关的内容）；/mode <readonly|auto|full|creator> 切换模式；/creator 进入创造模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
+      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/context 查看上下文占用；/compact 压缩会话；/compact focus <关键词> 按重点压缩会话（重点保留与关键词相关的内容）；/mode <readonly|auto|full|creator> 切换模式；/pet [on|off] 小伙伴开关；/creator 进入创造模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
       continue;
     }
     if (text === "/clear") {
       agent.messages = [];
       saveSession(agent.sessionId, [], home);
-      process.stdout.write("会话已清空。\n");
+      process.stdout.write(ok("会话已清空。") + "\n");
       continue;
     }
     // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化与
@@ -1421,10 +1536,23 @@ async function runRepl(args: CliArgs): Promise<number> {
       try {
         mode = validateMode(next);
         agent.setMode(mode);
-        process.stdout.write(`已切换到 ${mode} 模式。\n`);
+        process.stdout.write(ok(`已切换到 ${mode} 模式。`) + "\n");
       } catch {
-        process.stderr.write("模式必须是 readonly / auto / full / creator。\n");
+        process.stderr.write(fail("模式必须是 readonly / auto / full / creator。") + "\n");
       }
+      continue;
+    }
+    if (text === "/pet" || text.startsWith("/pet ")) {
+      const next = parsePetCommand(text, petOn);
+      if (next === null) {
+        process.stderr.write(fail("用法：/pet [on|off]") + "\n");
+        continue;
+      }
+      petOn = next;
+      try { saveConfig(home, { pet: petOn }); } catch { /* 写不了配置也照样切换本次会话 */ }
+      let msg = petOn ? "小伙伴回来了（/pet off 可关闭）。" : "小伙伴先去休息了（/pet on 叫回来）。";
+      if (petOn && !showPet()) msg += "当前终端不显示（需要 TTY、至少 80 列、非 ASCII、非 CI）。";
+      process.stdout.write(ok(msg) + "\n");
       continue;
     }
     if (text === "/creator") {
@@ -1510,20 +1638,39 @@ async function runRepl(args: CliArgs): Promise<number> {
       // 回退存档（第 3 阶段）：本轮问答记入 conversations，供 /rewind-* 用。
       const store = new ConversationStore(home);
       try { store.record(agent.sessionId, "user", text); } catch { /* ignore */ }
-      const result = await agent.run(text);
+      pet.setMood("thinking");
+      spinning = framed();
+      spinner.start("思考中…");
+      const unguard = spinning
+        ? [guardStream(process.stdout), guardStream(process.stderr), guardConsole("log"), guardConsole("error"), guardConsole("warn")]
+        : [];
+      let result: string;
+      try { result = await agent.run(text); } finally {
+        spinning = false;
+        approvalOpen = false;
+        spinner.stop();
+        for (const u of unguard) u();
+      }
       try { store.record(agent.sessionId, "assistant", result); } catch { /* ignore */ }
       store.close();
-      process.stdout.write(result + "\n");
+      process.stdout.write((framed() ? renderReply(result, ui) : result) + "\n");
+      pet.setMood("happy");
     } catch (err: unknown) {
       if (err instanceof ApprovalRequired) {
+        pet.setMood("approval");
         process.stdout.write(`等待审批：${(err as ApprovalRequired).tool}（已记录，可用 nyra task approve 批准后继续）\n`);
         continue;
       }
-      process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+      pet.setMood("worried");
+      process.stderr.write(fail(`错误：${err instanceof Error ? err.message : String(err)}`) + "\n");
     }
     agent.ctx.approvedShellCommands?.clear();
   }
   } finally {
+    spinner.stop();
+    pet.stop();
+    approvalHooks.before = undefined;
+    approvalHooks.after = undefined;
     rl.close();
     await endSessionHooks();
     process.removeListener("SIGINT", onReplSigint);

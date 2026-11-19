@@ -84,8 +84,25 @@ export async function lineFallback(prompt: string, allowAlways: boolean): Promis
   }
 }
 
+/**
+ * 审批前后的钩子：交互终端用它在提问前收起 spinner、让小伙伴举手，
+ * 回答后再恢复。钩子出错一律忽略，绝不影响审批本身（fail-closed 语义不变）。
+ */
+export const approvalHooks: { before?: (prompt: string) => void; after?: (choice: ApprovalChoice) => void } = {};
+
 /** TTY 时方向键菜单，否则行输入回退；菜单搭建失败也回退到行输入。 */
 export async function askApproval(prompt: string, allowAlways = false, alwaysLabel?: string): Promise<ApprovalChoice> {
+  try { approvalHooks.before?.(prompt); } catch { /* ignore */ }
+  let choice: ApprovalChoice = NO;
+  try {
+    choice = await askApprovalInner(prompt, allowAlways, alwaysLabel);
+    return choice;
+  } finally {
+    try { approvalHooks.after?.(choice); } catch { /* ignore */ }
+  }
+}
+
+async function askApprovalInner(prompt: string, allowAlways: boolean, alwaysLabel?: string): Promise<ApprovalChoice> {
   const options = approvalOptions(allowAlways, alwaysLabel);
   const stdinTty = Boolean(process.stdin.isTTY);
   const stdoutTty = Boolean(process.stdout.isTTY);

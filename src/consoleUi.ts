@@ -1,6 +1,8 @@
 // src/consoleUi.ts — 终端输出样式与工具打印，与 Python 版 nyra/console.py 同语义。
 // 颜色只在 TTY 且 NO_COLOR 未设且 TERM 不是 dumb 时启用；其余情况纯文本。
 import { formatDashboardLine, type DashboardSnapshot } from "./dashboard.ts";
+import { BRAND, detectColorLevel, paint, supportsBoxDrawing, type ColorLevel, type PaintOpts } from "./theme.ts";
+
 const STYLES: Record<string, string> = {
   bold: "1", dim: "2", gold: "33", blue: "34", cyan: "36", green: "32", red: "31",
 };
@@ -120,45 +122,64 @@ export function wrapText(text: string, width: number): string[] {
   return lines;
 }
 
+/**
+ * 工具调用打印（v2）：助手的中间说明用主色 ● 开头；工具调用是暗色的 "⎿" 树，
+ * 结果行带绿色 ✓ / 红色 ✗。ASCII 回退用 "`-"、"*"、"+"、"x"。
+ * onBeforeWrite 让调用方在打印前先收起 spinner。
+ */
 export class ToolPrinter {
   stream: NodeJS.WriteStream;
   color: boolean;
+  level: ColorLevel;
+  unicode: boolean;
+  onBeforeWrite: (() => void) | null = null;
+  onAfterWrite: (() => void) | null = null;
 
-  constructor(stream?: NodeJS.WriteStream, color?: boolean) {
+  constructor(stream?: NodeJS.WriteStream, color?: boolean, opts: { level?: ColorLevel; unicode?: boolean } = {}) {
     this.stream = stream ?? process.stdout;
     this.color = color ?? useColor(this.stream);
+    this.level = !this.color ? 0 : (opts.level ?? detectColorLevel(process.env, true));
+    if (this.color && this.level === 0) this.level = 1;
+    this.unicode = opts.unicode ?? supportsBoxDrawing();
   }
 
-  private s(text: string, ...names: string[]): string {
-    return styleEnabled(text, names, this.color);
+  private p(text: string, o: PaintOpts): string {
+    return paint(text, this.level, o);
   }
 
   call(kind: string, data: Record<string, unknown>): void {
+    const u = this.unicode;
+    const branch = this.p(u ? "  ⎿ " : "  `- ", { fg: BRAND.muted });
+    const indent = "    ";
     let line: string | null = null;
     if (kind === "tool_start") {
       const name = String(data.name ?? "");
       const args = oneLine(data.arguments ?? "", 70);
-      line = `${this.s("┌", "dim")} ${this.s(name, "cyan", "bold")} ${this.s(args, "dim")}`;
+      line = `${branch}${this.p(name, { fg: BRAND.mist, bold: true })}${args ? " " + this.p(args, { fg: BRAND.muted }) : ""}`;
     } else if (kind === "tool_result") {
       const result = String(data.result ?? "");
       const failed = result.startsWith("错误：") || result.startsWith("执行失败：");
-      const mark = failed ? this.s("✗", "red") : this.s("✓", "green");
-      line = `${this.s("└", "dim")} ${mark} ${this.s(oneLine(result, 90), "dim")}`;
+      const mark = failed ? this.p(u ? "✗" : "x", { fg: BRAND.danger, bold: true }) : this.p(u ? "✓" : "+", { fg: BRAND.success, bold: true });
+      line = `${indent}${mark} ${this.p(oneLine(result, 90), failed ? { fg: BRAND.danger } : { fg: BRAND.muted })}`;
     } else if (kind === "tool_stream") {
       let text = String(data.text ?? "").replace(/\n$/, "");
       if (text.length > 200) text = text.slice(0, 199) + "…";
       line = data.stream === "stderr"
-        ? `${this.s("│", "dim")} ${this.s(text, "red")}`
-        : `${this.s("│", "dim")} ${this.s(text, "dim")}`;
+        ? `${indent}${this.p(text, { fg: BRAND.danger })}`
+        : `${indent}${this.p(text, { fg: BRAND.muted })}`;
     } else if (kind === "assistant") {
-      line = this.s("· " + oneLine(data.content ?? "", 100), "dim");
+      const content = oneLine(data.content ?? "", 100);
+      if (!content) return;
+      line = `${this.p(u ? "●" : "*", { fg: BRAND.sage, bold: true })} ${content}`;
     } else if (kind === "cost_update") {
-      // P2-3：每轮的看板行（与 --json 的 cost_update 事件同一份快照）。
-      line = this.s(formatDashboardLine(data as unknown as DashboardSnapshot), "dim");
+      // P2-3：每轮的看板行（与 --json 的 cost_update 事件同一份快照），暗色缩进在工具树下。
+      line = `${indent}${this.p(formatDashboardLine(data as unknown as DashboardSnapshot), { fg: BRAND.muted })}`;
     } else {
       return;
     }
+    this.onBeforeWrite?.();
     this.stream.write(line + "\n");
+    this.onAfterWrite?.();
   }
 }
 
