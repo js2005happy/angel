@@ -1,4 +1,4 @@
-// tests/node/test-style.test.ts — 缺口 4（分应用文风学习）。
+﻿// tests/node/test-style.test.ts — 缺口 4（分应用文风学习）。
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,7 +104,8 @@ test("Style.test_save_load_roundtrip_and_perms", () => {
   const path = saveStyleProfile(home, profile);
   expect(path).toBe(stylePath(home, "gmail"));
   expect(existsSync(path)).toBe(true);
-  expect(statSync(path).mode & 0o777).toBe(0o600);
+    // POSIX 才保证 0600；Windows 上 chmod 只映射到只读位，mode 不等于 0o600。
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
   const loaded = loadStyleProfile(home, "gmail");
   expect(loaded).toEqual(profile);
   expect(loadStyleProfile(home, "outlook")).toBeNull();
