@@ -196,3 +196,30 @@ test("全部忽略时给一条说明，而不是空列表", () => {
   expect(r.findings[0].code).toBe("consistent");
   expect(r.ok).toBe(true);
 });
+
+test("回忆过期阈值可配：默认 30 天", () => {
+  const r = checkRedlines({ ...good(), recall: { enabled: true, total: 5, fresh: 0 } });
+  const f = r.findings.find((x) => x.code === "recall-stale");
+  expect(f?.detail).toContain("30 天");
+});
+
+test("回忆过期阈值可配：改成 7 天后文案与修复建议都跟着变", () => {
+  const r = checkRedlines({
+    ...good(),
+    recall: { enabled: true, total: 5, fresh: 0 },
+    thresholds: { recallMaxAgeDays: 7 },
+  });
+  const f = r.findings.find((x) => x.code === "recall-stale");
+  expect(f?.detail).toContain("7 天");
+  expect(f?.detail).not.toContain("30 天");
+  expect(f?.fix).toContain("7 天");
+});
+
+test("回忆过期阈值可配：ready 状态文案同步", () => {
+  const r = checkRedlines({
+    ...good(),
+    recall: { enabled: true, total: 5, fresh: 2 },
+    thresholds: { recallMaxAgeDays: 7 },
+  });
+  expect(r.findings.find((x) => x.code === "recall-ready")?.detail).toContain("7 天内");
+});

@@ -2352,7 +2352,9 @@ export async function main(argv: string[]): Promise<number> {
       recall: (() => {
         const feats2 = resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures });
         const all = new RunStore(join(home, "runs")).list();
-        const cutoff = Date.now() - 30 * 86_400_000;
+        const cfgRl = (cfgRed.redlines && typeof cfgRed.redlines === "object" ? (cfgRed.redlines as Record<string, unknown>).thresholds : null) as Record<string, number> | null;
+        const maxAgeDays = cfgRl && typeof cfgRl.recallMaxAgeDays === "number" ? cfgRl.recallMaxAgeDays : 30;
+        const cutoff = Date.now() - maxAgeDays * 86_400_000;
         const fresh = all.filter((r) => {
           const ts = Date.parse(String((r as unknown as Record<string, unknown>).created_at ?? ""));
           return Number.isFinite(ts) && ts >= cutoff;
