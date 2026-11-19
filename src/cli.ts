@@ -29,7 +29,7 @@ import { handleConfig } from "./configCli.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
-import { buildRecallNote } from "./runRecall.ts";
+import { buildRecallNote, selectRecalledRuns } from "./runRecall.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
@@ -236,7 +236,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["features", "tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -2023,7 +2023,31 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
-  if (args.subcommand === "features") {
+  if (args.subcommand === "recall") {
+    // 回忆是隐式注入的，出问题时只能猜。这条命令把"这次任务能复用哪些历史"摊开给人看。
+    const cfgRecall = loadConfig(home);
+    const taskArg = (args.subArgs ?? []).join(" ").trim() || (args.task ?? "").trim();
+    if (!taskArg) {
+      process.stderr.write("用法：nyra recall \"<任务文本>\"\n");
+      return EXIT_ARGUMENT;
+    }
+    const feats = resolveFeatures(cfgRecall, { enable: args.enableFeatures, disable: args.disableFeatures });
+    const enabled = featureOn(feats, "run_recall");
+    const store = new RunStore(join(home, "runs"));
+    const runs = store.list();
+    const picked = selectRecalledRuns(runs, taskArg, { workdir: resolve(args.workdir), limit: 5, maxAgeDays: 30 });
+    process.stdout.write(`回忆开关：${enabled ? "已开启" : "已关闭"}（features.run_recall）\n`);
+    process.stdout.write(`历史运行：共 ${runs.length} 条，本目录 ${runs.filter((r) => (r as unknown as Record<string, unknown>).workdir === resolve(args.workdir)).length} 条\n`);
+    if (!picked.length) {
+      process.stdout.write("（没有可复用的历史：可能没有同类任务、或都超过 30 天、或未通过验证）\n");
+      return EXIT_SUCCESS;
+    }
+    process.stdout.write(`可复用 ${picked.length} 条：\n`);
+    for (const r of picked) {
+      process.stdout.write(`  ${r.run_id}  ${r.status}  ${r.ageDays} 天前  相似度 ${(r.score * 100).toFixed(0)}%  ${r.task.slice(0, 40)}\n`);
+    }
+    return EXIT_SUCCESS;
+  }  if (args.subcommand === "features") {
     const res = resolveFeatures(loadConfig(home), { enable: args.enableFeatures, disable: args.disableFeatures });
     process.stdout.write(formatFeatures(res) + "\n");
     return EXIT_SUCCESS;
