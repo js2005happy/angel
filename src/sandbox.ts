@@ -6,6 +6,7 @@
 // 仍在宿主机跑（src/hooks.ts），不在沙箱内——职责分工见 docs/sandbox.md。
 import { spawn } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import { seatbeltAvailable } from "./seatbelt.ts";
 import { delimiter, join } from "node:path";
 
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——三档模式。
@@ -16,12 +17,12 @@ export type SandboxMode = "read-only" | "workspace-write" | "danger-full-access"
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——后端选择。
 // auto：Linux 且有 bwrap 时用 bwrap，否则工具级；local：显式只要工具级；
 // bwrap：强制 bwrap，缺失即 fail-closed 报错；e2b：0.5.1 暂不支持。
-export type SandboxBackend = "auto" | "local" | "bwrap" | "e2b";
+export type SandboxBackend = "auto" | "local" | "bwrap" | "seatbelt" | "e2b";
 
 export const SANDBOX_MODES: readonly SandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
-export const SANDBOX_BACKENDS: readonly SandboxBackend[] = ["auto", "local", "bwrap", "e2b"];
+export const SANDBOX_BACKENDS: readonly SandboxBackend[] = ["auto", "local", "bwrap", "seatbelt", "e2b"];
 
-export type SandboxLevel = "bwrap" | "tool-level" | "none";
+export type SandboxLevel = "bwrap" | "seatbelt" | "tool-level" | "none";
 
 export interface SandboxStatus {
   backend: string;
@@ -33,13 +34,15 @@ export interface SandboxStatus {
 
 export interface ResolvedSandbox {
   /** 生效的后端（auto 已解析为 bwrap 或 local）。 */
-  backend: "bwrap" | "local";
-  /** 用户原始选择（auto/local/bwrap），用于提示文案。 */
+  backend: "bwrap" | "seatbelt" | "local";
+  /** 用户原始选择（auto/local/bwrap/seatbelt），用于提示文案。 */
   requested: SandboxBackend;
   mode: SandboxMode;
   level: SandboxLevel;
   allowNet: boolean;
   bwrapAvailable: boolean;
+  /** macOS 上 sandbox-exec 是否可用（其他平台恒 false）。 */
+  seatbeltAvailable?: boolean;
 }
 
 /** bwrap 不可用时抛出的错误：调用方据此降级或 fail-closed，绝不静默裸奔。 */
@@ -136,16 +139,32 @@ export function resolveSandboxBackend(
     }
     return { backend: "bwrap", requested, mode, level: "bwrap", allowNet, bwrapAvailable };
   }
+  // P0-6：macOS Seatbelt（sandbox-exec）。与 bwrap 同款语义，只是实现换 SBPL。
+  if (requested === "seatbelt") {
+    if (process.platform !== "darwin") {
+      throw new Error(`--sandbox seatbelt 只支持 macOS（当前平台 ${process.platform}）；请改回 --sandbox auto 或 --sandbox local`);
+    }
+    if (!seatbeltAvailable()) {
+      throw new Error("--sandbox seatbelt 要求 /usr/bin/sandbox-exec，但本机找不到它；请改回 --sandbox auto 或 --sandbox local");
+    }
+    if (mode === "danger-full-access") {
+      throw new Error("danger-full-access 与沙箱互斥：该模式要求无限制执行，不能进 Seatbelt；如需无限制请用 --sandbox local 并自行承担风险");
+    }
+    return { backend: "seatbelt", requested, mode, level: "seatbelt", allowNet, bwrapAvailable, seatbeltAvailable: true };
+  }
   if (requested === "local") {
     return { backend: "local", requested, mode, level: "tool-level", allowNet, bwrapAvailable };
   }
-  // auto：danger-full-access 显式要无限制，不强制进 bwrap，落到工具级。
+  // auto：danger-full-access 显式要无限制，不强制进沙箱，落到工具级。
   if (mode === "danger-full-access") {
     return { backend: "local", requested, mode, level: "tool-level", allowNet, bwrapAvailable };
   }
   if (process.platform === "linux" && bwrapAvailable) {
     return { backend: "bwrap", requested, mode, level: "bwrap", allowNet, bwrapAvailable };
   }
+  // 注意：auto **不**自动选 Seatbelt。SBPL 不是 Apple 的稳定 API，且避免在没有 mac
+  // 实测的情况下悄悄改变既有行为（auto 无 bwrap → 工具级 是已有契约）。
+  // 需要 macOS OS 级沙箱请显式 --sandbox seatbelt。
   return { backend: "local", requested, mode, level: "tool-level", allowNet, bwrapAvailable };
 }
 

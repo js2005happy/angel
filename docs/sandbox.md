@@ -154,3 +154,38 @@ NYRA_ALLOW_PROTECTED_WRITES=1 nyra "<task>"
 ### 为什么默认拦
 
 agent 的指令来源就是 `AGENTS.md` / `commands/*.md` / `skills/*.md`。允许它改这些，等于允许它给自己放权——在一次被污染的会话里，这是最直接的持久化路径。`.git` 则是回滚与审计的底线。
+
+---
+
+## macOS：Seatbelt 后端（P0-6）
+
+Linux 用 bwrap，macOS 用系统自带的 `sandbox-exec`（SBPL profile）。两者是同一层东西：**内核级拦截**，不是工具级规则。
+
+```bash
+nyra --sandbox seatbelt "<task>"     # 显式要求（非 macOS 会报错，不静默降级）
+nyra --sandbox auto "<task>"         # 注意：auto 不会自动选 Seatbelt（见下）
+```
+
+### profile 的形状
+
+原则是 **deny default，再逐项放行**（Apple 推荐的写法，也比"默认允许再禁止"安全）：
+
+| mode | 文件写 | 网络 |
+|---|---|---|
+| `read-only` | 不给 `file-write*`，只留 `/dev/null` 等设备节点 | 按 `allowNet` |
+| `workspace-write` | 只有工作目录 + `/private/tmp` + `/private/var/folders` | 按 `allowNet`，默认只放 localhost |
+| `danger-full-access` | `(allow default)`，与 bwrap 后端语义一致 | 全放开 |
+
+- 可额外追加可写路径（例如 `~/.nyra` 要写会话/记忆时）
+- 路径里的 `"` 与 `\` 会被转义——不能靠路径注入 profile
+
+### 三个边界（别高估它）
+
+1. 拦的是系统调用面（文件/网络/进程），**拦不住工作目录内的逻辑破坏**（比如删自己的源码）。
+2. `sandbox-exec` 失败即 fail-closed：报错说"命令未执行"并**不会退化成裸奔**；要裸奔必须显式 `--sandbox local`。
+3. SBPL 不是 Apple 的稳定 API，语法可能随系统版本变化；这里只用了最小集 `(allow/deny file-*/network-*/process-*)`。
+
+### 验证状态
+
+- profile 生成是纯函数，在任何平台都能单测（`tests/node/test-seatbelt.test.ts`）
+- **真机执行尚未在 macOS 上跑过**——CI 只有 ubuntu / windows / macos-latest 三档，mac 档会走 Seatbelt 分支，但本机（Windows）无法本地复现；首次 mac 运行时请重点看 `docs/sandbox.md` 这节
