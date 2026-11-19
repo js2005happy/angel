@@ -1,0 +1,131 @@
+# 发布产物签名与来源证明（sigstore keyless + SLSA）
+#
+# 为什么用 keyless：开源项目不该把长期私钥塞进 CI secrets。cosign keyless 用
+# GitHub 的 OIDC 令牌换一张 10 分钟有效的短期证书，签名记录进 Rekor 透明日志，
+# 任何人都能离线验证"这个产物确实由本仓库的这条 workflow 构建"。
+#
+# 产出（挂到同一个 Release）：
+#   SHA256SUMS              所有产物的哈希清单
+#   SHA256SUMS.sig          对清单的 cosign 签名（keyless）
+#   SHA256SUMS.pem          签名时的短期证书（含 OIDC 身份）
+#   SHA256SUMS.bundle       sigstore bundle（签名+证书+Rekor 凭证，一体化验证用）
+#   *.intoto.jsonl          每个产物的 SLSA 来源证明（attest-build-provenance）
+#
+# 触发：Release 发布后自动跑；也可手动指定 tag。
+# 前置：仓库 Settings → Actions → General 里允许 GitHub Actions 创建 attestation
+#       （公共仓库默认允许）。
+
+name: Sign release artifacts
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要签名的 Release tag（例如 v0.5.0）'
+        required: true
+
+permissions:
+  contents: write       # 回传签名文件到 Release
+  id-token: write       # keyless 签名换取 OIDC 令牌
+  attestations: write   # 写 SLSA 来源证明
+
+concurrency:
+  group: release-sign-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    name: Sign + attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$TAG" ]; then echo "缺少 tag"; exit 1; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (for verify script)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --repo "${{ github.repository }}" --dir dist --clobber
+          echo "--- 下载到的产物 ---"
+          ls -la dist
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          # 排除上一次运行可能残留的签名文件，避免自我签名
+          find . -maxdepth 1 -type f \
+            ! -name 'SHA256SUMS*' ! -name '*.intoto.jsonl' \
+            -printf '%f\n' | sort | xargs -r -d '\n' sha256sum > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Sign SHA256SUMS (keyless)
+        working-directory: dist
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign sign-blob --yes \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            --bundle SHA256SUMS.bundle \
+            SHA256SUMS
+          echo "--- 签名文件 ---"
+          ls -la SHA256SUMS*
+
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            dist/*
+
+      - name: Upload signatures back to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.sig \
+            dist/SHA256SUMS.pem \
+            dist/SHA256SUMS.bundle \
+            --repo "${{ github.repository }}" --clobber
+
+      - name: Verify our own signature (fail closed)
+        working-directory: dist
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          cosign verify-blob --bundle SHA256SUMS.bundle \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/release-sign\.yml@refs/" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+          echo "✅ 自身签名验证通过"
+
+      - name: Summary
+        run: |
+          {
+            echo "## 签名完成：${{ steps.tag.outputs.tag }}"
+            echo ""
+            echo "已签名产物："
+            sed 's/^/  - /' dist/SHA256SUMS
+            echo ""
+            echo "用户验证方式见 docs/SIGNING.md"
+          } >> "$GITHUB_STEP_SUMMARY"
