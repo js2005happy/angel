@@ -305,3 +305,35 @@ test("J7 red 结论在 JSON 里也带 blockers（门禁可直接判 grade）", (
   expect(j.grade).toBe("red");
   expect(j.blockers.length).toBeGreaterThan(0);
 });
+
+// ---- 守门（guardExitCode / formatGuardLine）----
+import { guardExitCode, formatGuardLine } from "../../src/verdict.ts";
+
+test("G1 等级 → 退出码：green 放行、red 拦截、yellow 默认放行", () => {
+  expect(guardExitCode("green")).toBe(0);
+  expect(guardExitCode("red")).toBe(2);
+  expect(guardExitCode("yellow")).toBe(0);
+});
+
+test("G2 strict 下 yellow 也拦（但 red 拦不拦与 strict 无关）", () => {
+  expect(guardExitCode("yellow", { strict: true })).toBe(2);
+  expect(guardExitCode("red", { strict: false })).toBe(2);
+});
+
+test("G3 一行输出：green 放行、red 拦截并带首条阻断原因", () => {
+  const green = buildVerdict({ redlines: redlines(), savings: savings(), recallAvailable: 1 });
+  expect(formatGuardLine(green)).toContain("放行");
+  const red = buildVerdict({ redlines: redlines(2), savings: savings() });
+  const line = formatGuardLine(red);
+  expect(line).toContain("拦截");
+  expect(line).toContain("红线");
+});
+
+test("G4 一行输出真的只有一行（钩子里不刷屏）", () => {
+  expect(formatGuardLine(buildVerdict({ redlines: redlines(1), savings: savings() })).includes("\n")).toBe(false);
+});
+
+test("G5 单次运行结论也能守门（同源，不另写判断）", () => {
+  const runRed = buildRunVerdict({ run_id: "r", status: "verify_failed", verify_result: { exit_code: 1 } });
+  expect(guardExitCode(runRed.grade)).toBe(2);
+});

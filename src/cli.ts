@@ -30,7 +30,7 @@ import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
-import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict, toVerdictJson, type Verdict as VerdictShape } from "./verdict.ts";
+import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict, toVerdictJson, guardExitCode, formatGuardLine, type Verdict as VerdictShape } from "./verdict.ts";
 import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
@@ -170,6 +170,7 @@ Usage:
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
   nyra verdict --run <id>         score one run; --recent N: trend over the last N runs; --json: machine-readable
+  nyra guard [--strict]          gate: exit 2 when verdict is red (yellow too with --strict)
   nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
   nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
   nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
@@ -268,7 +269,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang", "--channel",
   ]);
-  const subcommands = new Set(["verdict", "savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats", "status"]);
+  const subcommands = new Set(["guard", "verdict", "savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats", "status"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -2733,12 +2734,22 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
+  if (args.subcommand === "guard") {
+    // guard = verdict 的门禁形态：一行输出 + 退出码。等级判定与 verdict 同源，不另写一套。
+    args.subcommand = "verdict";
+    args.subArgs = [...(args.subArgs ?? []), "--guard"];
+  }
   if (args.subcommand === "verdict") {
     // --json：机器可读输出（CI 门禁只看 grade，看板画趋势线看 reasons 里的数字）。
     const verdictJson = (args.subArgs ?? []).includes("--json");
-    const emitVerdict = (v2: VerdictShape, kind: "config" | "run" | "trend"): void => {
-      if (verdictJson) process.stdout.write(JSON.stringify(toVerdictJson(v2, kind)) + "\n");
+    // --guard：一行输出 + 退出码（供 pre-push / CI 用）；--strict 时 yellow 也拦。
+    const guardMode = (args.subArgs ?? []).includes("--guard");
+    const guardStrict = (args.subArgs ?? []).includes("--strict");
+    const emitVerdict = (v2: VerdictShape, kind: "config" | "run" | "trend"): number => {
+      if (guardMode) process.stdout.write(formatGuardLine(v2, { strict: guardStrict }) + "\n");
+      else if (verdictJson) process.stdout.write(JSON.stringify(toVerdictJson(v2, kind)) + "\n");
       else process.stdout.write(formatVerdict(v2) + "\n");
+      return guardMode ? guardExitCode(v2.grade, { strict: guardStrict }) : v2.grade === "red" ? 2 : 0;
     };
     // --run <id>：给单次运行打分（配置级 verdict 只看设置，不看这一次的产物）。
     const runIdFlag = (() => {
@@ -2785,8 +2796,7 @@ export async function main(argv: string[]): Promise<number> {
         failureCounts[cls] = (failureCounts[cls] ?? 0) + 1;
       }
       const v = buildTrendVerdict({ runs, failureCounts });
-      emitVerdict(v, "run");
-      return v.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
+        return emitVerdict(v, "trend");
     }
     if (runIdFlag) {
       let state: Record<string, unknown> | null = null;
@@ -2809,8 +2819,7 @@ export async function main(argv: string[]): Promise<number> {
         delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
         error: typeof state.error === "string" ? state.error : null,
       });
-      emitVerdict(v, "trend");
-      return v.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
+      return emitVerdict(v, "run");
     }
     // 一条结论：把红线 + 省钱 + 回忆 + 运行历史拼成"这次跑得值不值"。
     const cfgV = loadConfig(home);
@@ -2870,8 +2879,7 @@ export async function main(argv: string[]): Promise<number> {
     } catch { runStatusCounts = null; }
 
     const verdict = buildVerdict({ redlines, savings, modelSavings, recallAvailable, runStatusCounts, turns });
-    emitVerdict(verdict, "config");
-    return verdict.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
+    return emitVerdict(verdict, "config");
   }
   if (args.subcommand === "status") return handleStatus(home, resolve(args.workdir));
   if (args.subcommand === "savings") {
