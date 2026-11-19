@@ -22,9 +22,9 @@ import { handleCost } from "./costCli.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
-import { renderBanner } from "./banner.ts";
+import { renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing } from "./banner.ts";
 import { formatUsage } from "./usage.ts";
-import { formatReplStatus, ToolPrinter } from "./consoleUi.ts";
+import { formatReplStatus, ToolPrinter, useColor, styleEnabled, truncateWidth } from "./consoleUi.ts";
 import { askApproval } from "./approvalUi.ts";
 import { JsonLines, invalidArguments, EXIT_SUCCESS, EXIT_RUNTIME, EXIT_ARGUMENT, EXIT_INCOMPLETE, EXIT_VERIFY, EXIT_INTERRUPTED, EXIT_COST } from "./jsonMode.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
@@ -300,9 +300,13 @@ async function ensureWorkspaceTrusted(workdir: string, args: CliArgs, config: Re
   if (config.skip_workspace_trust) return null;
   if (!(process.stdin.isTTY && process.stdout.isTTY)) return null;
   if (isTrusted(workdir, home)) return null;
+  const trust = renderTrustPrompt(resolve(workdir), {
+    width: process.stdout.columns || 80, color: useColor(process.stdout), unicode: supportsBoxDrawing(),
+  });
+  process.stdout.write(trust.lines.join("\n") + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise<string>((resolvePromise) => {
-    rl.question(`首次在工作目录 ${resolve(workdir)} 运行 Nyra。信任该目录吗？（y/N）`, (a) => { rl.close(); resolvePromise(a); });
+    rl.question(trust.question, (a) => { rl.close(); resolvePromise(a); });
   });
   if (answer.trim().toLowerCase() !== "y" && answer.trim().toLowerCase() !== "yes") {
     process.stdout.write("已拒绝信任该工作目录。\n");
@@ -1313,8 +1317,18 @@ async function runRepl(args: CliArgs): Promise<number> {
   const printer = new ToolPrinter();
   agent.onEvent = (kind, data) => printer.call(kind, data);
   const providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
-  process.stdout.write(renderBanner(VERSION, providerDesc, agent.mode, agent.sessionId) + "\n");
-  process.stdout.write("输入 /help 查看命令，/exit 退出。\n");
+  // 终端外观：TTY 且宽度够时用 Claude Code 风格的框式头部 + 横线输入区 + 状态栏；
+  // 非 TTY / TERM=dumb / 太窄时退回纯文本状态行 + "> "（管道与脚本不受影响）。
+  const uiColor = useColor(process.stdout);
+  const uiUnicode = supportsBoxDrawing();
+  const termCols = (): number => process.stdout.columns || 80;
+  const framed = (): boolean => Boolean(process.stdin.isTTY && process.stdout.isTTY)
+    && process.env.TERM !== "dumb" && termCols() >= 20;
+  process.stdout.write(renderHeader(
+    { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir },
+    { width: termCols(), color: uiColor, unicode: uiUnicode },
+  ).join("\n") + "\n");
+  process.stdout.write(styleEnabled(truncateWidth("  输入 /help 查看命令，/exit 退出。", Math.max(1, termCols() - 1)), ["dim"], uiColor) + "\n");
   const unread = (await import("./tasks.ts")).formatUnreadInbox(home);
   if (unread) process.stdout.write(unread + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
@@ -1328,9 +1342,41 @@ async function runRepl(args: CliArgs): Promise<number> {
     const contextUsage = agent.usage.last_prompt_tokens !== null && agent.usage.configuredWindow
       ? agent.usage.last_prompt_tokens / agent.usage.configuredWindow
       : null;
-    const status = formatReplStatus(providerDesc, workdir, contextUsage, mode);
-    process.stdout.write(status + "\n");
-    const line = await ask("nyra> ");
+    let line: string | null;
+    if (framed()) {
+      const cols = termCols();
+      // Node 版暂不支持 shift+tab 切换模式（用 /mode），所以不显示该提示。
+      const frame = renderInputFrame(
+        { model: providerDesc, mode, contextUsage, modeSwitchKey: false },
+        { width: cols, color: uiColor, unicode: uiUnicode },
+      );
+      // 先画上横线并在下面预留几行（避免之后滚屏），光标回到输入行；
+      // readline 显示提示符后再把下横线和状态栏画到输入行下面。readline 在
+      // 退格、移动光标时会清掉光标以下的内容，所以每次按键后补画一次（只在
+      // 输入还是单行时画，多行时跳过，避免和折行的输入抢位置）。
+      process.stdout.write("\n" + frame.above.join("\n") + "\n" + "\n".repeat(frame.below.length) + `\x1b[${frame.below.length}A\r`);
+      const drawBelow = (): void => {
+        const typed = (rl as unknown as { line?: string }).line ?? "";
+        if (inputRows(typed, cols) > 1) return;
+        process.stdout.write("\x1b7" + frame.below.map((l) => `\x1b[1B\r\x1b[2K${l}`).join("") + "\x1b8");
+      };
+      const onKey = (_s: unknown, key?: { name?: string }): void => {
+        if (key && (key.name === "return" || key.name === "enter")) return;
+        drawBelow();
+      };
+      const pending = ask(frame.prompt);
+      drawBelow();
+      process.stdin.on("keypress", onKey);
+      try { line = await pending; } finally { process.stdin.off("keypress", onKey); }
+      if (line !== null) {
+        // 提交后：回到上横线，清掉输入框，留下一行暗色回显，界面像 Claude Code 一样干净。
+        const up = inputRows(line, cols) + frame.above.length;
+        process.stdout.write(`\x1b[${up}A\r\x1b[J` + styleEnabled(`> ${line}`, ["dim"], uiColor) + "\n");
+      }
+    } else {
+      process.stdout.write(formatReplStatus(providerDesc, workdir, contextUsage, mode) + "\n");
+      line = await ask("> ");
+    }
     if (line === null) { process.stdout.write("\n"); break; }
     const text = line.trim();
     if (!text) continue;
