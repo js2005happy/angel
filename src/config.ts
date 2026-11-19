@@ -65,6 +65,8 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   disabled_tools: [],
   // 工具检索（延迟加载）：默认关；开启后只发核心工具 + search_tools 命中的。
   tool_search: { enabled: false, top_k: 12 },
+  // 功能开关（对齐 Codex [features]）：键名为开关名，值为布尔；未知键会告警。
+  features: {},
   pricing: {},
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},
