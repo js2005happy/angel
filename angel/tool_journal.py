@@ -508,10 +508,24 @@ class ToolJournal:
         # A global count of one is insufficient: another process could have
         # finished this intent and left a different intent pending. Never
         # return a dispatchable ID unless *our* intent remains unresolved.
-        own = [r for r in self._records() if r["call_id"] == call_id]
+        snapshot = self._records()
+        own = [r for r in snapshot if r["call_id"] == call_id]
         if (len(own) != 1 or own[0]["event"] != "intent"
                 or own[0]["tool"] != tool):
             raise JournalError("本次调用意图已变化；禁止执行工具")
+        # Detect other pending calls in the same final snapshot, including
+        # an intent inserted after the preceding inspect(). Not a lock.
+        groups: dict[str, list[dict]] = {}
+        for record in snapshot:
+            groups.setdefault(record["call_id"], []).append(record)
+        for other_id, events in groups.items():
+            if other_id == call_id:
+                continue
+            intents = [e for e in events if e["event"] == "intent"]
+            results = [e for e in events if e["event"] != "intent"]
+            if (len(intents) != 1 or len(results) != 1
+                    or intents[0]["tool"] != results[0]["tool"]):
+                raise JournalError("最终日志快照出现并发未决调用或歧义；禁止执行工具")
         return call_id
 
     def finish(self, call_id: str, tool: str, *, success: bool) -> None:
