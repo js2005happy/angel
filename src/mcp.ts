@@ -228,6 +228,11 @@ export class MCPClient {
         this.failPending(new MCPError(`MCP 服务器 ${this.config.name} 写入失败：${err.message}`));
       }
     });
+    // 交互式 stdio 协议：写完即刷。Bun 原生 FileSink 有 flush()，
+    // 这里若存在就调一次；node:child_process 的 WriteStream 上
+    // flush 不是函数，此步为空操作，不影响任何行为。
+    const sink = this.process.stdin as unknown as { flush?: unknown };
+    if (typeof sink.flush === "function") (sink.flush as () => void).call(this.process.stdin);
   }
 
   private modernMeta(version: string): Record<string, unknown> {
@@ -239,6 +244,37 @@ export class MCPClient {
   }
 
   private async sendRequest(method: string, params: Record<string, unknown> = {}, meta?: Record<string, unknown> | null, timeout?: number): Promise<Record<string, unknown>> {
+    // Windows 上偶发（CI 三轮里同一测试必现其一）：请求发出后整个
+    // 超时窗口内收到 0 字节、服务器仍活着——请求或回复在传输层
+    // 丢了，本地复现不了（Linux 上 10/10 次 1ms 内回包；MITM
+    // 1 字节切片亦通过；请求 JSON 全是 ASCII，排除多字节切断）。
+    // 只对这种可确认的“零字节丢失”重试一次（新 id），其余失败
+    // （服务器已退出、有坏行、已收到部分回复）一律不重试。重试
+    // 有极小重复执行风险：若服务器其实已执行但回复丢了，重发会
+    // 再执行一次；零字节意味着它大概率根本没收到请求，且原地
+    // 10 秒超时后由上层重试的风险与体验都更差，因此接受折中。
+    let lastErr: unknown = null;
+    let retried = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await this.sendRequestOnce(method, params, meta, timeout);
+      } catch (err) {
+        lastErr = err;
+        const zeroByte = err instanceof MCPError
+          && (err as MCPError & { zeroByteTimeout?: boolean }).zeroByteTimeout === true;
+        if (attempt === 0 && zeroByte && this.process !== null && this.process.exitCode === null) {
+          retried = true;
+          process.stderr.write(`MCP 请求无响应后重试（第 1 次）：${method}（发出后 0 字节，服务器仍在运行）\n`);
+          continue;
+        }
+        if (retried && err instanceof MCPError) err.message += "（已重试 1 次）";
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
+  private async sendRequestOnce(method: string, params: Record<string, unknown> = {}, meta?: Record<string, unknown> | null, timeout?: number): Promise<Record<string, unknown>> {
     const id = this.nextId++;
     const body: Record<string, unknown> = { ...params };
     if (meta !== undefined && meta !== null) body._meta = meta;
@@ -254,14 +290,23 @@ export class MCPClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         this.staleIds.add(id);
+        const serverAlive = this.process !== null && this.process.exitCode === null;
         const serverState = this.process === null ? "客户端已停止"
-          : this.process.exitCode === null ? "服务器仍在运行" : "服务器已退出";
-        const detail = `请求发出后已收字节 +${this.bytesReceived - sentBytes}`
-          + `，已解析行 +${this.linesParsed - sentLines}`
-          + `，无法解析行 +${this.badLineCount - sentBad}`
+          : serverAlive ? "服务器仍在运行" : "服务器已退出";
+        const recvBytes = this.bytesReceived - sentBytes;
+        const recvLines = this.linesParsed - sentLines;
+        const recvBad = this.badLineCount - sentBad;
+        const detail = `请求发出后已收字节 +${recvBytes}`
+          + `，已解析行 +${recvLines}`
+          + `，无法解析行 +${recvBad}`
           + (this.lastBadLine !== null ? `，最后无法解析行：${this.lastBadLine}` : "")
           + `，${serverState}`;
-        reject(new MCPError(`MCP 请求超时：${method}（${detail}）`));
+        const err = new MCPError(`MCP 请求超时：${method}（${detail}）`);
+        // 零字节且服务器活着 = 请求或回复在传输层丢了（见 sendRequest），
+        // 可重试；其余超时原因不重试。
+        (err as MCPError & { zeroByteTimeout?: boolean }).zeroByteTimeout
+          = recvBytes === 0 && recvLines === 0 && recvBad === 0 && serverAlive;
+        reject(err);
       }, deadline);
       this.pending.set(id, { resolve, reject, timer });
     });
