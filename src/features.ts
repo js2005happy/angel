@@ -28,6 +28,7 @@ export const FEATURES: readonly FeatureSpec[] = [
   { name: "aux_model_routing", defaultEnabled: true, description: "压缩/子任务走便宜模型（compact_model / delegate_model）" },
   { name: "deny_read_globs", defaultEnabled: true, description: "读侧禁读清单（.env / secrets 等敏感文件拒绝读取）" },
   { name: "cost_hard_cap", defaultEnabled: true, description: "成本硬顶：超过 max_cost_usd 立即中止而不是只警告" },
+  { name: "run_recall", defaultEnabled: true, description: "跨会话回忆：二次跑同类任务时注入上次的结论（省掉重复探索）" },
   { name: "resume_idempotent", defaultEnabled: true, description: "续跑幂等：已成功的写操作不重复执行" },
 ];
 
