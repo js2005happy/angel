@@ -17,9 +17,10 @@ import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
   TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
   newToolContext, executeTool, executeToolIdempotent, resumeWriteAlreadyDone, ToolError, checkApproval,
-  type ToolContext, type DelegateOptions,
+  type ToolContext, type DelegateOptions, type ApproveResult,
 } from "./tools.ts";
 import { RepeatGuard } from "./repeatGuard.ts";
+import { SessionRules } from "./approvalRules.ts";
 import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, skillRenderOptionsFor, type Skill } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession } from "./memory.ts";
@@ -92,7 +93,7 @@ export const MODE_NOTES: Record<string, string> = {
 };
 
 export type AgentEventHandler = (kind: string, data: Record<string, unknown>) => void;
-export type ApproveFn = (tool: string, summary: string, details?: Record<string, unknown>) => Promise<boolean | string> | boolean | string;
+export type ApproveFn = (tool: string, summary: string, details?: Record<string, unknown>) => Promise<ApproveResult> | ApproveResult;
 
 export interface AgentOptions {
   workdir?: string;
@@ -105,6 +106,8 @@ export interface AgentOptions {
   backend?: ToolContext["backend"];
   onEvent?: AgentEventHandler | null;
   approveFn?: ApproveFn | null;
+  /** “允许并不再询问”的本会话规则（网关每个会话一份，终端每个 Agent 一份）。 */
+  sessionRules?: SessionRules | null;
   delegateDepth?: number;
   delegateBudget?: DelegationBudget | null;
   systemInstructions?: string;
@@ -245,6 +248,7 @@ export class Agent {
       evidence: this.evidence,
       backend: this.backend ?? null,
       approveFn: opts.approveFn ?? null,
+      sessionRules: opts.sessionRules ?? new SessionRules(),
       checkpoint: this.checkpoints,
       poppyEnabled: this.poppyEnabled,
       streamToolOutput: opts.streamToolOutput ?? false,
@@ -769,6 +773,7 @@ export class Agent {
       mcpManager: this.mcpManager,
       backend: this.backend ?? null,
       approveFn: this.ctx.approveFn ?? null,
+      sessionRules: this.ctx.sessionRules ?? null,
       delegateDepth: this.delegateDepth + 1,
       delegateBudget: this.delegateBudget,
       systemInstructions: this.systemInstructions,

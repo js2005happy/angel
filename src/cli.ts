@@ -7,6 +7,7 @@
 // src/eigenfluxPolicy.ts）；worker 桥与 Python 运行时已移除。
 // ui（gateway）与 MCP 客户端在第 3 阶段已原生化。
 import { createInterface } from "node:readline";
+import { encode as qrEncode, toTerminal as qrToTerminal } from "./qrcode.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, realpathSync, chmodSync, renameSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -458,9 +459,16 @@ async function handleUi(argv: string[], workdir: string, home: string): Promise<
   if (pair) {
     try {
       const pairing = gateway.startPairing();
-      const line = `手机配对码 ${pairing.code}（${Math.floor(Number(pairing.expires_in) / 60)} 分钟内有效，一次性）；手机打开 ${pairing.url} 并输入配对码。`;
-      if (printJson) process.stderr.write(line + "\n");
-      else process.stdout.write(line + "\n");
+      const line = `手机配对码 ${pairing.code}（${Math.floor(Number(pairing.expires_in) / 60)} 分钟内有效，一次性，输错 5 次作废）；用手机扫下面的二维码，或打开 ${pairing.url} 并输入配对码。`;
+      const out = printJson ? process.stderr : process.stdout;
+      let qr = "";
+      try {
+        // 终端里画二维码（本机生成，不调第三方）；非 TTY / NO_COLOR 时不带 ANSI 颜色。
+        const ansi = Boolean(out.isTTY) && !process.env.NO_COLOR;
+        qr = qrToTerminal(qrEncode(String(pairing.url), "M"), { ansi }) + "\n";
+      } catch { qr = ""; }
+      out.write(qr + line + "\n");
+      out.write("只在可信的局域网里配对；已配对的设备可在网页“设置 → 手机”里撤销。\n");
     } catch (err) {
       process.stderr.write(`无法生成配对码：${err instanceof Error ? err.message : String(err)}\n`);
     }

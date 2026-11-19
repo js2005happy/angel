@@ -13,6 +13,7 @@ import { appendMemory } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
 import { evaluate, parseRules, matchPathGlob, type RuleSet } from "./permissionRules.ts";
+import { RuleStore, SessionRules, suggestionFor, rejectionMessage, type ApprovalDecision, type ApprovalRule } from "./approvalRules.ts";
 import { runSeatbelt, SeatbeltUnavailableError } from "./seatbelt.ts";
 import { runWindowsSandboxed, WindowsSandboxUnavailableError } from "./windowsSandbox.ts";
 import { EvidenceStore } from "./evidence.ts";
@@ -73,6 +74,28 @@ export const MUTATING_TOOLS = new Set([
 export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan"]);
 export const SESSION_GRANT_TOOLS = new Set([...SESSION_FILE_TOOLS, "shell"]);
 export const APPROVE_ALWAYS = "always";
+/** 审批回调返回值：true/false、"always"（本会话同一命令/文件），或结构化决定（带规则范围 / 拒绝反馈）。 */
+export type ApproveResult = boolean | string | ApprovalDecision;
+
+/** 已保存的“不再询问”规则（本会话 → 本项目）里第一条命中的；没有返回 null。 */
+export function findApprovalRule(ctx: ToolContext, tool: string, command: string | null | undefined): ApprovalRule | null {
+  const session = ctx.sessionRules?.find(tool, command) ?? null;
+  if (session) return session;
+  if (!ctx.home) return null;
+  try { return new RuleStore(ctx.home).find(ctx.workdir, tool, command); } catch { return null; }
+}
+
+/** 按审批卡选择的范围记下建议规则；返回记下的规则（建议为空时返回 null，等同单次允许）。 */
+export function rememberApprovalRule(ctx: ToolContext, tool: string, command: string | null | undefined, scope: string | undefined): ApprovalRule | null {
+  const suggestion = suggestionFor(tool, command);
+  if (!suggestion) return null;
+  if (scope === "project") {
+    if (!ctx.home) return null;
+    return new RuleStore(ctx.home).add(ctx.workdir, suggestion);
+  }
+  if (!ctx.sessionRules) ctx.sessionRules = new SessionRules();
+  return ctx.sessionRules.add(suggestion);
+}
 
 /** S4：委派选项——子 Agent 的隔离方式、工具白名单与模型。 */
 export interface DelegateOptions {
@@ -98,7 +121,9 @@ export interface ToolContext {
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
   evidence?: EvidenceStore | null;
   backend?: { name?: string; readFile?(p: string): string; writeFile?(p: string, c: string): string; listDir?(p: string): string; runCommand?(cmd: string, cwd: string, timeout: number): string } | null;
-  approveFn?: ((tool: string, summary: string, details?: Record<string, unknown>) => boolean | string | Promise<boolean | string>) | null;
+  approveFn?: ((tool: string, summary: string, details?: Record<string, unknown>) => ApproveResult | Promise<ApproveResult>) | null;
+  /** “允许并不再询问”的本会话前缀规则（approvalRules.ts）；终端与网页/手机共用同一份。 */
+  sessionRules?: SessionRules | null;
   approvalObserver?: ((tool: string, approved: boolean | null) => void) | null;
   approvedFileTools?: Set<string>;
   approvedShellCommands?: Set<string>;
@@ -468,6 +493,15 @@ export async function checkApproval(
     if (!ctx.interactive) {
       throw new ToolError("非交互模式下 auto 模式不执行写入操作，请使用 --mode full 重新运行");
     }
+    // 已记下的“允许并不再询问”规则：匹配时会重新做简单命令检查，
+    // `; && | $() 反引号 换行` 一律匹配不上（见 approvalRules.prefixMatches）。
+    const ruleHit = findApprovalRule(ctx, toolName, opts?.command);
+    if (ruleHit) {
+      observeApproval(ctx, toolName, true);
+      try { ctx.onEvent?.("approval_rule_applied", { tool: toolName, rule: ruleHit.label, scope: ruleHit.scope, id: ruleHit.id }); } catch { /* ignore */ }
+      return;
+    }
+    const suggestion = suggestionFor(toolName, opts?.command);
     const fileScope = SESSION_FILE_TOOLS.has(toolName) && opts?.fileTarget !== undefined
       ? JSON.stringify([toolName, String(opts.fileTarget), approvalRoot(ctx), backendKey(ctx.backend ?? null)])
       : null;
@@ -483,7 +517,14 @@ export async function checkApproval(
       // 把 opts 原样透传给 approveFn（旧调用方忽略第 3 个参数）。
       const approved = await ctx.approveFn(toolName, summary, {
         command: opts?.command, cwd: opts?.cwd, fileTarget: opts?.fileTarget, timeout: opts?.timeout,
+        suggestion,
       });
+      if (approved && typeof approved === "object") {
+        observeApproval(ctx, toolName, Boolean(approved.approved));
+        if (!approved.approved) throw new ToolError(rejectionMessage(approved.feedback));
+        if (approved.scope) rememberApprovalRule(ctx, toolName, opts?.command, approved.scope);
+        return;
+      }
       observeApproval(ctx, toolName, Boolean(approved));
       if (!approved) throw new ToolError("用户拒绝执行");
       if (approved === APPROVE_ALWAYS && grant !== null) ctx.approveFnGrants?.add(grant);
@@ -497,6 +538,9 @@ export async function checkApproval(
     let choice: string;
     if (fileScope !== null) {
       choice = await askApproval("允许执行吗？", true, "始终允许：本次会话此工具对该文件");
+    } else if (shellScope !== null && suggestion !== null) {
+      // 与网页/手机审批卡同一套规则：终端“始终允许”记一条本会话前缀规则。
+      choice = await askApproval("允许执行吗？", true, `始终允许：本次会话${suggestion.label}`);
     } else if (shellScope !== null) {
       choice = await askApproval("允许执行吗？", true, "始终允许：本次会话相同命令、目录、后端和超时");
     } else {
@@ -506,6 +550,7 @@ export async function checkApproval(
     if (choice === "yes") return;
     if (choice === "always") {
       if (fileScope !== null) { ctx.approvedFileTools?.add(fileScope); return; }
+      if (shellScope !== null && suggestion !== null) { rememberApprovalRule(ctx, toolName, opts?.command, "session"); return; }
       if (shellScope !== null) { ctx.approvedShellCommands?.add(shellScope); return; }
     }
     throw new ToolError("用户拒绝执行");

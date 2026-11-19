@@ -18,7 +18,10 @@ Nyra 的手机版是电脑上 `nyra ui` 顺带提供的一个手机页面
 > 行为都还没亲手试过，第一次在真机上装时如有出入，以手机上实际出现的
 > 为准，并欢迎反馈。
 
-> 第 1 阶段说明：PWA 本身在 Node 迁移第 1 阶段没有改动，补真机验证仍是待办。
+> Node 版（2026-11-19）：手机页已移植到 Node/TypeScript 的 gateway（`nyra ui`），
+> 见文末“Node 版实现”。在电脑上用 Playwright 模拟 Pixel 7 跑过：配对 → 审批
+> （允许并不再询问）→ 拒绝并反馈；真机验证仍是待办。入场动画与手机设置页
+> 尚未移植到 Node 版。
 
 ## 第 1 步：在电脑上开启配对
 
@@ -130,3 +133,27 @@ nyra ui --pair
 - 测试：`tests/test_mobile_pwa.py`（二维码可解码、配对码过期 / 一次性 /
   限次、token 只存哈希与撤销、动画只在手机独立窗口播放的判断规则、
   `/m` 与配对 API 的鉴权）。
+
+## Node 版实现（Codex 式审批卡）
+
+- `src/webuiMobile.ts`：手机页（终端 v2 配色：深炭底、鼠尾草绿 → 雾蓝渐变字标、彩色模式徽章）、
+  manifest、图标。图标从 `docs/assets/nyra-mark.svg` 的几何在本机光栅化：192/512 `any`（透明底）、
+  192/512 `maskable`（深炭底铺满、标志在安全区内）、`apple-touch-icon` 180（不透明）、favicon
+  （32 PNG + SVG）。光标填白，与 `desktop/icon-src` 的桌面图标一致。
+- `src/qrcode.ts`：QR 编码器，与 Python 版逐模块一致；`nyra ui --pair` 在终端画二维码，
+  `POST /api/pair/start` 额外返回 `qr_svg`。
+- `src/pairing.ts`：沿用已有 `DeviceRegistry`（6 位码 5 分钟、一次性、错 5 次作废、token 只存 SHA-256、可撤销）。
+- `src/approvalRules.ts`：审批卡上的三个动作——
+  - **允许**：只这一次。
+  - **允许并不再询问**：卡片上写明具体前缀规则（如“以 `git status` 开头的命令”），选 **仅本会话**
+    （内存里，会话结束失效）或 **本项目**（存 `~/.nyra/approval_rules.json`，按项目绝对路径分组，
+    从不写进项目目录）。危险程序（rm、sudo、curl、bash -c、python -c……）、危险子命令（git push/reset、
+    npm install……）和任何含分号、`&`、`|`、`<`、`>`、`$`、反引号、括号、换行等语法的命令不提供规则，只能单次允许。
+    匹配时重新做同样的检查，所以 `git status && rm -rf /`、`git status $(…)`、反引号、换行都匹配不上。
+  - **拒绝…**：展开文本框，反馈作为工具错误原样带回给 agent（“用户拒绝执行，并给出反馈：…”）。
+- 终端审批菜单的“始终允许”与手机共用同一套规则：shell 命令有建议规则时，终端选“始终允许”记一条
+  本会话前缀规则；手机记下的本项目规则在终端同样生效。
+- API：`GET /api/approvals` 每项带 `command` 与 `suggestion`；`POST /api/approvals/<id>`
+  接受 `{approve, scope: "session"|"project"}` 或 `{approve: false, feedback}`；
+  `GET /api/rules[?session=<id>]` 列规则，`POST /api/rules/<id>/revoke` 撤销（手机也可撤销，只会收紧）。
+- 测试：`tests/node/test-mobile-pwa-v2.test.ts`。

@@ -20,7 +20,10 @@ import {
   getProviderPresets, VERSION, VALID_MODES, resolveSandbox, type ResolvedProvider,
 } from "./config.ts";
 import { Provider, buildProviderChain, type ProviderLike } from "./providers.ts";
-import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS } from "./tools.ts";
+import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS, type ApproveResult } from "./tools.ts";
+import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, type RuleScope, type RuleSuggestion } from "./approvalRules.ts";
+import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
+import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, mobileIconPng, mobileFaviconSvg } from "./webuiMobile.ts";
 import { runHooks } from "./hooks.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome } from "./memory.ts";
@@ -44,7 +47,7 @@ import GROUP_UI_HTML from "./assets/group_ui.html.txt" with { type: "text" };
 import GROUP_UI_JS from "./assets/group-ui.js.txt" with { type: "text" };
 import { decideSmartApproval, reviewerEnabled, smartApprovalConfig, readAudit } from "./smartApprovals.ts";
 import { rewind as doRewind, storeHistoryToAgentMessages, type RewindAction } from "./rewind.ts";
-import { PAGE_HTML, MOBILE_HTML, MANIFEST, MOBILE_MANIFEST, CSP, solidPng } from "./webuiPage.ts";
+import { PAGE_HTML, MANIFEST, CSP, solidPng } from "./webuiPage.ts";
 
 export const GATEWAY_DEFAULT_HOST = "127.0.0.1";
 export const GATEWAY_DEFAULT_PORT = 8765;
@@ -87,8 +90,12 @@ export interface PendingApproval {
   tool: string;
   summary: string;
   always: boolean;
-  decision: boolean | string | null;
-  resolve: (v: boolean | string) => void;
+  /** shell 命令原文（手机审批卡等宽显示）；非 shell 为 null。 */
+  command?: string | null;
+  /** “允许并不再询问”的建议规则；null = 只能单次允许（复合/危险命令）。 */
+  suggestion?: RuleSuggestion | null;
+  decision: ApproveResult | null;
+  resolve: (v: ApproveResult) => void;
 }
 
 export interface SessionRun {
@@ -99,6 +106,8 @@ export interface SessionRun {
   error: string;
   pending: PendingApproval | null;
   baseMessages: Record<string, unknown>[];
+  /** 本会话“不再询问”规则：Agent 的 ToolContext 与手机审批卡共用这一份。 */
+  sessionRules?: SessionRules;
   /** 会话钩子：SessionStart 是否已触发过（只触发一次，见 fireSessionStart）。 */
   hooksStarted?: boolean;
   /** 会话钩子：SessionEnd 是否已触发过（只触发一次，见 fireSessionEnd）。 */
@@ -259,7 +268,7 @@ export class Gateway {
   getRun(sessionId: string, create = true): SessionRun | null {
     let run = this.runs.get(sessionId);
     if (!run && create) {
-      run = { sessionId, agent: null, events: [], status: "idle", error: "", pending: null, baseMessages: [] };
+      run = { sessionId, agent: null, events: [], status: "idle", error: "", pending: null, baseMessages: [], sessionRules: new SessionRules() };
       this.runs.set(sessionId, run);
     }
     return run ?? null;
@@ -515,13 +524,16 @@ export class Gateway {
   pendingApprovals(): Record<string, unknown>[] {
     const out: Record<string, unknown>[] = [];
     for (const [id, { run, pending }] of this.approvals) {
-      out.push({ id, session: run.sessionId, tool: pending.tool, summary: pending.summary, always: pending.always });
+      out.push({
+        id, session: run.sessionId, tool: pending.tool, summary: pending.summary, always: pending.always,
+        command: pending.command ?? null, suggestion: pending.suggestion ?? null,
+      });
     }
     return out;
   }
 
   // -- approval (smart approvals 接入点) ----------------------------------
-  private async approve(run: SessionRun, tool: string, summary: string, details?: Record<string, unknown>): Promise<boolean | string> {
+  private async approve(run: SessionRun, tool: string, summary: string, details?: Record<string, unknown>): Promise<ApproveResult> {
     const command = typeof details?.command === "string" ? details.command : null;
     const decision = await decideSmartApproval({
       tool, summary, command,
@@ -541,14 +553,16 @@ export class Gateway {
     // ESCALATE → 挂起等人工（评审模型默认关时也走这里，与第 2 阶段二值审批一致）。
     const approvalId = randomBytes(8).toString("hex");
     const canAlways = SESSION_GRANT_TOOLS.has(tool);
-    let resolveFn: (v: boolean | string) => void = () => {};
-    const waiter = new Promise<boolean | string>((resolve) => { resolveFn = resolve; });
+    const rawSuggestion = details?.suggestion;
+    const suggestion = rawSuggestion && typeof rawSuggestion === "object" ? rawSuggestion as RuleSuggestion : null;
+    let resolveFn: (v: ApproveResult) => void = () => {};
+    const waiter = new Promise<ApproveResult>((resolve) => { resolveFn = resolve; });
     const pending: PendingApproval = {
-      id: approvalId, tool, summary, always: canAlways, decision: null, resolve: resolveFn,
+      id: approvalId, tool, summary, always: canAlways, command, suggestion, decision: null, resolve: resolveFn,
     };
     this.approvals.set(approvalId, { run, pending });
     run.pending = pending;
-    this.record(run, "approval", { id: approvalId, tool, summary, always: canAlways, tier: decision.tier, reason: decision.reason });
+    this.record(run, "approval", { id: approvalId, tool, summary, always: canAlways, command, suggestion, tier: decision.tier, reason: decision.reason });
     let timedOut = false;
     const timer = setTimeout(() => {
       if (this.approvals.has(approvalId)) {
@@ -563,16 +577,41 @@ export class Gateway {
     clearTimeout(timer);
     this.approvals.delete(approvalId);
     if (run.pending === pending) run.pending = null;
+    if (decided && typeof decided === "object") {
+      this.record(run, "approval_result", {
+        id: approvalId, approved: decided.approved, always: false, timeout: timedOut,
+        scope: decided.scope ?? null, rule: decided.scope ? suggestion?.label ?? null : null,
+        feedback: decided.approved ? null : decided.feedback ?? null,
+      });
+      return decided;
+    }
     const approved = decided === APPROVE_ALWAYS ? true : Boolean(decided);
     const always = decided === APPROVE_ALWAYS;
     this.record(run, "approval_result", { id: approvalId, approved, always, timeout: timedOut });
     return decided;
   }
 
-  decide(approvalId: string, approve: boolean, always = false): boolean {
+  /**
+   * 审批决定。scope = "session" | "project"：允许并按建议规则不再询问（建议为空时拒绝请求，
+   * 复合/危险命令只能单次允许）；feedback：拒绝时带回给 agent 的说明。
+   */
+  decide(approvalId: string, approve: boolean, always = false, opts?: { scope?: unknown; feedback?: unknown }): boolean {
     const item = this.approvals.get(approvalId);
     if (!item) return false;
     const { pending } = item;
+    const scope = opts?.scope;
+    if (approve && scope !== undefined && scope !== null && scope !== "") {
+      if (!RULE_SCOPES.includes(scope as RuleScope)) throw new Error("规则范围只能是 session 或 project");
+      if (!pending.suggestion) throw new Error("这个操作不能记成“不再询问”规则（复合或危险命令），请单次允许");
+      pending.decision = { approved: true, scope: scope as RuleScope };
+      pending.resolve(pending.decision);
+      return true;
+    }
+    if (!approve && typeof opts?.feedback === "string" && opts.feedback.trim()) {
+      pending.decision = { approved: false, feedback: opts.feedback.trim().slice(0, MAX_FEEDBACK) };
+      pending.resolve(pending.decision);
+      return true;
+    }
     if (approve && always) {
       if (!pending.always) throw new Error("这个操作不支持“本会话始终允许”，请逐次批准");
       pending.decision = APPROVE_ALWAYS;
@@ -649,6 +688,7 @@ export class Gateway {
           mcpManager: this.mcpManager,
           onEvent: (kind, data) => this.record(run, kind, data),
           approveFn: (tool, summary, details) => this.approve(run, tool, summary, details),
+          sessionRules: run.sessionRules ?? (run.sessionRules = new SessionRules()),
           contextWindowTokens: this.contextWindowTokens,
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
@@ -892,13 +932,37 @@ export class Gateway {
     if (this.schedulerTimer) { clearInterval(this.schedulerTimer); this.schedulerTimer = null; }
   }
 
+  // -- “允许并不再询问”规则 ---------------------------------------------------
+  /** 本项目的持久规则 + （给了会话时）该会话的本会话规则。 */
+  rulesView(sessionId: string | null): Record<string, unknown> {
+    const project = new RuleStore(this.home).list(this.workdir);
+    const session: unknown[] = [];
+    for (const run of this.runs.values()) {
+      if (sessionId !== null && run.sessionId !== sessionId) continue;
+      for (const rule of run.sessionRules?.list() ?? []) session.push({ ...rule, session: run.sessionId });
+    }
+    return { project: normalizeProject(this.workdir), rules: [...session, ...project] };
+  }
+
+  revokeRule(ruleId: string): boolean {
+    if (ruleId.startsWith("s-")) {
+      for (const run of this.runs.values()) if (run.sessionRules?.remove(ruleId)) return true;
+      return false;
+    }
+    return new RuleStore(this.home).remove(ruleId, this.workdir);
+  }
+
   // -- pairing ------------------------------------------------------------------
   startPairing(): Record<string, unknown> {
     if (!this.pairOrigin) {
       throw new PairingError("网页界面只监听本机（127.0.0.1），手机连不上。请用 nyra ui --pair 重新启动");
     }
     const info = this.devices.startPairing();
-    return { ...info, url: `${this.pairOrigin}/m#pair=${info.code}` };
+    const url = `${this.pairOrigin}/m#pair=${info.code}`;
+    // 二维码本机生成（src/qrcode.ts），内容就是带配对码的 /m 链接（码在 # 后，不发给服务器日志）。
+    let qrSvgText: string | null = null;
+    try { qrSvgText = qrSvg(qrEncode(url, "M"), { title: "Nyra 配对二维码" }); } catch { qrSvgText = null; }
+    return { ...info, url, qr_svg: qrSvgText };
   }
 
   // -- HTTP -----------------------------------------------------------------------
@@ -1050,14 +1114,28 @@ export class Gateway {
     const method = req.method ?? "GET";
 
     // 手机公共壳：页面与静态资源不含秘密，不用 token；API 仍要鉴权。
-    if (method === "GET" && (path === "/m" || path === "/m/")) { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": CSP }); res.end(MOBILE_HTML); return; }
-    if (method === "GET" && path === "/m/manifest.json") { this.sendJson(res, 200, MOBILE_MANIFEST); return; }
-    const iconMatch = /^\/m\/icon-(180|192|512)\.png$/.exec(path);
-    if (method === "GET" && iconMatch) {
-      const size = Number(iconMatch[1]);
-      const png = solidPng(size, size, "#0B0B0C");
-      res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length });
+    // 手机 v2（src/webuiMobile.ts）：终端 v2 配色、Codex 式审批卡、从 nyra-mark.svg 光栅化的图标。
+    if (method === "GET" && (path === "/m" || path === "/m/")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": CSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" });
+      res.end(MOBILE_V2_HTML);
+      return;
+    }
+    if (method === "GET" && path === "/m/manifest.json") {
+      const body = Buffer.from(JSON.stringify(MOBILE_V2_MANIFEST), "utf-8");
+      res.writeHead(200, { "Content-Type": "application/manifest+json; charset=utf-8", "Content-Length": body.length });
+      res.end(body);
+      return;
+    }
+    const mobileIcon = MOBILE_ICON_ROUTES[path];
+    if (method === "GET" && mobileIcon) {
+      const png = mobileIconPng(mobileIcon.size, mobileIcon.kind);
+      res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "public, max-age=86400" });
       res.end(png);
+      return;
+    }
+    if (method === "GET" && path === "/m/favicon.svg") {
+      res.writeHead(200, { "Content-Type": "image/svg+xml", "Cache-Control": "public, max-age=86400" });
+      res.end(mobileFaviconSvg());
       return;
     }
     const startupMatch = /^\/m\/startup\/(\d{3,4})x(\d{3,4})\.png$/.exec(path);
@@ -1065,7 +1143,7 @@ export class Gateway {
       const w = Number(startupMatch[1]);
       const h = Number(startupMatch[2]);
       if (!STARTUP_SIZES.some(([a, b]) => a === w && b === h)) { this.sendError(res, 404, "未找到"); return; }
-      const png = solidPng(w, h, "#FFFFFF");
+      const png = solidPng(w, h, MOBILE_V2_MANIFEST.background_color);
       res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length });
       res.end(png);
       return;
@@ -1075,7 +1153,6 @@ export class Gateway {
       this.sendHtml(res, 200, PAGE_HTML);
       return;
     }
-    if (method === "GET" && path === "/favicon.ico") { res.writeHead(204); res.end(); return; }
     if (method === "GET" && path === "/manifest.json") {
       if (!this.pageTokenOk(req)) { this.sendError(res, 403, "token 无效"); return; }
       this.sendJson(res, 200, MANIFEST);
@@ -1137,6 +1214,11 @@ export class Gateway {
       return;
     }
     if (method === "GET" && path === "/api/info") { this.sendJson(res, 200, this.info()); return; }
+    if (method === "GET" && path === "/api/rules") {
+      const sid = query.get("session");
+      this.sendJson(res, 200, this.rulesView(sid && SESSION_ID_RE.test(sid) ? sid : null));
+      return;
+    }
     if (method === "GET" && path === "/api/schedule") {
       try { this.sendJson(res, 200, { tasks: this.scheduleList() }); }
       catch (err) { this.sendError(res, 400, `定时任务读取失败：${err instanceof Error ? err.message : String(err)}`); }
@@ -1223,6 +1305,13 @@ export class Gateway {
         if (!isOwner) { this.sendError(res, 403, "只能在电脑上管理已配对设备"); return; }
         try { this.sendJson(res, 200, this.startPairing()); }
         catch (err) { this.sendError(res, 409, err instanceof Error ? err.message : String(err)); }
+        return;
+      }
+      // 撤销“不再询问”规则：只会收紧权限，手机也可以做。
+      const ruleRevokeMatch = /^\/api\/rules\/([A-Za-z0-9-]{1,40})\/revoke$/.exec(path);
+      if (ruleRevokeMatch) {
+        if (!this.revokeRule(ruleRevokeMatch[1])) { this.sendError(res, 404, "规则不存在"); return; }
+        this.sendJson(res, 200, { ok: true });
         return;
       }
       const revokeMatch = /^\/api\/devices\/([^/]+)\/revoke$/.exec(path);
@@ -1363,7 +1452,7 @@ export class Gateway {
       const decideMatch = /^\/api\/approvals\/([0-9a-f]{16})$/.exec(path);
       if (decideMatch) {
         try {
-          const ok = this.decide(decideMatch[1], Boolean(body.approve), Boolean(body.always));
+          const ok = this.decide(decideMatch[1], Boolean(body.approve), Boolean(body.always), { scope: body.scope, feedback: body.feedback });
           if (!ok) { this.sendError(res, 404, "审批已失效"); return; }
           this.sendJson(res, 200, { ok: true });
         } catch (err) { this.sendError(res, 400, err instanceof Error ? err.message : String(err)); }
