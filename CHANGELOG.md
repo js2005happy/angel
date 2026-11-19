@@ -1,3 +1,8 @@
+## 未发布（2026-11-19，ToolJournal 孤立结果全局歧义）
+
+- 修复 inspect() 对孤立 result 的统计：过去 orphan 计入 unknown，却没有设置 journal_ambiguous，可能同时显示其他调用 reported_ok。现在孤立结果令整个快照歧义，所有成功/失败汇总归零、全部调用待人工核查。
+- 新增静态回归测试源码，覆盖已配对成功与孤立 result 并存；未执行测试或 CI。无新依赖，不提供 exactly-once 或自动恢复。
+
 ## 未发布（2026-11-19，ToolJournal 结果槽位预留）
 
 - `begin()` 在接近 `MAX_EVENTS` 时为本次 `result` 保留一个事件槽位；此前允许最后一个槽位写入 intent，随后 `finish()` 无法提交结果。增加模拟容量边界的测试源码，未执行。此项仅修复单会话容量边界，不提供跨进程锁、崩溃恢复或 exactly-once。
