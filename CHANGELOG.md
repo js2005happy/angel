@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal finish 最终快照并发门禁）
+
+- `finish()` 在最终记录快照中再次拒绝其他未决 intent 或错配结果。新增模拟竞争 intent 的回归测试源码，未运行；不提供跨进程原子锁或 exactly-once。
+
 ## 未发布（2026-11-19，ToolJournal 最终快照并发意图复核）
 
 - begin() 最后一次读取自己的 intent 时，同时核对同一快照的其他调用均已完整配对；竞争进程新增未决 intent 则拒绝派发。新增模拟测试源码，未运行；仍非原子锁或 exactly-once。
