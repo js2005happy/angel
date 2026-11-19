@@ -1,0 +1,88 @@
+# Node CI：0.4.0 起唯一的测试工作流（Python CI 与 Build Windows exe 已随 Python 删除）。
+#
+# 覆盖：tsc 类型检查 + Node 全量测试（Ubuntu / Windows / macOS 三平台，
+# 接替原来 Python CI 的三平台矩阵）+ 探针 + 启动/内存预算（Ubuntu）。
+# 预算数字来自 2026-11-19 本地实测（第 4 阶段）：二进制约 109.8MB（基本是
+# Bun 运行时本身，Nyra 代码仅约 0.5MB）、gateway 空闲 RSS 中位 33.5MB、
+# 首字节中位 33ms；预算留足余量，只拦回归，不追绝对值。
+
+name: Node CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/node/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/node-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/node/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'tsconfig.json'
+      - '.github/workflows/node-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Node ${{ matrix.bun }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bun: '1.4.4'
+          - os: windows-latest
+            bun: '1.4.4'
+          - os: macos-latest
+            bun: '1.4.4'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ matrix.bun }}
+
+      - name: Type check
+        run: bun x tsc -p tsconfig.json --noEmit
+
+      - name: Run Node tests
+        run: bun test tests/node
+
+      - name: Run Bun API probes
+        run: bash scripts/run-probes.sh
+
+  budgets:
+    name: Startup and memory budgets (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - name: Check startup and memory budgets
+        run: bash scripts/check-budgets.sh
