@@ -15,6 +15,8 @@
 // 已知边界（写清楚，别让人以为它能替代容器）：
 //   - 子进程先启动、再接进作业，中间有毫秒级窗口：启动瞬间 fork 出的子进程
 //     理论上可能逃出作业；作业关柄时只杀作业内的进程
+//   - 若子进程出生时已在父作业中（CI runner 的作业），接管必然失败：此时降级
+//     为直接执行并在 stderr 告警，不抛错——否则 CI 上永远跑不通（CI #92 根因）
 //   - 输出不是流式：子进程输出先落临时文件，命令结束时一次性返回
 //     （onStream 不适用；tools.ts 的 jobobject 分支不传 onStream）
 //   - 命令与工作目录走 Base64 进脚本，不存在引号转义问题；
@@ -93,6 +95,11 @@ export function windowsSandboxAvailable(pathEnv?: string): boolean {
  * maxMemoryMB > 0 时再加 JOB_OBJECT_LIMIT_JOB_MEMORY（0x200，作业总内存上限）。
  * 子进程是 cmd.exe /c (<命令>)，输出重定向到临时文件（防管道死锁），
  * 等退出后一次性读回、按原退出码退出；finally 里删临时文件并关作业句柄。
+ * 接管失败时不一律抛错：先查子进程是否已在父作业中（CI runner 会把步骤进程
+ * 放进自己的作业，子进程出生即在其中；Windows 规定一个进程只能属于一个作业，
+ * 此时 AssignProcessToJobObject 必然失败）——已在父作业中则降级执行并在 stderr
+ * 告警（Job Object 限制不生效，工具级规则兜底）；进程在接管前已退出（极快命令）
+ * 则直接读退出码；其余接管失败仍 fail-closed（CI #92 根因）。
  */
 export function buildJobObjectScript(command: string, opts: JobObjectOptions): string {
   if (opts.mode === "danger-full-access") {
@@ -117,6 +124,8 @@ export function buildJobObjectScript(command: string, opts: JobObjectOptions): s
     "  public static extern bool SetInformationJobObject(IntPtr hJob, int JobObjectInfoClass, IntPtr lpJobObjectInfo, uint cbJobObjectInfoLength);",
     "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
     "  public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);",
+    "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
+    "  public static extern bool IsProcessInJob(IntPtr hProcess, IntPtr hJob, out bool result);",
     "  [DllImport(\"kernel32.dll\", SetLastError = true)]",
     "  public static extern bool CloseHandle(IntPtr hObject);",
     "  [StructLayout(LayoutKind.Sequential)]",
@@ -168,7 +177,18 @@ export function buildJobObjectScript(command: string, opts: JobObjectOptions): s
     "  $p.StartInfo = $psi",
     "  [void]$p.Start()",
     "  $assigned = [NyraJobObject]::AssignProcessToJobObject($job, $p.Handle)",
-    "  if (-not $assigned) { try { $p.Kill() } catch {} ; throw \"AssignProcessToJobObject 失败\" }",
+    "  if (-not $assigned) {",
+    "    $alreadyInJob = $false",
+    "    [void][NyraJobObject]::IsProcessInJob($p.Handle, [IntPtr]::Zero, [ref]$alreadyInJob)",
+    "    if ($alreadyInJob) {",
+    "      [Console]::Error.WriteLine(\"警告：子进程已在父作业中（例如 CI runner 的作业），Job Object 限制不生效，本次改用工具级规则兜底\")",
+    "    } elseif ($p.HasExited) {",
+    "      # 进程在接管前已退出（极快命令），无须再接管，直接读退出码",
+    "    } else {",
+    "      try { $p.Kill() } catch {}",
+    "      throw \"AssignProcessToJobObject 失败\"",
+    "    }",
+    "  }",
     "  $p.WaitForExit()",
     "  $code = $p.ExitCode",
     "  if (Test-Path $outFile) { [Console]::Out.Write([System.IO.File]::ReadAllText($outFile)) }",
