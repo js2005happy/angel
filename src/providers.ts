@@ -812,16 +812,33 @@ export class FallbackProvider implements ProviderLike {
   }
 }
 
+export interface KeyRotatingProviderOptions {
+  /** 同一把 Key 失败时先重试的退避基数（毫秒），默认 PROVIDER_RETRY_BACKOFF_MS。测试可传 [0, 0] 定住。 */
+  retryDelaysMs?: number[];
+  /** 退避睡眠（可注入，供测试不用真等）。 */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /** 同 Key 重试时回调（网页端可展示，与 onSwitch 并列）。 */
+  onRetry?: ((record: RetryRecord) => void) | null;
+}
+
 export class KeyRotatingProvider implements ProviderLike {
   providers: ProviderLike[];
   onSwitch: ((record: SwitchRecord) => void) | null;
   activeIndex = 0;
   switches: SwitchRecord[] = [];
+  /** 同一把 Key 的重试记录（与 FallbackProvider 同款字段）。 */
+  retries: RetryRecord[] = [];
+  retryDelaysMs: number[];
+  private retrySleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  onRetry: ((record: RetryRecord) => void) | null;
 
-  constructor(providers: ProviderLike[], onSwitch?: ((record: SwitchRecord) => void) | null) {
+  constructor(providers: ProviderLike[], onSwitch?: ((record: SwitchRecord) => void) | null, opts: KeyRotatingProviderOptions = {}) {
     if (!providers.length) throw new Error("KeyRotatingProvider needs at least one provider");
     this.providers = [...providers];
     this.onSwitch = onSwitch ?? null;
+    this.retryDelaysMs = opts.retryDelaysMs ?? [...PROVIDER_RETRY_BACKOFF_MS];
+    this.retrySleep = opts.sleep ?? ((ms, signal) => sleepMs(ms, signal));
+    this.onRetry = opts.onRetry ?? null;
   }
 
   get name(): string { return this.providers[this.activeIndex].name; }
@@ -855,34 +872,76 @@ export class KeyRotatingProvider implements ProviderLike {
     }
   }
 
-  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout()): Promise<Record<string, unknown>> {
+  async chat(messages: ChatMessage[], tools?: Record<string, unknown>[] | null, timeout = resolveChatTimeout(), opts?: { signal?: AbortSignal }): Promise<Record<string, unknown>> {
     const attempted: [number, string][] = [];
     let lastExc: ProviderError | null = null;
     // 总预算：整条链最多花 2× 单次超时，不让 N 把 Key 各等满一份超时。
+    // 同一把 Key 的重试同样受该预算约束（与 FallbackProvider 同款规则）：
+    // 剩余时间不够“一次退避 + 一次重试（重试超时按剩余预算封顶）”时直接改走
+    // 换 Key，免得重试吃光预算。
     const started = Date.now();
     const budgetMs = timeout * 2 * 1000;
-    for (let index = 0; index < this.providers.length; index++) {
+    keyLoop: for (let index = 0; index < this.providers.length; index++) {
       const provider = this.providers[index];
       const remainingMs = budgetMs - (Date.now() - started);
       if (index > 0 && remainingMs < 100) break;
-      const attemptTimeout = index === 0 ? timeout : Math.min(timeout, remainingMs / 1000);
-      try {
-        const result = await provider.chat(messages, tools, attemptTimeout);
-        this.activeIndex = index;
-        return result;
-      } catch (exc: unknown) {
-        if (!(exc instanceof ProviderError)) throw exc;
-        const safe = this.safeError(provider, exc);
-        attempted.push([index, safe]);
-        lastExc = exc;
-        if (index + 1 >= this.providers.length) break;
-        const record: SwitchRecord = {
-          from: this.label(index), to: this.label(index + 1),
-          error: safe, kind: exc.kind, status: exc.status,
-        };
-        this.switches.push(record);
-        this.activeIndex = index + 1;
-        this.onSwitch?.(record);
+      let attemptTimeout = index === 0 ? timeout : Math.min(timeout, remainingMs / 1000);
+      let attempt = 0;
+      let logged = false;
+      while (true) {
+        try {
+          const result = await provider.chat(messages, tools, attemptTimeout);
+          this.activeIndex = index;
+          return result;
+        } catch (exc: unknown) {
+          if (!(exc instanceof ProviderError)) throw exc;
+          const safe = this.safeError(provider, exc);
+          if (!logged) {
+            logged = true;
+            attempted.push([index, safe]);
+          }
+          lastExc = exc;
+          // 换 Key 之前先重试同一把（至多 MAX_SAME_PROVIDER_RETRIES 次，退避
+          // 1s/3s + ±25% 抖动，可中断）：只有瞬时错误可重试——401/403 类认证错
+          // 换 Key 才有用，重试同一把 Key 只是白等；用量上限（quota）也不重试
+          // （isTransientProviderError 已把 quota 文案排除在外）。
+          if (isTransientProviderError(exc) && attempt < MAX_SAME_PROVIDER_RETRIES) {
+            const base = this.retryDelaysMs[Math.min(attempt, this.retryDelaysMs.length - 1)] ?? 1000;
+            const delay = jitteredDelayMs(base);
+            const leftMs = budgetMs - (Date.now() - started);
+            const retryTimeout = Math.min(attemptTimeout, (leftMs - delay - 100) / 1000);
+            if (retryTimeout >= 0.2) {
+              const record: RetryRecord = {
+                provider: this.label(index), attempt: attempt + 1, kind: exc.kind, delayMs: Math.round(delay),
+              };
+              this.retries.push(record);
+              this.onRetry?.(record);
+              attempt += 1;
+              attemptTimeout = retryTimeout;
+              try {
+                await this.retrySleep(delay, opts?.signal);
+              } catch {
+                // 睡眠被中断（用户叫停）：不再重发，立即按原错抛出。
+                throw exc;
+              }
+              continue;
+            }
+          }
+          // 注意：这里不照抄 FallbackProvider 的 `if (!exc.recoverable) throw`——
+          // Key 轮换的语义就是“这把 Key 坏了就换下一把”：401/403 类认证错对
+          // 当前 Key 不可恢复，但下一把 Key 可能正常，必须继续换 Key 试
+          // （test_key_rotation_on_401 钉住这一行为）。只有瞬时错误才先重试
+          // 同一把 Key，其余错误直接换 Key。
+          if (index + 1 >= this.providers.length) break keyLoop;
+          const record: SwitchRecord = {
+            from: this.label(index), to: this.label(index + 1),
+            error: safe, kind: exc.kind, status: exc.status,
+          };
+          this.switches.push(record);
+          this.activeIndex = index + 1;
+          this.onSwitch?.(record);
+          continue keyLoop;
+        }
       }
     }
     const detail = attempted.map(([i, e]) => `key ${i + 1}：${e}`).join("；");

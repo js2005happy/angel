@@ -93,6 +93,10 @@ export function windowsSandboxAvailable(pathEnv?: string): boolean {
  * LimitFlags 固定带 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE（0x2000，作业关柄即全杀，
  * 孤儿进程不留）；maxProcesses > 0 时再加 JOB_OBJECT_LIMIT_ACTIVE_PROCESS（0x8）；
  * maxMemoryMB > 0 时再加 JOB_OBJECT_LIMIT_JOB_MEMORY（0x200，作业总内存上限）。
+ * 内存上限必须走扩展结构（JOBOBJECT_EXTENDED_LIMIT_INFORMATION，class 9）：
+ * BasicLimits（class 2）里第二个 long 字段的真实含义是 PerJobUserTimeLimit，
+ * 不是 JobMemoryLimit——旧代码把它当内存槽位写，512MB 会被当成约 54 秒 CPU
+ * 时间（布局字节数恰好对得上所以 echo 测试没炸，但语义是错的）。
  * 子进程是 cmd.exe /c (<命令>)，输出重定向到临时文件（防管道死锁），
  * 等退出后一次性读回、按原退出码退出；finally 里删临时文件并关作业句柄。
  * 接管失败时不一律抛错：先查子进程是否已在父作业中（CI runner 会把步骤进程
@@ -131,7 +135,7 @@ export function buildJobObjectScript(command: string, opts: JobObjectOptions): s
     "  [StructLayout(LayoutKind.Sequential)]",
     "  public struct BasicLimits {",
     "    public long PerProcessUserTimeLimit;",
-    "    public long JobMemoryLimit;",
+    "    public long PerJobUserTimeLimit;",
     "    public uint LimitFlags;",
     "    public UIntPtr MinimumWorkingSetSize;",
     "    public UIntPtr MaximumWorkingSetSize;",
@@ -140,23 +144,37 @@ export function buildJobObjectScript(command: string, opts: JobObjectOptions): s
     "    public uint PriorityClass;",
     "    public uint SchedulingClass;",
     "  }",
+    "  [StructLayout(LayoutKind.Sequential)]",
+    "  public struct ExtendedLimits {",
+    "    public BasicLimits BasicLimit;",
+    "    public long ReadOperationCount;",
+    "    public long WriteOperationCount;",
+    "    public long OtherOperationCount;",
+    "    public long ReadTransferCount;",
+    "    public long WriteTransferCount;",
+    "    public long OtherTransferCount;",
+    "    public UIntPtr ProcessMemoryLimit;",
+    "    public UIntPtr JobMemoryLimit;",
+    "    public UIntPtr PeakProcessMemoryUsed;",
+    "    public UIntPtr PeakJobMemoryUsed;",
+    "  }",
     "}",
     "\"@",
     "$job = [NyraJobObject]::CreateJobObject([IntPtr]::Zero, $null)",
     "if ($job -eq [IntPtr]::Zero) { throw \"CreateJobObject 失败\" }",
-    "$limits = [NyraJobObject+BasicLimits]::new()",
-    "$limits.LimitFlags = 0x2000",
+    "$limits = [NyraJobObject+ExtendedLimits]::new()",
+    "$limits.BasicLimit.LimitFlags = 0x2000",
     ...(maxProcs > 0
-      ? ["$limits.LimitFlags = $limits.LimitFlags -bor 0x8", `$limits.ActiveProcessLimit = ${maxProcs}`]
+      ? ["$limits.BasicLimit.LimitFlags = $limits.BasicLimit.LimitFlags -bor 0x8", `$limits.BasicLimit.ActiveProcessLimit = ${maxProcs}`]
       : []),
     ...(maxMemBytes > 0
-      ? ["$limits.LimitFlags = $limits.LimitFlags -bor 0x200", `$limits.JobMemoryLimit = ${maxMemBytes}`]
+      ? ["$limits.BasicLimit.LimitFlags = $limits.BasicLimit.LimitFlags -bor 0x200", `$limits.JobMemoryLimit = ${maxMemBytes}`]
       : []),
     "$size = [System.Runtime.InteropServices.Marshal]::SizeOf($limits)",
     "$ptr = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($size)",
     "try {",
     "  [System.Runtime.InteropServices.Marshal]::StructureToPtr($limits, $ptr, $false)",
-    "  $ok = [NyraJobObject]::SetInformationJobObject($job, 2, $ptr, [uint32]$size)",
+    "  $ok = [NyraJobObject]::SetInformationJobObject($job, 9, $ptr, [uint32]$size)",
     "  if (-not $ok) { throw \"SetInformationJobObject 失败\" }",
     "} finally {",
     "  [System.Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)",

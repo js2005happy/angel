@@ -4,8 +4,12 @@
 // tools/list 分页；tools/call 遇多轮往返（input_required）直接报错，不假装完成。
 // 服务器主动发来的请求一律回 -32601（不支持）。超时放弃的旧响应按 id 丢弃。
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { DEFAULT_MCP_PRESETS, resolvePreset } from "./mcpPresets.ts";
+import { buildBwrapArgv, resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
+import { buildSeatbeltProfile } from "./seatbelt.ts";
 
 export const LATEST_PROTOCOL_VERSION = "2026-07-28";
 export const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"];
@@ -86,9 +90,122 @@ function stripProxyCredentials(value: string): string {
 
 export interface McpTool { name: string; description: string; inputSchema: Record<string, unknown>; }
 
+/**
+ * MCP 沙箱配置（与 Agent/CLI/群聊同款形状，见 sandbox.ts）：MCPToolManager
+ * 在 startAll 里用 resolveSandboxBackend 解析一次，解析失败整批拒绝启动。
+ * workdir 是服务器进程的工作目录（bwrap/Seatbelt 绑定的工作区）。
+ */
+export interface McpSandboxOptions {
+  backend?: string | null;
+  mode?: SandboxMode;
+  allowNet?: boolean;
+  workdir?: string;
+}
+
+/** 已解析的 MCP 沙箱配置（MCPClient 持有，start() 时直接用，不再二次解析）。 */
+export interface ResolvedMcpSandbox {
+  backend: string;
+  mode: SandboxMode;
+  allowNet: boolean;
+  workdir: string;
+}
+
+/** 在 PATH 里找可执行文件（供 MCP 沙箱找服务器命令的真实位置；找不到返回 null）。 */
+export function findOnPath(command: string, pathEnv?: string, platform: string = process.platform): string | null {
+  if (isAbsolute(command)) return existsSync(command) ? command : null;
+  if (command.includes("/") || (platform === "win32" && command.includes("\\"))) return null;
+  const pathValue = pathEnv ?? process.env.PATH ?? "";
+  const delimiter = platform === "win32" ? ";" : ":";
+  const candidates = platform === "win32" ? [command, `${command}.exe`, `${command}.cmd`] : [command];
+  for (const dir of pathValue.split(delimiter)) {
+    if (!dir) continue;
+    for (const name of candidates) {
+      const candidate = join(dir, name);
+      try {
+        if (existsSync(candidate) && statSync(candidate).isFile()) return candidate;
+      } catch { /* 不存在或不可读就继续找 */ }
+    }
+  }
+  return null;
+}
+
+/**
+ * bwrap 追加只读绑定目录：服务器命令本身（绝对路径或 PATH 解析后）与绝对
+ * 路径参数所在目录。工作区内或已在系统挂载面里的目录不重复加。
+ */
+export function mcpServerRoBinds(config: MCPServerConfig, workdir: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const addDir = (dir: string): void => {
+    const abs = resolve(dir);
+    if (seen.has(abs)) return;
+    seen.add(abs);
+    const wd = resolve(workdir);
+    if (abs === wd || abs.startsWith(wd + "/")) return;
+    if (["/usr", "/lib", "/lib64", "/bin", "/etc"].some((base) => abs === base || abs.startsWith(base + "/"))) return;
+    out.push(abs);
+  };
+  const cmdPath = findOnPath(config.command);
+  if (cmdPath) addDir(dirname(cmdPath));
+  for (const arg of config.args) {
+    if (!isAbsolute(arg)) continue;
+    try {
+      if (!existsSync(arg)) continue;
+      addDir(statSync(arg).isDirectory() ? arg : dirname(arg));
+    } catch { /* 读不到就跳过，不拦启动 */ }
+  }
+  return out;
+}
+
+/**
+ * 按沙箱配置算出 MCP 服务器进程的 spawn 参数（纯函数，可单测）。
+ * 返回 [spawn 命令, spawn 参数]。沙箱不可用时抛 MCPError——调用方不启动
+ * 该服务器，绝不静默裸奔。
+ * - local：原样 spawn（工具级隔离，与 0.5.1 前行为一致）。
+ * - bwrap：复用 buildBwrapArgv；服务器命令与绝对路径参数所在目录追加只读
+ *   绑定（服务器可执行文件本身常在工作区外，不绑就读不到）。
+ * - seatbelt：sandbox-exec -p <profile> <command> <args>，profile 与
+ *   toolShell 同款（工作区可写、默认断网）。
+ * - jobobject：Job Object 是一锤子脚本执行器（runWindowsSandboxed），装不下
+ *   长驻 stdio 进程，显式指定时直接拒绝。
+ * - e2b：未接线（见 docs/sandbox.md），显式指定时直接拒绝。
+ */
+export function sandboxedMcpSpawnArgs(
+  config: MCPServerConfig,
+  resolved: { backend: string; mode: SandboxMode; allowNet: boolean },
+  workdir: string,
+): [string, string[]] {
+  if (resolved.backend === "local") return [config.command, [...config.args]];
+  if (resolved.backend === "bwrap") {
+    const argv = buildBwrapArgv(config.command, config.args, {
+      workdir,
+      allowNet: resolved.allowNet,
+      mode: resolved.mode,
+      extraRoBinds: mcpServerRoBinds(config, workdir),
+    });
+    return [argv[0], argv.slice(1)];
+  }
+  if (resolved.backend === "seatbelt") {
+    const profile = buildSeatbeltProfile({ mode: resolved.mode, workdir, allowNet: resolved.allowNet });
+    return ["sandbox-exec", ["-p", profile, config.command, ...config.args]];
+  }
+  if (resolved.backend === "jobobject") {
+    throw new MCPError(
+      `MCP 服务器 ${config.name} 无法进 Job Object 沙箱：Job Object 是一锤子脚本执行器，装不下长驻 stdio 进程；` +
+      "请改用 --sandbox local（工具级）或 bwrap/seatbelt",
+    );
+  }
+  if (resolved.backend === "e2b") {
+    throw new MCPError(`MCP 服务器 ${config.name} 无法进 e2b 沙箱：e2b 后端未接线（见 docs/sandbox.md）；请改用 --sandbox local 或 bwrap`);
+  }
+  throw new MCPError(`MCP 服务器 ${config.name} 的沙箱后端 ${resolved.backend} 未知，拒绝启动`);
+}
+
 export class MCPClient {
   config: MCPServerConfig;
   timeout: number;
+  /** 已解析的沙箱配置；为 null 时原样 spawn（0.5.1 前行为）。 */
+  sandbox: ResolvedMcpSandbox | null;
   process: ChildProcessWithoutNullStreams | null = null;
   nextId = 1;
   tools: McpTool[] = [];
@@ -110,9 +227,10 @@ export class MCPClient {
   private badLineCount = 0;
   private lastBadLine: string | null = null;
 
-  constructor(config: MCPServerConfig, timeout = 30.0) {
+  constructor(config: MCPServerConfig, timeout = 30.0, sandbox: ResolvedMcpSandbox | null = null) {
     this.config = config;
     this.timeout = timeout;
+    this.sandbox = sandbox;
   }
 
   private subprocessEnv(): Record<string, string> {
@@ -131,7 +249,18 @@ export class MCPClient {
 
   start(): void {
     if (this.process) return;
-    const child = spawn(this.config.command, this.config.args, {
+    // 沙箱：按已解析配置算 spawn 参数；算不出来（后端不可用/不支持长驻进程）
+    // 直接抛 MCPError，服务器不启动——绝不静默裸奔。
+    let command = this.config.command;
+    let args = [...this.config.args];
+    if (this.sandbox) {
+      try {
+        [command, args] = sandboxedMcpSpawnArgs(this.config, this.sandbox, this.sandbox.workdir);
+      } catch (err) {
+        throw new MCPError(`MCP 服务器 ${this.config.name} 无法进沙箱，拒绝启动：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"], env: this.subprocessEnv(),
     });
     this.process = child;
@@ -532,16 +661,40 @@ export class MCPToolManager {
   clients: Record<string, MCPClient> = {};
   toolSchemas: McpToolSchema[] = [];
   private toolRoutes: Record<string, [string, string]> = {};
+  /** 未解析的沙箱配置（startAll 里解析一次）；为 null 时不进沙箱。 */
+  sandbox: McpSandboxOptions | null;
+  workdir: string;
 
-  constructor(servers: Record<string, MCPServerConfig>, timeout = 30.0) {
+  constructor(
+    servers: Record<string, MCPServerConfig>,
+    timeout = 30.0,
+    opts: { sandbox?: McpSandboxOptions | null; workdir?: string } = {},
+  ) {
     this.servers = { ...servers };
     this.timeout = timeout;
+    this.sandbox = opts.sandbox ?? null;
+    this.workdir = opts.workdir ?? process.cwd();
   }
 
   async startAll(): Promise<void> {
+    // 沙箱配置只解析一次：显式后端不可用时整批拒绝启动（不逐个服务器重复
+    // 报错，也不让任何服务器裸奔）；解析失败直接抛 MCPError。
+    let resolved: ResolvedMcpSandbox | null = null;
+    if (this.sandbox) {
+      try {
+        const r = resolveSandboxBackend({
+          sandbox: this.sandbox.backend ?? null,
+          sandbox_mode: this.sandbox.mode,
+          sandbox_allow_net: this.sandbox.allowNet,
+        });
+        resolved = { backend: r.backend, mode: r.mode, allowNet: r.allowNet, workdir: this.workdir };
+      } catch (err) {
+        throw new MCPError(`MCP 沙箱配置无法解析，拒绝启动全部服务器：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     for (const [serverName, config] of Object.entries(this.servers)) {
       if (this.clients[serverName]) continue;
-      const client = new MCPClient(config, this.timeout);
+      const client = new MCPClient(config, this.timeout, resolved);
       try {
         client.start();
         const tools = await client.listTools();
@@ -605,7 +758,14 @@ export class MCPToolManager {
  * 未启用（mcp_enabled 非真）或无服务器时返回 null。
  */
 export async function buildMcpManager(
-  opts: { mode?: string; interactive?: boolean; config?: Record<string, unknown>; askApproval?: (prompt: string) => Promise<boolean> },
+  opts: {
+    mode?: string; interactive?: boolean; config?: Record<string, unknown>;
+    askApproval?: (prompt: string) => Promise<boolean>;
+    /** 沙箱配置（与 Agent/CLI 同款形状）；未传时服务器原样启动。 */
+    sandbox?: McpSandboxOptions | null;
+    /** 服务器进程的工作目录（bwrap/Seatbelt 绑定的工作区）；默认 process.cwd()。 */
+    workdir?: string;
+  },
 ): Promise<MCPToolManager | null> {
   const mode = opts.mode ?? "auto";
   const interactive = opts.interactive ?? false;
@@ -625,7 +785,7 @@ export async function buildMcpManager(
     }
     if (!Object.keys(approved).length) return null;
   }
-  const manager = new MCPToolManager(approved);
+  const manager = new MCPToolManager(approved, 30.0, { sandbox: opts.sandbox ?? null, workdir: opts.workdir });
   await manager.startAll();
   if (!manager.hasTools()) { manager.stopAll(); return null; }
   return manager;

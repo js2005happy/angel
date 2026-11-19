@@ -251,10 +251,12 @@ export function getSandboxStatus(
 // 不存在的跳过，不让 bwrap 因缺目录启动失败），默认断网（--unshare-net，
 // allowNet 时不加），--die-with-parent 保证父进程退出时沙箱一起死。
 // read-only 模式工作目录也改 --ro-bind；danger-full-access 拒绝进 bwrap，直接抛错。
-export function buildBwrapArgs(
-  command: string,
-  opts: { workdir: string; allowNet: boolean; mode: SandboxMode },
-): string[] {
+/**
+ * bwrap 挂载面（buildBwrapArgs 与 buildBwrapArgv 共用）：断网、随父进程死、
+ * 系统目录只读挂载、/proc /dev /tmp、工作目录按模式绑定。
+ * extraRoBinds：工作区外的目录（只读追加，调用方保证是已存在的目录）。
+ */
+function bwrapBaseArgs(opts: { workdir: string; allowNet: boolean; mode: SandboxMode; extraRoBinds?: string[] }): string[] {
   if (opts.mode === "danger-full-access") {
     throw new Error("danger-full-access 与沙箱互斥：该模式要求无限制执行，不能进 bwrap；如需无限制请用 --sandbox local 并自行承担风险");
   }
@@ -266,10 +268,34 @@ export function buildBwrapArgs(
     if (existsSync(dir)) args.push("--ro-bind", dir, dir);
   }
   args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
+  for (const dir of opts.extraRoBinds ?? []) {
+    if (existsSync(dir)) args.push("--ro-bind", dir, dir);
+  }
   if (opts.mode === "read-only") args.push("--ro-bind", opts.workdir, opts.workdir);
   else args.push("--bind", opts.workdir, opts.workdir);
-  args.push("--chdir", opts.workdir, "--", "/bin/sh", "-c", command);
+  args.push("--chdir", opts.workdir);
   return args;
+}
+
+export function buildBwrapArgs(
+  command: string,
+  opts: { workdir: string; allowNet: boolean; mode: SandboxMode },
+): string[] {
+  return [...bwrapBaseArgs(opts), "--", "/bin/sh", "-c", command];
+}
+
+/**
+ * argv 版（MCP 服务器进程用）：与 buildBwrapArgs 同款挂载面，但不经过
+ * /bin/sh -c——长驻 stdio 进程直接当 bwrap 的子进程跑，stdio 管道原样透传。
+ * extraRoBinds：服务器可执行文件与绝对路径参数所在目录（只读追加），
+ * 否则工作区外的服务器文件在沙箱里读不到。
+ */
+export function buildBwrapArgv(
+  command: string,
+  args: string[],
+  opts: { workdir: string; allowNet: boolean; mode: SandboxMode; extraRoBinds?: string[] },
+): string[] {
+  return [...bwrapBaseArgs(opts), "--", command, ...args];
 }
 
 export interface RunSandboxedOptions {

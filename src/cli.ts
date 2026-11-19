@@ -1112,6 +1112,26 @@ export async function handleVault(argv: string[], home: string, input?: VaultInp
 }
 
 // ---- JSON 模式 ----
+/**
+ * 一次性任务的会话钩子外包：SessionStart 在任务开始前触发，SessionEnd 在
+ * 任务结束（成功、失败或异常退出）后于 finally 里触发——与 REPL（runRepl）
+ * /网关（newSession/stop/closeSession）行为一致：一次任务一个会话，
+ * 开始与结束各触发一次。钩子 fail-open（超时、退出码非零都不阻塞、不改
+ * 退出码）；钩子只写 stderr、不碰 stdout，--json 模式的结构化输出不受影响。
+ * 注意：包在 main() 分发层，参数错误等极早退出也会触发一次开始/结束——
+ * 与 REPL“启动即触发 SessionStart”的口径一致。
+ */
+async function withOneShotSession(args: CliArgs, fn: () => Promise<number>): Promise<number> {
+  const home = resolveHome();
+  const workdir = resolve(args.workdir);
+  try { await runHooks("SessionStart", { home, workdir }); } catch { /* fail-open：钩子故障不破坏任务 */ }
+  try {
+    return await fn();
+  } finally {
+    try { await runHooks("SessionEnd", { home, workdir }); } catch { /* 同上 */ }
+  }
+}
+
 async function runJson(args: CliArgs): Promise<number> {
   const lines = new JsonLines();
   try {
@@ -2017,7 +2037,7 @@ export async function main(argv: string[]): Promise<number> {
     process.stdout.write("Poppy 发现工具在 Node 版第 3 阶段，暂走 Python 版：python3 -m nyra --discover-poppy <站点>\n");
     return 2;
   }
-  if (args.jsonMode) return runJson(args);
+  if (args.jsonMode) return withOneShotSession(args, () => runJson(args));
 
   // 列表类命令（不用 Key、不调模型）。
   if (args.listProviders) {
@@ -2115,7 +2135,7 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   }
 
-  if (args.task !== undefined) return runOneShot(args);
+  if (args.task !== undefined) return withOneShotSession(args, () => runOneShot(args));
   return runRepl(args);
 }
 

@@ -132,6 +132,13 @@ export interface ToolContext {
   checkpoint?: CheckpointStore | null;
   /** P1-4：续跑时已在中断前成功执行过的写操作幂等键集合。只在 --resume-run 时由 CLI 填入；为空或缺失时不跳过任何调用。 */
   resumeCompletedWriteKeys?: Set<string>;
+  /**
+   * 幂等重试标记（内部 transient 状态，不持久化）：executeToolIdempotent 在
+   * 重试同一写操作时把它置 true——这次调用已在首次调用时批过并跑过钩子，
+   * 重试不再重走审批与 Pre/PostToolUse 钩子；重试结束（无论成败）由
+   * executeToolIdempotent 在 finally 里恢复原值。外部调用方不要直接设。
+   */
+  idempotentRetry?: boolean;
   poppyEnabled?: boolean;
   streamToolOutput?: boolean;
   onEvent?: ((kind: string, data: Record<string, unknown>) => void) | null;
@@ -489,6 +496,13 @@ export async function checkApproval(
     observeApproval(ctx, toolName, true);
     return;
   }
+
+  // 幂等重试（ctx.idempotentRetry === true）不重走审批：这次写操作已在
+  // 首次调用时走完规则与审批，重试只是对同一已批操作的再执行——再弹一次
+  // 审批没有意义，还会把一次已批的重试变成两次人工确认。注意这个短路放在
+  // 只读拒绝与权限规则 deny 之后：重试仍受这两条硬控制约束，跳过的只是
+  // 人工弹窗 / approveFn 这一层。
+  if (ctx.idempotentRetry === true) return;
 
   if (ctx.mode === "auto" || ctx.mode === "creator") {
     if (!ctx.interactive) {
@@ -1692,7 +1706,10 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
     // 钩子在审批之前跑：钩子先拦下危险操作，省一次人工审批打扰；审批流程本身不变。
     // P0-4：钩子还可以用 updatedInput 改写入参——合并后按改写后的参数执行。
-    if (HOOKED_TOOLS.has(name)) {
+    // 幂等重试（ctx.idempotentRetry === true）不重跑钩子：首次调用的钩子已跑过，
+    // 其入参改写（Object.assign 原地改 args）重试时仍生效；重试再跑一遍钩子只会
+    // 对同一已批操作重复通知/重复改写，没有意义。
+    if (HOOKED_TOOLS.has(name) && ctx.idempotentRetry !== true) {
       const updated = await runPreToolHook(ctx, name, args);
       if (updated) {
         // 审计：改写必须留痕，否则"模型说要 A、实际执行 B"无法追查。
@@ -1745,7 +1762,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
     })();
     // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
     // 工具执行成功后跑 PostToolUse：只通知、不拦截，失败只警告（runHooks 内部已 fail-open）。
-    if (HOOKED_TOOLS.has(name)) await runPostToolHook(ctx, name, args);
+    // 幂等重试不重跑 PostToolUse（同 PreToolUse 的理由：首次调用已通知过）。
+    if (HOOKED_TOOLS.has(name) && ctx.idempotentRetry !== true) await runPostToolHook(ctx, name, args);
     return result;
   } catch (err: unknown) {
     if (err instanceof ApprovalRequired) throw err;
@@ -1906,6 +1924,11 @@ export interface IdempotentRetryOptions {
  * 只读工具直接重试；写操作先核查状态（已生效 → 报告已生效、不再执行；
  * 未生效 → 重试；无法核查 → 返回原错误）。审批拒绝（ApprovalRequired）
  * 直接冒泡，绝不重试。
+ * 重试不重走审批与钩子：重试调用前把 ctx.idempotentRetry 置 true，
+ * executeTool 与 checkApproval 据此跳过 Pre/PostToolUse 钩子与人工审批
+ * （首次调用已批过、钩子已跑过；钩子的入参改写是原地改 args，重试时仍在），
+ * 重试结束（无论成败）在 finally 里恢复原值；只读工具的重试同样置标记
+ * （钩子不重复通知）。
  */
 export async function executeToolIdempotent(
   name: string,
@@ -1917,12 +1940,24 @@ export async function executeToolIdempotent(
   const maxRetries = opts.maxRetries ?? TOOL_MAX_RETRIES;
   const delays = opts.delaysMs ?? [...TOOL_RETRY_DELAYS_MS];
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // 重试调用走同一个 exec：重试前置标记、结束后恢复，保证标记不泄漏到
+  // 本次逻辑调用之外的工具调用里（ctx 是跨调用复用的）。
+  const execRetry = async (): Promise<string> => {
+    const prev = ctx.idempotentRetry;
+    ctx.idempotentRetry = true;
+    try {
+      return await exec(name, args, ctx);
+    } finally {
+      if (prev === undefined) delete ctx.idempotentRetry;
+      else ctx.idempotentRetry = prev;
+    }
+  };
   let result = await exec(name, args, ctx);
   if (!isToolErrorResult(result)) return result;
   if (READONLY_TOOLS.has(name)) {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       await sleep(delays[Math.min(attempt, delays.length - 1)] ?? 0);
-      result = await exec(name, args, ctx);
+      result = await execRetry();
       if (!isToolErrorResult(result)) return result;
     }
     return result;
@@ -1935,7 +1970,7 @@ export async function executeToolIdempotent(
     if (applied === false) {
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         await sleep(delays[Math.min(attempt, delays.length - 1)] ?? 0);
-        result = await exec(name, args, ctx);
+        result = await execRetry();
         if (!isToolErrorResult(result)) return result;
         // 重试又失败：再核查一次，期间生效了就不再继续。
         if ((await verifyWriteApplied(name, args, ctx)) === true) {

@@ -185,7 +185,15 @@ export class Gateway {
     this.providerFactory = opts.providerFactory;
     this.reviewerFactory = opts.reviewerFactory;
     this.devices = new DeviceRegistry(defaultDevicesPath(this.home));
-    this.groups = new GroupStore(join(this.home, "groups"));
+    // 群聊机器人走网关同一沙箱配置：这里只做配置解析（resolveSandbox 不查
+    // 后端二进制是否存在），后端不可用时不拦网关启动，留给机器人跑 shell 时
+    // toolShell 逐次 fail-closed——网关只聊天不用 shell 的部署不受影响。
+    // 配置名本身非法（不在 VALID_SANDBOXES 里）时 resolveSandbox 直接抛错，
+    // 与首次 send 时 sandboxSettings() 的行为一致。
+    const groupSandbox = resolveSandbox(this.config);
+    this.groups = new GroupStore(join(this.home, "groups"), {
+      sandbox: { backend: groupSandbox.backend, mode: groupSandbox.mode as SandboxMode, allowNet: groupSandbox.allowNet },
+    });
     this.mcpCost = new McpCostTracker(this.home);
     if (!isLoopbackHost(this.host)) {
       const lan = lanIPv4();
@@ -279,6 +287,27 @@ export class Gateway {
     const run = this.getRun(sid);
     this.fireSessionStart(run);
     return sid;
+  }
+
+  /**
+   * 逐会话关闭（DELETE /api/sessions/:id）：触发一次 SessionEnd（fireSessionEnd
+   * 自带去重；无钩子时立即返回）并从 live 会话表里删掉该会话；持久化会话文件
+   * 保留（仍可从列表/历史读到）。运行中的会话不中途杀任务，返回 "running"
+   * （调用方回 409，等它跑完再关）；live 表里没有、磁盘上也没有该会话时返回
+   * "unknown"；磁盘上有、live 表里没有时没有 live 会话可关，直接返回 "closed"
+   * （关闭是幂等的）。SessionEnd 钩子等跑完再返回（与 stop() 同款约定，
+   * 避免关完钩子还在跑；钩子有超时封顶，不会无限等）。
+   */
+  async closeSession(sessionId: string): Promise<"closed" | "running" | "unknown"> {
+    const run = this.getRun(sessionId, false);
+    if (!run) {
+      if (!this.sessionKnown(sessionId)) return "unknown";
+      return "closed";
+    }
+    if (run.status === "running") return "running";
+    await (this.fireSessionEnd(run) ?? Promise.resolve());
+    this.runs.delete(sessionId);
+    return "closed";
   }
 
   sessionKnown(sid: string): boolean {
@@ -516,7 +545,13 @@ export class Gateway {
     // full 是显式 opt-in。网页端不能批准本地 MCP 进程启动。
     if (this.mode !== "full") return null;
     if (!this.config.mcp_enabled) return null;
-    const manager = await buildMcpManager({ mode: this.mode, interactive: false, config: this.config });
+    // MCP 服务器进程走网关同一沙箱配置（sandboxSettings 已做 fail-closed
+    // 校验）；沙箱不可用时 buildMcpManager 抛错，服务器不启动——与 shell
+    // 工具的 fail-closed 口径一致。工作目录是网关工作区。
+    const manager = await buildMcpManager({
+      mode: this.mode, interactive: false, config: this.config,
+      sandbox: this.sandboxSettings(), workdir: this.workdir,
+    });
     this.mcpManager = manager;
     return manager;
   }
@@ -641,9 +676,8 @@ export class Gateway {
   // -- session hooks（调研报告第 1 项，会话生命周期） ----------------------
   /**
    * 会话钩子触发点（网关侧）：SessionStart 在会话新建（newSession）或首次
-   * send 建 Agent 成功后触发；SessionEnd 在网关关停（stop）时为每个已开始
-   * 的会话触发。网关没有逐会话关闭接口，所以没有更细的结束点——会话在
-   * 网关里一直活到关停，见 docs/hooks.md。
+   * send 建 Agent 成功后触发；SessionEnd 在逐会话关闭（DELETE /api/sessions/:id，
+   * 见 closeSession）或网关关停（stop）时为每个已开始的会话触发。
    * 约定与 CLI 侧一致：超时走 config.json hooks.timeout_ms（runHooks 内
    * clamp 到 1–120 秒，默认 10 秒）、fail-open、退出码 2 只通知不拦截；
    * 无钩子时 runHooks 直接返回、不 spawn。SessionStart 不阻塞 HTTP 响应，
@@ -1294,6 +1328,17 @@ export class Gateway {
     if (method === "GET" && groupMatch) {
       try { this.sendJson(res, 200, this.groups.get(groupMatch[1])); }
       catch (err) { this.sendError(res, 400, err instanceof Error ? err.message : String(err)); }
+      return;
+    }
+
+    // ---- DELETE ----
+    if (method === "DELETE" && sessionGetMatch) {
+      const sid = this.validSid(sessionGetMatch[1]);
+      if (!sid) { this.sendError(res, 400, "会话 id 无效"); return; }
+      const outcome = await this.closeSession(sid);
+      if (outcome === "unknown") { this.sendError(res, 404, "会话不存在"); return; }
+      if (outcome === "running") { this.sendError(res, 409, "会话正在执行任务，请等它完成再关闭"); return; }
+      this.sendJson(res, 200, { id: sid, closed: true });
       return;
     }
 

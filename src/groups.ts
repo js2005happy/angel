@@ -45,6 +45,7 @@ import {
   type SwitchRecord,
 } from "./providers.ts";
 import { decryptEntry, encryptEntry, Vault } from "./vault.ts";
+import type { SandboxMode } from "./sandbox.ts";
 
 export const MAX_BOTS = 6;
 export const MAX_API_KEYS = 5;
@@ -380,6 +381,12 @@ export interface GroupStoreOptions {
   botTimeoutSeconds?: number;
   /** 注入的 bot 回合执行器（测试用）；默认走 Node Agent。 */
   botRunner?: BotRunner | null;
+  /**
+   * 沙箱配置（与 Agent/CLI 同款形状）：defaultBotRunner 建 Agent 时原样透传，
+   * 群聊机器人跑 shell 走同一后端解析口径；显式后端不可用时 fail-closed
+   * （toolShell 拒绝执行、不静默裸奔）。未设置时保持旧行为（不解析、不提示）。
+   */
+  sandbox?: { backend?: string | null; mode?: SandboxMode; allowNet?: boolean } | null;
 }
 
 function publicBot(raw: Bot): PublicBot {
@@ -399,6 +406,7 @@ export class GroupStore {
   readonly providerFactory: ProviderFactory | null;
   readonly botTimeoutSeconds: number;
   readonly botRunner: BotRunner | null;
+  readonly sandbox: { backend?: string | null; mode?: SandboxMode; allowNet?: boolean } | null;
   private sendQueue = new Map<string, Promise<void>>();
   /** 已解锁的密码箱缓存：600k 次 PBKDF2 只在进程里算一次（审查报告第 1 项的性能点）。 */
   private vaultCache: Vault | null | undefined = undefined;
@@ -411,6 +419,7 @@ export class GroupStore {
     this.providerFactory = opts.providerFactory ?? null;
     this.botTimeoutSeconds = opts.botTimeoutSeconds ?? BOT_TIMEOUT_SECONDS;
     this.botRunner = opts.botRunner ?? null;
+    this.sandbox = opts.sandbox ?? null;
   }
 
   // -- 群 Key 加密存储（审查报告第 7 项） --
@@ -893,6 +902,9 @@ export class GroupStore {
         "不要假称已经执行未调用的工具。回答用中文，控制篇幅。",
       memoryPath: ctx.memoryPath,
       home: this.home,
+      // 群聊机器人跑 shell 走网关/CLI 同一沙箱配置；显式后端不可用时
+      // toolShell fail-closed，命令不执行。
+      sandbox: this.sandbox ?? null,
     });
     const text = await agent.run(prompt);
     const switches = (provider as unknown as { switches?: unknown }).switches;
