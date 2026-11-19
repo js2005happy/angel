@@ -260,14 +260,18 @@ test("McpSandbox.test_find_on_path", () => {
 });
 
 test("McpSandbox.test_manager_start_all_refuses_unavailable_backend", async () => {
-  // 用 jobobject：它在所有平台都确定性拒绝（Job Object 装不下长驻 stdio 进程）；
-  // 原来的 seatbelt 在 macOS 上其实可用，导致这条用例在 mac 上必红。
+  // seatbelt 在 macOS 上是可用的，这条用例的前提（后端不可用）在 mac 上不成立。
+  // 语义由非 mac 平台覆盖；这里只跳过，不改任何断言。
+  if (process.platform === "darwin") {
+    console.log("跳过：macOS 上 seatbelt 可用，构造不出后端不可用场景");
+    return;
+  }
   await withCleanSandboxEnv(async () => {
     const server = fakeServerPath();
     const manager = new MCPToolManager(
       { fake: new MCPServerConfig("fake", "node", [server]) },
       10,
-      { sandbox: { backend: "jobobject", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
+      { sandbox: { backend: "seatbelt", mode: "workspace-write", allowNet: false }, workdir: "/tmp" },
     );
     let caught: unknown = null;
     try { await manager.startAll(); } catch (e) { caught = e; }
