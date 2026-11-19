@@ -276,3 +276,13 @@ test("BannerTest.test_supports_box_drawing_detection", () => {
   expect(supportsBoxDrawing({ TERM: "dumb" }, "linux")).toBe(false);
   expect(supportsBoxDrawing({ LANG: "zh_CN.GBK" }, "linux")).toBe(false);
 });
+
+test("BannerTest.test_status_bar_cost_segment", () => {
+  const bar = renderStatusBar({ model: "deepseek", mode: "auto", contextUsage: 0.25, cost: "成本 $0.0180/$1.00", branch: "main" }, { width: 100 });
+  expect(bar).toContain("上下文 25% · 成本 $0.0180/$1.00 · ⎇ main");
+  // 窄时先丢分支，再丢成本，上下文保留。
+  const narrow = renderStatusBar({ model: "deepseek", mode: "auto", contextUsage: 0.25, cost: "成本 $0.0180/$1.00", branch: "main" }, { width: 52 });
+  expect(narrow).toContain("上下文 25%");
+  expect(narrow).not.toContain("main");
+  expect(textWidth(narrow)).toBeLessThanOrEqual(52);
+});

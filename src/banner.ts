@@ -314,7 +314,7 @@ export function renderStatusBar(info: StatusInfo, opts: RenderOpts): string {
   const br: Seg | null = info.branch
     ? { plain: `${g.branch}${unicode ? " " : ""}${info.branch}`, painted: paintRaw(`${g.branch}${unicode ? " " : ""}${info.branch}`, level, { fg: BRAND.mist }) }
     : null;
-  const cost: Seg | null = info.cost ? { plain: info.cost, painted: paintRaw(info.cost, level, { fg: BRAND.coral }) } : null;
+  const cost: Seg | null = info.cost ? { plain: info.cost, painted: paintRaw(info.cost, level, { fg: info.cost.includes("$") ? BRAND.coral : BRAND.muted }) } : null;
   const hint: Seg | null = info.modeSwitchKey ? { plain: "shift+tab to switch modes", painted: muted("shift+tab to switch modes") } : null;
   const badgePlain = ` ${info.mode} `;
   const lead = "  ";

@@ -173,7 +173,11 @@ export class ToolPrinter {
       line = `${this.p(u ? "●" : "*", { fg: BRAND.sage, bold: true })} ${content}`;
     } else if (kind === "cost_update") {
       // P2-3：每轮的看板行（与 --json 的 cost_update 事件同一份快照），暗色缩进在工具树下。
-      line = `${indent}${this.p(formatDashboardLine(data as unknown as DashboardSnapshot), { fg: BRAND.muted })}`;
+      // TTY 上按终端宽度截断成一行，避免折行打乱工具树。
+      let dash = formatDashboardLine(data as unknown as DashboardSnapshot);
+      const cols = (this.stream as { isTTY?: boolean; columns?: number }).isTTY ? (this.stream as { columns?: number }).columns : undefined;
+      if (cols && cols > indent.length + 8) dash = truncateWidth(dash, cols - indent.length - 1, u ? "…" : "...");
+      line = `${indent}${this.p(dash, { fg: BRAND.muted })}`;
     } else {
       return;
     }
