@@ -146,3 +146,30 @@ test("跨目录：输出里标注来源目录与「仅供参考」", async () =>
   expect(note).toContain("来自 /other");
   expect(note).toContain("仅供参考");
 });
+
+test("误用防护：同目录回忆要求先用 read_file 复核，以当前文件为准", () => {
+  const note = formatRecallNote(selectRecalledRuns([run({ run_id: "a" })], "重构 auth 模块", { maxAgeDays: 0 }))!;
+  expect(note).toContain("read_file");
+  expect(note).toContain("以当前文件为准");
+  expect(note).toContain("丢弃该条回忆结论");
+});
+
+test("误用防护：含跨项目条目时追加"说明为什么仍成立"的严格要求", async () => {
+  const { RECALL_GUARD_CROSS, requiresStrictRecheck } = await import("../../src/runRecall.ts");
+  const runs = [run({ run_id: "a", workdir: "/proj" }), run({ run_id: "b", workdir: "/other" })];
+  const picked = selectRecalledRuns(runs, "重构 auth 模块", { workdir: "/proj", maxAgeDays: 0, allowCrossDir: true });
+  const note = formatRecallNote(picked)!;
+  expect(note).toContain(RECALL_GUARD_CROSS);
+  expect(note).toContain("为什么这个结论在当前项目仍然成立");
+  expect(requiresStrictRecheck(picked)).toBe(true);
+});
+
+test("误用防护：同目录时不加跨项目要求（避免噪音）", async () => {
+  const { RECALL_GUARD_CROSS } = await import("../../src/runRecall.ts");
+  const note = formatRecallNote(selectRecalledRuns([run({ run_id: "a" })], "重构 auth 模块", { maxAgeDays: 0 }))!;
+  expect(note).not.toContain(RECALL_GUARD_CROSS);
+});
+
+test("误用防护：空回忆仍然返回 null（不加任何提示）", () => {
+  expect(formatRecallNote([])).toBeNull();
+});

@@ -51,6 +51,12 @@ export interface RecalledRun {
   crossDir: boolean;
 }
 
+/** 同目录回忆的复核要求：动手前必须先看当前文件。 */
+export const RECALL_GUARD = "动手前必须先用 read_file 复核涉及的文件：内容与回忆不符时以当前文件为准，并丢弃该条回忆结论。";
+
+/** 含跨项目条目时的复核要求：更严格，且要求说明为什么仍然适用。 */
+export const RECALL_GUARD_CROSS = "其中包含跨项目结论：复用前必须在回复里说明「为什么这个结论在当前项目仍然成立」，说不出就别用。";
+
 /** 跨目录复用的分数折扣：跨项目经验只部分可迁移。 */
 export const CROSS_DIR_SCORE_FACTOR = 0.7;
 
@@ -134,9 +140,17 @@ export function formatRecallNote(recalled: readonly RecalledRun[], maxChars = 12
     if (r.verify_cmd) bits.push(`  验证：${r.verify_cmd}${r.verify_exit === null ? "" : `（退出码 ${r.verify_exit}）`}`);
     lines.push(bits.join("\n"));
   }
-  lines.push("不要假设这些结论仍然成立：先看相关文件的当前内容，再决定要不要沿用。");
+  // 误用防护：回忆是"历史"，不复核就照抄会引入错误改动。
+  const hasCross = recalled.some((r) => r.crossDir);
+  lines.push(RECALL_GUARD);
+  if (hasCross) lines.push(RECALL_GUARD_CROSS);
   const text = lines.join("\n");
   return text.length > maxChars ? text.slice(0, maxChars) + "\n…（已截断）" : text;
+}
+
+/** 这批回忆是否要求更严格复核（含跨项目条目）。 */
+export function requiresStrictRecheck(recalled: readonly RecalledRun[]): boolean {
+  return recalled.some((r) => r.crossDir);
 }
 
 /** 一步到位：从历史里挑 + 格式化。 */
