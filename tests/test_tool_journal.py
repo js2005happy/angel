@@ -11,6 +11,26 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_posix_final_dirfd_enumeration_denied_fails_closed(self):
+        # Simulate a denied second enumeration without changing permissions.
+        from angel import tool_journal as module
+        journal = ToolJournal("posix-final-enumeration-denied", root=self.root)
+        journal.begin("shell")
+        original_listdir = module.os.listdir
+        calls = 0
+
+        def denied_second_listdir(path):
+            nonlocal calls
+            if isinstance(path, int):
+                calls += 1
+                if calls == 2:
+                    raise PermissionError("access denied")
+            return original_listdir(path)
+
+        with mock.patch.object(module.os, "listdir", side_effect=denied_second_listdir):
+            with self.assertRaisesRegex(JournalError, "无法复核日志目录枚举"):
+                journal.inspect()
+
     def test_path_fallback_symlink_probe_denied_fails_closed(self):
         # A denied metadata probe must not escape as an unclassified OSError.
         from angel import tool_journal as module
