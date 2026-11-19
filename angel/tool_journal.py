@@ -553,6 +553,10 @@ class ToolJournal:
         # call began. Refuse to certify one result while another is unknown.
         if status["unknown_outcomes"] != 1:
             raise JournalError("存在其他结果未知的工具调用；禁止记录结果")
+        if status["reported_errors"]:
+            # A concurrent completed failure may already have side effects.
+            # Never certify another result before explicit reconciliation.
+            raise JournalError("存在其他工具报告失败；人工核查前禁止记录结果")
         records = self._records()
         matches = [r for r in records if r["call_id"] == call_id]
         if len(matches) != 1 or matches[0]["event"] != "intent" or matches[0]["tool"] != tool:
@@ -572,6 +576,8 @@ class ToolJournal:
             if (len(intents) != 1 or len(results) != 1
                     or intents[0]["tool"] != results[0]["tool"]):
                 raise JournalError("结果提交前发现并发未决调用或歧义；禁止记录结果")
+            if results[0]["event"] == "result_error":
+                raise JournalError("结果提交前发现其他工具报告失败；必须人工核查")
         self._write("result_ok" if success else "result_error", call_id, tool)
         # A competing process can insert a new unresolved intent while the
         # result is being committed. Do not report a clean finish unless the
