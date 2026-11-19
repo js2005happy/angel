@@ -123,9 +123,11 @@ test("create 默认 4 机器人并可 get/list 往返", () => {
     expect(stored.id).toBe("dev");
     expect((stored.bots as unknown[]).length).toBe(4);
     expect(typeof stored.instance_id).toBe("string");
-    // 文件 0600、目录 0700。
-    expect(statSync(join(root, "groups", "dev", "room.json")).mode & 0o777).toBe(0o600);
-    expect(statSync(join(root, "groups", "dev")).mode & 0o777).toBe(0o700);
+    // 文件 0600、目录 0700（Windows 没有 POSIX 权限位，不断言）。
+    if (process.platform !== "win32") {
+      expect(statSync(join(root, "groups", "dev", "room.json")).mode & 0o777).toBe(0o600);
+      expect(statSync(join(root, "groups", "dev")).mode & 0o777).toBe(0o700);
+    }
   } finally {
     cleanup(root);
   }
