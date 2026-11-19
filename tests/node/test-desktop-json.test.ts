@@ -1,6 +1,8 @@
 // tests/node/test-desktop-json.test.ts — 桌面外壳兼容专项（第 3 阶段）。
 // Node 版 nyra ui --print-url-json --exit-on-stdin-close：
-// stdout 第一行是一行 JSON（nyra/version/url/host/port/token）；
+// stdout 第一行是一行 JSON（nyra/version/url/host/port/token），其中
+// nyra 字段固定为 "ui"（桌面外壳契约：Python 版 url_json() 一直返回
+// "ui"，桌面端 Rust 的 parse_start_line 要求 nyra == "ui"）；
 // 带 token 访问 200、不带 403；关 stdin 后退出码 0。
 import { test, expect } from "bun:test";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -36,8 +38,8 @@ test("DesktopJsonTest.test_print_url_json_contract", async () => {
   try {
     const line = await readFirstLine(child);
     const info = JSON.parse(line) as Record<string, unknown>;
-    expect(info.nyra).toBe("nyra");
-    expect(info.version).toBe("0.3.0");
+    expect(info.nyra).toBe("ui");
+    expect(info.version).toBe("0.4.0");
     expect(typeof info.url).toBe("string");
     expect(typeof info.host).toBe("string");
     expect(typeof info.port).toBe("number");

@@ -1,7 +1,7 @@
 // tests/node/test-cli.test.ts — 对应 tests/test_cli_providers.py（35 唯一）+ test_commands.py（19 唯一）的核心项，
 // 外加 vault 子命令、信任、自定义命令与 --json/--plan 冒烟。
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -11,8 +11,8 @@ import {
 import { VERSION } from "../../src/config.ts";
 
 test("CliTest.test_version_string", () => {
-  expect(VERSION).toBe("0.3.0");
-  expect(USAGE).toContain("0.3.0");
+  expect(VERSION).toBe("0.4.0");
+  expect(USAGE).toContain("0.4.0");
 });
 
 test("CliTest.test_parse_args_flags", () => {
@@ -93,6 +93,27 @@ test("CliTest.test_trust_add_and_check", () => {
   expect(isTrusted(wd, home)).toBe(true);
 });
 
+test("CliTest.test_trust_reads_python_dict_format", () => {
+  // Python 版 nyra/trust.py 的字典格式 {"version": 1, "folders": {...}} 必须能读。
+  const home = mkdtempSync(join(tmpdir(), "nyra-trust-py-"));
+  const wd = mkdtempSync(join(tmpdir(), "nyra-trust-py-wd-"));
+  const other = mkdtempSync(join(tmpdir(), "nyra-trust-py-other-"));
+  writeFileSync(join(home, "trusted_workspaces.json"), JSON.stringify({
+    version: 1,
+    folders: { [wd]: { trusted_at: "2026-11-18T00:00:00+0000" } },
+  }) + "\n");
+  expect(isTrusted(wd, home)).toBe(true);
+  expect(isTrusted(other, home)).toBe(false);
+  // 追加写入后旧条目不丢失（转为数组格式），文件权限 0600。
+  addTrusted(other, home);
+  expect(isTrusted(wd, home)).toBe(true);
+  expect(isTrusted(other, home)).toBe(true);
+  const parsed = JSON.parse(readFileSync(join(home, "trusted_workspaces.json"), "utf-8")) as unknown;
+  expect(Array.isArray(parsed)).toBe(true);
+  expect((parsed as string[]).length).toBe(2);
+  expect(statSync(join(home, "trusted_workspaces.json")).mode & 0o777).toBe(0o600);
+});
+
 test("CliTest.test_list_custom_commands", () => {
   const home = mkdtempSync(join(tmpdir(), "nyra-cmd-"));
   const wd = mkdtempSync(join(tmpdir(), "nyra-cmd-wd-"));
@@ -140,7 +161,7 @@ test("CliTest.test_binary_help_and_version", () => {
   expect(help.out).toContain("nyra");
   const ver = runCli(["--version"], home);
   expect(ver.code).toBe(0);
-  expect(ver.out).toContain("0.3.0");
+  expect(ver.out).toContain("0.4.0");
 });
 
 test("CliTest.test_binary_list_providers_skills_sessions", () => {
@@ -217,4 +238,118 @@ test("CliTest.test_binary_memory_export_import_roundtrip", () => {
   expect(exp.out).toContain("用户是学生");
   const imp = runCli(["memory", "import"], home);
   expect(imp.code).toBe(0);
+});
+
+test("CliTest.test_binary_permissions_roundtrip", () => {
+  const home = mkdtempSync(join(tmpdir(), "nyra-cli-perm-"));
+  const list0 = runCli(["permissions", "list"], home);
+  expect(list0.code).toBe(0);
+  expect(JSON.parse(list0.out).count).toBe(0);
+  const noConfirm = runCli(["permissions", "grant", "--site", "https://example.com", "--scope", "read"], home);
+  expect(noConfirm.code).toBe(1);
+  expect(noConfirm.out).toContain("需要用户显式 --confirm");
+  const grant = runCli(["permissions", "grant", "--site", "https://example.com", "--scope", "read", "--confirm"], home);
+  expect(grant.code).toBe(0);
+  expect(JSON.parse(grant.out).changed).toBe(true);
+  const check = runCli(["permissions", "check", "--site", "https://example.com", "--scope", "read"], home);
+  expect(check.code).toBe(0);
+  const checked = JSON.parse(check.out);
+  expect(checked.local_intent).toBe("recorded");
+  expect(checked.may_execute_remote_action).toBe(false);
+  const list1 = runCli(["permissions", "list"], home);
+  expect(JSON.parse(list1.out).count).toBe(1);
+  const audit = runCli(["permissions", "audit"], home);
+  expect(audit.code).toBe(0);
+  expect(JSON.parse(audit.out).events.length).toBe(1);
+  const revoke = runCli(["permissions", "revoke", "--site", "https://example.com", "--scope", "read"], home);
+  expect(revoke.code).toBe(0);
+  expect(JSON.parse(revoke.out).changed).toBe(true);
+});
+
+test("CliTest.test_binary_eigenflux_doctor_and_onboarding", () => {
+  const home = mkdtempSync(join(tmpdir(), "nyra-cli-ef-"));
+  const doc = runCli(["eigenflux", "doctor"], home);
+  expect(doc.code).toBe(0);
+  const report = JSON.parse(doc.out);
+  expect(report.status).toBe("not_checked");
+  expect(report.network_actions_allowed).toBe(false);
+  const checked = runCli(["eigenflux", "doctor", "--check"], home);
+  // 本机无 eigenflux 二进制：状态 cli_not_installed，退出 1（与 Python 口径一致）。
+  expect(checked.code).toBe(1);
+  expect(JSON.parse(checked.out).status).toBe("cli_not_installed");
+  const onb = runCli(["eigenflux", "onboarding"], home);
+  expect(onb.code).toBe(0);
+  const steps = JSON.parse(onb.out);
+  expect(steps.blocked).toBe(true);
+  expect(steps.requiresHumanOnboarding).toBe(true);
+  const policy0 = runCli(["eigenflux", "policy", "show"], home);
+  expect(policy0.code).toBe(0);
+  const shown = JSON.parse(policy0.out);
+  expect(shown.network_actions_enabled).toBe(false);
+  expect(shown.capabilities.feed_read.local_intent).toBe("denied");
+  const noConfirm = runCli(["eigenflux", "policy", "allow", "--capability", "feed_read"], home);
+  expect(noConfirm.code).toBe(1);
+  expect(noConfirm.out).toContain("必须由用户显式提供 --confirm");
+  const allow = runCli(["eigenflux", "policy", "allow", "--capability", "feed_read", "--confirm"], home);
+  expect(allow.code).toBe(0);
+  expect(JSON.parse(allow.out).changed).toBe(true);
+  expect(JSON.parse(allow.out).local_intent).toBe("allowed");
+  const policy1 = runCli(["eigenflux", "policy", "show"], home);
+  expect(JSON.parse(policy1.out).capabilities.feed_read.local_intent).toBe("allowed");
+  expect(JSON.parse(policy1.out).network_actions_enabled).toBe(false);
+  const audit = runCli(["eigenflux", "policy", "audit"], home);
+  expect(audit.code).toBe(0);
+  expect(JSON.parse(audit.out).events.length).toBe(1);
+  const deny = runCli(["eigenflux", "policy", "deny", "--capability", "feed_read"], home);
+  expect(deny.code).toBe(0);
+  expect(JSON.parse(deny.out).changed).toBe(true);
+});
+
+function runCliInWorkdir(args: string[], home: string, workdir: string): { code: number; out: string } {
+  const r = spawnSync("bun", ["run", join(process.cwd(), "src/cli.ts"), ...args], {
+    cwd: workdir,
+    env: { ...process.env, HOME: home, NYRA_HOME: join(home, ".nyra") },
+    encoding: "utf-8", timeout: 60000,
+  });
+  return { code: r.status ?? -1, out: (r.stdout ?? "") + (r.stderr ?? "") };
+}
+
+test("CliTest.test_creator_pomodoro_e2e", () => {
+  const home = mkdtempSync(join(tmpdir(), "nyra-cli-creator-"));
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-cli-creator-work-"));
+  const res = runCliInWorkdir(["creator", "做个番茄钟", "--yes"], home, workdir);
+  expect(res.code).toBe(0);
+  expect(res.out).toContain("已安装 pomodoro 0.1.0");
+  expect(existsSync(join(workdir, ".nyra", "creator", "pomodoro", "spec.md"))).toBe(true);
+  expect(existsSync(join(home, ".nyra", "plugins", "pomodoro", "panel", "pomodoro.html"))).toBe(true);
+  const list = runCliInWorkdir(["plugin", "list"], home, workdir);
+  expect(list.out).toContain("pomodoro");
+  const skills = runCliInWorkdir(["--list-skills"], home, workdir);
+  expect(skills.out).toContain("pomodoro");
+  const un = runCliInWorkdir(["plugin", "uninstall", "pomodoro"], home, workdir);
+  expect(un.code).toBe(0);
+});
+
+test("CliTest.test_creator_todo_scan_verify_and_unknown", () => {
+  const home = mkdtempSync(join(tmpdir(), "nyra-cli-creator-"));
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-cli-creator-work-"));
+  const res = runCliInWorkdir(["creator", "扫描 TODO", "--yes"], home, workdir);
+  expect(res.code).toBe(0);
+  expect(res.out).toContain("已安装 todo-scan 0.1.0");
+  const staging = join(workdir, ".nyra", "creator", "todo-scan", "staging");
+  const verify = runCliInWorkdir(["creator", "verify", staging], home, workdir);
+  expect(verify.code).toBe(0);
+  expect(verify.out).toContain("验证通过");
+  const unknown = runCliInWorkdir(["creator", "给我做个天气插件"], home, workdir);
+  expect(unknown.code).toBe(1);
+  expect(unknown.out).toContain("没有现成的模板");
+});
+
+test("CliTest.test_parse_args_creator_mode", () => {
+  const a = parseArgs(["--mode", "creator", "做点事"]);
+  expect(a.mode).toBe("creator");
+  const b = parseArgs(["creator", "做个番茄钟", "--yes"]);
+  expect(b.subcommand).toBe("creator");
+  expect(b.subArgs).toEqual(["做个番茄钟", "--yes"]);
+  expect(USAGE).toContain("creator");
 });

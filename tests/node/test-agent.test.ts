@@ -285,3 +285,25 @@ test("AgentTest.test_readonly_mode_blocks_write_via_agent", async () => {
   expect(existsSync(join(workdir, "a.txt"))).toBe(false);
   expect(out.length).toBeGreaterThan(0);
 });
+
+test("AgentTest.test_creator_mode_loads_creator_skill", () => {
+  const { home, workdir } = setup();
+  const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "creator", skillsDirs: [] });
+  expect(agent.skills.map((s) => s.name)).toContain("creator-mode");
+  expect(MODE_NOTES.creator).toContain("创造模式");
+  expect(agent.buildSystemPrompt("做个番茄钟")).toContain("创造模式");
+  agent.setMode("auto");
+  expect(agent.mode).toBe("auto");
+  expect(agent.ctx.mode).toBe("auto");
+  expect(agent.skills.map((s) => s.name)).not.toContain("creator-mode");
+  agent.setMode("creator");
+  expect(agent.skills.map((s) => s.name)).toContain("creator-mode");
+});
+
+test("AgentTest.test_creator_mode_skill_matches_builtin_text", () => {
+  const { home, workdir } = setup();
+  const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "creator", skillsDirs: [] });
+  const skill = agent.skills.find((s) => s.name === "creator-mode");
+  expect(skill).toBeDefined();
+  expect(skill?.description).toContain("一句话需求");
+});

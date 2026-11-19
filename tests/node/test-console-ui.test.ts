@@ -1,6 +1,6 @@
 // tests/node/test-console-ui.test.ts — 对应 tests/test_repl_ui.py（16 个唯一测试）的核心项。
 import { test, expect } from "bun:test";
-import { useColor, style, styleEnabled, oneLine, ToolPrinter, formatReplStatus } from "../../src/consoleUi.ts";
+import { useColor, style, styleEnabled, oneLine, ToolPrinter, formatReplStatus, charWidth, textWidth, truncateWidth, wrapText } from "../../src/consoleUi.ts";
 
 test("ConsoleUiTest.test_use_color_tty_rules", () => {
   // 非 TTY 的输出流不用颜色。
@@ -59,4 +59,19 @@ test("ConsoleUiTest.test_format_repl_status_no_usage", () => {
   const status = formatReplStatus("deepseek", "/tmp/wd", null, "readonly");
   expect(status).toContain("--");
   expect(status).toContain("readonly");
+});
+
+test("ConsoleUiTest.test_cjk_width_helpers", () => {
+  expect(charWidth("中")).toBe(2);
+  expect(charWidth("a")).toBe(1);
+  expect(charWidth("́")).toBe(0);
+  expect(textWidth("你好ab")).toBe(6);
+  expect(textWidth("hello")).toBe(5);
+  expect(truncateWidth("你好世界你好", 7)).toBe("你好世…");
+  expect(truncateWidth("hello world", 8)).toBe("hello w…");
+  expect(truncateWidth("短", 10)).toBe("短");
+  expect(truncateWidth("你好", 0)).toBe("");
+  expect(wrapText("你好世界你好世界", 6)).toEqual(["你好世", "界你好", "世界"]);
+  expect(wrapText("hello world foo bar", 8)).toEqual(["hello", "world", "foo bar"]);
+  expect(wrapText("", 8)).toEqual([""]);
 });
