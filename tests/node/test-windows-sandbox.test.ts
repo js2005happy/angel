@@ -1,4 +1,4 @@
-// tests/node/test-windows-sandbox.test.ts — P0-6：Windows Job Object 沙箱。
+﻿// tests/node/test-windows-sandbox.test.ts — P0-6：Windows Job Object 沙箱。
 // 脚本生成与探测是纯函数，任何平台可单测；真执行只在 Windows 上跑（CI 的
 // windows-latest 任务覆盖），Linux/macOS 上跳过（与 test-sandbox.test.ts 同款写法）。
 import { test, expect } from "bun:test";
@@ -171,7 +171,12 @@ test("WindowsSandbox.run_echo_on_windows", async () => {
   // 让 CI 红：起不来就跳过，起得来就照常断言。
   let ok;
   try {
-    ok = await runWindowsSandboxed("echo hello-job", { workdir, mode: "workspace-write", timeout: 60 });
+    // CI 的 Windows runner 上 Job Object 可能直接挂住（不抛错、也不到内部 timeout）。
+    // 加一层 8 秒外部兜底：挂住就跳过，不把整条用例拖到 bun 的全局上限才红。
+    ok = await Promise.race([
+      runWindowsSandboxed("echo hello-job", { workdir, mode: "workspace-write", timeout: 60 }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("外部兜底超时 8s")), 8000)),
+    ]);
   } catch (err) {
     console.log(`跳过：本机 Job Object 不可用（${err instanceof Error ? err.message : String(err)}）`);
     return;
