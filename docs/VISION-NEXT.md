@@ -99,3 +99,26 @@
 - 不做自己的模型。模型是别人的战场。
 - 不和 Cursor/Devin 抢 IDE 与托管。Nyra 的战场是**本地 + 可审计**。
 - 不为了"看起来强"加功能：任何新能力必须能写进上面第七条的可复现断言。
+
+---
+
+## 十、怎么自检（不用记清单）
+
+上面第七条的可复现断言，已经有一部分变成命令：
+
+```bash
+nyra redlines        # 上线红线自检：成本上限 / 定价 / OS 沙箱 / deny 规则 / 验证命令 / 钩子
+nyra doctor          # 能不能跑起来：运行时 / Key / 网络 / 磁盘 / 权限
+nyra evidence verify <run-id>   # 这次运行的证据链是否成立（重算产物哈希 + 调用闭合）
+nyra cost --estimate "<task>"   # 跑之前先知道大概多少钱
+```
+
+`nyra redlines` 的三层判定：
+
+| 级别 | 含义 | 例子 |
+|---|---|---|
+| ✅ ok | 已设好 | 配了 `max_cost_usd` 与 `pricing` |
+| ⚠️ warn | 缺省可接受，但长任务前该补 | 没配 deny 规则、没有验证命令 |
+| ❌ fail | 明确危险，不宜上生产 | `sandbox_mode: danger-full-access`、`permissions.allow` 里有裸 `Bash` |
+
+退出码 0 = 没有 fail；1 = 有 fail。CI 里可以直接当门。
