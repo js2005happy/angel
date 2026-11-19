@@ -562,6 +562,13 @@ class ToolJournal:
                     or intents[0]["tool"] != results[0]["tool"]):
                 raise JournalError("结果提交前发现并发未决调用或歧义；禁止记录结果")
         self._write("result_ok" if success else "result_error", call_id, tool)
+        # A competing process can insert a new unresolved intent while the
+        # result is being committed. Do not report a clean finish unless the
+        # post-commit snapshot is unambiguous and has no pending outcomes.
+        # This is detection, not a cross-process atomic transaction.
+        committed = self.inspect()
+        if committed["journal_ambiguous"] or committed["unknown_outcomes"]:
+            raise JournalError("结果写入后发现并发未决调用或歧义；必须人工核查")
 
     def inspect(self) -> dict:
         """Only counts; never expose a transcript, argument, result or call id."""
