@@ -23,5 +23,5 @@ if [ "${1:-}" = "--node" ]; then
         fi
     done
 fi
-echo "探针：通过 $pass，失败 $fail"
+echo "探针：通过 ${pass}，失败 ${fail}"
 [ "$fail" -eq 0 ]
