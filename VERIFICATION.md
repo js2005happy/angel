@@ -1,3 +1,8 @@
+## 2026-11-19 — 回退路径符号链接探测拒绝（仅静态）
+
+- 静态检查发现 `_records()` 在路径回退分支的 `Path.is_symlink()` 未统一捕获 `OSError`；现在失败关闭为 `JournalError` 并保留异常链。已编写模拟 `PermissionError` 的测试源码，未执行。
+- 未运行测试、安装软件、触发 CI、合并或发布；Windows 实机 ACL 和竞态语义尚未验证。
+
 ## 2026-11-19 — 路径回退枚举失败诊断（仅静态）
 
 - 静态核对 `_records()` 两次路径回退枚举原先未将 `OSError` 映射为 `JournalError`；现在均保守拒绝并保留异常链。增加首次/末次枚举 `PermissionError` 的模拟回归测试源码。
