@@ -66,12 +66,12 @@ test("ToolPoolTest.test_bm25_matches_sync_scoring", async () => {
 test("ToolPoolTest.test_timeout_kills_stuck_worker_and_pool_recovers", async () => {
   const pool = new ToolPool(1);
   try {
-    // 10 万短文档：传输量小、worker 端 BM25 计算量大，100ms 必然超时；
-    // 随后 ping 应恢复可用。注意不要用 tokenize 现算 10 万文档（主线程太慢）。
-    const docTokens = Array.from({ length: 100000 }, () => ["填充", "工业", "机器人", "汽车", "制造"]);
+    // spin 任务在 worker 内确定性阻塞 5000ms，100ms 超时必然触发；
+    // 随后 ping 应恢复可用。旧版用 10 万文档 BM25 赌计算量，在快机器上
+    // 仅约 13ms，超时从不触发（36f08e6 的 Node binaries #28 真失败）。
     let err: unknown = null;
     try {
-      await pool.run("bm25", { queryTokens: ["工业", "机器人"], docTokens, topK: 5 }, 100);
+      await pool.run("spin", { ms: 5000 }, 100);
     } catch (e: unknown) { err = e; }
     expect(err).toBeInstanceOf(Error);
     expect(String((err as Error).message)).toContain("超时");

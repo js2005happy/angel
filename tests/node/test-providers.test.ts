@@ -176,7 +176,22 @@ test("ProvidersTest.test_codex_prefix_and_version", () => {
   expect(parseCodexVersion("no version here")).toBeNull();
 });
 
-test("ProvidersTest.test_codex_binary_search", () => {
+// 运行器上是否有 Codex：有则跑真实查找断言，无则跳过——GitHub 运行器
+// 不装 Codex CLI，直接断言必失败（36f08e6 的 Node binaries #28 真失败）。
+// 探针只调 findCodexBinary（不调 codexAvailable，后者还会跑 --version 与
+// login status，又慢又依赖登录态）。
+const codexOnMachine = ((): boolean => {
+  try {
+    resetCodexCache();
+    return findCodexBinary().endsWith("codex");
+  } catch {
+    return false;
+  } finally {
+    resetCodexCache();
+  }
+})();
+
+test.skipIf(!codexOnMachine)("ProvidersTest.test_codex_binary_search", () => {
   resetCodexCache();
   // 本机装有 Codex（/opt/hatch-image/bin/codex，0.164.0-alpha.9）。
   const found = findCodexBinary();
@@ -186,7 +201,11 @@ test("ProvidersTest.test_codex_binary_search", () => {
   // 里有 codex，仍能找到。
   expect(findCodexBinary("/definitely/not/here/codex").endsWith("codex")).toBe(true);
   resetCodexCache();
-  // PATH 里也没有 codex 时才抛错。
+});
+
+test("ProvidersTest.test_codex_binary_search_throws_when_absent", () => {
+  // PATH 里也没有 codex 时才抛错；与机器上有无 Codex 无关，任何环境都可跑。
+  resetCodexCache();
   const savedPath = process.env.PATH;
   process.env.PATH = "/tmp/no-codex-here";
   try {
