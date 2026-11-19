@@ -18,6 +18,7 @@ import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport } from "./runs.ts";
 import { resolvePricing } from "./cost.ts";
+import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { renderBanner } from "./banner.ts";
@@ -1023,12 +1024,18 @@ async function runJson(args: CliArgs): Promise<number> {
     return EXIT_RUNTIME;
   } catch (err: unknown) {
     if (err instanceof ApprovalRequired) {
-      return lines.failed("approval_required", "审批被拒绝或超时", EXIT_RUNTIME);
+      return lines.failed("approval_required", "审批被拒绝或超时", EXIT_RUNTIME, { class: "tool_error", retryable: false, errorName: "ApprovalRequired" });
     }
     if (err instanceof AgentError && (err as Error).message === "__NO_CREDENTIALS__") {
-      return lines.failed("no_credentials", "未找到可用的 API 凭据", EXIT_RUNTIME);
+      return lines.failed("no_credentials", "未找到可用的 API 凭据", EXIT_RUNTIME, { class: "model_error", retryable: false, errorName: "AgentError" });
     }
-    return lines.failed("runtime_error", err instanceof Error ? err.message : String(err), EXIT_RUNTIME);
+    // P1-3：失败分类——CI 据此决定重试还是报 bug，不必解析自然语言。
+    const info = classifyFailure(err);
+    return lines.failed(info.class, info.message, EXIT_RUNTIME, {
+      class: info.class,
+      retryable: info.retryable,
+      errorName: info.errorName,
+    });
   }
 }
 
@@ -1154,7 +1161,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
       process.stderr.write(`等待审批：${(err as ApprovalRequired).tool}\n`);
       return 1;
     }
-    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    // P1-3：非 JSON 输出也带分类前缀，人一眼能看出该重试还是该改代码。
+    process.stderr.write(`错误：${formatFailureLine(classifyFailure(err))}\n`);
     return 1;
   }
 }

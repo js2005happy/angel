@@ -57,8 +57,21 @@ export class JsonLines {
     }
   }
 
-  failed(code: string, message: string, exitCode: number): number {
-    this.emit("run_failed", { error: { code, message }, exit_code: exitCode });
+  /**
+   * P1-3：失败事件带分类，CI 不需要解析自然语言就能分辨"工具挂 / 模型限流 / 验证没过"。
+   * 字段只增不改——`error.class` 与 `error.retryable` 是新增的，老消费者忽略即可。
+   */
+  failed(code: string, message: string, exitCode: number, extra?: { class?: string; retryable?: boolean; errorName?: string }): number {
+    this.emit("run_failed", {
+      error: {
+        code,
+        message,
+        ...(extra?.class ? { class: extra.class } : {}),
+        ...(typeof extra?.retryable === "boolean" ? { retryable: extra.retryable } : {}),
+        ...(extra?.errorName ? { error_name: extra.errorName } : {}),
+      },
+      exit_code: exitCode,
+    });
     return exitCode;
   }
 }
