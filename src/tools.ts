@@ -205,12 +205,19 @@ export function resolveBackendPath(ctx: ToolContext, path: string): string {
 
 // ---- 受保护路径 ----
 // agent 能改自己的规则文件，等于所有权限设计都失效：AGENTS.md / commands/*.md /
-// skills/*.md 都是它的指令来源，.git 是回滚与审计的底线。这些路径在任何 sandbox
-// 模式下默认拒写（含 workspace-write 与 danger-full-access），与 Codex 对
-// .git/.agents/.codex 的处理一致。
+// skills/*.md 都是它的指令来源，.git 是回滚与审计的底线。
 //
-// 确实需要 agent 自己维护规则文件时，用 NYRA_ALLOW_PROTECTED_WRITES=1 显式放开；
-// 不做静默放行，也不把拒绝伪装成"文件不存在"。
+// **覆盖范围（务必看清）**：这个守卫挂在 `workspaceWritePath` 上，因此只覆盖走这条
+// 路径的文件工具——write_file、edit_file、apply_patch、plan 等。**shell 工具不在覆盖
+// 范围内**：`echo x >> AGENTS.md` 依旧能写成功（即使进了 bwrap，AGENTS.md 也在工作
+// 目录内）。要真正封死必须靠权限规则层（S5）或把 shell 的写操作也接到同一守卫上。
+//
+// 另外：判定按"工作目录内相对路径"做，顶层 commands/ 与 skills/ 会被整体拦掉。
+// 普通项目里若有同名目录（例如前端的 skills/ 组件目录），agent 将无法写入，需要
+// 用 NYRA_ALLOW_PROTECTED_WRITES=1 显式放开（见 docs/sandbox.md）。
+//
+// 确实需要 agent 自己维护规则文件时用该环境变量显式放开；不做静默放行，
+// 也不把拒绝伪装成"文件不存在"。
 const PROTECTED_WRITE_DIRS: readonly string[] = [".git", ".nyra", "commands", "skills"];
 const PROTECTED_WRITE_FILES: readonly string[] = ["AGENTS.md", "CLAUDE.md", "nyra.json", ".nyra.json"];
 
