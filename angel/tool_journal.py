@@ -509,7 +509,8 @@ class ToolJournal:
         # our intent unresolved for manual review, never automatic replay.
         # This narrows a race; it is NOT a cross-process transaction lock.
         after = self.inspect()
-        if after["journal_ambiguous"] or after["unknown_outcomes"] != 1:
+        if (after["journal_ambiguous"] or after["unknown_outcomes"] != 1
+                or after["reported_errors"]):
             raise JournalError("写入意图后发现并发或歧义日志；禁止执行工具")
         # A global count of one is insufficient: another process could have
         # finished this intent and left a different intent pending. Never
@@ -532,6 +533,10 @@ class ToolJournal:
             if (len(intents) != 1 or len(results) != 1
                     or intents[0]["tool"] != results[0]["tool"]):
                 raise JournalError("最终日志快照出现并发未决调用或歧义；禁止执行工具")
+            # A competing tool may have reported an error after inspect().
+            # Its external side effects remain uncertain until reviewed.
+            if results[0]["event"] == "result_error":
+                raise JournalError("最终日志快照存在工具报告失败；人工核查前禁止执行工具")
         return call_id
 
     def finish(self, call_id: str, tool: str, *, success: bool) -> None:
