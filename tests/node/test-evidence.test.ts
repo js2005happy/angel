@@ -2,7 +2,7 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { EvidenceStore, MAX_EVIDENCE_CHARS } from "../../src/evidence.ts";
 
 function store(): EvidenceStore {
@@ -43,7 +43,7 @@ test("EvidenceTest.test_list_and_read", () => {
   s.save("fetch", "https://example.com/a", "一");
   s.save("search", "https://example.com/b", "二");
   expect(s.list().length).toBe(2);
-  const first = s.list()[0].split("/").pop()!;
+  const first = basename(s.list()[0]);
   expect(s.read(first)).toContain("一");
   expect(s.read("不存在.md")).toBeNull();
 });
