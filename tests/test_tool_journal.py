@@ -11,6 +11,31 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_posix_final_directory_fstat_denied_fails_closed(self):
+        # Mock the final directory-handle probe on an empty journal.
+        # No tests are executed as part of this change.
+        from angel import tool_journal as module
+        if os.name != "posix" or os.open not in os.supports_dir_fd:
+            self.skipTest("POSIX directory descriptors unavailable")
+        journal = ToolJournal("final-fstat-denied", root=self.root)
+        journal.path.mkdir(mode=0o700)
+        original_fstat = module.os.fstat
+        directory_probes = 0
+
+        def deny_final_directory_probe(fd):
+            nonlocal directory_probes
+            info = original_fstat(fd)
+            if stat.S_ISDIR(info.st_mode):
+                directory_probes += 1
+                if directory_probes == 3:
+                    raise PermissionError("access denied")
+            return info
+
+        with mock.patch.object(module.os, "fstat",
+                               side_effect=deny_final_directory_probe):
+            with self.assertRaisesRegex(JournalError, "无法复核末次日志目录句柄"):
+                journal.inspect()
+
     def test_posix_final_dirfd_enumeration_denied_fails_closed(self):
         # Simulate a denied second enumeration without changing permissions.
         from angel import tool_journal as module
