@@ -1,3 +1,8 @@
+## 2026-11-19 — ToolJournal 源码换行错误（仅静态）
+
+- 读取开发分支 `angel/tool_journal.py`，确认前次孤立 result 修复将三处源码换行意外写成字面量 `\n`，致使 `invalid = ...` 与 `pending = ...` 落入注释行；此处恢复真实换行。静态对照原片段和新片段；未运行解析器、测试、CI 或安装。此前孤立结果修复不能视为已验证。
+- 已核对 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal、相关测试、主分支近期提交、开放 Issues/PR；跨进程原子所有权与外部副作用证明仍未实现。
+
 ## 2026-11-19 — ToolJournal 孤立结果全局歧义（仅静态审查）
 
 - 审阅 `inspect()` 的 orphan_results 计算：旧逻辑 orphan_results > 0 但 invalid 仍为 False，导致其它已配对成功被计入 reported_ok。现设置 invalid = invalid or orphan_results > 0，并保守归零成功/错误汇总。
