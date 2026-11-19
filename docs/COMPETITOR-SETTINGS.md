@@ -86,7 +86,7 @@
 4. **`config export/import`**：把红线打包成可分享文件
 5. **`features` 开关**：新能力默认关、可灰度
 6. **`--add-dir`**：扩展可写根，不退出沙箱
-7. **MCP 工具延迟加载**：常驻 token 从 N 个工具降到 1 个检索入口
+7. 🔧 **工具集量化与裁剪**（本轮）：`nyra tools` 看每轮 schema 成本，`--disable-tool` / `disabled_tools` 裁剪；实测裁掉 computer_use + poppy 省 1,359 token/轮（20 轮 = 27,180）`n8. **MCP 工具延迟加载**：在 7 的基础上把"发全部 schema"换成"1 个检索入口"
 
 ---
 
