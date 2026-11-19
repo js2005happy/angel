@@ -1,3 +1,9 @@
+## 2026-11-19 — ToolJournal finish 写后并发复核（仅静态）
+
+- 静态检查确认原 `finish()` 最后一步直接 `_write(result)` 后返回，无法发现写入期间新出现的未决 intent。现在写入后重新读取完整日志，存在未知或歧义时抛出 `JournalError`。
+- 增加 `test_finish_rechecks_post_commit_competing_intent` 模拟写入结果时竞争进程新增 intent；**未运行测试、未触发 CI、未进行跨平台实机验证**。
+- 检测仍存在最后一次检查与返回之间的竞态，不保证原子提交、崩溃恢复或远端副作用恰好一次。
+
 ## 2026-11-19 ToolJournal finish 最终快照并发门禁（仅静态）
 
 - 首次 `inspect()` 与最终 `_records()` 之间可插入竞争 intent；现在最终快照检查其他调用的 intent/result 配对及工具名一致性。
