@@ -93,6 +93,9 @@ def _verify_written_windows_entry(path: Path, written: os.stat_result) -> None:
     """
     if os.name != "nt":
         return
+    # The path entry may be ordinary while the opened write handle points
+    # at a reparse point. Reject the handle before trusting the path check.
+    _reject_windows_event_reparse(written)
     try:
         entry = os.lstat(path)
     except OSError as exc:
