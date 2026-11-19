@@ -1282,6 +1282,7 @@ export class Agent {
       return {
         results, succeeded: 0, failed: 0, timedOut: 0, rejected: tasks.length,
         totalSpentUsd: null, totalDurationMs: 0,
+          pendingAfterTimeout: 0,
         maxConcurrency: resolved.maxConcurrency, timeoutMs: resolved.timeoutMs,
         maxConcurrencyClamped: resolved.maxConcurrencyClamped,
       };
@@ -1346,6 +1347,7 @@ export class Agent {
     return {
       results, succeeded, failed, timedOut, rejected,
       totalSpentUsd: totalSpent, totalDurationMs: ran.totalDurationMs,
+        pendingAfterTimeout: timedOut,
       maxConcurrency: ran.maxConcurrency, timeoutMs: ran.timeoutMs,
       maxConcurrencyClamped: ran.maxConcurrencyClamped,
     };
