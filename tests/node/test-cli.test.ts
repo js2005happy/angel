@@ -111,7 +111,10 @@ test("CliTest.test_trust_reads_python_dict_format", () => {
   const parsed = JSON.parse(readFileSync(join(home, "trusted_workspaces.json"), "utf-8")) as unknown;
   expect(Array.isArray(parsed)).toBe(true);
   expect((parsed as string[]).length).toBe(2);
-  expect(statSync(join(home, "trusted_workspaces.json")).mode & 0o777).toBe(0o600);
+  // Windows 没有 POSIX 权限位，写盘默认 0666，不断言 0600。
+  if (process.platform !== "win32") {
+    expect(statSync(join(home, "trusted_workspaces.json")).mode & 0o777).toBe(0o600);
+  }
 });
 
 test("CliTest.test_list_custom_commands", () => {
