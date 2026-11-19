@@ -255,3 +255,53 @@ test("T12 通过率写进依据（百分比取整）", () => {
   const v = buildTrendVerdict({ runs: [R("verified"), R("verified"), R("verified"), R("failed")] });
   expect(v.reasons.some((r) => r.includes("75%"))).toBe(true);
 });
+
+// ---- 机器可读输出（toVerdictJson）----
+import { toVerdictJson, VERDICT_JSON_SCHEMA } from "../../src/verdict.ts";
+
+test("J1 字段顺序稳定（契约：只加不改）", () => {
+  const j = toVerdictJson(buildVerdict({}), "config");
+  expect(Object.keys(j)).toEqual([
+    "schema_version", "kind", "grade", "headline", "reasons", "blockers", "next_steps", "unknowns",
+  ]);
+});
+
+test("J2 schema_version 是显式常量（客户端可据此判断兼容）", () => {
+  expect(VERDICT_JSON_SCHEMA).toBe(1);
+  expect(toVerdictJson(buildVerdict({}), "run").schema_version).toBe(1);
+});
+
+test("J3 kind 区分三种结论（config / run / trend）", () => {
+  const v = buildVerdict({});
+  expect(toVerdictJson(v, "config").kind).toBe("config");
+  expect(toVerdictJson(v, "run").kind).toBe("run");
+  expect(toVerdictJson(v, "trend").kind).toBe("trend");
+});
+
+test("J4 grade 与 headline 原样搬运", () => {
+  const v = buildVerdict({ redlines: redlines(1), savings: savings() });
+  const j = toVerdictJson(v, "config");
+  expect(j.grade).toBe(v.grade);
+  expect(j.headline).toBe(v.headline);
+});
+
+test("J5 数组是浅拷贝：改 JSON 不污染原结论", () => {
+  const v = buildVerdict({});
+  const before = v.reasons.length;
+  toVerdictJson(v, "config").reasons.push("污染");
+  expect(v.reasons.length).toBe(before);
+});
+
+test("J6 可直接 JSON.stringify / parse（CI 与看板消费）", () => {
+  const j = toVerdictJson(buildVerdict({}), "trend");
+  const round = JSON.parse(JSON.stringify(j));
+  expect(round.kind).toBe("trend");
+  expect(round.schema_version).toBe(1);
+  expect(Array.isArray(round.next_steps)).toBe(true);
+});
+
+test("J7 red 结论在 JSON 里也带 blockers（门禁可直接判 grade）", () => {
+  const j = toVerdictJson(buildVerdict({ redlines: redlines(2), savings: savings() }), "config");
+  expect(j.grade).toBe("red");
+  expect(j.blockers.length).toBeGreaterThan(0);
+});
