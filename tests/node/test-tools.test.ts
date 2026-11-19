@@ -16,7 +16,7 @@ import {
 const TOOL_NAMES = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "shell",
   "web_fetch", "web_search", "browser_navigate", "browser_click", "browser_screenshot",
   "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_windows",
-  "multi_model_research", "memory_append", "memory_search", "memory_forget", "memory_delete", "save_skill", "read_skill", "delegate", "plan",
+  "multi_model_research", "memory_append", "memory_search", "memory_forget", "memory_delete", "save_skill", "read_skill", "delegate", "delegate_parallel", "plan",
   "grep_search", "git_status", "http_post"];
 
 function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext {
@@ -26,7 +26,7 @@ function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext
 test("ToolsTest.test_schema_names_match_python_24_plus_read_skill", () => {
   const names = TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string);
   expect(names).toEqual(TOOL_NAMES);
-  expect(TOOL_SCHEMAS.length).toBe(28); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete。
+  expect(TOOL_SCHEMAS.length).toBe(29); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete；缺口 3a：新增 delegate_parallel。
   const poppy = [POPPY_TOOL_SCHEMA, POPPY_IDENTITY_SCHEMA, POPPY_PERMISSION_SCHEMA]
     .map((s) => (s.function as Record<string, unknown>).name as string);
   expect(poppy).toEqual(["poppy_discover", "poppy_identity_check", "poppy_permission_check"]);
