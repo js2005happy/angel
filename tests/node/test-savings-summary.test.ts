@@ -1,7 +1,7 @@
 // tests/node/test-savings-summary.test.ts — 省钱机制汇总成一张单页。
 // 核心纪律：**算不出的项不填 0**（0 会被读成"没省"），只把真正可加的项加总。
 import { test, expect } from "bun:test";
-import { summarizeSavings, formatSavings } from "../../src/savingsSummary.ts";
+import { summarizeSavings, formatSavings, formatRedlinesWithSavings } from "../../src/savingsSummary.ts";
 
 function tool(name: string, size = 400) {
   return { type: "function", function: { name, description: "x".repeat(size), parameters: {} } };
