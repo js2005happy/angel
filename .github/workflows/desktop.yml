@@ -5,7 +5,7 @@
 # Output is uploaded as workflow artifacts only; nothing is published to a
 # GitHub Release here.
 #
-# Code signing is conditional (see docs/signing.md): if the signing secrets
+# Code signing is conditional (see docs/SIGNING.md): if the signing secrets
 # are configured, the build signs (Windows: OV certificate from
 # WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD, imported into the cert
 # store and passed to `tauri build --config`; macOS: Developer ID
@@ -107,7 +107,7 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --locked
 
-      # --- 条件签名接线（docs/signing.md） ---------------------------------
+      # --- 条件签名接线（docs/SIGNING.md） ---------------------------------
       # 两步只在对应平台 + 证书秘密存在时跑；秘密一个都没有时整步跳过，
       # 构建与以前完全一致（未签名）。秘密只配了一半时里面直接报错退出，
       # 绝不悄悄出未签名包。证书只活在本次 runner 里，不进 git。

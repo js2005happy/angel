@@ -5,12 +5,12 @@
 # 第 0 阶段已验证格式）；随后 windows-latest 与 macos-latest 各下一个
 # 对应产物跑 --version / --example 冒烟（真机运行验证，不是只看格式）。
 # Release 只在打 v* 标签时创建，二进制挂为 Release 附件，不进 git。
-# 代码签名是条件式的（见 docs/signing.md）：WINDOWS_CERTIFICATE 秘密
+# 代码签名是条件式的（见 docs/SIGNING.md）：WINDOWS_CERTIFICATE 秘密
 # 存在时，构建后用 osslsigncode 给 nyra-windows-x64.exe 做 Authenticode
 # 签名；秘密不存在时整步跳过，产物保持未签名。macOS 的 Node 二进制目前
-# 不签名（裸 Mach-O 文件，见 docs/signing.md 的说明），桌面端 .app/.dmg
+# 不签名（裸 Mach-O 文件，见 docs/SIGNING.md 的说明），桌面端 .app/.dmg
 # 的签名走 desktop.yml。
-# 本 workflow 只验证“能跑”，签名状态见 docs/signing.md。
+# 本 workflow 只验证“能跑”，签名状态见 docs/SIGNING.md。
 
 name: Node binaries
 
@@ -67,7 +67,7 @@ jobs:
       - name: Build binaries
         run: bash scripts/build-binaries.sh
 
-      # --- 条件签名接线（docs/signing.md） ---------------------------------
+      # --- 条件签名接线（docs/SIGNING.md） ---------------------------------
       # 只有 WINDOWS_CERTIFICATE 秘密存在时才跑；不存在时整步跳过，
       # nyra-windows-x64.exe 保持未签名。秘密只配了一半时里面直接报错退出，
       # 绝不悄悄出未签名包。Linux 上用 osslsigncode 做 Authenticode 签名
@@ -189,4 +189,4 @@ jobs:
           body: |
             Nyra Node 运行时：单文件可执行（Bun --compile）。
             下载对应平台的文件，给执行权限，直接运行；首次使用跑 `nyra setup`。
-            代码签名：见 docs/signing.md。证书配置后构建即自动签名（Windows 命令行版与桌面安装包、macOS 桌面安装包）；未配置证书时产物未签名、未公证，Windows SmartScreen 与 macOS Gatekeeper 的首次运行提示仍存在（见安装文档）。
+            代码签名：见 docs/SIGNING.md。证书配置后构建即自动签名（Windows 命令行版与桌面安装包、macOS 桌面安装包）；未配置证书时产物未签名、未公证，Windows SmartScreen 与 macOS Gatekeeper 的首次运行提示仍存在（见安装文档）。
