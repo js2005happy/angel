@@ -586,6 +586,12 @@ class ToolJournal:
         committed = self.inspect()
         if committed["journal_ambiguous"] or committed["unknown_outcomes"]:
             raise JournalError("结果写入后发现并发未决调用或歧义；必须人工核查")
+        # A different process may have completed a failed call after our
+        # pre-commit checks. Do not report this result as clean in that case.
+        # Our own result_error is expected when success is False.
+        expected_errors = 0 if success else 1
+        if committed["reported_errors"] > expected_errors:
+            raise JournalError("结果写入后发现其他工具报告失败；必须人工核查")
 
     def inspect(self) -> dict:
         """Only counts; never expose a transcript, argument, result or call id."""
