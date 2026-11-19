@@ -1,3 +1,8 @@
+## 2026-11-19 — 路径回退枚举失败诊断（仅静态）
+
+- 静态核对 `_records()` 两次路径回退枚举原先未将 `OSError` 映射为 `JournalError`；现在均保守拒绝并保留异常链。增加首次/末次枚举 `PermissionError` 的模拟回归测试源码。
+- 未运行测试、安装软件、触发 CI、合并或发布；Windows 实机与竞态安全性仍未验证。
+
 ## 2026-11-19 — ToolJournal 目录类型检查拒绝语义（仅静态）
 
 - 静态核对 `_safe_directory()` 末次 `exists()/is_dir()` 在部分 Python/Windows 版本可能吞掉访问拒绝；改用 `lstat()` 并仅捕获 `FileNotFoundError`。新增模拟 `PermissionError` 的测试源码，未运行。
