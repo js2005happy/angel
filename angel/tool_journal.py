@@ -228,6 +228,9 @@ class ToolJournal:
                         raise
                     with handle_context as handle:
                         info = os.fstat(handle.fileno())
+                        # Inspect the opened Windows handle too: the path entry
+                        # may have changed between the pre-open check and open.
+                        _reject_windows_event_reparse(info)
                         if (not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVENT_BYTES
                                 or info.st_nlink != 1):
                             raise JournalError("事件文件类型、大小或硬链接数量无效")
