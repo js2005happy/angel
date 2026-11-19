@@ -18,8 +18,8 @@
 </p>
 
 <p align="center">
-  <img alt="Python 3.10+ / Node 单文件" src="https://img.shields.io/badge/python-3.10%2B-0B0B0C">
-  <img alt="测试 1234 项" src="https://img.shields.io/badge/tests-1234%20passing-0B0B0C">
+  <img alt="Node 单文件二进制" src="https://img.shields.io/badge/node-single%20binary-0B0B0C">
+  <img alt="测试" src="https://img.shields.io/badge/tests-node%20suite-0B0B0C">
   <img alt="MIT" src="https://img.shields.io/badge/license-MIT-0B0B0C">
 </p>
 
@@ -70,25 +70,25 @@ chmod +x nyra-linux-x64
 
 还没 Key 也能先跑 `--help` / `--version` / `--list-providers`（不联网、不花钱）。跑模型任务需要 Key：没设 Key 时会直接打印设置说明并退出（退出码 1），不会发请求、不会产生费用。没有 Key 可先用本地模型：`nyra --provider ollama "…"`（需本机装好 Ollama）或 `--provider codex`（复用本机 Codex 登录）。
 
-> 注意：第 1 阶段的 Node 二进制是预览版，只含安装、doctor、向导与本地示例任务；模型任务（agent 核心）在第 2 阶段移植。现阶段跑模型任务请用下面的 Python 方式，二进制会明确告诉你、不会假装跑成功。Windows/macOS 二进制未签名、未公证，首次运行会有系统提示（见各平台安装文档）。
+> 注意：0.4.0 的 Node 二进制是完整版（agent 核心、网页界面、插件市场、创造模式都在内）。Windows/macOS 二进制未签名、未公证，首次运行会有系统提示（见各平台安装文档）。
 
-**旧方式（Python 版，功能完整，仍可用，不强制切）：**
-
-需要 Python 3.10+（`python3 --version` 验证）；Windows 上把下面命令里的 `python3` 换成 `python`（官网安装面板同样口径）。
+**源码方式（想自己构建或看代码）：**
 
 ```bash
 git clone https://github.com/js2005happy/nyra.git nyra && cd nyra
 export DEEPSEEK_API_KEY=sk-...          # 或任意已支持的模型 Key
 
-python3 -m nyra "解释一下这个项目的结构"   # 一次性任务
-python3 -m nyra                          # 交互模式
-python3 -m nyra ui --open                # 本地网页界面
+bun run src/cli.ts "解释一下这个项目的结构"   # 一次性任务（需先装 Bun）
+bun run src/cli.ts                          # 交互模式
+bun run src/cli.ts ui --open                # 本地网页界面
 ```
 
-想一键装到 `~/.local/bin`（可选 systemd 服务）：Node 二进制用 `./scripts/install-node.sh`，见 [docs/linux-install.md](docs/linux-install.md)；Python 版已 clone 好仓库时跑 `./scripts/install.sh --source . --with-systemd`。
+> 0.4.0 已移除 Python 版：仓库里不再有 Python 代码，`python3 -m nyra` 不可用；唯一运行方式是 Node 单文件二进制（或上面这样用 Bun 跑源码）。
+
+想一键装到 `~/.local/bin`（可选 systemd 服务）：用 `./scripts/install-node.sh`，见 [docs/linux-install.md](docs/linux-install.md)。
 
 想让定时任务在后台一直跑（关掉终端也不停）：见 [docs/linux-systemd.md](docs/linux-systemd.md)（systemd 用户服务，不需要 root）。
-想拿现成的发布包（tarball / .deb）：Node 二进制见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build-package-node.sh`；Python 版跑 `./scripts/build_package.sh`。
+想拿现成的发布包（tarball / .deb）：见 [docs/linux-packaging.md](docs/linux-packaging.md)，或跑 `./scripts/build-package-node.sh`。
 
 Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚本，见 [docs/windows-install.md](docs/windows-install.md)。
 
@@ -98,9 +98,9 @@ Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚�
 
 长任务会把运行状态记在 `~/.nyra/runs/<run_id>/`（目录权限 0700，文件 0600）。单次任务和 `--json` 会打印运行 ID。
 
-- 中途中断后用 `python3 -m nyra --resume-run <run_id>` 接着跑。尚未得到结果的工具调用**不会自动重跑**（可能已经产生副作用），会先告诉模型结果未知。续跑时先前会话里放行的审批全部作废，需要重新确认。已经 `verified` 或 `completed_unverified` 的运行不能再续。
+- 中途中断后用 `nyra --resume-run <run_id>` 接着跑。尚未得到结果的工具调用**不会自动重跑**（可能已经产生副作用），会先告诉模型结果未知。续跑时先前会话里放行的审批全部作废，需要重新确认。已经 `verified` 或 `completed_unverified` 的运行不能再续。
 - 用 `--verify "python -m unittest"`（或配置 `verify_command`、项目 `AGENTS.md` 里的 `verify:` 行）做结果自证。验证命令在**创建任务时冻结**，之后再改 `AGENTS.md` 不算数。只有命令真实退出码 0 才是 `verified`；失败会把输出作为不可信的工具消息交回模型，最多再试 2 次，仍失败则为 `verify_failed`（`--json` 退出码 4）。没配置验证命令时状态是 `completed_unverified`，报告会写明「未验证」。模型自己说「已验证」不会改变状态。来自 `AGENTS.md` 的 `verify:` 视为外部内容：任意模式（含 `--mode full`）都要先确认一次再冻结；`--json` 或其它非交互运行需加 `--trust-agents-verify`，否则跳过该命令并记为未验证。命令行 `--verify` 和用户配置 `verify_command` 不需要这步确认。续跑只用已冻结的命令，不再读取 `AGENTS.md`。
-- 后台队列：`python3 -m nyra task add "任务" [--workdir D] [--verify CMD] [--mode readonly|auto] [--trust-agents-verify]` 入队；`python3 -m nyra task worker [--once]` 顺序执行（同时只能有一个 worker）。遇到需要审批的操作会停下并标为 `awaiting_approval`，不会自动放行。前台用 `python3 -m nyra task approve <run_id>` 继续。`python3 -m nyra task list|show|cancel` 查看或取消（只能取消还在排队的任务）。定时任务到期后也会进入这个队列，且与队列一样拒绝 `full` 模式。worker 不会自动信任 `AGENTS.md` 里的验证命令，需在 `task add` 时加 `--trust-agents-verify` 或显式 `--verify`。完成通知写在 `~/.nyra/inbox.jsonl`，打开 REPL 或输入 `/status` 时会看到未读通知。
+- 后台队列：`nyra task add "任务" [--workdir D] [--verify CMD] [--mode readonly|auto] [--trust-agents-verify]` 入队；`nyra task worker [--once]` 顺序执行（同时只能有一个 worker）。遇到需要审批的操作会停下并标为 `awaiting_approval`，不会自动放行。前台用 `nyra task approve <run_id>` 继续。`nyra task list|show|cancel` 查看或取消（只能取消还在排队的任务）。定时任务到期后也会进入这个队列，且与队列一样拒绝 `full` 模式。worker 不会自动信任 `AGENTS.md` 里的验证命令，需在 `task add` 时加 `--trust-agents-verify` 或显式 `--verify`。完成通知写在 `~/.nyra/inbox.jsonl`，打开 REPL 或输入 `/status` 时会看到未读通知。
 
 ## 它能做什么
 
@@ -108,8 +108,9 @@ Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚�
 - **研究**：`web_search` + `web_fetch` 联网查证，原文存档，结论附链接。
 - **自动化**：内置调度器，`nyra schedule add` 按间隔或每天定时跑任务。
 - **多机器人群聊**：一个房间里组长、架构师、开发者、审查员分工讨论，各自记忆与权限独立（默认只读）。
-- **扩展**：接标准 MCP 服务器（stdio），用 `skills/` 与自定义斜杠命令沉淀你的做法。
-- **隔离执行**：`--sandbox e2b` 让文件与命令跑在 E2B 云沙盒里，不碰本机。
+- **插件市场**：只装带来源、可审计的技能包（`nyra plugin install <本地目录|git URL>`），哈希锁定、升级不覆盖你改过的文件。
+- **创造模式**：一句话搓出专属插件，先验证、你确认后才安装（[手册](GUIDE.md#创造模式一句话搓出插件)）。
+- **隔离执行**：0.3.0 的 `--sandbox e2b`（E2B 云沙盒）已在 0.4.0 移除，Node 版 E2B 后端尚未移植；当前只支持 `--sandbox local`。
 - **配对码协作**：两个 Nyra 用 6 位配对码配对，宿主以只读模式跑任务、只传任务文本与结果（[手册](GUIDE.md#审批模式)）。
 - **本地密码箱**：API Key 加密存在本机，不写进配置文件或聊天记录（[手册](GUIDE.md#审批模式)）。
 - **本地知识库**：把文本、文件、网页收进知识库再提问，只按库内内容回答并注明依据（[手册](GUIDE.md#审批模式)）。
@@ -122,11 +123,12 @@ Windows 上装：Node 二进制 exe 单文件（不用装 Python）或一键脚�
 | `readonly` | 只读文件、联网查资料，不写不执行 |
 | `auto`（默认） | 写文件 / 执行命令前问你 `[y/N/a]`；无人值守时不会悄悄写入 |
 | `full` | 不再确认，适合你明确信任的任务 |
+| `creator`（创造模式） | 一句话做插件：先对齐 spec、生成、验证，安装前请你确认；写文件/执行命令时与 `auto` 一样逐项确认 |
 
 ```bash
-python3 -m nyra --mode readonly "看看这个目录里有什么"
-python3 -m nyra --plan "评估登录逻辑并列出修复步骤"
-python3 -m nyra --execute-plan --approve-plan <完整 SHA-256>
+nyra --mode readonly "看看这个目录里有什么"
+nyra --plan "评估登录逻辑并列出修复步骤"
+nyra --execute-plan --approve-plan <完整 SHA-256>
 ```
 
 ## 配置模型
@@ -145,12 +147,12 @@ python3 -m nyra --execute-plan --approve-plan <完整 SHA-256>
 | ollama（本地） | 无需 Key | `qwen2.5:7b` |
 | codex | 无需 Key（本机 Codex 登录） | `codex-default` |
 
-另有 openrouter、mistral、groq、together 与 `custom`（`NYRA_API_KEY` + `NYRA_BASE_URL` + `NYRA_MODEL`）。`python3 -m nyra --list-providers` 查看全部，详见 [完整手册](GUIDE.md#配置模型)。
+另有 openrouter、mistral、groq、together 与 `custom`（`NYRA_API_KEY` + `NYRA_BASE_URL` + `NYRA_MODEL`）。`nyra --list-providers` 查看全部，详见 [完整手册](GUIDE.md#配置模型)。
 
 ## 网页界面
 
 ```bash
-python3 -m nyra ui --open
+nyra ui --open
 ```
 
 一个内嵌页面，不加载任何外部资源（字体随包内嵌）。只监听本机，每次启动生成随机访问 token。
@@ -159,7 +161,7 @@ python3 -m nyra ui --open
 
 ### 桌面 App（预览，macOS / Windows）
 
-`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Python 3.10+ 或 Nyra 时显示安装引导。安装包（`.dmg`、`.msi` / NSIS `.exe`）由 Actions 的 “Build desktop app” 工作流手动构建，**未签名**、不内置 Python。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
+`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Nyra 二进制时显示安装引导。安装包（`.dmg`、`.msi` / NSIS `.exe`）由 Actions 的 “Build desktop app” 工作流手动构建，**未签名**。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
 
 ## 安全边界
 
@@ -180,7 +182,8 @@ python3 -m nyra ui --open
 ## 测试
 
 ```bash
-python3 -m unittest discover tests   # 1234 项，全部 mock，无需 Key
+bun x tsc -p tsconfig.json --noEmit   # 类型检查
+bun test tests/node                    # Node 测试（全部 mock，无需 Key）
 ```
 
 ## 致谢与许可

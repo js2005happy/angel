@@ -2,38 +2,39 @@
 
 ## 一句话
 
-Nyra 是一个全能 AI agent 命令行工具：用 **Python 标准库**从零写成（零 pip 依赖），集多个开源 agent 的设计思想之长，跑在任何只有 Python 3 的机器上。
+Nyra 是一个全能 AI agent 命令行工具：用 **TypeScript + Bun** 从零写成（零 pip 依赖、零 Python 运行时依赖），集多个开源 agent 的设计思想之长，编译成单文件二进制分发，不用装 Node、不用装 Python。
 
 ## 架构
 
 ```
 用户
- │  python3 -m nyra "任务" / 交互 REPL
+ │  nyra "任务" / 交互 REPL / nyra ui（本地网页）/ 桌面 App
  ▼
-cli.py ── 参数解析、审批模式、会话恢复、REPL 命令、schedule 子命令
+src/cli.ts ── 参数解析、审批模式、会话恢复、REPL 命令、schedule / plugin / creator 子命令
  │
  ▼
-agent.py ── 主循环：组装系统提示词 → 调模型 → 执行工具调用 → 直到回答
- │   ├── providers.py ── OpenAI 兼容客户端（urllib，无依赖）
- │   ├── tools.py ────── 15 个工具 + 审批 + shell 危险命令黑名单
- │   ├── commands.py ─── 自定义斜杠命令 + /init 的 AGENTS.md 模板
- │   ├── skills.py ──── 技能加载 / 关键词匹配 / 保存
- │   ├── runs.py ────── 私有运行状态与事件日志、审批观察、检查点改动记录
- │   ├── tasks.py ───── 后台任务队列、worker 文件锁、完成通知 inbox
- │   ├── memory.py ──── 长期记忆 + AGENTS.md + 会话 jsonl 存储
- │   ├── config.py ──── 配置 + provider 注册表 + provider 档案
- │   ├── mcp.py ─────── MCP 客户端（stdio JSON-RPC，默认关闭）
- │   ├── scheduler.py ─ 内置调度器（~/.nyra/schedule.json + daemon）
- │   ├── compact.py ─── 会话压缩（模型摘要 + 本地回退）
- │   ├── evidence.py ── 会话内证据链（联网抓取原文存档）
-│   └── webui.py ───── 本地网页界面（http.server + 内嵌单页，复用 Agent 与审批门）
+src/agent.ts ── 主循环：组装系统提示词 → 调模型 → 执行工具调用 → 直到回答
+ │   ├── src/providers.ts ── OpenAI 兼容客户端 + 兜底链 + 多 Key 轮换 + Codex CLI provider
+ │   ├── src/tools.ts ────── 24 个工具 + 审批 + shell 危险命令黑名单
+ │   ├── src/skills.ts ──── 技能加载 / 关键词匹配 / 保存
+ │   ├── src/runs.ts ────── 私有运行状态与事件日志、审批观察、检查点改动记录
+ │   ├── src/tasks.ts ───── 后台任务队列、worker 文件锁、完成通知 inbox
+ │   ├── src/memory.ts ──── 长期记忆 + AGENTS.md + 会话 jsonl 存储
+ │   ├── src/config.ts ──── 配置 + provider 注册表 + provider 档案
+ │   ├── src/mcp.ts ─────── MCP 客户端（stdio JSON-RPC，默认关闭）+ 预置与成本上限
+ │   ├── src/scheduler.ts ─ 内置调度器（~/.nyra/schedule.json + daemon）
+ │   ├── src/compact.ts ─── 会话压缩（模型摘要 + 本地回退）
+ │   ├── src/evidence.ts ── 会话内证据链（联网抓取原文存档）
+ │   ├── src/creator.ts ─── 创造模式：一句话需求 → spec → 生成插件 → 验证 → 确认后安装
+ │   ├── src/plugins.ts ─── 最小插件市场：技能包安装、哈希锁定、升级保护、生命周期
+ │   └── src/gateway.ts ─── 本地网页界面（Bun.serve + 内嵌单页，复用 Agent 与审批门）
 ```
 
 **关键设计选择：**
 
-- **标准库 only**：`urllib` 调 API、`subprocess` 跑命令、`json`/`re` 做解析。没有 requests、没有 pydantic，部署就是复制一个目录。
+- **TypeScript + Bun 运行时**：`fetch` 调 API、子进程跑命令、标准库做解析。没有 Python 运行时依赖；部署就是复制一个单文件二进制（Bun --compile 打包，含运行时）。
 - **OpenAI 兼容协议**：所有 provider（DeepSeek、Grok、Hermes via OpenRouter、Ollama、OpenAI）都走同一套 `/v1/chat/completions` + function calling，换模型只改配置。
-- **审批是工具层的门**：`tools.py` 的 `_check_approval` 是唯一入口，readonly / auto / full 三档；非交互环境下 auto 拒绝写入，避免 cron 悄悄改文件。
+- **审批是工具层的门**：`src/tools.ts` 的 `checkApproval` 是唯一入口，readonly / auto / full / creator 四档；非交互环境下 auto 拒绝写入，避免 cron 悄悄改文件。
 - **技能是 Markdown**：`skills/*.md` + frontmatter（name/description/when/keywords），关键词匹配后注入系统提示词。技能可读、可改、可直接用编辑器写。
 - **会话是 jsonl**：`~/.nyra/sessions/<id>.jsonl`，每行一条消息，`--resume` 直接续聊；坏了也能用文本编辑器修。
 
@@ -81,7 +82,7 @@ Nyra 的代码全部是原创实现，没有复制任何项目的源码。下表
 
 - `nyra/commands.py` 与技能文件同一思路：命令是 `*.md` 文件，文件名即命令名（只允许字母、数字、`-`、`_`），正文是发给模型的提示词模板，可带 `description:` / `argument-hint:` frontmatter。加载顺序是项目级 `<workdir>/.nyra/commands/` 优先于用户级 `~/.nyra/commands/`，同名只保留第一个；格式错误、空正文、非法文件名、符号链接文件会被跳过并在 stderr 留言，不中断启动。
 - REPL 里 `/<名字> <参数>` 展开成提示词再进同一 `Agent.run`：`$ARGUMENTS` 换成全部参数，`$1`..`$9` 换成逐词参数，缺失的位置参数变空串；正文没有任何占位符时参数追加到正文末尾。`/commands` 列出当前可用命令及来源；内置命令（`/help`、`/mode`、`/init` 等）优先于同名自定义命令；不认识的 `/xxx` 仍按原来当作普通提问发给模型。
-- 命令文件只是提示词：它本身不能执行代码、读写文件或改配置，能做什么取决于模型随后调什么工具、过什么审批。`/init` 则是确定性动作：检查 `AGENTS.md` 是否存在（走 `read_file`，本地与 E2B 后端都适用），不存在才经 `write_file` 写入起始模板，因此要过审批、工作目录边界与检查点，readonly 下拒绝，已存在时绝不覆盖。
+- 命令文件只是提示词：它本身不能执行代码、读写文件或改配置，能做什么取决于模型随后调什么工具、过什么审批。`/init` 则是确定性动作：检查 `AGENTS.md` 是否存在（走 `read_file`，本地适用），不存在才经 `write_file` 写入起始模板，因此要过审批、工作目录边界与检查点，readonly 下拒绝，已存在时绝不覆盖。
 - 已知限制：命令每次调用都重新读目录（文件改动即时生效，但每次调用有少量目录 IO）；`/init` 模板是通用骨架，不含项目自动探测，内容仍需人工按实改写。
 
 ## 两阶段只读计划模式
@@ -91,20 +92,17 @@ Nyra 的代码全部是原创实现，没有复制任何项目的源码。下表
 - `--execute-plan --approve-plan SHA256` 用完整 64 位 SHA-256 校验文件所有字节。校验失败不会初始化执行 Agent；执行仅使用校验过的内存内容，不重新读取计划。
 - 批准计划不会提升工具权限；默认进入 `auto`，不继承配置中可能存在的 full；仅显式 `--mode full` 才取消工具级确认。本版本仅本地 CLI，不宣称 OS 沙箱或 Web UI 审批功能。
 
-### Worker 协议 v1（混合 Go 迁移第 1 批）
+### Worker 协议 v1（混合 Go 迁移第 1 批，已作废）
 
-Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent 会话。协议有版本号（`PROTOCOL_VERSION = 1`），完整格式见 `nyra/worker_protocol.py`；入口在 `nyra/worker.py`，用法 `python3 -m nyra.worker [--session ID] [--workdir DIR] [--provider NAME] [--model MODEL] [--mode MODE] [--max-turns N]`。
+> 0.4.0 状态：Python worker（`nyra/worker.py` + `nyra/worker_protocol.py`，stdio JSONL 协议 v1）已随 Python 删除；Go 混合路线已作废，改走完整 Node 运行时。后台任务现在由 Node 原生任务队列跑（`nyra task worker`，见 `src/tasks.ts`）。本节保留设计思路备查，协议细节以 git 历史为准，不再是现行契约。
 
-- **通道**：请求走 stdin（一行一个 JSON），事件走 stdout（一行一个 JSON），日志走 stderr。Go 只负责传话，不做任何决定。
-- **请求**：`run`（`{prompt, session_id?, workdir?, provider?, model?, mode?, max_turns?, id?}`）、`approval_decision`（`{approval_id, approved}`）、`stop`、`ping`。`run` 只在 worker 启动时指定的单 provider 上跑，绝不兜底、不进定时任务。
-- **事件**：`run_started` / `run_completed` / `run_incomplete` / `run_failed` / `tool_start` / `tool_result` / `assistant` / `final` / `usage` / `approval_request` / `approval_result` / `model_switch` / `turn_limit` / `pong` / `error`。`approval_request` 的 `details` 里不含工具参数、不含执行结果。
-- **审批**：决定权永远在 Python 的 `tools.py`。worker 的 `approve_fn` 只把宿主（人）做的决定传进去，自己绝不批准；审批超时 600 秒、无匹配的决定、协议异常、stdin 关闭，一律按拒绝处理，绝不默认放行。
-- **入口形式**：设计文档写的是 `python3 -m nyra worker`（空格形式），但那要改 `nyra/__main__.py` 或 `nyra/cli.py`，第 1 批只新增文件、不改现有入口与冻结文件，所以先用模块形式 `python3 -m nyra.worker`，行为完全一致；空格形式等冻结解除后补，协议不变。
-- **测试**：`tests/test_worker_protocol.py`（22 项，协议编解码与校验、golden transcript、只读工具调用且不泄露参数与结果、2MB 大输出、非法输入与未知类型、无匹配的决定、`fallback: true` 与 provider 覆盖被拒、空 stdin 退出、审批通过/拒绝/超时交互式测试、真实子进程 ping/pong/stop 与 `--help`）。另有端到端冒烟：真实子进程 + 真实管道 + 本地桩 HTTP 模型，`run_completed` 输出 `smoke-ok`，usage total 13，零付费调用。
+- **通道**：请求走 stdin（一行一个 JSON），事件走 stdout（一行一个 JSON），日志走 stderr。宿主只负责传话，不做任何决定。
+- **请求**：`run`、`approval_decision`、`stop`、`ping`。`run` 只在 worker 启动时指定的单 provider 上跑，绝不兜底、不进定时任务。
+- **审批**：决定权永远在工具层；worker 的 `approve_fn` 只把宿主（人）做的决定传进去，自己绝不批准；审批超时 600 秒、无匹配的决定、协议异常、stdin 关闭，一律按拒绝处理，绝不默认放行。
 
 ## 可编排 JSON Lines 执行协议
 
-- python3 -m nyra --json "任务" 通过独立的 json_mode.py 单次执行入口构造真实 Agent；Agent 仍走原有工具审批与 MCP 安全门，不因输出模式更换而提高权限。
+- nyra --json "任务" 通过独立的 src/jsonMode.ts 单次执行入口构造真实 Agent；Agent 仍走原有工具审批与 MCP 安全门，不因输出模式更换而提高权限。
 - 每个事件是单行 JSON，包含 schema_version（当前 1）、seq（递增序号）与 type；任务开始、工具开始/结束、usage、自动压缩、完成、失败、耗尽轮数均有可枚举事件。
 - 工具事件默认只输出 id、name 与执行状态，**不会**无意记录原始工具参数、文件内容或命令输出；任务最终答案仅位于 run_completed.output 或 run_incomplete.output。交互式审批不适合机器执行，非交互 auto 模式继续拒绝需要确认的写入。
 - 人工 print 在执行期间被导向 stderr；机器 stdout 保留给结构化事件，即使参数校验或运行失败也返回 run_failed。help 与不支持的 schedule/ui 子命令仍属于原有人类界面，不属于 --json 合约。
@@ -166,26 +164,26 @@ Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent �
 
 ## 长期记忆：可查看、可管理、与会话压缩解耦
 
-- 原有 `memory.py` 的全局 `MEMORY.md` 和 `groups.py` 中按机器人隔离的 `MEMORY.md` 都位于 session JSONL 之外，`compact.py` 只处理消息数组，不会写入长期记忆。Agent 每次构造系统提示词时加载相应记忆文件的**最后 40 行**，因此持久文件本身不等于模型能同时回忆所有内容。
-- 新增 `memory_browser.py`：严格按既有文件路径读取 UTF-8 完整内容，支持带 SHA-256 修订号的 CAS 保存、同目录临时文件与原子替换、64 KiB 容量限制及已有符号链接防护，文件冲突失败关闭。使用 `MEMORY_LOCK` 与同一 Python 进程中 `append_memory` 串行化。
+- 原有 `src/memory.ts` 的全局 `MEMORY.md` 和 `src/groups.ts` 中按机器人隔离的 `MEMORY.md` 都位于 session JSONL 之外，`src/compact.ts` 只处理消息数组，不会写入长期记忆。Agent 每次构造系统提示词时加载相应记忆文件的**最后 40 行**，因此持久文件本身不等于模型能同时回忆所有内容。
+- 新增 `src/memoryBrowser.ts`：严格按既有文件路径读取 UTF-8 完整内容，支持带 SHA-256 修订号的 CAS 保存、同目录临时文件与原子替换、64 KiB 容量限制及已有符号链接防护，文件冲突失败关闭。使用进程内锁与同一进程中 `appendMemory` 串行化。
 - Web UI 新增受原有访问 token 保护的 `GET /api/memory/scopes`、`GET /api/memory?scope=...`、`POST /api/memory`，只允许全局记忆和通过 `GroupStore.get` 证实存在的机器人。群 ID 与机器人 ID 不作为任意文件路径，拒绝符号链接穿透及跨机器人越界访问。
-- `webui_page.py` 加入独立的编辑对话框，选择记忆所属、载入完整 Markdown、刷新和明确保存；版本冲突提示用户先手工合并，关闭/切换未保存内容时警告。所有记忆正文通过 `textarea.value` 输出，不插入 HTML。
+- `src/webuiPage.ts` 加入独立的编辑对话框，选择记忆所属、载入完整 Markdown、刷新和明确保存；版本冲突提示用户先手工合并，关闭/切换未保存内容时警告。所有记忆正文通过 `textarea.value` 输出，不插入 HTML。
 - 已知限制：单进程锁与 SHA-256 校验不构成多进程原子 compare-and-swap；文件系统竞争时仍有 TOCTOU 风险；目前没有记忆条目语义索引、自动去重、记忆摘要层次或跨机器人授权共享。
 
 ## 多 Agent 群聊架构（可运行 MVP）
 
-- `nyra/groups.py`（Python）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
-- `nyra/group-ui.html` + `nyra/group-ui.js`（原生 HTML/CSS/JavaScript）：独立群聊 UI、组员列表、各成员模型配置与发送消息；不强制所有代码使用 Python，前端无需重新编译。
-- `nyra/webui.py`：沿用现有同源 token 安全边界，提供 `GET/POST /api/groups`、`GET /api/groups/<id>`、`POST /api/groups/<id>/messages`。前端以 `textContent` 显示不可信的群消息，避免 HTML 注入。
+- `src/groups.ts`（Node）：群存储、不同 bot 的角色指令、独立会话、不同 provider/model、成员私有记忆和 workspace、@mention 路由、预算控制。复用成熟的 `Agent` 执行器，避免多套模型调用实现。
+- `src/assets/group_ui.html.txt` + `src/assets/group-ui.js.txt`（原生 HTML/CSS/JavaScript，随二进制打包）：独立群聊 UI、组员列表、各成员模型配置与发送消息；前端无需重新编译。
+- `src/gateway.ts`：沿用现有同源 token 安全边界，提供 `GET/POST /api/groups`、`GET /api/groups/<id>`、`POST /api/groups/<id>/messages`。前端以 `textContent` 显示不可信的群消息，避免 HTML 注入。
 - 机器人身份和记忆分离：不同成员的 `Agent` 实例、模型会话 ID、群内 workspace 与 `MEMORY.md` 相互独立；共享的只有群消息记录。
 - 资源限制：每群最多 6 人、每条消息最多 2 轮、每个机器人每次最多 3 轮模型调用；独立的 `delegate` 工具有共享子任务预算/递归深度限制。
 - 当前选择串行逐个响应，以便后续成员能看到前一个人的意见，也便于控制模型调用成本。可并行的独立任务队列、WebSocket/SSE 推送与多机器人实际代码执行放入后续迭代，不虚称已实现。
-- 语言路线：保留 Python 标准库 agent / 协议适配，交互层使用 JavaScript；当有具体并发或性能瓶颈，再评估 TypeScript、Go、Rust，而不是先重写。
+- 语言路线：0.4.0 起全部是 TypeScript + Bun 单文件二进制（Python 已移除）；交互层仍用 JavaScript（群聊页随二进制打包）。
 
 ## 单文件补丁与审批差异预览
 
-- `nyra/patches.py` 使用标准库解析单文件 unified diff。强制匹配文件头、每段 hunk 的旧/新行号以及逐行上下文，不允许模糊匹配、多文件补丁、重命名或新建/删除补丁；支持 LF、CRLF 和基本无末尾换行标记。
-- `apply_patch` 先通过工作目录安全检查，读取原始字节、计算修改与 diff，再按原有 `readonly/auto/full` 权限审批。审批后重新比对原始文件防止过期补丁，最终交由 `CheckpointStore` 写入，保留 `/undo` 能力。E2B 暂不支持此工具。
+- `src/tools.ts` 的 `apply_patch` 用内联解析器处理单文件 unified diff。强制匹配文件头、每段 hunk 的旧/新行号以及逐行上下文，不允许模糊匹配、多文件补丁、重命名或新建/删除补丁；支持 LF、CRLF 和基本无末尾换行标记。
+- `apply_patch` 先通过工作目录安全检查，读取原始字节、计算修改与 diff，再按原有 `readonly/auto/full` 权限审批。审批后重新比对原始文件防止过期补丁，最终交由 `CheckpointStore` 写入，保留 `/undo` 能力。
 - 本地 `write_file`、`edit_file`、`plan` 与 `apply_patch` 的交互审批摘要附带最大 6000 字符的 unified diff（单侧超过 128 KiB 时不执行昂贵的对比运算，提示无法预览）；Web UI 保留预格式化换行和滚动，避免多行文本压成一行。超长预览标记截断，不宣称展示了完整改动。
 - `CheckpointStore.latest_diff()` 展示最近活动检查点原始内容与当前文件差异；若文件哈希不匹配，报告外部冲突而非展示外部编辑。CLI `/diff` 为只读视图。
 - 已知限制：路径安全检查与执行之间有残余竞态；本次不实现跨文件补丁事务、远端补丁、OS 沙箱或完整 Git 工作树 diff。
@@ -195,21 +193,21 @@ Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent �
 - `nyra/checkpoints.py` 按 session_id + 真实工作目录计算隔离存储目录，每次顶层 Agent.run 重置当前检查点；子 Agent 分享父任务同一检查点。仅本地 `write_file`/`edit_file`/`plan` 的最终 UTF-8 文本写入由该管理器持久化；备份保存写入前原始二进制字节。
 - 首次写入某文件前保存完整的原始字节（base64）、原始哈希、目标哈希；采用同目录临时文件 + os.replace 进行文件写入，尽量避免部分写入。一次任务改动多个文件仍归一条检查点。每文件 2 MiB/每轮 20 文件/最多 20 未撤销轮限制，超过上限则拒绝修改。
 - `/undo` 恢复最近一轮，`/rewind N` 预检最近 N 轮所有关联文件及重叠的历史状态；任何哈希/符号链接/工作区路径冲突都会在写入前整体中止，避免覆盖其他人的编辑。恢复完成的检查点标记 undone，CLI 提示并写入会话通知后续 Agent 重新核对文件。
-- 明确非覆盖范围：Shell/MCP/E2B/HTTP/全局 memory 与 skills/任何外部系统修改都不在检查点内；文件操作、哈希检查与多个文件恢复过程也不是 OS 级多文件事务，对并发修改存在 TOCTOU 残余风险。掉电/强杀在清单写入和实际文件替换之间可能留下无法自动恢复的记录，系统会按当前哈希拒绝危险的撤销，不默默覆盖。
+- 明确非覆盖范围：Shell/MCP/HTTP/全局 memory 与 skills/任何外部系统修改都不在检查点内；文件操作、哈希检查与多个文件恢复过程也不是 OS 级多文件事务，对并发修改存在 TOCTOU 残余风险。掉电/强杀在清单写入和实际文件替换之间可能留下无法自动恢复的记录，系统会按当前哈希拒绝危险的撤销，不默默覆盖。
 - 本次交付 CLI 检查点入口；Web UI 独立撤销交互、操作前后 diff、shell/沙箱级快照等后续扩展，不能宣称已经完成。
 
 ## Session 授权进一步收窄（文件目标与 Shell 起始目录）
 
 - 交互式 `auto` 的 `a` 绑定单个文件工具名称、`resolve()` 后的目标路径、规范化工作区和后端身份。不再按整个工具名授权全部文件；另一文件必须再次征得批准。
-- Shell 缓存的精确匹配键包括原始命令字符串、规范化起始 `cwd`、工作区、timeout 和后端身份。Shell 的起始目录经本地真实路径包含关系 / E2B 远端词法范围校验，拒绝通过 `../`、绝对路径、已有外部符号链接指定工作区外目录。
+- Shell 缓存的精确匹配键包括原始命令字符串、规范化起始 `cwd`、工作区、timeout 和后端身份。Shell 的起始目录经本地真实路径包含关系校验，拒绝通过 `../`、绝对路径、已有外部符号链接指定工作区外目录。
 - 回调型（例如 Web UI）审批总是先于终端缓存，避免同一个 ToolContext 中的旧授权绕过前端确认；非交互 auto 与 readonly 仍失败关闭。
 - 安全范围：上述只约束**授权范围及起始 cwd**，不能限制 shell 内部命令行为、任意子进程、外部资源或 shell 切目录。远端沙盒符号链接未验证，文件操作仍可能存在 TOCTOU，不能当成完整文件系统沙箱。
 
 ## 工作目录内置文件写入限制与会话授权
 
-- `nyra/tools.py` 在执行 `write_file`、`edit_file`、`plan` 之前先校验目标：本机使用 `Path.resolve` 后检查目标是否在实际 `workdir` 内，已有符号链接的外部目标会被拒绝；E2B 用 `posixpath.normpath` 限制远端词法路径。`full` 模式不能绕过此检查。
+- `src/tools.ts` 在执行 `write_file`、`edit_file`、`plan` 之前先校验目标：本机使用解析后的真实路径检查目标是否在实际 `workdir` 内，已有符号链接的外部目标会被拒绝。`full` 模式不能绕过此检查。
 - `ToolContext` 持有单次会话的批准缓存，仅能为 `write_file`、`edit_file`、`plan` 记住某种文件工具，以及 shell **完全相同的命令文本和 cwd**；不会采用易混淆的前缀匹配，也不给 MCP/http_post/memory/skill 记住宽泛授权。回调式 Web UI 审批仍按原来逐项进行。
-- 不可信 shell 仍可能读取或写入工作目录之外；运行命令的 cwd 不构成沙箱，MCP 和 HTTP POST 也可拥有外部副作用。记忆、技能、会话、证据文件在 Agent 数据目录写入属于独立路径。远端 E2B 符号链接无法在本地做真实目标验证；Path.resolve 和执行操作之间也不是原子检查，尚需进一步防 TOCTOU。此改动是文件工具拦截，不是安全承诺“整个 Agent 只能写工作目录”。
+- 不可信 shell 仍可能读取或写入工作目录之外；运行命令的 cwd 不构成沙箱，MCP 和 HTTP POST 也可拥有外部副作用。记忆、技能、会话、证据文件在 Agent 数据目录写入属于独立路径。真实路径解析和执行操作之间也不是原子检查，尚需进一步防 TOCTOU。此改动是文件工具拦截，不是安全承诺“整个 Agent 只能写工作目录”。
 - 下一步再考虑可信 shell 操作系统沙箱、命令前缀解析/白名单、细分路径级授权与审计日志。
 
 ## 安全模型
@@ -219,7 +217,7 @@ Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent �
 - **MCP 子进程环境最小化**：启动时不直接复制整个 `os.environ`，只传系统启动所需变量与每个服务器明确声明的 `inherit_env`、`env`。后者优先级更高。这降低 Agent 自身模型 Key 意外被 MCP 子进程继承的风险；子进程仍以同一系统用户运行，**没有文件系统与网络隔离**，不能替代沙箱。
 - **MCP 启动和调用均经过授权**：MCP 进程启动本身就可能有副作用。readonly 不启动、非交互 auto 不启动、终端交互 auto 逐项确认启动并对工具逐次确认、full 自动启动。终端 `/mode` 切换会关闭旧 MCP 进程并按模式重新加载；Web UI 在 auto/readonly 不自动启动 MCP，切换 full 才可启动，活跃任务期间拒绝切换以避免竞态。提示仅展示服务器/工具名，**该策略不是进程沙箱**。
 - **MCP 协议双时代**：客户端优先 2026-07-28（`server/discover` 探测 + 每次请求 `_meta` 自带版本与能力），探测失败回退 `initialize` 握手（2025-11-25）；`-32022` 按服务器列出的版本重试；`tools/call` 遇 `input_required` 直接报错，不做 MRTR 追问；只做 stdio，未实现 HTTP 传输。
-- **shell 黑名单**：`rm -rf /`、`rm -rf ~`、`mkfs`、`dd` 写设备、关机/重启、fork 炸弹等一律拒绝（见 `tools.py` 的 `_check_shell_denied`）。
+- **shell 黑名单**：`rm -rf /`、`rm -rf ~`、`mkfs`、`dd` 写设备、关机/重启、fork 炸弹等一律拒绝（见 `src/tools.ts` 的 `checkShellDenied`）。
 - **无真沙箱（诚实说明）**：MVP 没有实现容器/命名空间级沙箱，命令以运行 Nyra 的用户身份执行。这是路线图第一项；在此之前，请只在信任的目录用 full 模式。
 
 ## 路线图
@@ -229,8 +227,8 @@ Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent �
 1. **真沙箱**：Linux 上用 bubblewrap 或 uid 沙箱跑 shell，写操作限制在工作目录。
 2. **浏览器工具**：BrowserNavigate / BrowserClick / BrowserScreenshot 等，需要真实浏览器驱动（Playwright/Chromium），不属于 stdlib 范围；v2 只做了证据链轻量版。待定。
 3. **GEPA 式自动学习**：任务成功后自动提炼技能（现在是模型主动调 `save_skill`，未来是成功后自动总结+评估）。
-4. **桌面 UI**（部分完成）：本地网页界面 `python3 -m nyra ui` 已可用（2026-11-16：会话列表、对话与工具卡片、网页内审批、证据与计划检查器，纯标准库、默认只听 127.0.0.1 + 启动 token）；技能浏览、独立桌面应用、按品牌形象的完整三栏 App 尚未开始。
-5. **多模型路由**：按任务难度自动选便宜/强的模型（待做）。基础版已做完：主模型遇 402/429/5xx/超时/网络错误时自动按链切换（默认 DeepSeek flash → Grok → 本地 Ollama），401/403 不切换，每次切换打印明确提示；**兜底默认关闭**（2026-11-17 用户定安全事项）：只由用户自己开启（配置 `fallback_enabled: true` / `--fallback` / 环境变量），只切换到 `fallback_providers` 允许列表里的服务商，未知名字与未配置 Key 的备用会被跳过并记日志，网页聊天流与群聊回复里都会显示切换提示，定时任务与队列里不切换；见 `providers.py` 的 `FallbackProvider` 与 README「模型自动兜底」一节。通用接入已做完：14 个内置预设（DeepSeek、Grok、OpenRouter、Ollama、OpenAI、Qwen、Kimi、GLM、Gemini、Mistral、Groq、Together、custom、Codex CLI）+ 配置里 `custom_providers` 可自定义任意 OpenAI 兼容接口并进 fallback 链；见 README「自定义 provider 与列出模型」「Codex CLI provider（不用 API Key）」两节。明文 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`），外网地址必须用 `https://`，否则 API Key 会明文传输；校验在配置解析（`config.py`）与发请求前（`providers.py`）各做一道，两处报错文本一致。兜底链已接到的入口：命令行（REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面、群聊；定时任务仍用单个 provider（调度器正在另一路开发中）。
+4. **桌面 UI**（部分完成）：本地网页界面 `nyra ui` 已可用（2026-11-16：会话列表、对话与工具卡片、网页内审批、证据与计划检查器，纯标准库、默认只听 127.0.0.1 + 启动 token）；技能浏览、独立桌面应用、按品牌形象的完整三栏 App 尚未开始。
+5. **多模型路由**：按任务难度自动选便宜/强的模型（待做）。基础版已做完：主模型遇 402/429/5xx/超时/网络错误时自动按链切换（默认 DeepSeek flash → Grok → 本地 Ollama），401/403 不切换，每次切换打印明确提示；**兜底默认关闭**（2026-11-17 用户定安全事项）：只由用户自己开启（配置 `fallback_enabled: true` / `--fallback` / 环境变量），只切换到 `fallback_providers` 允许列表里的服务商，未知名字与未配置 Key 的备用会被跳过并记日志，网页聊天流与群聊回复里都会显示切换提示，定时任务与队列里不切换；见 `src/providers.ts` 的 `FallbackProvider` 与 README「模型自动兜底」一节。通用接入已做完：14 个内置预设（DeepSeek、Grok、OpenRouter、Ollama、OpenAI、Qwen、Kimi、GLM、Gemini、Mistral、Groq、Together、custom、Codex CLI）+ 配置里 `custom_providers` 可自定义任意 OpenAI 兼容接口并进 fallback 链；见 README「自定义 provider 与列出模型」「Codex CLI provider（不用 API Key）」两节。明文 `http://` 只允许本机地址（`localhost`、`127.0.0.1`、`::1`），外网地址必须用 `https://`，否则 API Key 会明文传输；校验在配置解析（`src/config.ts`）与发请求前（`src/providers.ts`）各做一道，两处报错文本一致。兜底链已接到的入口：命令行（REPL、一次性任务、`--plan`）、`--json` 单次模式、网页界面、群聊；定时任务仍用单个 provider。
 6. **多会话并发**：每会话独立引擎（IllusionAgent 的做法），目前 Nyra 一次只跑一个会话。
 7. **hooks / 插件**：任务前后钩子与第三方插件加载。
 
@@ -273,9 +271,11 @@ Go 侧将来用子进程 + stdio JSONL 拉起 Python worker，跑一个 Agent �
 - 计费归属：每个用户的模型调用、沙盒时长、工具次数都要记账，否则免费额度没法限。
 - 注销要能彻底删：卷、快照、密钥、浏览器 profile 一起删。
 - 后台任务的调度器本身要持久化、可恢复；结果推送需要通道（App 推送/websocket）。
-- 服务化后 Nyra 的「标准库 only」不再适用：服务端是另一套技术选型，CLI 保持轻量，服务层另起炉灶。
+- 服务化后 Nyra 的「单文件二进制、零 Python 依赖」定位不变：服务端是另一套技术选型，CLI 保持轻量，服务层另起炉灶。
 
 **第 1 步进展（2026-11-16 已跑通并收进 Nyra 0.3.0）：** 单用户原型已验证：大脑在外、双手在沙盒。模型调用走保管的 DeepSeek 连接器（key 不出保险库），工具执行走 E2B 沙盒（SDK 用保管的 E2B 凭证替身认证，key 不出现）。验证脚本 `workspace/nyra/scripts/remote_run.py`：模型写 `prime_sum.py`、沙盒里运行、结果 1060、读回确认，全程 4 轮。Nyra 代码已上传进同一台沙盒（28 个文件），`--help` 正常，53 个测试全过。沙盒 `id0mo7xciz8qsrn88a06v`（base 模板，1 小时超时）。2026-11-16 同日，E2B 后端已收进 Nyra 本身（0.3.0）：`nyra/e2b_backend.py` + tools.py 里的执行后端缝，`--sandbox e2b` 切换，文件与 shell 工具（read/write/edit/list/shell/plan/grep/git_status）走沙盒，其余工具仍在本地，审批与黑名单两种后端都生效，子 agent 继承同一后端；真实 DeepSeek + 真实沙盒端到端已验证（沙盒里写 `sandbox-demo.txt`、读回、列目录，本地零写入）。限制：E2B 免费档沙盒超时上限 1 小时；沙盒不主动删除、到期自动销毁；定时任务仍走本地执行（未接沙盒）。下一步：第 2 步——映射表 + 持久卷（user_id → sandbox_id/状态/最后活动，Postgres 存映射）。
+
+> 0.4.0 注：以上是 0.3.0 时期的历史记录。E2B 后端已在 0.4.0 随 Python 一起移除，Node 版 E2B 后端尚未移植；服务化第 2 步待重新定方向。
 
 ## 品牌与产品界面（2026-11-16 用户定：全部自己设计；2026-11-17 配色重做，UI v2 落代码；2026-11-18 形象去除）
 
