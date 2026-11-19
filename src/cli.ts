@@ -28,7 +28,7 @@ import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
-import { summarizeSavings as summarizeCostSavings, formatSavings } from "./savingsSummary.ts";
+import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
@@ -2753,7 +2753,16 @@ export async function main(argv: string[]): Promise<number> {
         return { totalTools: m.totalTools, tokensPerTurn: m.tokensPerTurn, contextRatio: m.contextRatio };
       })(),
     });
-    process.stdout.write(formatRedlines(result) + "\n");
+    // 与省钱机制合并输出：红线管"该不该上生产"，savings 管"上了能省多少"。
+    const savingsForRedlines = summarizeCostSavings({
+      config: cfgRed,
+      schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
+      disabledTools: Array.isArray(cfgRed.disabled_tools) ? cfgRed.disabled_tools.filter((t): t is string => typeof t === "string") : [],
+      recallCount: result.findings.some((f) => f.code === "recall-ready") ? 1 : 0,
+      toolSearchEnabled: featureOn(resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
+      turns: typeof cfgRed.max_turns === "number" ? cfgRed.max_turns : 20,
+    });
+    process.stdout.write(formatRedlinesWithSavings(formatRedlines(result), savingsForRedlines) + "\n");
     return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
   }
   if (args.subcommand === "evidence") return handleEvidence(args.subArgs ?? [], home);

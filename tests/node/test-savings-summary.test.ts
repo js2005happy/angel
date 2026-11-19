@@ -76,3 +76,17 @@ test("formatSavings 每项都有一行，且带解释尾巴", () => {
   }
   expect(text).toContain("不填 0");
 });
+
+test("与红线合并：顺序为红线在前、省钱在后，且带明确过渡标题", () => {
+  const text = formatRedlinesWithSavings("上线红线自检：红线全绿", summarizeSavings({ config: {}, schemas: SCHEMAS }));
+  expect(text.indexOf("上线红线自检")).toBeLessThan(text.indexOf("省钱机制"));
+  expect(text).toContain("—— 省钱机制（上了之后能省多少）——");
+});
+
+test("与红线合并：两段各自内容都完整保留（不是互相覆盖）", () => {
+  const savings = summarizeSavings({ config: {}, schemas: SCHEMAS, disabledTools: ["computer_use"], turns: 10 });
+  const text = formatRedlinesWithSavings("上线红线自检：可运行", savings);
+  expect(text).toContain("上线红线自检：可运行");
+  expect(text).toContain("每轮可确定省下");
+  expect(text).toContain("10 轮共");
+});
