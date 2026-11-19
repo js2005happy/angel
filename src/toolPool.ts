@@ -21,7 +21,7 @@ export function defaultPoolSize(): number {
   }
 }
 
-export type PoolJobKind = "ping" | "bm25";
+export type PoolJobKind = "ping" | "bm25" | "spin";
 
 export interface PoolJobMessage {
   id: string;
@@ -41,6 +41,15 @@ export interface Bm25Payload {
   queryTokens: string[];
   docTokens: string[][];
   topK: number;
+}
+
+/**
+ * spin 任务入参：worker 内确定性阻塞 ms 毫秒（Atomics.wait，不烧 CPU）。
+ * 用途只有一个——让超时行为可测试：BM25 算得太快（10 万文档约 13ms），
+ * 靠“工作量超过超时”赌超时根本不可靠；spin 让 worker 想卡多久卡多久。
+ */
+export interface SpinPayload {
+  ms: number;
 }
 
 interface PendingJob {
@@ -225,6 +234,19 @@ if (!isMainThread && parentPort) {
           const payload = msg.payload as Bm25Payload;
           const result = scoreBm25(payload.queryTokens, payload.docTokens, payload.topK);
           port.postMessage({ id: msg.id, ok: true, result } satisfies PoolResultMessage);
+          return;
+        }
+        if (msg.kind === "spin") {
+          const { ms } = msg.payload as SpinPayload;
+          // 确定性阻塞 worker 线程：主线程的超时逻辑靠它验证。
+          // Atomics.wait 只在 worker 线程可用，失败则退回忙等。
+          try {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0));
+          } catch {
+            const until = Date.now() + Math.max(0, ms | 0);
+            while (Date.now() < until) { /* 忙等 */ }
+          }
+          port.postMessage({ id: msg.id, ok: true, result: { spunMs: ms } } satisfies PoolResultMessage);
           return;
         }
         port.postMessage({ id: msg.id, ok: false, error: `未知任务类型：${msg.kind}` } satisfies PoolResultMessage);
