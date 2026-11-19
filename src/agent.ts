@@ -31,6 +31,7 @@ import {
 import { EvidenceStore } from "./evidence.ts";
 import { UsageTracker } from "./usage.ts";
 import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
+import type { AuxTask } from "./modelRouting.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { randomBytes } from "node:crypto";
@@ -122,6 +123,8 @@ export interface AgentOptions {
   maxCostUsd?: number | null;
   /** P2-2：该模型的单价；null = 未配置，金额未知（不编造）。 */
   pricing?: Pricing | null;
+  /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
+  auxModels?: { compact?: string; delegate?: string };
   /** 父级禁用的工具名；委派时子级工具集 = 父级减禁用。 */
   disabledTools?: string[] | null;
   /** MCP 工具执行器（第 3 阶段前为 null，走 worker 桥）。 */
@@ -165,6 +168,8 @@ export class Agent {
   private delegateBudget: DelegationBudget;
   private maxCostUsd: number | null;
   private pricing: Pricing | null;
+  /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
+  private auxModels: { compact?: string; delegate?: string };
   /** 最近一次成本估算；超支时由 checkCost 抛错前写入，供 CLI 汇报。 */
   lastCost: CostEstimate | null = null;
   onEvent: AgentEventHandler | null;
@@ -201,6 +206,7 @@ export class Agent {
     this.delegateBudget = opts.delegateBudget ?? new DelegationBudget();
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
     this.pricing = opts.pricing ?? null;
+    this.auxModels = opts.auxModels ?? {};
     this.onEvent = opts.onEvent ?? null;
     this.workdir = opts.workdir ?? ".";
     this.mode = opts.mode ?? "auto";
@@ -362,7 +368,9 @@ export class Agent {
   // 见 buildCompactMessages）；focus 为空时行为与原来完全一致。压缩成功后自动
   // 重读记忆与规则（见 postCompactReReadNote）；压缩失败走 fallback 时不重读。
   async compact(keepLast = 4, focus?: string): Promise<{ method: string; summary_chars: number; before: number; after: number }> {
-    const [newMessages, info] = await compactMessages(this.provider, this.messages as never, keepLast, {
+    // 压缩走便宜模型（如果配了 compact_model）；没配就用主模型，行为不变。
+    const compactProvider = this.auxProvider("compact") ?? this.provider;
+    const [newMessages, info] = await compactMessages(compactProvider, this.messages as never, keepLast, {
       focus: (focus ?? "").trim() || undefined,
       reRead: this.postCompactReReadNote(),
     });
@@ -394,7 +402,7 @@ export class Agent {
       const [compressedOld, info] = await compactMessages(
         // 调研报告第 3 项：上下文补齐（学 Claude Code）——自动压缩走同一条路，
         // 压缩成功后同样重读记忆与规则；strict 失败时抛错、走外层 catch，不重读。
-        this.provider, trimmed as never, 0, { strict: true, onResponse: account, reRead: this.postCompactReReadNote() },
+        this.auxProvider("compact") ?? this.provider, trimmed as never, 0, { strict: true, onResponse: account, reRead: this.postCompactReReadNote() },
       );
       const reduced = [...compressedOld, ...active] as Record<string, unknown>[];
       const newSize = JSON.stringify(reduced).length;
@@ -630,6 +638,23 @@ export class Agent {
    * 父级只看调用与最终摘要（子级 onEvent 不接父级观察器），一次只给一个明确目标。
    */
   /**
+   * 辅助任务（压缩 / 子任务）的 provider 选择。
+   *
+   * 没配 auxModels、或没装 multiModelFactory、或工厂抛错 → 返回 null，调用方沿用主模型。
+   * **不假装切换成功**：切不过去就明确回退，由调用方把原因写进备注。
+   */
+  private auxProvider(task: AuxTask): ProviderLike | null {
+    const model = task === "compact" ? this.auxModels.compact : this.auxModels.delegate;
+    if (!model) return null;
+    const factory = this.ctx.multiModelFactory;
+    if (!factory) return null;
+    try {
+      return factory(`aux-${task}`, model);
+    } catch {
+      return null;
+    }
+  }
+  /**
    * P2-2：每次上报 usage 后检查成本上限。超限直接抛错中止运行——这是"硬顶"，
    * 不是警告。金额算不出来时（未配单价 / provider 未报 usage）不抛错、不假装封顶，
    * 只把状态留在 lastCost 里供 CLI 说明。
@@ -691,15 +716,20 @@ export class Agent {
     // S4-2：独立模型。用 multiModelFactory 造一个该模型的 provider；造不出来就退回父级模型，
     // 并把"为什么没生效"写进结果，不静默假装切换成功。
     let provider = this.provider;
-    if (opts.model) {
+    // 子任务默认走便宜模型（config.delegate_model）；调用方显式给了 model 则以显式为准。
+    let effectiveModel = opts.model ?? this.auxModels.delegate;
+    if (!opts.model && this.auxModels.delegate) {
+      notes.push(`子任务默认模型：${this.auxModels.delegate}（来自 delegate_model）`);
+    }
+    if (effectiveModel) {
       const factory = this.ctx.multiModelFactory;
       if (!factory) notes.push(`未配置多模型，子任务沿用父级模型（请求的 ${opts.model} 未生效）`);
       else {
         try {
-          provider = factory("delegate", opts.model);
-          notes.push(`子任务模型：${opts.model}`);
+          provider = factory("delegate", effectiveModel);
+          notes.push(`子任务模型：${effectiveModel}`);
         } catch (err: unknown) {
-          notes.push(`切换模型 ${opts.model} 失败，沿用父级模型：${err instanceof Error ? err.message : String(err)}`);
+          notes.push(`切换模型 ${effectiveModel} 失败，沿用父级模型：${err instanceof Error ? err.message : String(err)}`);
         }
       }
     }
