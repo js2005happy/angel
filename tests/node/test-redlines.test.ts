@@ -100,3 +100,39 @@ test("formatRedlines 带图标与修复建议", () => {
   expect(text).toContain("⚠️");
   expect(text).toContain("修复：");
 });
+
+test("工具集体积：重工具集 + 未开延迟加载 → warn（不阻塞）", () => {
+  const r = checkRedlines({
+    ...good(),
+    toolBudget: { totalTools: 30, tokensPerTurn: 3000, contextRatio: 0.06 },
+    toolSearchEnabled: false,
+  });
+  const f = r.findings.find((x) => x.code === "tools-bloat");
+  expect(f?.level).toBe("warn");
+  expect(f?.fix).toContain("tool_search");
+  expect(r.ok).toBe(true); // 只是提醒
+});
+
+test("工具集体积：开了延迟加载就是 ok", () => {
+  const r = checkRedlines({
+    ...good(),
+    toolBudget: { totalTools: 30, tokensPerTurn: 3000, contextRatio: 0.06 },
+    toolSearchEnabled: true,
+  });
+  expect(r.findings.some((x) => x.code === "tools-deferred" && x.level === "ok")).toBe(true);
+});
+
+test("工具集体积：轻工具集不打扰", () => {
+  const r = checkRedlines({
+    ...good(),
+    toolBudget: { totalTools: 8, tokensPerTurn: 700, contextRatio: 0.004 },
+    toolSearchEnabled: false,
+  });
+  expect(r.findings.some((x) => x.code === "tools-lean")).toBe(true);
+  expect(r.findings.some((x) => x.code === "tools-bloat")).toBe(false);
+});
+
+test("没传工具体积时不产生该检查（零影响）", () => {
+  const r = checkRedlines(good());
+  expect(r.findings.some((x) => x.code.startsWith("tools-"))).toBe(false);
+});

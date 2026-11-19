@@ -2053,6 +2053,16 @@ export async function main(argv: string[]): Promise<number> {
       permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
       hasCostLimit: typeof cfgRed.max_cost_usd === "number",
       platform: process.platform,
+      // 工具体积：每轮都发 schema，工具多 + 不开延迟加载就是每轮白烧 token。
+      toolBudget: (() => {
+        const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
+        const disabled = Array.isArray(cfgRed.disabled_tools) ? cfgRed.disabled_tools.filter((t): t is string => typeof t === "string") : [];
+        const kept = filterSchemas(schemas, disabled).kept;
+        const m = measureToolBudget(kept, typeof cfgRed.context_window === "number" ? cfgRed.context_window : null);
+        return { totalTools: m.totalTools, tokensPerTurn: m.tokensPerTurn, contextRatio: m.contextRatio };
+      })(),
+      toolSearchEnabled: featureOn(resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search")
+        || (typeof cfgRed.tool_search === "object" && cfgRed.tool_search !== null && (cfgRed.tool_search as Record<string, unknown>).enabled === true),
     });
     process.stdout.write(formatRedlines(result) + "\n");
     return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
