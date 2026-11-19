@@ -29,6 +29,7 @@ import { handleConfig } from "./configCli.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
+import { buildRecallNote } from "./runRecall.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
@@ -488,7 +489,17 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
     disabledTools: [...(Array.isArray(config.disabled_tools) ? config.disabled_tools.filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
     // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
-    // --add-dir / config.extra_writable_dirs：显式放开工作目录之外的可写根。
+    // 跨会话回忆（features.run_recall 默认开）：上次同类任务的结论注入系统提示。
+    recallNote: (() => {
+      const feats = resolveFeatures(config, { enable: args.enableFeatures, disable: args.disableFeatures });
+      if (!featureOn(feats, "run_recall")) return null;
+      try {
+        const store = new RunStore(join(home, "runs"));
+        return buildRecallNote(store.list(), args.task ?? "", { workdir: resolve(args.workdir), limit: 3 });
+      } catch {
+        return null; // 历史读不了不该挡住本次运行
+      }
+    })(),    // --add-dir / config.extra_writable_dirs：显式放开工作目录之外的可写根。
     extraDirs: (() => {
       const cfgDirs = Array.isArray(config.extra_writable_dirs)
         ? config.extra_writable_dirs.filter((x): x is string => typeof x === "string")

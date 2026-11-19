@@ -138,13 +138,15 @@ export interface AgentOptions {
   /** P2-2：该模型的单价；null = 未配置，金额未知（不编造）。 */
   pricing?: Pricing | null;
   /**
-   * 工具检索（延迟加载）：仅接受、不使用。延迟加载已改为 MCP 工具 > 8 个时
-   * 自动开启（见 toolSchemas），不再走这项配置；保留字段是因为 cli.ts
-   * 的 Agent 构造字面量里传了它，删掉 tsc 会报 excess property 错误。
-   * 另见已知遗留：config.tool_search.enabled / --enable-feature tool_search
-   * 目前对延迟加载不起作用。
+   * 工具检索（延迟加载）。两档行为：
+   * - 默认：MCP 工具 > MCP_LAZY_LOAD_THRESHOLD 个时自动开（见 toolSchemas）
+   * - 显式开启（config.tool_search.enabled 或 features.tool_search=true）：
+   *   阈值降到 topK（默认 8），即使 MCP 工具不多也会进入延迟加载
+   * - NYRA_LAZY_TOOLS=0 仍然一票否决（排障用）
    */
   toolSearch?: { enabled?: boolean; topK?: number; always?: string[] } | null;
+  /** 跨会话回忆：上次同类任务的结论（由 CLI 从 runs/ 里挑好传入）。 */
+  recallNote?: string | null;
   /** --add-dir：额外可写根（写路径校验与沙箱同时放开）。 */
   extraDirs?: string[] | null;
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
@@ -197,6 +199,11 @@ export class Agent {
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
+  /** 跨会话回忆：上次同类任务的结论（历史，需复核）。 */
+  private recallNote: string | null = null;
+  /** tool_search 开关是否被显式要求。 */
+  private toolSearchRequested = false;
+  private toolSearchTopK = MCP_LAZY_LOAD_THRESHOLD;
   private deferredTools: Record<string, unknown>[] = [];
   /** 延迟加载（P3）：本轮未发送工具的说明，拼进 system prompt 告诉模型怎么拿回来。 */
   private deferredNote = "";
@@ -237,6 +244,9 @@ export class Agent {
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
     this.pricing = opts.pricing ?? null;
     this.auxModels = opts.auxModels ?? {};
+    this.recallNote = opts.recallNote ?? null;
+    this.toolSearchRequested = opts.toolSearch?.enabled === true;
+    this.toolSearchTopK = typeof opts.toolSearch?.topK === "number" ? opts.toolSearch.topK : MCP_LAZY_LOAD_THRESHOLD;
     this.onEvent = opts.onEvent ?? null;
     this.workdir = opts.workdir ?? ".";
     this.mode = opts.mode ?? "auto";
@@ -356,13 +366,17 @@ export class Agent {
     if (this.poppyEnabled) schemas.push(POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA);
     const mcpSchemas = this.mcpManager?.hasTools() ? [...this.mcpManager.toolSchemas] : [];
     // 延迟加载的开关：默认开，NYRA_LAZY_TOOLS=0 显式关闭（逃生口）。
-    const lazyOn = (process.env.NYRA_LAZY_TOOLS ?? "").trim() !== "0";
-    if (!lazyOn || mcpSchemas.length <= MCP_LAZY_LOAD_THRESHOLD) {
+    // 三个来源，优先级：NYRA_LAZY_TOOLS=0（显式关）> tool_search 开关/配置（显式开）> MCP 数量阈值。
+    const envOff = (process.env.NYRA_LAZY_TOOLS ?? "").trim() === "0";
+    const forcedOn = this.toolSearchRequested === true;
+    const lazyOn = !envOff;
+    const threshold = forcedOn ? Math.max(1, this.toolSearchTopK) : MCP_LAZY_LOAD_THRESHOLD;
+    if (!lazyOn || mcpSchemas.length <= threshold) {
       this.deferredTools = [];
       this.deferredNote = "";
       return [...schemas, ...mcpSchemas];
     }
-    const selection = selectTools(mcpSchemas as never, task, { topK: MCP_LAZY_LOAD_THRESHOLD, always: [] });
+    const selection = selectTools(mcpSchemas as never, task, { topK: threshold, always: [] });
     const kept = new Set(selection.kept);
     const keptMcp = mcpSchemas.filter((s) => kept.has((s.function as Record<string, unknown>).name as string));
     this.deferredTools = mcpSchemas.filter((s) => !kept.has((s.function as Record<string, unknown>).name as string));
@@ -547,6 +561,8 @@ export class Agent {
     // 信任模型：只有 ~/.nyra/skills 下的技能会自动执行，项目/插件技能只留占位。
     const skillRenderOpts = skillRenderOptionsFor({ mode: this.mode, workdir: this.workdir, home: this.home });
     if (full.length) sections.push("## 相关技能\n" + full.map((s) => renderSkill(s, skillRenderOpts)).join("\n\n"));
+    // 跨会话回忆：上次同类任务的结论（历史，需复核）。没有就不加，零影响。
+    if (this.recallNote) sections.push(this.recallNote);
     const memory = loadMemorySummary(40, this.memoryPath, this.home);
     if (memory) sections.push("## 长期记忆\n" + memory);
     // 延迟加载（P3）：本轮没发出去的工具告诉模型一声，附上怎么拿回来
