@@ -20,6 +20,8 @@ import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport } from "./runs.ts";
 import { resolvePricing } from "./cost.ts";
 import { handleCost } from "./costCli.ts";
+import { handleModels } from "./modelsCli.ts";
+import { loadModelCache, manualWindowFromConfig, resolveContextWindow } from "./modelCatalog.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
@@ -38,7 +40,7 @@ import {
   PetController, PET_WIDTH, petVisible, petEnabledFromConfig, parsePetCommand, renderPet, renderBubble, petFace,
 } from "./pet.ts";
 import { Spinner } from "./spinner.ts";
-import { formatUsage } from "./usage.ts";
+import { formatUsage, windowSourceLabel } from "./usage.ts";
 import { formatReplStatus, ToolPrinter, useColor, textWidth } from "./consoleUi.ts";
 import { dashboardCostSegment } from "./dashboard.ts";
 import { askApproval, approvalHooks } from "./approvalUi.ts";
@@ -108,6 +110,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
   nyra memory <export|export-prompt|import|local|import-zip>  记忆交换
   nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
+  nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
   nyra setup                     首次启动向导
   nyra --example [文件]          本地示例任务（不调模型、不花钱）
   nyra ui                        网页界面（本地网页，含模式切换与创造模式）
@@ -151,6 +154,7 @@ Usage:
   nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
   nyra memory <export|export-prompt|import|local|import-zip>  memory exchange
   nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
+  nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
   nyra setup                     first-run wizard
   nyra --example [file]          local example task (no model calls, no cost)
   nyra permissions ...           Poppy site permission intents (local ledger; records, never grants)
@@ -224,7 +228,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["tools", "config", "redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -443,13 +447,25 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   // 推理档位 / 冗长度：未配置时 toRequestBody 返回空对象，provider payload 不变。
   const reasoningOpts = resolveReasoningOptions(config);
   (provider as { extraBody?: Record<string, unknown> }).extraBody = toRequestBody(reasoningOpts);
+  // 模型上下文窗口自动识别：--context-window > 手动配置 > 刷新缓存 > 内置表
+  // > 同系列推断；未知模型不猜数字（resolver 给原因）。同时修掉旧的不一致：
+  // CLI 读的是 config.context_window，网关读的是 context_window_tokens，
+  // 现在统一走 manualWindowFromConfig（context_window_tokens 优先，旧键兼容）。
+  const manualWindow = manualWindowFromConfig(config);
+  const windowResolved = resolveContextWindow({
+    model: provider.model, provider: primaryCfg.name,
+    cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
+    cache: loadModelCache(home),
+  });
   const agent = new Agent(provider, {
     workdir: resolve(args.workdir),
     mode,
     maxTurns,
     interactive: opts?.interactive ?? true,
     skillsDirs: opts?.skillsDirs,
-    contextWindowTokens: args.contextWindow ?? (typeof config.context_window === "number" ? config.context_window : null),
+    contextWindowTokens: windowResolved.window,
+    contextWindowSource: windowResolved.source,
+    contextWindowModel: windowResolved.model,
     autoCompactEnabled: args.autoCompact,
     autoCompactThreshold: args.autoCompactThreshold ?? undefined,
     poppyEnabled: args.poppy,
@@ -1380,7 +1396,7 @@ export function formatContextUsage(u: ContextUsage): string {
   if (u.windowTokens === null || u.windowTokens === undefined) {
     lines.push(t("ctx.windowUnset"));
   } else {
-    lines.push(t("ctx.window", { n: u.windowTokens.toLocaleString("en-US") }));
+    lines.push(t("ctx.window", { n: u.windowTokens.toLocaleString("en-US"), source: windowSourceLabel(u.windowSource) }));
   }
   if (u.usedTokens === null || u.usedTokens === undefined) {
     lines.push(t("ctx.usedUnknown"));
@@ -1956,6 +1972,7 @@ export async function main(argv: string[]): Promise<number> {
 
   // 子命令优先。
   if (args.subcommand === "cost") { const cfgCost = loadConfig(home); return handleCost(args.subArgs ?? [], cfgCost, (cfgCost.model as string) ?? null); }
+  if (args.subcommand === "models") return handleModels(args.subArgs ?? [], home);
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
@@ -1973,8 +1990,14 @@ export async function main(argv: string[]): Promise<number> {
     ];
     const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
     const { kept, dropped } = filterSchemas(schemas, disabled);
-    const full = measureToolBudget(schemas, args.contextWindow ?? (typeof cfgTools.context_window === "number" ? cfgTools.context_window : null));
-    const after = measureToolBudget(kept, args.contextWindow ?? (typeof cfgTools.context_window === "number" ? cfgTools.context_window : null));
+    const toolsManual = manualWindowFromConfig(cfgTools);
+    const toolsWindow = resolveContextWindow({
+      model: (cfgTools.model as string) ?? null, provider: (cfgTools.provider as string) ?? null,
+      cli: args.contextWindow, manual: toolsManual.value, manualKey: toolsManual.key,
+      cache: loadModelCache(home),
+    }).window;
+    const full = measureToolBudget(schemas, toolsWindow);
+    const after = measureToolBudget(kept, toolsWindow);
     const saving = summarizeSavings(schemas, kept);
     process.stdout.write(formatToolBudget(full) + "\n");
     if (dropped.length) {

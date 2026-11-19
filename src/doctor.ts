@@ -10,6 +10,7 @@
 import { existsSync, statSync, writeFileSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, resolveProvider, VERSION } from "./config.ts";
+import { loadModelCache, manualWindowFromConfig, resolveContextWindow, type WindowSource } from "./modelCatalog.ts";
 import { vaultExists, vaultMode } from "./vault/index.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——doctor 加一项隔离级别检查。
 import { getSandboxStatus, sandboxLevelText } from "./sandbox.ts";
@@ -122,16 +123,23 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ checks: DoctorCh
     checks.push({ name: "模型配置", ok: false, detail: String(err instanceof Error ? err.message : err), fix: "运行 nyra setup 重新选模型来源，或检查 ~/.nyra/config.json 里的 provider / model。" });
     return { checks, allOk: false };
   }
+  // 模型上下文窗口：自动识别（内置表/刷新缓存），手动配置优先；未知模型写清原因。
+  const winManual = manualWindowFromConfig(config);
+  const winResolved = resolveContextWindow({ model: provider.model, provider: provider.name, manual: winManual.value, manualKey: winManual.key, cache: loadModelCache(home) });
+  const winSourceZh: Record<WindowSource, string> = { cli: "命令行 --context-window 指定", manual: "手动配置", cache: "刷新缓存（OpenRouter）", builtin: "内置模型表", family: "内置模型表（同系列推断）", unknown: "未知" };
+  const winText = winResolved.window !== null
+    ? `，上下文窗口 ${winResolved.window.toLocaleString("en-US")} tokens（${winSourceZh[winResolved.source]}）`
+    : `，上下文窗口未知（${winResolved.detail}）`;
   if (provider.auth === "cli") {
-    checks.push({ name: "模型配置", ok: true, detail: `provider=${provider.name}（Codex CLI，复用本机登录，不需要 Key）` });
+    checks.push({ name: "模型配置", ok: true, detail: `provider=${provider.name}（Codex CLI，复用本机登录，不需要 Key）${winText}` });
   } else if (provider.name === "ollama") {
-    checks.push({ name: "模型配置", ok: true, detail: `provider=ollama（本地模型，不需要 Key，默认 ${provider.baseUrl}）` });
+    checks.push({ name: "模型配置", ok: true, detail: `provider=ollama（本地模型，不需要 Key，默认 ${provider.baseUrl}）${winText}` });
   } else if (provider.hasKey) {
-    checks.push({ name: "模型配置", ok: true, detail: `provider=${provider.name}，模型 ${provider.model}，Key 已配置（来源：环境变量 ${provider.envKey}）` });
+    checks.push({ name: "模型配置", ok: true, detail: `provider=${provider.name}，模型 ${provider.model}，Key 已配置（来源：环境变量 ${provider.envKey}）${winText}` });
   } else if (provider.keySource === "vault") {
     checks.push({
       name: "模型配置", ok: false,
-      detail: `provider=${provider.name}，模型 ${provider.model}，环境变量里没有 Key；检测到密码箱 vault.json，但第 1 阶段还不能解密它`,
+      detail: `provider=${provider.name}，模型 ${provider.model}，环境变量里没有 Key；检测到密码箱 vault.json，但第 1 阶段还不能解密它${winText}`,
       fix: provider.envKey
         ? `先用环境变量提供 Key：export ${provider.envKey}=你的Key（第 2 阶段恢复密码箱读取后就不用每次 export）。`
         : `先用环境变量 NYRA_API_KEY 提供 Key。`,
@@ -139,13 +147,13 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ checks: DoctorCh
   } else if (provider.auth === "connector") {
     checks.push({
       name: "模型配置", ok: false,
-      detail: `provider=${provider.name}，模型 ${provider.model}，环境变量里没有 Key；该 provider 在 Python 版走连接器注入，Node 版第 1 阶段尚未接连接器`,
+      detail: `provider=${provider.name}，模型 ${provider.model}，环境变量里没有 Key；该 provider 在 Python 版走连接器注入，Node 版第 1 阶段尚未接连接器${winText}`,
       fix: provider.envKey ? `先用环境变量提供 Key：export ${provider.envKey}=你的Key。` : "先用环境变量 NYRA_API_KEY 提供 Key。",
     });
   } else {
     checks.push({
       name: "模型配置", ok: false,
-      detail: `provider=${provider.name}，模型 ${provider.model}，没有配置 Key`,
+      detail: `provider=${provider.name}，模型 ${provider.model}，没有配置 Key${winText}`,
       fix: provider.envKey
         ? `设置 Key：export ${provider.envKey}=你的Key；或运行 nyra setup 走向导配置。`
         : "运行 nyra setup 走向导配置。",

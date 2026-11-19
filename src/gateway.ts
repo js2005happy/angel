@@ -34,7 +34,7 @@ import { appendInbox } from "./tasks.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
-import { contextLimit } from "./usage.ts";
+import { loadModelCache, manualWindowFromConfig, resolveContextWindow, type WindowSource } from "./modelCatalog.ts";
 import { MCPToolManager, buildMcpManager } from "./mcp.ts";
 import { McpCostTracker, estimateToolCost, costLimitUsd } from "./mcpCost.ts";
 import { DeviceRegistry, defaultDevicesPath, startDiscoveryResponder, PairingError } from "./pairing.ts";
@@ -145,6 +145,10 @@ export class Gateway {
   profile: string | null;
   maxTurns: number | null;
   contextWindowTokens: number | null;
+  /** 窗口数值的来源（cli/manual/cache/builtin/family/unknown），见 modelCatalog。 */
+  contextWindowSource: WindowSource = "unknown";
+  /** 用于解析窗口的模型名。 */
+  contextWindowModel: string | null = null;
   autoCompactEnabled: boolean;
   autoCompactThreshold: number;
   pairOrigin: string | null = null;
@@ -177,7 +181,19 @@ export class Gateway {
     this.model = opts.model ?? null;
     this.profile = opts.profile ?? null;
     this.maxTurns = opts.maxTurns ?? null;
-    this.contextWindowTokens = contextLimit(this.config.context_window_tokens as number | null | undefined ?? null);
+    // 模型上下文窗口自动识别：手动配置 > 刷新缓存 > 内置表 > 同系列推断；
+    // 未知模型不猜数字（resolver 给原因）。与 CLI buildAgent 同优先级。
+    const gwProfile = resolveProfile(opts.profile ?? null, this.config);
+    const gwManual = manualWindowFromConfig(this.config);
+    const gwWindow = resolveContextWindow({
+      model: opts.model ?? gwProfile.model ?? (this.config.model as string | null) ?? null,
+      provider: opts.providerName ?? gwProfile.provider ?? (this.config.provider as string | null) ?? null,
+      manual: gwManual.value, manualKey: gwManual.key,
+      cache: loadModelCache(this.home),
+    });
+    this.contextWindowTokens = gwWindow.window;
+    this.contextWindowSource = gwWindow.source;
+    this.contextWindowModel = gwWindow.model;
     this.autoCompactEnabled = Boolean(this.config.auto_compact_enabled ?? false);
     this.autoCompactThreshold = validateAutoCompactThreshold(
       (this.config.auto_compact_threshold as number | undefined) ?? DEFAULT_AUTO_COMPACT_THRESHOLD,
@@ -726,6 +742,8 @@ export class Gateway {
           approveFn: (tool, summary, details) => this.approve(run, tool, summary, details),
           sessionRules: run.sessionRules ?? (run.sessionRules = new SessionRules()),
           contextWindowTokens: this.contextWindowTokens,
+          contextWindowSource: this.contextWindowSource,
+          contextWindowModel: this.contextWindowModel,
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
           home: this.home,

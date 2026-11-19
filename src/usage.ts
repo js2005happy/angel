@@ -1,6 +1,8 @@
 // src/usage.ts — Token 用量统计，与 Python 版 nyra/usage.py 同语义。
-// 只统计 provider 实际报告的数字；上下文窗口只用用户配置的数字，绝不按模型名猜。
+// 只统计 provider 实际报告的数字；上下文窗口由模型登记表自动识别
+// （见 src/modelCatalog.ts），手动配置仍可覆盖；未知模型不猜数字。
 import { t } from "./i18n.ts";
+import type { WindowSource } from "./modelCatalog.ts";
 export function contextLimit(value: unknown): number | null {
   if (typeof value === "boolean" || typeof value !== "number" || !Number.isInteger(value) || value <= 0) return null;
   return value;
@@ -24,10 +26,16 @@ export interface UsageSnapshot {
   last_prompt_tokens: number | null;
   context_window_tokens: number | null;
   context_remaining_tokens: number | null;
+  /** 窗口数值的来源（cli/manual/cache/builtin/family/unknown），见 modelCatalog。 */
+  context_window_source: WindowSource;
+  /** 用于解析窗口的模型名（null = 本次没用到模型名）。 */
+  context_window_model: string | null;
 }
 
 export class UsageTracker {
   configuredWindow: number | null;
+  windowSource: WindowSource;
+  windowModel: string | null;
   calls = 0;
   reported_calls = 0;
   prompt_tokens = 0;
@@ -38,8 +46,10 @@ export class UsageTracker {
   total_samples = 0;
   last_prompt_tokens: number | null = null;
 
-  constructor(configuredWindow?: number | null) {
+  constructor(configuredWindow?: number | null, source?: WindowSource, model?: string | null) {
     this.configuredWindow = configuredWindow ?? null;
+    this.windowSource = source ?? (this.configuredWindow !== null ? "manual" : "unknown");
+    this.windowModel = model ?? null;
   }
 
   record(response: unknown): void {
@@ -89,8 +99,14 @@ export class UsageTracker {
       last_prompt_tokens: last,
       context_window_tokens: window,
       context_remaining_tokens: remaining,
+      context_window_source: this.windowSource,
+      context_window_model: this.windowModel,
     };
   }
+}
+
+export function windowSourceLabel(source: WindowSource): string {
+  return t(`usage.source.${source}`);
 }
 
 export function formatUsage(snapshot: UsageSnapshot): string {
@@ -105,13 +121,14 @@ export function formatUsage(snapshot: UsageSnapshot): string {
   const window = snapshot.context_window_tokens;
   const recent = snapshot.last_prompt_tokens;
   const remaining = snapshot.context_remaining_tokens;
+  const source = windowSourceLabel(snapshot.context_window_source);
   if (window === null) {
-    lines.push(t("usage.windowUnset"));
+    lines.push(t("usage.windowUnset", { model: snapshot.context_window_model ?? t("usage.unknownModel") }));
   } else if (recent === null) {
-    lines.push(t("usage.noRecent", { window: window.toLocaleString("en-US") }));
+    lines.push(t("usage.noRecent", { window: window.toLocaleString("en-US"), source }));
   } else {
     lines.push(
-      t("usage.recent", { recent: recent.toLocaleString("en-US"), window: window.toLocaleString("en-US"), remaining: remaining!.toLocaleString("en-US") }),
+      t("usage.recent", { recent: recent.toLocaleString("en-US"), window: window.toLocaleString("en-US"), remaining: remaining!.toLocaleString("en-US"), source }),
     );
   }
   return lines.join("\n");

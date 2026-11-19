@@ -31,6 +31,7 @@ import {
 } from "./compact.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { UsageTracker } from "./usage.ts";
+import type { WindowSource } from "./modelCatalog.ts";
 import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
 import type { AuxTask } from "./modelRouting.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
@@ -113,6 +114,10 @@ export interface AgentOptions {
   systemInstructions?: string;
   memoryPath?: string | null;
   contextWindowTokens?: number | null;
+  /** 窗口数值的来源（cli/manual/cache/builtin/family/unknown），见 modelCatalog。 */
+  contextWindowSource?: WindowSource;
+  /** 用于解析窗口的模型名。 */
+  contextWindowModel?: string | null;
   autoCompactEnabled?: boolean;
   autoCompactThreshold?: number;
   checkpointStore?: CheckpointStore | null;
@@ -150,6 +155,8 @@ export interface ContextUsage {
   toolResults: number;
   totalChars: number;
   windowTokens: number | null;
+  /** 窗口数值的来源（cli/manual/cache/builtin/family/unknown），见 modelCatalog。 */
+  windowSource: WindowSource;
   usedTokens: number | null;
   estimated: boolean;
 }
@@ -199,7 +206,7 @@ export class Agent {
   constructor(provider: ProviderLike, opts: AgentOptions = {}) {
     this.provider = provider;
     this.poppyEnabled = Boolean(opts.poppyEnabled);
-    this.usage = new UsageTracker(opts.contextWindowTokens ?? null);
+    this.usage = new UsageTracker(opts.contextWindowTokens ?? null, opts.contextWindowSource, opts.contextWindowModel ?? null);
     this.autoCompactEnabled = Boolean(opts.autoCompactEnabled);
     this.autoCompactThreshold = validateAutoCompactThreshold(opts.autoCompactThreshold ?? DEFAULT_AUTO_COMPACT_THRESHOLD);
     this.systemInstructions = opts.systemInstructions ?? "";
@@ -364,7 +371,7 @@ export class Agent {
     const reported = snap.last_prompt_tokens;
     const estimated = reported === null || reported === undefined;
     const usedTokens = estimated ? Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE) : (reported as number);
-    return { system, skills, history, toolResults, totalChars, windowTokens, usedTokens, estimated };
+    return { system, skills, history, toolResults, totalChars, windowTokens, windowSource: snap.context_window_source, usedTokens, estimated };
   }
 
   // 调研报告第 3 项：上下文补齐（学 Claude Code）——compact focus：focus 为非
@@ -779,6 +786,8 @@ export class Agent {
       systemInstructions: this.systemInstructions,
       memoryPath: this.memoryPath,
       contextWindowTokens: this.usage.configuredWindow,
+      contextWindowSource: this.usage.windowSource,
+      contextWindowModel: this.usage.windowModel,
       autoCompactEnabled: this.autoCompactEnabled,
       autoCompactThreshold: this.autoCompactThreshold,
       // worktree 子任务不共用主工作区的检查点库，避免把临时工作树的内容写进主回滚链。
