@@ -57,13 +57,29 @@ test("WindowsSandbox.script_danger_rejected", () => {
     .toThrow("danger-full-access 与沙箱互斥");
 });
 
+test("WindowsSandbox.script_assignment_fallback", () => {
+  const script = buildJobObjectScript("echo hi", { mode: "workspace-write", workdir: "C:\\w" });
+  // 接管失败时先查是否已在父作业中（CI #92：runner 的作业导致
+  // AssignProcessToJobObject 失败，脚本直接 throw → 退出码 1）；已在父作业中
+  // 则降级执行并告警，不抛错；极快命令抢先退出时直接读退出码。
+  expect(script).toContain("IsProcessInJob");
+  expect(script).toContain("已在父作业中");
+  expect(script).toContain("HasExited");
+  // 退出码透传逻辑仍在：读子进程 ExitCode，脚本以该码退出。
+  expect(script).toContain("$code = $p.ExitCode");
+  expect(script).toContain("exit $code");
+});
+
 test("WindowsSandbox.find_powershell", () => {
-  // 平台相关：非 win32 恒为 null；win32 上真实存在 PowerShell 属正常，只断言不抛。
-  if (process.platform !== "win32") {
+  // 本机探测：非 win32 恒为 null；win32 上 PowerShell 一定存在
+  // （CI #92：原断言无平台守卫，在 Windows 上收到 "pwsh.exe" 而失败）。
+  if (process.platform === "win32") {
+    expect(findPowerShell()).not.toBeNull();
+    expect(["pwsh.exe", "powershell.exe"]).toContain(findPowerShell());
+    expect(windowsSandboxAvailable()).toBe(true);
+  } else {
     expect(findPowerShell()).toBeNull();
     expect(windowsSandboxAvailable()).toBe(false);
-  } else {
-    expect(() => findPowerShell()).not.toThrow();
   }
   // 假 PATH：只有平台参数传 win32 时才认。
   const dir = mkdtempSync(join(tmpdir(), "nyra-ps-"));
