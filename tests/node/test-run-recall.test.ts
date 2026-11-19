@@ -154,7 +154,7 @@ test("误用防护：同目录回忆要求先用 read_file 复核，以当前文
   expect(note).toContain("丢弃该条回忆结论");
 });
 
-test("误用防护：含跨项目条目时追加"说明为什么仍成立"的严格要求", async () => {
+test("误用防护：含跨项目条目时追加「说明为什么仍成立」的严格要求", async () => {
   const { RECALL_GUARD_CROSS, requiresStrictRecheck } = await import("../../src/runRecall.ts");
   const runs = [run({ run_id: "a", workdir: "/proj" }), run({ run_id: "b", workdir: "/other" })];
   const picked = selectRecalledRuns(runs, "重构 auth 模块", { workdir: "/proj", maxAgeDays: 0, allowCrossDir: true });
