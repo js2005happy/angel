@@ -1,3 +1,8 @@
+## 2026-11-20 静态核验：finish 写后竞争失败
+
+- 静态审阅确认 `finish()` 写后原先只核对歧义和未知结果，未核对其他进程新增的已配对 `result_error`。现用 `expected_errors = 0 if success else 1` 检查写后汇总，检测到额外失败则拒绝报告干净完成；自己的失败结果仍能正常落盘。
+- 增加两项模拟回归测试源码。**未运行测试、Python、CI 或跨平台实机验证**；检测后仍有竞态，不提供跨进程互斥、自动重放或外部副作用证明。
+
 ## 2026-11-20 — finish 并发报告失败保护（静态检查）
 
 - 核对 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、`angel/tool_journal.py` 和测试源码；核对主分支最近提交、开放 Issue/PR 与提交状态。静态发现 `begin()` 已拒绝其他调用的 `result_error`，但 `finish()` 在未知结果数为 1 时仍可能忽略另一已完成调用的失败。现于初始状态及末次快照增加失败关闭门禁。
