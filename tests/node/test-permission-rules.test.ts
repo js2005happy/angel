@@ -32,10 +32,12 @@ test("空规则集：isEmpty 为真，evaluate 返回 null（零影响）", () =
   expect(evaluate(rs, { tool: "Bash", target: "rm -rf /" })).toBeNull();
 });
 
-test("命令通配：Bash(git *) 命中 git status，不命中 gitk", () => {
+test("命令通配：Bash(git *) 命中 git status，不命中 gitk 与裸 git", () => {
   const rs = parseRules({ allow: ["Bash(git *)"] });
   expect(evaluate(rs, { tool: "Bash", target: "git status" })?.action).toBe("allow");
-  expect(evaluate(rs, { tool: "Bash", target: "git" })?.action).toBe("allow");
+  expect(evaluate(rs, { tool: "Bash", target: "git push origin main" })?.action).toBe("allow");
+  // "git *" 要求 "git" 后面还有内容，裸 git 不命中（要命中裸 git 请写 Bash(git*) 或 Bash）
+  expect(evaluate(rs, { tool: "Bash", target: "git" })).toBeNull();
   expect(evaluate(rs, { tool: "Bash", target: "gitk" })).toBeNull();
   expect(evaluate(rs, { tool: "Bash", target: "npm install" })).toBeNull();
 });
