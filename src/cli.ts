@@ -30,6 +30,8 @@ import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
+import { buildVerdict, formatVerdict } from "./verdict.ts";
+import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
@@ -164,6 +166,7 @@ Usage:
   nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
   nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
+  nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
   nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
   nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
   nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
@@ -261,7 +264,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang", "--channel",
   ]);
-  const subcommands = new Set(["savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats"]);
+  const subcommands = new Set(["verdict", "savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -2705,7 +2708,68 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
-  if (args.subcommand === "savings") {
+  if (args.subcommand === "verdict") {
+    // 一条结论：把红线 + 省钱 + 回忆 + 运行历史拼成"这次跑得值不值"。
+    const cfgV = loadConfig(home);
+    const feats = resolveFeatures(cfgV, { enable: args.enableFeatures, disable: args.disableFeatures });
+    const taskText = (args.subArgs ?? []).join(" ").trim() || (args.task ?? "").trim();
+    const turns = typeof cfgV.max_turns === "number" ? cfgV.max_turns : 20;
+
+    // 红线
+    let redlines: RedlineResult | null = null;
+    try {
+      redlines = checkRedlines({
+        config: cfgV,
+        sandbox: resolveSandbox(cfgV),
+        permissions: null,
+        hasCostLimit: typeof cfgV.max_cost_usd === "number",
+        toolBudget: measureToolBudget(TOOL_SCHEMAS as never),
+      } as never);
+    } catch { redlines = null; }
+
+    // 省钱 + 实测
+    const savings = summarizeCostSavings({
+      config: cfgV,
+      schemas: TOOL_SCHEMAS as never,
+      disabledTools: Array.isArray(cfgV.disabled_tools) ? (cfgV.disabled_tools as string[]) : [],
+      recallCount: null,
+      toolSearchEnabled: featureOn(feats, "tool_search"),
+      turns,
+    });
+    let modelSavings = null;
+    try {
+      modelSavings = summarizeModelSavings(new UsageLedger(home).readAll(), {
+        mainModel: (cfgV.model as string) ?? null,
+        mainPricing: resolvePricing(cfgV.pricing, (cfgV.model as string) ?? null),
+      });
+    } catch { modelSavings = null; }
+
+    // 回忆
+    let recallAvailable: number | null = null;
+    if (taskText) {
+      try {
+        recallAvailable = selectRecalledRuns(new RunStore(join(home, "runs")).list(), taskText, {
+          workdir: resolve(args.workdir), limit: 3,
+        }).length;
+      } catch { recallAvailable = null; }
+    }
+
+    // 运行历史状态分布
+    let runStatusCounts: Record<string, number> | null = null;
+    try {
+      const runs = new RunStore(join(home, "runs")).list();
+      const counts: Record<string, number> = {};
+      for (const r of runs) {
+        const st = String((r as unknown as Record<string, unknown>).status ?? "");
+        if (st) counts[st] = (counts[st] ?? 0) + 1;
+      }
+      runStatusCounts = Object.keys(counts).length ? counts : null;
+    } catch { runStatusCounts = null; }
+
+    const verdict = buildVerdict({ redlines, savings, modelSavings, recallAvailable, runStatusCounts, turns });
+    process.stdout.write(formatVerdict(verdict) + "\n");
+    return verdict.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
+  }  if (args.subcommand === "savings") {
     // 把散落的省钱机制汇成一张单页：一份运行到底开了哪些、能确定省多少。
     const cfgSav = loadConfig(home);
     const feats = resolveFeatures(cfgSav, { enable: args.enableFeatures, disable: args.disableFeatures });
