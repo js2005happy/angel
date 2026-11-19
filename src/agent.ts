@@ -315,7 +315,7 @@ export class Agent {
   contextUsage(task?: string, touchedPaths: string[] = []): ContextUsage {
     const effectiveTask = task ?? this.lastTask;
     const systemPrompt = this.buildSystemPrompt(effectiveTask, touchedPaths);
-    const fullSkillsText = this.fullSkills(effectiveTask, touchedPaths).map(renderSkill).join("\n\n");
+    const fullSkillsText = this.fullSkills(effectiveTask, touchedPaths).map((s) => renderSkill(s)).join("\n\n");
     const skills = fullSkillsText.length;
     let system = Math.max(0, systemPrompt.length - skills);
     let history = 0;
@@ -435,7 +435,9 @@ export class Agent {
       sections.push("## 技能索引\n" + index + "\n（需要某个技能的完整步骤时，用 read_skill 按名读取全文；不要凭描述猜步骤。）");
     }
     const full = this.fullSkills(task, touchedPaths);
-    if (full.length) sections.push("## 相关技能\n" + full.map(renderSkill).join("\n\n"));
+    // S3：非计划模式下展开技能里的 !`cmd` 动态上下文注入（计划模式禁止副作用）。
+    const skillRenderOpts = { workdir: this.workdir, execute: this.mode !== "plan" };
+    if (full.length) sections.push("## 相关技能\n" + full.map((s) => renderSkill(s, skillRenderOpts)).join("\n\n"));
     const memory = loadMemorySummary(40, this.memoryPath, this.home);
     if (memory) sections.push("## 长期记忆\n" + memory);
     return sections.join("\n\n");
@@ -574,7 +576,7 @@ export class Agent {
           if (newly.length) {
             for (const s of newly) injectedPathSkills.add(s.name);
             result += "\n\n## 路径触发的技能（你刚触碰了匹配文件，按以下技能执行）\n" +
-              newly.map(renderSkill).join("\n\n");
+              newly.map((s) => renderSkill(s, { workdir: this.workdir, execute: this.mode !== "plan" })).join("\n\n");
           }
         }
         this.emit("tool_result", { id: (tc.id as string) ?? "", name: fnName, result });
