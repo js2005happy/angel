@@ -1,3 +1,8 @@
+## 2026-11-19 — 祖先目录链接探测异常保护（仅静态）
+
+- 源码静态审阅发现 `_safe_directory()` 遍历祖先时直接调用 `Path.is_symlink()` / `is_junction()`，可能将权限拒绝作为未分类 `OSError` 传播。现捕获并失败关闭为 `JournalError`，保留异常链；新增模拟祖先探测拒绝的测试源码，未执行。
+- 未运行测试、CI、安装、Windows 实机验证或发布。无法据此声称消除 TOCTOU、完成 ACL 检查或跨进程事务。
+
 ## 2026-11-19 — 回退路径符号链接探测拒绝（仅静态）
 
 - 静态检查发现 `_records()` 在路径回退分支的 `Path.is_symlink()` 未统一捕获 `OSError`；现在失败关闭为 `JournalError` 并保留异常链。已编写模拟 `PermissionError` 的测试源码，未执行。
