@@ -95,3 +95,28 @@
 - 抄 UI：Alma/Grok 的界面细节与 Nyra 的定位无关
 - 抄配置键名：除非已成事实标准（`sandbox_mode`、`approval_policy`）
 - 自建模型/训练：不是我们的战场
+
+---
+
+## 工具延迟加载：什么时候该开（判断标准）
+
+默认**关**（`features.tool_search = false`）——它会改变发给模型的工具集，属于行为变化，不该悄悄生效。
+
+**开启的信号**（任一命中就该开）：
+
+| 信号 | 阈值 | 怎么看 |
+|---|---|---|
+| 工具数量多 | ≥ 25 个 | `nyra tools` 第一行 |
+| 每轮 schema 成本高 | ≥ 2,500 token/轮 | `nyra tools` |
+| 占上下文比例高 | ≥ 5% | `nyra tools` |
+| 接了 MCP 且工具用不满 | MCP 工具数 > 实际使用数 | `nyra tools` 最贵名单 |
+
+`nyra redlines` 会对上述情况给出 `tools-bloat` 提醒（**warn，不阻塞**），并给出两条修法：
+
+```bash
+nyra features --enable-feature tool_search          # 开延迟加载（推荐）
+nyra --disable-tool computer_use --disable-tool poppy "<task>"   # 或裁掉用不到的
+```
+
+**不该开的场景**：工具本来就不多（< 15 个）、任务类型单一、或模型明显不太会用 `search_tools`
+（表现为反复检索同一个词）——这时切回全量发送更省心。
