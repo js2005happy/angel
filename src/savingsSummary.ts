@@ -196,3 +196,17 @@ export function formatSavings(summary: SavingsSummary): string {
   lines.push("（数字来源见各机制模块；算不出的项不填 0，避免被读成「没省」）");
   return lines.join("\n");
 }
+
+/**
+ * 把「该不该上生产」（红线）与「上了能省多少」（省钱机制）拼成一段完整结论。
+ *
+ * 分开放的坏处：只看红线会觉得"配齐了就完事"，只看 savings 又不知道有没有踩坑。
+ * 这里只做拼接与一个明确的过渡标题，不改两边的任何判定。
+ */
+export function formatRedlinesWithSavings(
+  redlineText: string,
+  savings: SavingsSummary,
+): string {
+  const parts: string[] = [redlineText.trimEnd(), "", "—— 省钱机制（上了之后能省多少）——", formatSavings(savings)];
+  return parts.join("\n");
+}
