@@ -1,8 +1,8 @@
 # 并行 delegate（缺口 3a）
 
 > 缺口 3（多线程并行 + worktree + review queue + 手机审批的调度面）的第一批：
-> 只做并行 delegate。review queue 与手机审批面是第二批（3b），本批不做；
-> 但每线程的结果已经是结构化证据（改了什么、验证结论、成本），可直接被 3b 消费。
+> 只做并行 delegate。review queue 与手机审批面是第二批（3b），已落地
+> （见 docs/review-queue.md）；本批每线程的结构化证据就是 3b 消费的接口。
 
 ## 用法
 
