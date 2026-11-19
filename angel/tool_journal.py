@@ -611,7 +611,11 @@ class ToolJournal:
         )
         # A globally ambiguous journal cannot certify even otherwise paired
         # results: callers must not interpret partial success counts as safe.
-        # An orphan result makes the entire journal ambiguous: otherwise\n        # unrelated paired calls could still be reported as verified-looking\n        # successes even though the event set is incomplete.\n        invalid = invalid or orphan_results > 0\n        pending = (len(calls) + orphan_results) if invalid else (
+        # An orphan result makes the entire journal ambiguous: otherwise
+        # unrelated paired calls could still be reported as verified-looking
+        # successes even though the event set is incomplete.
+        invalid = invalid or orphan_results > 0
+        pending = (len(calls) + orphan_results) if invalid else (
             sum(x["outcome"] == "unknown" for x in calls.values()) + orphan_results
         )
         return {
