@@ -51,6 +51,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // P0-5：权限规则语言（学 Claude Code 的 Tool(specifier)）。空 = 走默认交互式审批。
   // 例：deny: ["Bash(rm -rf *)"], allow: ["Bash(git *)", "Edit(src/**)"].
   permissions: { allow: [], ask: [], deny: [] },
+  // P2-2：成本硬顶。max_cost_usd 为单次运行上限（美元），pricing 按模型配单价
+  // （input_per_1m / output_per_1m）；未配单价时金额未知，不做超支判定。
+  max_cost_usd: null,
+  pricing: {},
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},
   fallback_enabled: false, // 默认关闭：模型自动兜底只由用户自己开启（用户定的安全事项）。

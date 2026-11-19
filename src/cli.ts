@@ -17,13 +17,14 @@ import {
 import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport } from "./runs.ts";
+import { resolvePricing } from "./cost.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { renderBanner } from "./banner.ts";
 import { formatUsage } from "./usage.ts";
 import { formatReplStatus, ToolPrinter } from "./consoleUi.ts";
 import { askApproval } from "./approvalUi.ts";
-import { JsonLines, invalidArguments, EXIT_SUCCESS, EXIT_RUNTIME, EXIT_ARGUMENT, EXIT_INCOMPLETE, EXIT_VERIFY, EXIT_INTERRUPTED } from "./jsonMode.ts";
+import { JsonLines, invalidArguments, EXIT_SUCCESS, EXIT_RUNTIME, EXIT_ARGUMENT, EXIT_INCOMPLETE, EXIT_VERIFY, EXIT_INTERRUPTED, EXIT_COST } from "./jsonMode.ts";
 import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTask, PlanError } from "./planMode.ts";
 import { handleTask } from "./tasks.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
@@ -102,6 +103,8 @@ export interface CliArgs {
   compact: string | null; resume: string | null; resumeRun: string | null;
   planMode: boolean; executePlan: boolean; approvePlan: string | null;
   verify: string | null; verifyTimeout: number | null; verifyRetries: number | null;
+  /** P2-2：本次运行的成本上限（美元）；null = 不设上限。 */
+  maxCost: number | null;
   trustAgentsVerify: boolean;
   jsonMode: boolean; autoCompact: boolean; autoCompactThreshold: number | null;
   poppy: boolean; fallback: boolean; noFallback: boolean;
@@ -122,7 +125,7 @@ export function parseArgs(argv: string[]): CliArgs {
     listSkills: false, listSessions: false, listMcp: false,
     compact: null, resume: null, resumeRun: null,
     planMode: false, executePlan: false, approvePlan: null,
-    verify: null, verifyTimeout: null, verifyRetries: null,
+    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null,
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
@@ -187,6 +190,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--resume": args.resume = value; break;
         case "--resume-run": args.resumeRun = value; break;
         case "--verify": args.verify = value; break;
+        case "--max-cost": args.maxCost = parseFloat(value); break;
         case "--verify-timeout": args.verifyTimeout = parseInt(value, 10); break;
         case "--verify-retries": args.verifyRetries = parseInt(value, 10); break;
         case "--auto-compact-threshold": args.autoCompactThreshold = parseFloat(value); break;
@@ -359,6 +363,9 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     autoCompactThreshold: args.autoCompactThreshold ?? undefined,
     poppyEnabled: args.poppy,
     home,
+    // P2-2：成本硬顶。单价从 config.pricing 按模型名解析；未配置时金额未知（不编造）。
+    maxCostUsd: args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null),
+    pricing: resolvePricing(config.pricing, provider.model),
     sandbox: {
       backend: sandboxSettings.backend,
       mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",
@@ -1138,6 +1145,11 @@ async function runOneShot(args: CliArgs): Promise<number> {
     return final.status === "verify_failed" ? EXIT_VERIFY : EXIT_SUCCESS;
   } catch (err: unknown) {
     if (err instanceof AgentError && (err as Error).message === "__NO_CREDENTIALS__") return 1;
+    // P2-2：成本硬顶触发——专用退出码，便于 CI/脚本区分"超预算"与"真出错"。
+    if (err instanceof AgentError && /^成本上限已超/.test((err as Error).message)) {
+      process.stderr.write(`成本上限已触发：${(err as Error).message}\n`);
+      return EXIT_COST;
+    }
     if (err instanceof ApprovalRequired) {
       process.stderr.write(`等待审批：${(err as ApprovalRequired).tool}\n`);
       return 1;

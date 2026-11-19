@@ -30,6 +30,7 @@ import {
 } from "./compact.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { UsageTracker } from "./usage.ts";
+import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { randomBytes } from "node:crypto";
 
@@ -116,6 +117,10 @@ export interface AgentOptions {
   // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——CLI 从 config.json /
   // 环境变量 / --sandbox 解析出的沙箱配置，透传给 ToolContext（toolShell 解析生效）。
   sandbox?: { backend?: string | null; mode?: import("./sandbox.ts").SandboxMode; allowNet?: boolean } | null;
+  /** P2-2：单次运行的成本上限（美元）；null = 不设上限。 */
+  maxCostUsd?: number | null;
+  /** P2-2：该模型的单价；null = 未配置，金额未知（不编造）。 */
+  pricing?: Pricing | null;
   /** 父级禁用的工具名；委派时子级工具集 = 父级减禁用。 */
   disabledTools?: string[] | null;
   /** MCP 工具执行器（第 3 阶段前为 null，走 worker 桥）。 */
@@ -157,6 +162,10 @@ export class Agent {
   memoryPath: string;
   delegateDepth: number;
   private delegateBudget: DelegationBudget;
+  private maxCostUsd: number | null;
+  private pricing: Pricing | null;
+  /** 最近一次成本估算；超支时由 checkCost 抛错前写入，供 CLI 汇报。 */
+  lastCost: CostEstimate | null = null;
   onEvent: AgentEventHandler | null;
   onFinal: ((text: string, messages: Record<string, unknown>[]) => Promise<Record<string, unknown>[] | null> | Record<string, unknown>[] | null) | null = null;
   workdir: string;
@@ -189,6 +198,8 @@ export class Agent {
     this.memoryPath = opts.memoryPath ?? join(this.home, "MEMORY.md");
     this.delegateDepth = opts.delegateDepth ?? 0;
     this.delegateBudget = opts.delegateBudget ?? new DelegationBudget();
+    this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
+    this.pricing = opts.pricing ?? null;
     this.onEvent = opts.onEvent ?? null;
     this.workdir = opts.workdir ?? ".";
     this.mode = opts.mode ?? "auto";
@@ -374,6 +385,7 @@ export class Agent {
       const trimmed = trimOldToolResults(completed as never);
       const account = (response: Record<string, unknown>) => {
         this.usage.record(response as never);
+        this.checkCost();
         if (response && typeof response === "object" && typeof (response as Record<string, unknown>).usage === "object") {
           this.emit("usage", this.usage.snapshot() as unknown as Record<string, unknown>);
         }
@@ -498,6 +510,7 @@ export class Agent {
       }
       this.turn = turnOffset + i + 1;
       this.usage.record(resp as never);
+      this.checkCost();
       if (resp && typeof resp === "object" && typeof (resp as Record<string, unknown>).usage === "object") {
         this.emit("usage", this.usage.snapshot() as unknown as Record<string, unknown>);
       }
@@ -604,6 +617,25 @@ export class Agent {
    * 委派（2.6 第 5 条）：子级全新会话 + 独立 task_id，工具集 = 父级减禁用，
    * 父级只看调用与最终摘要（子级 onEvent 不接父级观察器），一次只给一个明确目标。
    */
+  /**
+   * P2-2：每次上报 usage 后检查成本上限。超限直接抛错中止运行——这是"硬顶"，
+   * 不是警告。金额算不出来时（未配单价 / provider 未报 usage）不抛错、不假装封顶，
+   * 只把状态留在 lastCost 里供 CLI 说明。
+   */
+  private checkCost(): void {
+    if (this.maxCostUsd === null && this.pricing === null) return;
+    const e = estimateCost(this.usage.snapshot(), this.pricing, this.maxCostUsd);
+    this.lastCost = e;
+    if (e.status === "priced") {
+      this.emit("cost", { spent_usd: e.spentUsd, limit_usd: e.limitUsd, remaining_usd: e.remainingUsd });
+    }
+    if (e.exceeded) {
+      throw new AgentError(
+        `成本上限已超：已花费 $${(e.spentUsd ?? 0).toFixed(4)}（上限 $${(e.limitUsd ?? 0).toFixed(2)}），运行已中止`,
+      );
+    }
+  }
+
   async delegate(task: string, maxTurns = 6, opts: DelegateOptions = {}): Promise<string> {
     if (typeof task !== "string" || !task.trim()) return "错误：子任务必须是非空字符串";
     if (typeof maxTurns === "boolean" || typeof maxTurns !== "number" ||

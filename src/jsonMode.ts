@@ -7,6 +7,8 @@ export const EXIT_RUNTIME = 1;
 export const EXIT_ARGUMENT = 2;
 export const EXIT_INCOMPLETE = 3;
 export const EXIT_VERIFY = 4;
+/** P2-2：成本上限被触发（运行已中止）。 */
+export const EXIT_COST = 5;
 export const EXIT_INTERRUPTED = 130;
 
 export class JsonLines {
