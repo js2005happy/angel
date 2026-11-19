@@ -3,6 +3,7 @@
 // 每帧都是 "\r 清行 + 内容"，不换行；pause() 清掉这一行，好让工具输出正常打印。
 import { BRAND, paint, type ColorLevel } from "./theme.ts";
 import { textWidth, truncateWidth } from "./consoleUi.ts";
+import { t } from "./i18n.ts";
 
 export const SPINNER_FRAMES_UNICODE = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const SPINNER_FRAMES_ASCII = ["|", "/", "-", "\\"];
@@ -53,7 +54,7 @@ export class Spinner {
 
   constructor(opts: SpinnerOpts) {
     this.o = opts;
-    this.label = opts.label ?? "思考中…";
+    this.label = opts.label ?? t("spinner.thinking");
   }
 
   get running(): boolean { return this.timer !== null; }

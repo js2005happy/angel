@@ -152,7 +152,7 @@ test("CliTest.test_vault_rejects_password_from_argv", async () => {
 function runCli(args: string[], home: string): { code: number; out: string } {
   const r = spawnSync("bun", ["run", "src/cli.ts", ...args], {
     cwd: process.cwd(),
-    env: { ...process.env, HOME: home, NYRA_HOME: join(home, ".nyra") },
+    env: { ...process.env, HOME: home, NYRA_HOME: join(home, ".nyra"), NYRA_LANG: "zh" }, // 断言的是中文界面文案
     encoding: "utf-8", timeout: 60000,
   });
   return { code: r.status ?? -1, out: (r.stdout ?? "") + (r.stderr ?? "") };
@@ -312,7 +312,7 @@ test("CliTest.test_binary_eigenflux_doctor_and_onboarding", () => {
 function runCliInWorkdir(args: string[], home: string, workdir: string): { code: number; out: string } {
   const r = spawnSync("bun", ["run", join(process.cwd(), "src/cli.ts"), ...args], {
     cwd: workdir,
-    env: { ...process.env, HOME: home, NYRA_HOME: join(home, ".nyra") },
+    env: { ...process.env, HOME: home, NYRA_HOME: join(home, ".nyra"), NYRA_LANG: "zh" }, // 断言的是中文界面文案
     encoding: "utf-8", timeout: 60000,
   });
   return { code: r.status ?? -1, out: (r.stdout ?? "") + (r.stderr ?? "") };

@@ -13,6 +13,7 @@
 // 直接并进下一轮的累计值——钱一分不少报，只是晚一轮出现，文档里写明。
 import { estimateCost, type CostEstimate, type Pricing } from "./cost.ts";
 import type { UsageSnapshot } from "./usage.ts";
+import { t } from "./i18n.ts";
 
 /** 每轮的看板快照：JSON 事件的 payload，也是 TUI 那一行的唯一事实源。 */
 export interface DashboardSnapshot {
@@ -77,26 +78,42 @@ export function buildDashboardSnapshotFor(
 }
 
 function fmtTokens(v: number | null | undefined): string {
-  return typeof v === "number" ? v.toLocaleString("en-US") : "未报告";
+  return typeof v === "number" ? v.toLocaleString("en-US") : t("usage.notReported");
 }
 
 /** 看板一行（TUI / ToolPrinter 用）：紧凑、可断言，缺数就写"未知"。 */
+/**
+ * 成本原因：cost.ts 产出的是中文原文（--json 事件里原样保留，不改），终端看板行按界面语言显示。
+ * 认不出的原因原样返回。
+ */
+export function localizeCostReason(reason: string): string {
+  const known: [string, string][] = [
+    ["未配置该模型的单价（config.pricing），无法计算金额", t("cost.noPricing")],
+    ["provider 未上报 usage，无法计算金额", t("cost.noUsage")],
+    ["usage 里没有可用的 token 数", t("cost.noTokens")],
+  ];
+  for (const [zh, out] of known) if (reason === zh) return out;
+  const m = /^有 (\d+) 次调用未上报 usage，金额不完整，不做超支判定$/.exec(reason);
+  if (m) return t("cost.missing", { n: m[1] });
+  return reason;
+}
+
 export function formatDashboardLine(snap: DashboardSnapshot): string {
   const turn = typeof snap.turn === "number" ? snap.turn : 0;
   const maxTurns = typeof snap.max_turns === "number" ? snap.max_turns : 0;
-  const head = `看板 [轮次 ${turn}/${maxTurns}]`;
+  const head = t("dash.head", { turn, max: maxTurns });
   const tokens = `Token ${fmtTokens(snap.prompt_tokens)}/${fmtTokens(snap.completion_tokens)}`;
   const ctx = typeof snap.context_remaining_tokens === "number"
-    ? `上下文剩余 ${snap.context_remaining_tokens.toLocaleString("en-US")}`
-    : "上下文剩余未知";
+    ? t("dash.ctxLeft", { n: snap.context_remaining_tokens.toLocaleString("en-US") })
+    : t("dash.ctxUnknown");
   if (snap.status === "priced" && typeof snap.spent_usd === "number") {
     const spent = `$${snap.spent_usd.toFixed(4)}`;
     const limit = snap.limit_usd === null
-      ? "未设上限"
-      : `上限 $${snap.limit_usd.toFixed(2)}（剩余 $${(snap.remaining_usd ?? 0).toFixed(4)}）`;
-    return `${head} 已花费 ${spent} / ${limit} · ${tokens} · ${ctx}`;
+      ? t("dash.noLimit")
+      : t("dash.limit", { limit: `$${snap.limit_usd.toFixed(2)}`, left: `$${(snap.remaining_usd ?? 0).toFixed(4)}` });
+    return t("dash.priced", { head, spent, limit, tokens, ctx });
   }
-  return `${head} 成本：未知（${snap.reason ?? "数据不足"}）· ${tokens} · ${ctx}`;
+  return t("dash.unpriced", { head, reason: snap.reason ? localizeCostReason(snap.reason) : t("dash.noData"), tokens, ctx });
 }
 
 /**
@@ -107,8 +124,8 @@ export function dashboardCostSegment(estimate: CostEstimate | null | undefined):
   if (!estimate) return null;
   if (estimate.status === "priced" && typeof estimate.spentUsd === "number") {
     return estimate.limitUsd === null
-      ? `成本 $${estimate.spentUsd.toFixed(4)}`
-      : `成本 $${estimate.spentUsd.toFixed(4)}/$${estimate.limitUsd.toFixed(2)}`;
+      ? t("status.cost", { cost: `$${estimate.spentUsd.toFixed(4)}` })
+      : t("status.cost", { cost: `$${estimate.spentUsd.toFixed(4)}/$${estimate.limitUsd.toFixed(2)}` });
   }
-  return "成本未知";
+  return t("status.costUnknown");
 }

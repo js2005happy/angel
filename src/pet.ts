@@ -9,6 +9,7 @@
 // （保存/恢复光标、只画右侧固定列，不打扰 readline 的输入）。
 import { BRAND, paint, type ColorLevel } from "./theme.ts";
 import { textWidth } from "./consoleUi.ts";
+import { t, tList } from "./i18n.ts";
 
 export type PetState = "idle" | "blink" | "thinking" | "happy" | "worried" | "approval";
 
@@ -95,6 +96,12 @@ export const IDLE_QUIPS = [
 export const HAPPY_QUIPS = ["搞定！", "漂亮。", "这一步走得好。"];
 export const WORRIED_QUIPS = ["别急，看看报错。", "换个思路试试？"];
 export const APPROVAL_QUIP = "这步要你点个头。";
+
+/** 当前界面语言的台词（上面的常量是中文版，保留给旧引用）。 */
+export function idleQuips(): string[] { return tList("pet.idle"); }
+export function happyQuips(): string[] { return tList("pet.happy"); }
+export function worriedQuips(): string[] { return tList("pet.worried"); }
+export function approvalQuip(): string { return t("pet.approval"); }
 
 type Env = Record<string, string | undefined>;
 
@@ -200,7 +207,8 @@ export class PetController {
     this.later(() => {
       if (!this.running) return;
       if (this.state === "idle" && this.clock.random() < 0.5) {
-        this.say(IDLE_QUIPS[Math.floor(this.clock.random() * IDLE_QUIPS.length)]);
+        const quips = idleQuips();
+        this.say(quips[Math.floor(this.clock.random() * quips.length)]);
       }
       this.scheduleIdleQuip();
     }, 45_000);
@@ -221,9 +229,9 @@ export class PetController {
   setMood(mood: Exclude<PetState, "blink">): void {
     this.mood = mood;
     this.state = mood;
-    if (mood === "happy" && this.clock.random() < 0.3) this.say(HAPPY_QUIPS[Math.floor(this.clock.random() * HAPPY_QUIPS.length)]);
-    if (mood === "worried") this.say(WORRIED_QUIPS[Math.floor(this.clock.random() * WORRIED_QUIPS.length)]);
-    if (mood === "approval") this.say(APPROVAL_QUIP, true);
+    if (mood === "happy" && this.clock.random() < 0.3) { const q = happyQuips(); this.say(q[Math.floor(this.clock.random() * q.length)]); }
+    if (mood === "worried") { const q = worriedQuips(); this.say(q[Math.floor(this.clock.random() * q.length)]); }
+    if (mood === "approval") this.say(approvalQuip(), true);
     if (mood === "happy" || mood === "worried") {
       this.later(() => {
         if (this.mood === mood) { this.mood = "idle"; this.state = "idle"; if (this.running) this.onChange(); }

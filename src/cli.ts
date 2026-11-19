@@ -48,6 +48,7 @@ import { PermissionLedger, PermissionConflict } from "./poppy.ts";
 import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
 import { NetworkPolicy } from "./eigenfluxPolicy.ts";
 import { printDoctorResult, runDoctor } from "./doctor.ts";
+import { t, getLang, setLang, detectLang, extractLangFlag, normalizeLang } from "./i18n.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——main 入口做 fail-closed 校验，
 // buildAgent 把解析出的沙箱配置透传给 Agent（再进 ToolContext）。
 import { resolveSandboxBackend, getSandboxStatus } from "./sandbox.ts";
@@ -110,7 +111,66 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra permissions ...           Poppy 站点授权意向（本地账本，只记录不授权）
   nyra eigenflux ...             EigenFlux 接入检测与本地网络限制（第 4 阶段已原生化）
 
-模型兜底默认关闭（只用户开启、只切允许列表内服务商）。`;
+模型兜底默认关闭（只用户开启、只切允许列表内服务商）。
+界面语言：--lang zh|en（或 NYRA_LANG、config.json 的 language、系统语言；REPL 里 /lang 切换）。`;
+
+export const USAGE_EN = `Nyra ${VERSION} (Node runtime)
+
+Usage:
+  nyra "task" [--provider name] [--mode readonly|auto|full|creator]   run one task
+  nyra                                                        interactive mode (REPL)
+  nyra --help                    show help (no key, no network)
+  nyra --version                 show version
+  nyra --lang zh|en              UI language (also NYRA_LANG, config "language", system locale; /lang in the REPL)
+  nyra --list-providers          list providers (built-in presets + custom)
+  nyra --list-models [--provider name]   list known models for a provider
+  nyra --list-profiles           list configured provider profiles
+  nyra --list-skills             list loaded skills
+  nyra --list-sessions           list past sessions
+  nyra --list-mcp                list configured MCP servers and presets
+  nyra ui [--host 127.0.0.1] [--port 8765] [--pair] [--open]   start the gateway web UI
+  nyra ui --print-url-json --exit-on-stdin-close   desktop shell mode: one JSON line on stdout, exits when stdin closes
+  nyra gw <sessions|send|view|approve|rewind|info|schedule>   talk to a running gateway as a client
+  nyra --compact <session id>    compact a session and exit
+  REPL: /context shows context usage; /compact focus <keyword> compacts around a topic (see docs/context.md)
+  nyra --resume <session id>     continue a session
+  nyra --resume-run <run id>     resume a run from its record
+  nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
+  nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
+  nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
+  nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
+  nyra --json "task"             one non-interactive task, JSON Lines output
+  nyra schedule <list|add|remove|run|daemon>   manage scheduled tasks
+  nyra task <add|list|show|cancel|worker|approve>   manage the background task queue
+  nyra kb <create|list|add|search|ask|remove>  local knowledge base
+  nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
+  nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
+  nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
+  nyra memory <export|export-prompt|import|local|import-zip>  memory exchange
+  nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
+  nyra setup                     first-run wizard
+  nyra --example [file]          local example task (no model calls, no cost)
+  nyra permissions ...           Poppy site permission intents (local ledger; records, never grants)
+  nyra eigenflux ...             EigenFlux checks and local network limits
+
+Model fallback is off by default (only when you turn it on, only to allowed providers).`;
+
+/** 当前界面语言的 --help 文本。 */
+export function usageText(): string { return getLang() === "en" ? USAGE_EN : USAGE; }
+
+/**
+ * CLI 入口的语言初始化：--lang > NYRA_LANG > config.language > 系统语言 > en。
+ * 返回去掉 --lang 后的 argv；--lang 值非法时 error 有值。
+ */
+export function initLang(argv: string[], config: Record<string, unknown> | null): { argv: string[]; error?: string } {
+  const flag = extractLangFlag(argv);
+  if (flag.value !== undefined && flag.lang === null) {
+    setLang(detectLang({ config }));
+    return { argv: flag.rest, error: t("lang.badFlag", { value: flag.value }) };
+  }
+  setLang(detectLang({ flag: flag.lang, config }));
+  return { argv: flag.rest };
+}
 
 export interface CliArgs {
   help: boolean; version: boolean;
@@ -130,6 +190,8 @@ export interface CliArgs {
   workdir: string; trust: boolean;
   sandbox?: string | null; sandboxId?: string | null; sandboxTemplate?: string | null; sandboxTimeout: number | null;
   doctor: boolean; setup: boolean; example: boolean; exampleFile?: string;
+  /** 界面语言 --lang zh|en（main 入口已先取出并生效；这里只为 parseArgs 单独调用时不报未知选项）。 */
+  lang?: string;
   task?: string; unknown?: string;
   subcommand?: string; subArgs?: string[];
 }
@@ -155,6 +217,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries",
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
+    "--lang",
   ]);
   const subcommands = new Set(["redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
@@ -218,6 +281,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--sandbox-id": args.sandboxId = value; break;
         case "--sandbox-template": args.sandboxTemplate = value; break;
         case "--sandbox-timeout": args.sandboxTimeout = parseInt(value, 10); break;
+        case "--lang": args.lang = value; break;
       }
     } else if (a.startsWith("--") && a.includes("=")) {
       const [flag, value] = a.split("=", 2);
@@ -235,10 +299,7 @@ export function parseArgs(argv: string[]): CliArgs {
 }
 
 function printSetupHelp(providerName: string): void {
-  process.stdout.write("未找到可用的 API 凭据。\n设置方法（二选一）：\n");
-  process.stdout.write("  1. 环境变量：export DEEPSEEK_API_KEY=<redacted>\n     或通用：export NYRA_API_KEY=<redacted>\n");
-  process.stdout.write("  2. 已保存的连接器：如果 DeepSeek / xAI 的 Key 已通过安全流程保存，直接用 --provider deepseek 或 --provider xai 即可，无需再填 Key。\n");
-  process.stdout.write(`当前 provider：${providerName}\n`);
+  process.stdout.write(t("setup.noCreds", { provider: providerName }) + "\n");
 }
 
 function fallbackEnabled(args: CliArgs): boolean | null {
@@ -250,7 +311,7 @@ function fallbackEnabled(args: CliArgs): boolean | null {
 function fallbackNotice(record: { from: string; to: string; error: string }): void {
   let reason = record.error;
   if (reason.length > 120) reason = reason.slice(0, 117) + "…";
-  process.stderr.write(`模型切换：${record.from} 失败（${reason}），已切换到 ${record.to} 继续\n`);
+  process.stderr.write(t("fallback.notice", { from: record.from, reason, to: record.to }) + "\n");
 }
 
 const TRUSTED_FILE = "trusted_workspaces.json";
@@ -306,7 +367,7 @@ export function addTrusted(workdir: string, home: string): void {
 async function ensureWorkspaceTrusted(workdir: string, args: CliArgs, config: Record<string, unknown>, home: string): Promise<number | null> {
   if (args.trust) {
     try { addTrusted(workdir, home); } catch (err: unknown) {
-      process.stderr.write(`警告：无法记录工作区信任：${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(t("trust.warn", { err: err instanceof Error ? err.message : String(err) }) + "\n");
     }
     return null;
   }
@@ -323,11 +384,11 @@ async function ensureWorkspaceTrusted(workdir: string, args: CliArgs, config: Re
     rl.question(trust.question, (a) => { rl.close(); resolvePromise(a); });
   });
   if (answer.trim().toLowerCase() !== "y" && answer.trim().toLowerCase() !== "yes") {
-    process.stdout.write("已拒绝信任该工作目录。\n");
+    process.stdout.write(t("trust.denied") + "\n");
     return 1;
   }
   try { addTrusted(workdir, home); } catch (err: unknown) {
-    process.stderr.write(`警告：无法记录工作区信任（本次仍继续）：${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(t("trust.warnContinue", { err: err instanceof Error ? err.message : String(err) }) + "\n");
   }
   return null;
 }
@@ -363,7 +424,7 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   const mode = validateMode(args.mode ?? profile.mode ?? (config.mode as string) ?? "auto");
   const maxTurns = args.maxTurns ?? (typeof config.max_turns === "number" ? config.max_turns : 20);
   if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1) {
-    throw new Error("--max-turns 必须为正整数");
+    throw new Error(t("err.maxTurns"));
   }
   // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——后端/模式/网络开关
   // 按 CLI flag > 环境变量 > config.json 解析（resolveSandbox）；显式 bwrap
@@ -1208,7 +1269,7 @@ async function runOneShot(args: CliArgs): Promise<number> {
       final.status === "verify_failed" ? "验证命令未通过" : "未配置或未执行验证命令",
     );
     process.stdout.write(downgraded.text + "\n");
-    process.stderr.write("本次运行用量：\n" + formatUsage(agent.usage.snapshot()) + "\n");
+    process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n");
     return final.status === "verify_failed" ? EXIT_VERIFY : EXIT_SUCCESS;
   } catch (err: unknown) {
     if (err instanceof AgentError && (err as Error).message === "__NO_CREDENTIALS__") return 1;
@@ -1259,16 +1320,16 @@ export function parseCompactCommand(text: string): { focus: string } | null {
 // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 的优化建议触发规则：
 // 总量为 0 时无需优化；占比最高的类别超过 50% 时给出针对性建议，否则报均衡。
 export function contextSuggestion(u: ContextUsage): string {
-  if (u.totalChars <= 0) return "上下文为空，无需优化。";
+  if (u.totalChars <= 0) return t("ctx.empty");
   const parts: [string, number, string][] = [
-    ["系统提示", u.system, "系统提示占比最高：检查 AGENTS.md / 长期记忆是否过长，或精简常驻技能索引。"],
-    ["技能全文", u.skills, "技能全文占比最高：减少本轮命中的技能，或先 /compact 精简会话后再试。"],
-    ["对话历史", u.history, "对话历史占比最高：可用 /compact 压缩会话，或 /compact focus <关键词> 只保留重点。"],
-    ["工具结果", u.toolResults, "工具结果占比最高：可用 /compact 压缩会话，旧工具结果会被先折叠。"],
+    ["system", u.system, t("ctx.sysTop")],
+    ["skills", u.skills, t("ctx.skillsTop")],
+    ["history", u.history, t("ctx.historyTop")],
+    ["tools", u.toolResults, t("ctx.toolsTop")],
   ];
   let top = parts[0];
   for (const p of parts) if (p[1] > top[1]) top = p;
-  if (top[1] / u.totalChars <= 0.5) return "各部分占比均衡，暂无需压缩。";
+  if (top[1] / u.totalChars <= 0.5) return t("ctx.balanced");
   return top[2];
 }
 
@@ -1278,27 +1339,33 @@ export function contextSuggestion(u: ContextUsage): string {
 export function formatContextUsage(u: ContextUsage): string {
   const pct = (n: number) => (u.totalChars > 0 ? `${Math.round((n / u.totalChars) * 100)}%` : "0%");
   const lines = [
-    "上下文占用（字符数）：",
-    `  系统提示：${u.system}（${pct(u.system)}）`,
-    `  技能全文：${u.skills}（${pct(u.skills)}）`,
-    `  对话历史：${u.history}（${pct(u.history)}）`,
-    `  工具结果：${u.toolResults}（${pct(u.toolResults)}）`,
-    `  总计：${u.totalChars} 字符`,
+    t("ctx.title"),
+    t("ctx.system", { n: u.system, pct: pct(u.system) }),
+    t("ctx.skills", { n: u.skills, pct: pct(u.skills) }),
+    t("ctx.history", { n: u.history, pct: pct(u.history) }),
+    t("ctx.tools", { n: u.toolResults, pct: pct(u.toolResults) }),
+    t("ctx.total", { n: u.totalChars }),
   ];
   if (u.windowTokens === null || u.windowTokens === undefined) {
-    lines.push("  模型窗口：未配置（未配置该模型的 context_window_tokens）");
+    lines.push(t("ctx.windowUnset"));
   } else {
-    lines.push(`  模型窗口：${u.windowTokens.toLocaleString("en-US")} tokens`);
+    lines.push(t("ctx.window", { n: u.windowTokens.toLocaleString("en-US") }));
   }
   if (u.usedTokens === null || u.usedTokens === undefined) {
-    lines.push("  已用 token：未知");
+    lines.push(t("ctx.usedUnknown"));
   } else if (u.estimated) {
-    lines.push(`  已用 token：约 ${u.usedTokens.toLocaleString("en-US")}（估算：4 字符 ≈ 1 token，模型未报告用量）`);
+    lines.push(t("ctx.usedEstimated", { n: u.usedTokens.toLocaleString("en-US") }));
   } else {
-    lines.push(`  已用 token：${u.usedTokens.toLocaleString("en-US")}（模型实报）`);
+    lines.push(t("ctx.usedReported", { n: u.usedTokens.toLocaleString("en-US") }));
   }
-  lines.push(`建议：${contextSuggestion(u)}`);
+  lines.push(t("ctx.suggest", { s: contextSuggestion(u) }));
   return lines.join("\n");
+}
+
+/** 解析 /lang 命令：返回目标语言；null = 用法错误（没给参数或不是 zh/en）。 */
+export function parseLangCommand(text: string): "zh" | "en" | null {
+  const arg = text.trim().split(/\s+/)[1];
+  return arg === undefined ? null : normalizeLang(arg);
 }
 
 // ---- REPL ----
@@ -1313,7 +1380,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     built = await buildAgent(args, { interactive: true });
   } catch (err: unknown) {
     if (err instanceof AgentError && (err as Error).message === "__NO_CREDENTIALS__") return 1;
-    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
     return 1;
   }
   const { agent } = built;
@@ -1361,7 +1428,7 @@ async function runRepl(args: CliArgs): Promise<number> {
   ).join("\n") + "\n");
   process.stdout.write((framed()
     ? renderTips({ width: termCols(), ...ui, pet: showPet() })
-    : "  输入 /help 查看命令，/exit 退出。") + "\n");
+    : t("tips.plain")) + "\n");
   const unread = (await import("./tasks.ts")).formatUnreadInbox(home);
   if (unread) process.stdout.write(unread + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
@@ -1431,8 +1498,8 @@ async function runRepl(args: CliArgs): Promise<number> {
   printer.onBeforeWrite = () => spinner.pause();
   printer.onAfterWrite = () => { if (spinning) spinner.resume(); };
   agent.onEvent = (kind, data) => {
-    if (kind === "tool_start") spinner.setLabel(`运行 ${String(data.name ?? "工具")}…`);
-    else if (kind === "tool_result") spinner.setLabel("思考中…");
+    if (kind === "tool_start") spinner.setLabel(t("spinner.running", { tool: String(data.name ?? t("spinner.tool")) }));
+    else if (kind === "tool_result") spinner.setLabel(t("spinner.thinking"));
     printer.call(kind, data);
   };
   // 审批：提问前收起 spinner，小伙伴举手；回答后恢复。
@@ -1443,7 +1510,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     if (!showPet()) return;
     const cols = termCols();
     const rows = renderPet("approval", { level: uiLevel });
-    const bubble = renderBubble(pet.bubble ?? "这步要你点个头。", uiLevel);
+    const bubble = renderBubble(pet.bubble ?? t("pet.approval"), uiLevel);
     const bw = textWidth(stripAnsi(bubble));
     const lines = rows.map((r, i) => {
       const left = i === 1 && bw + PET_WIDTH + 3 < cols ? " ".repeat(cols - PET_WIDTH - bw - 2) + bubble + " " : " ".repeat(cols - PET_WIDTH - 1);
@@ -1513,13 +1580,13 @@ async function runRepl(args: CliArgs): Promise<number> {
     if (!text) continue;
     if (text === "/exit" || text === "/quit") break;
     if (text === "/help") {
-      process.stdout.write("命令：/help 帮助；/exit 退出；/clear 清空会话；/context 查看上下文占用；/compact 压缩会话；/compact focus <关键词> 按重点压缩会话（重点保留与关键词相关的内容）；/mode <readonly|auto|full|creator> 切换模式；/pet [on|off] 小伙伴开关；/creator 进入创造模式；/commands 列出自定义命令；/undo 撤销最近一轮改动；/rewind N 撤销最近 N 轮文件改动；/rewind-msg <消息 id> 回退到该消息；/rewind-edit <消息 id> <新文本> 编辑重发；/rewind-fork <消息 id> fork 新会话。\n");
+      process.stdout.write(t("repl.help") + "\n");
       continue;
     }
     if (text === "/clear") {
       agent.messages = [];
       saveSession(agent.sessionId, [], home);
-      process.stdout.write(ok("会话已清空。") + "\n");
+      process.stdout.write(ok(t("repl.cleared")) + "\n");
       continue;
     }
     // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化与
@@ -1531,14 +1598,14 @@ async function runRepl(args: CliArgs): Promise<number> {
     if (text === "/compact" || text.startsWith("/compact ")) {
       const parsed = parseCompactCommand(text);
       if (parsed === null) {
-        process.stderr.write("用法：/compact 或 /compact focus <关键词>\n");
+        process.stderr.write(t("repl.compactUsage") + "\n");
         continue;
       }
       try {
         const info = await agent.compact(4, parsed.focus || undefined);
-        process.stdout.write(`已压缩${parsed.focus ? `（focus：${parsed.focus}）` : ""}：${info.before} 条 → ${info.after} 条（${info.method}）\n`);
+        process.stdout.write(t("repl.compacted", { focus: parsed.focus ? t("repl.compactFocus", { focus: parsed.focus }) : "", before: info.before, after: info.after, method: info.method }) + "\n");
       } catch (err: unknown) {
-        process.stderr.write(`压缩失败：${err instanceof Error ? err.message : String(err)}\n`);
+        process.stderr.write(t("repl.compactFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
       }
       continue;
     }
@@ -1547,38 +1614,50 @@ async function runRepl(args: CliArgs): Promise<number> {
       try {
         mode = validateMode(next);
         agent.setMode(mode);
-        process.stdout.write(ok(`已切换到 ${mode} 模式。`) + "\n");
+        process.stdout.write(ok(t("repl.modeSwitched", { mode })) + "\n");
       } catch {
-        process.stderr.write(fail("模式必须是 readonly / auto / full / creator。") + "\n");
+        process.stderr.write(fail(t("repl.modeInvalid")) + "\n");
       }
       continue;
     }
     if (text === "/pet" || text.startsWith("/pet ")) {
       const next = parsePetCommand(text, petOn);
       if (next === null) {
-        process.stderr.write(fail("用法：/pet [on|off]") + "\n");
+        process.stderr.write(fail(t("pet.usage")) + "\n");
         continue;
       }
       petOn = next;
       try { saveConfig(home, { pet: petOn }); } catch { /* 写不了配置也照样切换本次会话 */ }
-      let msg = petOn ? "小伙伴回来了（/pet off 可关闭）。" : "小伙伴先去休息了（/pet on 叫回来）。";
-      if (petOn && !showPet()) msg += "当前终端不显示（需要 TTY、至少 80 列、非 ASCII、非 CI）。";
+      let msg = petOn ? t("pet.on") : t("pet.off");
+      if (petOn && !showPet()) msg += t("pet.hidden");
       process.stdout.write(ok(msg) + "\n");
+      continue;
+    }
+    if (text === "/lang" || text.startsWith("/lang ")) {
+      // 界面语言：立即切换并写回 config.json 的 language（下次启动沿用）。
+      const next = parseLangCommand(text);
+      if (next === null) {
+        process.stderr.write(fail(t("lang.usage", { lang: getLang() })) + "\n");
+        continue;
+      }
+      setLang(next);
+      try { saveConfig(home, { language: next }); } catch { /* 写不了配置也照样切换本次会话 */ }
+      process.stdout.write(ok(t("lang.switched")) + "\n");
       continue;
     }
     if (text === "/creator") {
       try {
         mode = validateMode("creator");
         agent.setMode(mode);
-        process.stdout.write("已进入创造模式：一句话描述想要的功能，我来对齐 spec、生成插件、验证后请你确认安装。\n");
+        process.stdout.write(t("repl.creatorOn") + "\n");
       } catch {
-        process.stderr.write("切换到创造模式失败。\n");
+        process.stderr.write(t("repl.creatorFailed") + "\n");
       }
       continue;
     }
     if (text === "/commands") {
       const found = listCustomCommands(workdir, home);
-      if (!found.length) process.stdout.write("还没有自定义命令。在 ~/.nyra/commands/ 或 <工作目录>/.nyra/commands/ 放 Markdown 文件即可。\n");
+      if (!found.length) process.stdout.write(t("repl.noCommands") + "\n");
       else for (const f of found) process.stdout.write(`- ${f}\n`);
       continue;
     }
@@ -1589,7 +1668,7 @@ async function runRepl(args: CliArgs): Promise<number> {
         const parts = text.split(/\s+/);
         const messageId = Number(parts[1]);
         if (!Number.isInteger(messageId) || messageId <= 0) {
-          process.stderr.write("用法：/rewind-msg <消息 id>；/rewind-edit <消息 id> <新文本>；/rewind-fork <消息 id>\n");
+          process.stderr.write(t("repl.rewindMsgUsage") + "\n");
           continue;
         }
         let result: { action: string; kept: number; deleted: number; new_session_id: string | null };
@@ -1599,18 +1678,18 @@ async function runRepl(args: CliArgs): Promise<number> {
           result = rewindFork(store, agent.sessionId, messageId);
         } else {
           const newText = text.slice(text.indexOf(parts[1]) + parts[1].length).trim();
-          if (!newText) { process.stderr.write("用法：/rewind-edit <消息 id> <新文本>\n"); continue; }
+          if (!newText) { process.stderr.write(t("repl.rewindEditUsage") + "\n"); continue; }
           result = rewindEdit(store, agent.sessionId, messageId, newText);
         }
         if (result.action !== "fork") {
           agent.messages = storeHistoryToAgentMessages(store.history(agent.sessionId, 100000));
           saveSession(agent.sessionId, agent.messages, home);
-          process.stdout.write(`已回退到消息 ${messageId}：保留 ${result.kept} 条，删除 ${result.deleted} 条。\n`);
+          process.stdout.write(t("repl.rewound", { id: messageId, kept: result.kept, deleted: result.deleted }) + "\n");
         } else {
-          process.stdout.write(`已 fork 新会话 ${result.new_session_id}（复制 ${result.kept} 条，原会话不动）。用 nyra --resume ${result.new_session_id} 继续。\n`);
+          process.stdout.write(t("repl.forked", { sid: String(result.new_session_id), kept: result.kept }) + "\n");
         }
       } catch (err: unknown) {
-        process.stdout.write(`回退失败：${err instanceof Error ? err.message : String(err)}\n`);
+        process.stdout.write(t("repl.rewindFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
       } finally {
         store.close();
       }
@@ -1618,14 +1697,14 @@ async function runRepl(args: CliArgs): Promise<number> {
     }
     if (text === "/undo" || text === "/rewind" || text.startsWith("/rewind ")) {
       if (!agent.checkpoints) {
-        process.stdout.write("当前后端不支持检查点撤销。\n");
+        process.stdout.write(t("repl.noCheckpoints") + "\n");
         continue;
       }
       let count = 1;
       if (text.startsWith("/rewind ")) {
         const pieces = text.split(/\s+/);
         if (pieces.length !== 2 || !/^\d+$/.test(pieces[1])) {
-          process.stderr.write("用法：/rewind N（1 至 10）\n");
+          process.stderr.write(t("repl.rewindUsage") + "\n");
           continue;
         }
         count = parseInt(pieces[1], 10);
@@ -1638,9 +1717,9 @@ async function runRepl(args: CliArgs): Promise<number> {
           content: `[Nyra 撤销记录] 已恢复最近 ${result.turns} 轮中的 ${result.files} 个本地文件；此前工具执行结果可能已失效。后续操作请重新读取文件，不要假设此前改动仍存在。`,
         });
         saveSession(agent.sessionId, agent.messages, home);
-        process.stdout.write(`已撤销 ${result.turns} 轮，恢复 ${result.files} 个文件。\n`);
+        process.stdout.write(t("repl.undone", { turns: result.turns, files: result.files }) + "\n");
       } catch (err: unknown) {
-        process.stdout.write(`撤销失败：${err instanceof Error ? err.message : String(err)}\n`);
+        process.stdout.write(t("repl.undoFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
       }
       continue;
     }
@@ -1651,7 +1730,7 @@ async function runRepl(args: CliArgs): Promise<number> {
       try { store.record(agent.sessionId, "user", text); } catch { /* ignore */ }
       pet.setMood("thinking");
       spinning = framed();
-      spinner.start("思考中…");
+      spinner.start(t("spinner.thinking"));
       const unguard = spinning
         ? [guardStream(process.stdout), guardStream(process.stderr), guardConsole("log"), guardConsole("error"), guardConsole("warn")]
         : [];
@@ -1669,11 +1748,11 @@ async function runRepl(args: CliArgs): Promise<number> {
     } catch (err: unknown) {
       if (err instanceof ApprovalRequired) {
         pet.setMood("approval");
-        process.stdout.write(`等待审批：${(err as ApprovalRequired).tool}（已记录，可用 nyra task approve 批准后继续）\n`);
+        process.stdout.write(t("approval.pending", { tool: (err as ApprovalRequired).tool }) + "\n");
         continue;
       }
       pet.setMood("worried");
-      process.stderr.write(fail(`错误：${err instanceof Error ? err.message : String(err)}`) + "\n");
+      process.stderr.write(fail(t("err.prefix", { err: err instanceof Error ? err.message : String(err) })) + "\n");
     }
     agent.ctx.approvedShellCommands?.clear();
   }
@@ -1686,7 +1765,7 @@ async function runRepl(args: CliArgs): Promise<number> {
     await endSessionHooks();
     process.removeListener("SIGINT", onReplSigint);
   }
-  process.stderr.write("本次运行用量：\n" + formatUsage(agent.usage.snapshot()) + "\n");
+  process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n");
   return 0;
 }
 
@@ -1824,12 +1903,22 @@ function handleEigenflux(argv: string[], home: string): number {
 export async function main(argv: string[]): Promise<number> {
   // spec 07：首次运行做原子迁移（~/.angel → ~/.nyra），只读 ~/.nyra。
   ensureNyraHome();
+  // 界面语言：--lang > NYRA_LANG > config.language > 系统语言 > en（首次启动不询问）。
+  // 只读 config.json 的 language（不存在不创建，--help/--version 不留副作用）。
+  let langCfg: Record<string, unknown> | null = null;
+  try {
+    const raw = JSON.parse(readFileSync(join(resolveHome(), "config.json"), "utf-8"));
+    if (raw && typeof raw === "object") langCfg = { language: (raw as Record<string, unknown>).language };
+  } catch { /* 没有或坏了就按环境探测 */ }
+  const langInit = initLang(argv, langCfg);
+  if (langInit.error) { process.stderr.write(t("err.prefix", { err: langInit.error }) + "\n"); return 2; }
+  argv = langInit.argv;
   const args = parseArgs(argv);
   if (args.unknown) {
-    process.stderr.write(`未知选项：${args.unknown}\n${USAGE}\n`);
+    process.stderr.write(`${t("err.unknownOption", { opt: args.unknown })}\n${usageText()}\n`);
     return 2;
   }
-  if (args.help) { process.stdout.write(USAGE + "\n"); return 0; }
+  if (args.help) { process.stdout.write(usageText() + "\n"); return 0; }
   if (args.version) { process.stdout.write(`nyra ${VERSION} (node runtime)\n`); return 0; }
 
   const home = resolveHome();
@@ -1879,7 +1968,7 @@ export async function main(argv: string[]): Promise<number> {
     try {
       provider = resolveProvider({ home, config, providerName: args.provider });
     } catch (err) {
-      console.error(`模型配置有问题：${err instanceof Error ? err.message : String(err)}`);
+      console.error(t("main.configBad", { err: err instanceof Error ? err.message : String(err) }));
       return 1;
     }
     const result = await runWizard({ home, provider, config, exampleFile: defaultExampleFile(home) });
@@ -1891,25 +1980,25 @@ export async function main(argv: string[]): Promise<number> {
     try {
       provider = resolveProvider({ home, config, providerName: args.provider });
     } catch (err) {
-      console.error(`模型配置有问题：${err instanceof Error ? err.message : String(err)}`);
+      console.error(t("main.configBad", { err: err instanceof Error ? err.message : String(err) }));
       return 1;
     }
     const file = args.exampleFile || defaultExampleFile(home);
-    if (!existsSync(file)) { process.stderr.write(`示例文件不存在：${file}\n`); return 2; }
+    if (!existsSync(file)) { process.stderr.write(t("main.exampleMissing", { file }) + "\n"); return 2; }
     try {
       const result = runExampleTask({ home, provider: provider.name, model: provider.model, file });
       return result.rows === 100 ? 0 : 1;
     } catch (err: unknown) {
-      process.stderr.write(`示例任务失败：${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(t("main.exampleFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
       return 1;
     }
   }
 
   // --resume-run 不能与任务文本、--resume、计划、压缩或列表命令组合使用。
   if (args.resumeRun && (args.task !== undefined || args.resume || args.planMode || args.executePlan || args.approvePlan || args.compact || args.listMcp || args.listProfiles || args.listSessions || args.listSkills || args.inspectPoppyIdentity !== null || args.discoverPoppy !== null)) {
-    const message = "--resume-run 不能与任务文本、--resume、计划、压缩或列表命令组合使用";
+    const message = t("main.resumeRunCombo");
     if (args.jsonMode) return invalidArguments(process.stdout, message);
-    process.stderr.write("错误：" + message + "\n");
+    process.stderr.write(t("err.prefix", { err: message }) + "\n");
     return 2;
   }
   if (args.inspectPoppyIdentity !== null) {
@@ -1930,11 +2019,11 @@ export async function main(argv: string[]): Promise<number> {
     const current = (config.provider as string) || "deepseek";
     for (const name of Object.keys(getProviderPresets(config)).sort()) {
       const p = PROVIDERS[name] ?? getProviderPresets(config)[name];
-      const mark = name === current ? "（当前）" : "";
-      const auth = p.auth === "cli" ? "复用本机登录，不用 Key" : name === "ollama" ? "本地模型，不用 Key" : `Key 环境变量：${p.envKey}`;
-      process.stdout.write(`${name}${mark}：默认模型 ${p.defaultModel ?? "（需指定）"}；${auth}\n`);
+      const mark = name === current ? t("list.current") : "";
+      const auth = p.auth === "cli" ? t("list.cliAuth") : name === "ollama" ? t("list.localModel") : t("list.envKey", { key: String(p.envKey) });
+      process.stdout.write(t("list.providerLine", { name, mark, model: p.defaultModel ?? t("list.needModel"), auth }) + "\n");
     }
-    process.stdout.write("自定义 provider：在 ~/.nyra/config.json 的 custom_providers 里添加。\n");
+    process.stdout.write(t("list.customHint") + "\n");
     return 0;
   }
   if (args.listModels) {
@@ -1946,31 +2035,31 @@ export async function main(argv: string[]): Promise<number> {
       const resolved = resolveProvider({ home, config, providerName: name });
       const provider = new Provider(resolved);
       const models = await provider.listModels();
-      if (!models.length) { process.stdout.write(`${name} 未返回可用模型。\n`); return 0; }
+      if (!models.length) { process.stdout.write(t("list.noModels", { name }) + "\n"); return 0; }
       for (const m of models) process.stdout.write(`- ${m}\n`);
       return 0;
     } catch (err: unknown) {
-      process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
       return 1;
     }
   }
   if (args.listProfiles) {
     const config = loadConfig(home);
     const names = listProfiles(config);
-    if (!names.length) process.stdout.write("暂无 provider 档案（在 ~/.nyra/config.json 的 profiles 里添加）\n");
+    if (!names.length) process.stdout.write(t("list.noProfiles") + "\n");
     else for (const n of names) process.stdout.write(`- ${n}\n`);
     return 0;
   }
   if (args.listSkills) {
     const skills = loadSkills(canonicalSkillDirs(process.cwd(), home, pluginSkillDirs(home)));
-    if (!skills.length) process.stdout.write("暂无技能\n");
+    if (!skills.length) process.stdout.write(t("list.noSkills") + "\n");
     else for (const s of skills) process.stdout.write(`- ${s.name}：${s.description}\n`);
     return 0;
   }
   if (args.listSessions) {
     const sessions = listSessions(home);
-    if (!sessions.length) process.stdout.write("暂无历史会话\n");
-    else for (const s of sessions) process.stdout.write(`- ${s.id}（${s.count} 条消息）${s.preview}\n`);
+    if (!sessions.length) process.stdout.write(t("list.noSessions") + "\n");
+    else for (const s of sessions) process.stdout.write(t("list.sessionLine", { id: s.id, n: s.count, preview: s.preview }) + "\n");
     return 0;
   }
   if (args.listMcp) {
@@ -1978,16 +2067,16 @@ export async function main(argv: string[]): Promise<number> {
     const servers = loadMcpServers(config);
     const names = Object.keys(servers);
     if (!config.mcp_enabled || !names.length) {
-      process.stdout.write("MCP 未启用或无可用服务器。\n在 ~/.nyra/config.json 里设置 \"mcp_enabled\": true 并配置 mcp_servers 或 mcp_presets 后可用。\n");
-      process.stdout.write("内置预置（10 个）：" + listPresets().map((p) => p.name).join("、") + "。\n");
+      process.stdout.write(t("list.mcpOff") + "\n");
+      process.stdout.write(t("list.mcpPresets", { n: listPresets().length, names: listPresets().map((p) => p.name).join(getLang() === "en" ? ", " : "、") }) + "\n");
       return 0;
     }
-    process.stdout.write("已配置的 MCP 服务器（原生客户端，第 3 阶段）：\n");
+    process.stdout.write(t("list.mcpTitle") + "\n");
     for (const name of names) {
       const s = servers[name];
       process.stdout.write(`- ${name}：${s.command} ${s.args.join(" ")}\n`);
     }
-    process.stdout.write("工具列表需启动服务器后查看：nyra ui（full 模式）→ 设置 → MCP 工具与成本。\n");
+    process.stdout.write(t("list.mcpHint") + "\n");
     return 0;
   }
   if (args.compact) {
@@ -1995,13 +2084,13 @@ export async function main(argv: string[]): Promise<number> {
       const { agent } = await buildAgent({ ...args, task: undefined }, { interactive: false });
       agent.sessionId = args.compact;
       const messages = loadSession(args.compact, home);
-      if (messages === null) { process.stderr.write(`错误：找不到会话 ${args.compact}\n`); return 1; }
+      if (messages === null) { process.stderr.write(t("main.sessionMissing", { id: args.compact }) + "\n"); return 1; }
       agent.messages = messages;
       const info = await agent.compact();
-      process.stdout.write(`已压缩会话 ${args.compact}：${info.before} 条 → ${info.after} 条（${info.method}）\n`);
+      process.stdout.write(t("main.compacted", { id: args.compact, before: info.before, after: info.after, method: info.method }) + "\n");
       return 0;
     } catch (err: unknown) {
-      process.stderr.write(`压缩失败：${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(t("repl.compactFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
       return 1;
     }
   }
@@ -2012,11 +2101,11 @@ export async function main(argv: string[]): Promise<number> {
   try {
     resolveSandboxBackend(loadConfig(home), args.sandbox ?? undefined);
   } catch (err) {
-    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
     return 2;
   }
   if (args.contextWindow !== null && (typeof args.contextWindow !== "number" || !Number.isInteger(args.contextWindow) || args.contextWindow < 1)) {
-    process.stderr.write("错误：--context-window 必须为正整数\n");
+    process.stderr.write(t("err.contextWindow") + "\n");
     return 1;
   }
 
@@ -2027,7 +2116,7 @@ export async function main(argv: string[]): Promise<number> {
 // Bun --compile 入口：直接跑 main。
 if (import.meta.main) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((err) => {
-    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
     process.exitCode = 1;
   });
 }

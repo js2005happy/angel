@@ -195,7 +195,7 @@ test("BannerTest.test_status_bar_mode_hint_only_when_supported", () => {
   const without = renderStatusBar({ model: "m", mode: "auto", contextUsage: null }, { width: 100 });
   expect(without).not.toContain("shift+tab");
   const withKey = renderStatusBar({ model: "m", mode: "auto", contextUsage: null, modeSwitchKey: true }, { width: 100 });
-  expect(withKey).toContain("shift+tab to switch modes");
+  expect(withKey).toContain("shift+tab"); // 提示文案随界面语言（zh：shift+tab 切换模式）
 });
 
 test("BannerTest.test_status_bar_fits_narrow_terminal", () => {

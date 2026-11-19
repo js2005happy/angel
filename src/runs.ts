@@ -13,6 +13,7 @@ import { pythonJsonDump} from "./pyjson.ts";
 import { ApprovalRequired} from "./tools.ts";
 import { checkApproval, checkShellDenied, defaultShell, wrapShellCommand, workspaceShellCwd, idempotencyKey, RESUME_IDEMPOTENT_TOOLS, type ToolContext} from "./tools.ts";
 import { loadSession, saveSession} from "./memory.ts";
+import { t as tr } from "./i18n.ts";
 
 export const RUN_STATUSES = new Set(
 "queued running awaiting_approval interrupted failed incomplete completed_unverified verified verify_failed".split(" "),
@@ -217,7 +218,7 @@ export async function runVerifyCommand(ctx: ToolContext, command: string, timeou
   if (denied) return { exit_code: null, passed: false, output: denied, denied: true };
   const cwd = workspaceShellCwd(ctx, null);
   try {
-    await checkApproval(ctx, "shell", `执行验证命令：${command}（cwd: ${cwd}；timeout: ${timeout}s）`, { command, cwd: String(cwd), timeout });
+    await checkApproval(ctx, "shell", tr("sum.verify", { cmd: command, cwd: String(cwd), timeout }), { command, cwd: String(cwd), timeout });
   } catch (err: unknown) {
     return { exit_code: null, passed: false, output: err instanceof Error ? err.message : String(err), denied: true };
   }

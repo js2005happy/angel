@@ -13,7 +13,7 @@ import { appendMemory } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
 import { evaluate, parseRules, matchPathGlob, type RuleSet } from "./permissionRules.ts";
-import { RuleStore, SessionRules, suggestionFor, rejectionMessage, type ApprovalDecision, type ApprovalRule } from "./approvalRules.ts";
+import { RuleStore, SessionRules, suggestionFor, rejectionMessage, formatPrefix, type ApprovalDecision, type ApprovalRule } from "./approvalRules.ts";
 import { runSeatbelt, SeatbeltUnavailableError } from "./seatbelt.ts";
 import { runWindowsSandboxed, WindowsSandboxUnavailableError } from "./windowsSandbox.ts";
 import { EvidenceStore } from "./evidence.ts";
@@ -34,6 +34,7 @@ import {
 import { discoverPoppy, inspectPoppyIdentity, PermissionLedger } from "./poppy.ts";
 import { assertPublicUrl } from "./net.ts";
 import { isToolErrorResult } from "./repeatGuard.ts";
+import { t as tr } from "./i18n.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -537,14 +538,17 @@ export async function checkApproval(
     observeApproval(ctx, toolName, null);
     let choice: string;
     if (fileScope !== null) {
-      choice = await askApproval("允许执行吗？", true, "始终允许：本次会话此工具对该文件");
+      choice = await askApproval(tr("approval.question"), true, tr("approval.alwaysFile"));
     } else if (shellScope !== null && suggestion !== null) {
       // 与网页/手机审批卡同一套规则：终端“始终允许”记一条本会话前缀规则。
-      choice = await askApproval("允许执行吗？", true, `始终允许：本次会话${suggestion.label}`);
+      const ruleLabel = suggestion.kind === "prefix"
+        ? tr("approval.rulePrefix", { prefix: formatPrefix(suggestion.prefix ?? []) })
+        : suggestion.label;
+      choice = await askApproval(tr("approval.question"), true, tr("approval.alwaysRule", { label: ruleLabel }));
     } else if (shellScope !== null) {
-      choice = await askApproval("允许执行吗？", true, "始终允许：本次会话相同命令、目录、后端和超时");
+      choice = await askApproval(tr("approval.question"), true, tr("approval.alwaysShell"));
     } else {
-      choice = await askApproval("允许执行吗？");
+      choice = await askApproval(tr("approval.question"));
     }
     observeApproval(ctx, toolName, choice === "yes" || choice === "always");
     if (choice === "yes") return;
@@ -681,7 +685,7 @@ async function toolReadFile(ctx: ToolContext, path: string): Promise<string> {
 
 async function toolWriteFile(ctx: ToolContext, path: string, content: string): Promise<string> {
   const target = workspaceWritePath(ctx, path);
-  let summary = `写入文件：${path}（${content.length} 字符）`;
+  let summary = tr("sum.write", { path, n: content.length });
   if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
   await checkApproval(ctx, "write_file", summary, { fileTarget: target });
   if (ctx.backend?.writeFile) return ctx.backend.writeFile(String(target), content);
@@ -698,7 +702,7 @@ async function toolEditFile(ctx: ToolContext, path: string, oldText: string, new
     if (count === 0) return "错误：未找到要替换的文本";
     if (count > 1) return `错误：找到 ${count} 处匹配，请提供更精确的 old_text`;
     const changed = content.replace(oldText, newText);
-    await checkApproval(ctx, "edit_file", `编辑文件：${path}\n（远端文件不支持本地 diff 预览）`, { fileTarget: target });
+    await checkApproval(ctx, "edit_file", tr("sum.editRemote", { path }), { fileTarget: target });
     return ctx.backend.writeFile!(String(target), changed);
   }
   if (!existsSync(target) || !statSync(target).isFile()) return `错误：文件不存在：${path}`;
@@ -707,7 +711,7 @@ async function toolEditFile(ctx: ToolContext, path: string, oldText: string, new
   if (count === 0) return "错误：未找到要替换的文本";
   if (count > 1) return `错误：找到 ${count} 处匹配，请提供更精确的 old_text`;
   const changed = content.replace(oldText, newText);
-  let summary = `编辑文件：${path}`;
+  let summary = tr("sum.edit", { path });
   if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) {
     summary += "\n" + unifiedPreview(relative(resolve(ctx.workdir), resolve(target)).split(sep).join("/"), Buffer.from(content, "utf-8"), Buffer.from(changed, "utf-8"));
   }
@@ -842,7 +846,7 @@ async function toolApplyPatch(ctx: ToolContext, path: string, patch: string): Pr
   }
   const rel = relative(resolve(ctx.workdir), resolve(target)).split(sep).join("/");
   const preview = unifiedPreview(rel, before, Buffer.from(replacement, "utf-8"));
-  await checkApproval(ctx, "apply_patch", `应用补丁：${rel}\n${preview}`, { fileTarget: target });
+  await checkApproval(ctx, "apply_patch", tr("sum.patch", { path: rel }) + "\n" + preview, { fileTarget: target });
   if (!readFileSync(target).equals(before)) {
     throw new ToolError("审批期间目标文件已发生变化，拒绝应用过期补丁");
   }
@@ -1009,7 +1013,7 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
   const denied = checkShellDenied(command);
   if (denied) return `错误：${denied}`;
   const resolvedCwd = workspaceShellCwd(ctx, cwd);
-  await checkApproval(ctx, "shell", `执行命令：${command}（cwd: ${resolvedCwd}；timeout: ${timeout}s）`, { command, cwd: String(resolvedCwd), timeout });
+  await checkApproval(ctx, "shell", tr("sum.shell", { cmd: command, cwd: String(resolvedCwd), timeout }), { command, cwd: String(resolvedCwd), timeout });
   if (ctx.backend?.runCommand) {
     return truncate(ctx.backend.runCommand(command, String(resolvedCwd), timeout)) || "（无输出）";
   }
@@ -1325,7 +1329,7 @@ function saveScreenshotPng(ctx: ToolContext, prefix: string, png: Buffer): strin
 }
 
 async function toolBrowserNavigate(ctx: ToolContext, url: string): Promise<string> {
-  await checkApproval(ctx, "browser_navigate", `浏览器打开：${url}`);
+  await checkApproval(ctx, "browser_navigate", tr("sum.browserOpen", { url }));
   let parsed: URL;
   try { parsed = new URL(url); } catch { throw new ToolError(`只支持打开 http/https 网址：${url}`); }
   if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
@@ -1338,7 +1342,7 @@ async function toolBrowserNavigate(ctx: ToolContext, url: string): Promise<strin
 }
 
 async function toolBrowserClick(ctx: ToolContext, selector: string): Promise<string> {
-  await checkApproval(ctx, "browser_click", `浏览器点击：${selector}`);
+  await checkApproval(ctx, "browser_click", tr("sum.browserClick", { sel: selector }));
   const browser = await getBrowser(ctx);
   try { await browser.click(selector); }
   catch (err: unknown) { throw new ToolError(err instanceof Error ? err.message : String(err)); }
@@ -1346,7 +1350,7 @@ async function toolBrowserClick(ctx: ToolContext, selector: string): Promise<str
 }
 
 async function toolBrowserScreenshot(ctx: ToolContext): Promise<string> {
-  await checkApproval(ctx, "browser_screenshot", "浏览器截图");
+  await checkApproval(ctx, "browser_screenshot", tr("sum.browserShot"));
   const browser = await getBrowser(ctx);
   let png: Buffer;
   try { png = await browser.screenshot(); }
@@ -1363,7 +1367,7 @@ async function toolBrowserScreenshot(ctx: ToolContext): Promise<string> {
 }
 
 async function toolComputerScreenshot(ctx: ToolContext): Promise<string> {
-  await checkApproval(ctx, "computer_screenshot", "电脑截屏");
+  await checkApproval(ctx, "computer_screenshot", tr("sum.screenShot"));
   const computer = getComputer(ctx);
   let png: Buffer;
   try { png = await computer.screenshot(); }
@@ -1377,7 +1381,7 @@ async function toolComputerScreenshot(ctx: ToolContext): Promise<string> {
 }
 
 async function toolComputerClick(ctx: ToolContext, x: number, y: number, button = "left"): Promise<string> {
-  await checkApproval(ctx, "computer_click", `电脑点击（${x}, ${y}，${button}键）`);
+  await checkApproval(ctx, "computer_click", tr("sum.click", { x, y, button }));
   const computer = getComputer(ctx);
   try { await computer.click(x, y, button); }
   catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
@@ -1385,7 +1389,7 @@ async function toolComputerClick(ctx: ToolContext, x: number, y: number, button 
 }
 
 async function toolComputerType(ctx: ToolContext, text: string): Promise<string> {
-  await checkApproval(ctx, "computer_type", `电脑输入：${text.slice(0, 60)}`);
+  await checkApproval(ctx, "computer_type", tr("sum.type", { text: text.slice(0, 60) }));
   const computer = getComputer(ctx);
   try { await computer.typeText(text); }
   catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
@@ -1393,7 +1397,7 @@ async function toolComputerType(ctx: ToolContext, text: string): Promise<string>
 }
 
 async function toolComputerKey(ctx: ToolContext, key: string): Promise<string> {
-  await checkApproval(ctx, "computer_key", `电脑按键：${key}`);
+  await checkApproval(ctx, "computer_key", tr("sum.key", { key }));
   const computer = getComputer(ctx);
   try { await computer.press(key); }
   catch (err: unknown) { throw new ToolError(computerErrorMessage(err)); }
@@ -1401,7 +1405,7 @@ async function toolComputerKey(ctx: ToolContext, key: string): Promise<string> {
 }
 
 async function toolComputerWindows(ctx: ToolContext): Promise<string> {
-  await checkApproval(ctx, "computer_windows", "电脑列窗口");
+  await checkApproval(ctx, "computer_windows", tr("sum.windows"));
   const computer = getComputer(ctx);
   let found: { id: string; title: string; x?: number; y?: number; width?: number; height?: number }[];
   try { found = await computer.windows(); }
@@ -1446,13 +1450,13 @@ async function toolMultiModelResearch(ctx: ToolContext, models: string[], prompt
 }
 
 async function toolMemoryAppend(ctx: ToolContext, text: string): Promise<string> {
-  await checkApproval(ctx, "memory_append", `写入记忆：${text.slice(0, 60)}`);
+  await checkApproval(ctx, "memory_append", tr("sum.memory", { text: text.slice(0, 60) }));
   appendMemory(text, ctx.memoryPath);
   return "已写入长期记忆";
 }
 
 async function toolSaveSkill(ctx: ToolContext, name: string, description: string, when: string, keywords: string | string[], instructions: string): Promise<string> {
-  await checkApproval(ctx, "save_skill", `保存技能：${name}`);
+  await checkApproval(ctx, "save_skill", tr("sum.skill", { name }));
   const keywordsList = typeof keywords === "string"
     ? keywords.split(/[,、]/).map((k) => k.trim()).filter(Boolean)
     : keywords;
@@ -1484,7 +1488,7 @@ async function toolDelegate(ctx: ToolContext, task: string, maxTurns = 6, opts: 
 async function toolPlan(ctx: ToolContext, title: string, steps: string[], path = "plan.md"): Promise<string> {
   const target = workspaceWritePath(ctx, path);
   const content = `# ${title}\n\n` + steps.map((s, i) => `${i + 1}. ${s}`).join("\n") + "\n";
-  let summary = `写入计划文件：${path}`;
+  let summary = tr("sum.plan", { path });
   if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
   await checkApproval(ctx, "plan", summary, { fileTarget: target });
   if (ctx.backend?.writeFile) {
@@ -1611,7 +1615,7 @@ async function toolGitStatus(ctx: ToolContext, path = "."): Promise<string> {
 }
 
 async function toolHttpPost(ctx: ToolContext, url: string, body = "", contentType = "application/json"): Promise<string> {
-  await checkApproval(ctx, "http_post", `POST 请求：${url}`);
+  await checkApproval(ctx, "http_post", tr("sum.post", { url }));
   try {
     const res = await fetchChecked(url, {
       method: "POST",

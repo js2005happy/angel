@@ -15,6 +15,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { charWidth, textWidth, truncateWidth } from "./consoleUi.ts";
 import { BRAND, gradient, paint as paintRaw, type ColorLevel, type PaintOpts } from "./theme.ts";
+import { t } from "./i18n.ts";
 
 export { supportsBoxDrawing } from "./theme.ts";
 
@@ -174,6 +175,7 @@ export interface HeaderInfo {
   tagline?: string;
 }
 
+/** 默认一句话介绍（中文，兼容旧调用方）；欢迎屏实际按当前界面语言取 t("banner.tagline")。 */
 export const DEFAULT_TAGLINE = "跑在你电脑上的开源 AI Agent";
 
 /**
@@ -186,7 +188,7 @@ export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: strin
   const g = glyphsFor(unicode);
   const cols = Math.max(1, opts.width);
   const out: string[] = [];
-  const tagline = info.tagline ?? DEFAULT_TAGLINE;
+  const tagline = info.tagline ?? t("banner.tagline");
   const version = `v${info.version}`;
   out.push(""); // 与上方（信任确认或命令行）隔开一行
   if (unicode && !opts.compact && cols >= WORDMARK_MIN_COLS) {
@@ -218,43 +220,49 @@ export function renderInfoCard(info: HeaderInfo, opts: RenderOpts & { home?: str
   const cols = Math.max(1, opts.width);
   const cardW = Math.min(cols, 62);
   const inner = Math.max(1, cardW - 4);
-  const label = (l: string) => `${l}  `;
-  const lw = textWidth(label("模型"));
+  // 标签按显示宽度补齐（中文 2 列/字，英文标签长短不一），值列始终对齐。
+  const names = { model: t("card.model"), mode: t("card.mode"), dir: t("card.dir"), branch: t("card.branch") };
+  const labelW = Math.max(...Object.values(names).map((n) => textWidth(n)));
+  const label = (l: string) => `${padTo(l, labelW)}  `;
+  const lw = textWidth(label(names.model));
   const muted = (s: string) => paintRaw(s, level, { fg: BRAND.muted });
   const labeled = (l: string, value: string, valueStyle: PaintOpts): Row => ({
     text: label(l) + value,
-    render: (t) => muted(t.slice(0, label(l).length)) + paintRaw(t.slice(label(l).length), level, valueStyle),
+    render: (s) => muted(s.slice(0, label(l).length)) + paintRaw(s.slice(label(l).length), level, valueStyle),
   });
   const dir = shortenPath(info.cwd, Math.max(8, inner - lw), opts.home ?? homedir(), g.ellipsis);
   const rows: Row[] = [
-    labeled("模型", info.model, { fg: BRAND.text }),
+    labeled(names.model, info.model, { fg: BRAND.text }),
     {
-      text: label("模式") + ` ${info.mode} `,
-      render: (t) => t.length >= label("模式").length + info.mode.length + 2
-        ? muted(label("模式")) + modeBadge(info.mode, level)
-        : muted(t),
+      text: label(names.mode) + ` ${info.mode} `,
+      render: (s) => s.length >= label(names.mode).length + info.mode.length + 2
+        ? muted(label(names.mode)) + modeBadge(info.mode, level)
+        : muted(s),
     },
-    labeled("目录", dir, { fg: BRAND.text }),
+    labeled(names.dir, dir, { fg: BRAND.text }),
   ];
-  if (info.branch) rows.push(labeled("分支", `${g.branch}${opts.unicode === false ? "" : " "}${info.branch}`, { fg: BRAND.mist }));
+  if (info.branch) rows.push(labeled(names.branch, `${g.branch}${opts.unicode === false ? "" : " "}${info.branch}`, { fg: BRAND.mist }));
   return boxed(rows, cardW, level, g, Math.min(inner, 40));
 }
 
 /** Tips 一行：只列 Nyra 真有的命令。 */
-export function renderTips(opts: RenderOpts & { pet?: boolean }): string {
+export function renderTips(opts: RenderOpts & { pet?: boolean; lang?: boolean }): string {
   const level = levelOf(opts);
   const g = glyphsFor(opts.unicode ?? true);
-  const items: [string, string][] = [["/help", "全部命令"], ["/mode", "切换权限模式"], ["/undo", "撤销改动"]];
-  if (opts.pet) items.push(["/pet", "小伙伴开关"]);
+  // /lang 紧跟 /help：窄屏从后往前丢时也尽量留住（切语言的入口）。
+  const items: [string, string][] = [["/help", t("tips.help")]];
+  if (opts.lang !== false) items.push([t("tips.langCmd"), t("tips.lang")]);
+  items.push(["/mode", t("tips.mode")], ["/undo", t("tips.undo")]);
+  if (opts.pet) items.push(["/pet", t("tips.pet")]);
   const sep = ` ${g.dot} `;
   const plainItems = items.map(([c, d]) => `${c} ${d}`);
-  const head = "提示 ";
+  const head = t("tips.head") + " ";
   // 放不下时从后往前丢。
   let n = items.length;
   while (n > 1 && textWidth(" " + head + plainItems.slice(0, n).join(sep)) > opts.width - 1) n--;
   const plain = " " + head + plainItems.slice(0, n).join(sep);
   if (textWidth(plain) > opts.width - 1) return truncateWidth(plain, Math.max(1, opts.width - 1), g.ellipsis);
-  return " " + paintRaw("提示", level, { fg: BRAND.coral, bold: true }) + " "
+  return " " + paintRaw(t("tips.head"), level, { fg: BRAND.coral, bold: true }) + " "
     + items.slice(0, n).map(([c, d]) => paintRaw(c, level, { fg: BRAND.sage, bold: true }) + " " + paintRaw(d, level, { fg: BRAND.muted })).join(paintRaw(sep, level, { fg: BRAND.muted }));
 }
 
@@ -267,13 +275,13 @@ export function renderTrustPrompt(path: string, opts: RenderOpts & { home?: stri
   const shown = truncateLeft(path, cols < 24 ? cols : inner, g.ellipsis);
   const lines = boxed(
     [
-      { text: "信任这个工作目录吗？", render: (t) => paintRaw(t, level, { fg: BRAND.coral, bold: true }) },
-      { text: shown, render: (t) => paintRaw(t, level, { fg: BRAND.text, bold: true }) },
-      { text: "Nyra 可以在这里读取、修改和执行文件。", render: (t) => paintRaw(t, level, { fg: BRAND.muted }) },
+      { text: t("trust.title"), render: (s) => paintRaw(s, level, { fg: BRAND.coral, bold: true }) },
+      { text: shown, render: (s) => paintRaw(s, level, { fg: BRAND.text, bold: true }) },
+      { text: t("trust.body"), render: (s) => paintRaw(s, level, { fg: BRAND.muted }) },
     ],
     cols, level, g, Math.min(inner, 36), BRAND.coral,
   );
-  return { lines, question: ` 信任并继续？(y/N) ` };
+  return { lines, question: t("trust.question") };
 }
 
 /** 输入区的横线（暗主色）。 */
@@ -310,12 +318,13 @@ export function renderStatusBar(info: StatusInfo, opts: RenderOpts): string {
   const sep = ` ${g.dot} `;
   const muted = (s: string) => paintRaw(s, level, { fg: BRAND.muted });
   type Seg = { plain: string; painted: string };
-  const ctx: Seg = { plain: `上下文 ${pct}`, painted: muted("上下文 ") + paintRaw(pct, level, { fg: pctColor, bold: pctNum !== null }) };
+  const ctxLabel = t("status.context");
+  const ctx: Seg = { plain: `${ctxLabel} ${pct}`, painted: muted(ctxLabel + " ") + paintRaw(pct, level, { fg: pctColor, bold: pctNum !== null }) };
   const br: Seg | null = info.branch
     ? { plain: `${g.branch}${unicode ? " " : ""}${info.branch}`, painted: paintRaw(`${g.branch}${unicode ? " " : ""}${info.branch}`, level, { fg: BRAND.mist }) }
     : null;
   const cost: Seg | null = info.cost ? { plain: info.cost, painted: paintRaw(info.cost, level, { fg: info.cost.includes("$") ? BRAND.coral : BRAND.muted }) } : null;
-  const hint: Seg | null = info.modeSwitchKey ? { plain: "shift+tab to switch modes", painted: muted("shift+tab to switch modes") } : null;
+  const hint: Seg | null = info.modeSwitchKey ? { plain: t("status.modeHint"), painted: muted(t("status.modeHint")) } : null;
   const badgePlain = ` ${info.mode} `;
   const lead = "  ";
   const room = width - 1; // 最后一列留空，避免自动换行

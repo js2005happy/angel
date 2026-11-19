@@ -16,6 +16,7 @@ function run(args: string[], env: Record<string, string> = {}): { code: number; 
       ...process.env,
       HOME: home,
       NYRA_HOME: join(home, ".nyra"),
+      NYRA_LANG: "zh", // 断言的是中文界面文案
       ...env,
     } as Record<string, string>,
     stdout: "pipe",

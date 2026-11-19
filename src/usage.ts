@@ -1,5 +1,6 @@
 // src/usage.ts — Token 用量统计，与 Python 版 nyra/usage.py 同语义。
 // 只统计 provider 实际报告的数字；上下文窗口只用用户配置的数字，绝不按模型名猜。
+import { t } from "./i18n.ts";
 export function contextLimit(value: unknown): number | null {
   if (typeof value === "boolean" || typeof value !== "number" || !Number.isInteger(value) || value <= 0) return null;
   return value;
@@ -93,25 +94,24 @@ export class UsageTracker {
 }
 
 export function formatUsage(snapshot: UsageSnapshot): string {
-  const shown = (v: number | null) => (typeof v === "number" ? v.toLocaleString("en-US") : "未报告");
+  const shown = (v: number | null) => (typeof v === "number" ? v.toLocaleString("en-US") : t("usage.notReported"));
   const lines = [
-    `模型调用：${snapshot.calls} 次；返回用量：${snapshot.reported_calls} 次`,
-    `Token（已报告）：输入 ${shown(snapshot.prompt_tokens)} / 输出 ${shown(snapshot.completion_tokens)} / 合计 ${shown(snapshot.total_tokens)}`,
+    t("usage.calls", { calls: snapshot.calls, reported: snapshot.reported_calls }),
+    t("usage.tokens", { p: shown(snapshot.prompt_tokens), c: shown(snapshot.completion_tokens), t: shown(snapshot.total_tokens) }),
   ];
   if (snapshot.missing_calls) {
-    lines.push(`注：${snapshot.missing_calls} 次响应未返回 token 用量，累计值不完整。`);
+    lines.push(t("usage.missing", { n: snapshot.missing_calls }));
   }
   const window = snapshot.context_window_tokens;
   const recent = snapshot.last_prompt_tokens;
   const remaining = snapshot.context_remaining_tokens;
   if (window === null) {
-    lines.push("上下文剩余：未知（未配置该模型的 context_window_tokens）。");
+    lines.push(t("usage.windowUnset"));
   } else if (recent === null) {
-    lines.push(`上下文剩余：未知（配置上限 ${window.toLocaleString("en-US")}，尚无可用输入 token 数据）。`);
+    lines.push(t("usage.noRecent", { window: window.toLocaleString("en-US") }));
   } else {
     lines.push(
-      `最近请求输入：${recent.toLocaleString("en-US")} / 配置窗口：${window.toLocaleString("en-US")} tokens；` +
-      `参考余量约 ${remaining!.toLocaleString("en-US")}（不含本轮生成和下一次输入）。`,
+      t("usage.recent", { recent: recent.toLocaleString("en-US"), window: window.toLocaleString("en-US"), remaining: remaining!.toLocaleString("en-US") }),
     );
   }
   return lines.join("\n");

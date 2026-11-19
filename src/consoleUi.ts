@@ -2,6 +2,7 @@
 // 颜色只在 TTY 且 NO_COLOR 未设且 TERM 不是 dumb 时启用；其余情况纯文本。
 import { formatDashboardLine, type DashboardSnapshot } from "./dashboard.ts";
 import { BRAND, detectColorLevel, paint, supportsBoxDrawing, type ColorLevel, type PaintOpts } from "./theme.ts";
+import { t } from "./i18n.ts";
 
 const STYLES: Record<string, string> = {
   bold: "1", dim: "2", gold: "33", blue: "34", cyan: "36", green: "32", red: "31",
@@ -191,6 +192,6 @@ export class ToolPrinter {
  * P2-3：cost 有值时末尾追加成本段（`成本 $0.0123/$0.50` 或 `成本未知`），无值时行保持原样。 */
 export function formatReplStatus(model: string, cwd: string, contextUsage: number | null, mode: string, cost?: string | null): string {
   const pct = contextUsage === null || contextUsage === undefined ? "--" : `${Math.round(contextUsage * 100)}%`;
-  const base = `[${model}] | ${cwd} · 上下文 ${pct} · ${mode}`;
+  const base = `[${model}] | ${cwd} · ${t("status.context")} ${pct} · ${mode}`;
   return cost ? `${base} · ${cost}` : base;
 }

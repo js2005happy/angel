@@ -3,18 +3,21 @@
 // 非 TTY 时行输入回退：空行 = 是（默认），EOF/Ctrl-C = 否（fail-closed）。
 // 任何无法识别的输入都是“否”，绝不抛错。
 import { createInterface } from "node:readline";
+import { t } from "./i18n.ts";
 
 export const YES = "yes";
 export const NO = "no";
 export const ALWAYS = "always";
 export type ApprovalChoice = "yes" | "no" | "always";
 
+/** 英文版页脚（兼容旧引用）；菜单实际按界面语言取 approvalFooter()。 */
 export const APPROVAL_FOOTER = "Enter to confirm · Esc to cancel";
+export function approvalFooter(): string { return t("approval.footer"); }
 
 export function approvalOptions(allowAlways: boolean, alwaysLabel?: string): [string, ApprovalChoice][] {
-  const options: [string, ApprovalChoice][] = [["是，执行一次", YES], ["否", NO]];
+  const options: [string, ApprovalChoice][] = [[t("approval.yes"), YES], [t("approval.no"), NO]];
   if (allowAlways) {
-    options.push([alwaysLabel ?? "始终允许（本次会话）", ALWAYS]);
+    options.push([alwaysLabel ?? t("approval.always"), ALWAYS]);
   }
   return options;
 }
@@ -28,7 +31,7 @@ export function renderApprovalMenu(options: [string, ApprovalChoice][], selected
     lines.push(text);
   });
   lines.push("");
-  lines.push(APPROVAL_FOOTER);
+  lines.push(approvalFooter());
   return lines.join("\n") + "\n";
 }
 
@@ -69,7 +72,7 @@ export async function lineFallback(prompt: string, allowAlways: boolean): Promis
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
     const answer = await new Promise<string | null>((resolvePromise) => {
-      rl.question(`${prompt} [是/否] `, (a) => resolvePromise(a));
+      rl.question(`${prompt} ${t("approval.lineChoices")} `, (a) => resolvePromise(a));
       rl.on("close", () => resolvePromise(null));
     });
     if (answer === null) return NO; // EOF

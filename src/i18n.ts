@@ -1,0 +1,428 @@
+// src/i18n.ts — 终端界面的中英双语文案（零依赖、同步、不拖慢启动）。
+//
+// 只管"用户在终端里看到的界面文字"（欢迎屏、信息卡、提示、状态栏、spinner、审批菜单、
+// /help、小伙伴台词、常见错误等）；模型的输出、发给模型的工具结果不翻译。
+//
+// 语言选择优先级：--lang zh|en > NYRA_LANG > config.json 的 language > 系统语言
+// （LC_ALL / LC_MESSAGES / LANG；Windows 用 Intl 的 locale）> en。
+// 首次启动不询问，直接按系统语言来；REPL 里 /lang zh|en 立即切换并写回配置。
+//
+// 库默认（没人调用 initLang/setLang 时）是 zh，与改造前的行为完全一致——
+// 测试与非 CLI 调用方（gateway 等）不受影响；只有 CLI 入口会做语言探测。
+
+export type Lang = "zh" | "en";
+export const LANGS: readonly Lang[] = ["zh", "en"];
+
+type Vars = Record<string, string | number>;
+
+// ---- 文案表：两种语言必须有完全相同的 key（测试会对比）。 ----
+// 多条台词用 "\n" 分隔，tList() 拆成数组。
+const zh = {
+  // 欢迎屏 / 信息卡 / Tips
+  "banner.tagline": "跑在你电脑上的开源 AI Agent",
+  "card.model": "模型",
+  "card.mode": "模式",
+  "card.dir": "目录",
+  "card.branch": "分支",
+  "tips.head": "提示",
+  "tips.help": "全部命令",
+  "tips.mode": "切换权限模式",
+  "tips.undo": "撤销改动",
+  "tips.lang": "English",
+  "tips.langCmd": "/lang en",
+  "tips.pet": "小伙伴开关",
+  "tips.plain": "  输入 /help 查看命令，/lang en 切换英文，/exit 退出。",
+  // 工作区信任
+  "trust.title": "信任这个工作目录吗？",
+  "trust.body": "Nyra 可以在这里读取、修改和执行文件。",
+  "trust.question": " 信任并继续？(y/N) ",
+  "trust.denied": "已拒绝信任该工作目录。",
+  "trust.warn": "警告：无法记录工作区信任：{err}",
+  "trust.warnContinue": "警告：无法记录工作区信任（本次仍继续）：{err}",
+  // 状态栏
+  "status.context": "上下文",
+  "status.modeHint": "shift+tab 切换模式",
+  "status.costUnknown": "成本未知",
+  "status.cost": "成本 {cost}",
+  // spinner
+  "spinner.thinking": "思考中…",
+  "spinner.running": "运行 {tool}…",
+  "spinner.tool": "工具",
+  // 审批
+  "approval.yes": "是，执行一次",
+  "approval.no": "否",
+  "approval.always": "始终允许（本次会话）",
+  "approval.alwaysFile": "始终允许：本次会话此工具对该文件",
+  "approval.alwaysShell": "始终允许：本次会话相同命令、目录、后端和超时",
+  "approval.alwaysRule": "始终允许：本次会话{label}",
+  "approval.rulePrefix": "以 `{prefix}` 开头的命令",
+  "approval.footer": "Enter 确认 · Esc 取消",
+  "approval.lineChoices": "[是/否]",
+  "approval.question": "允许执行吗？",
+  "approval.pending": "等待审批：{tool}（已记录，可用 nyra task approve 批准后继续）",
+  // 小伙伴
+  "pet.idle": "先读再改，稳。\n我在，慢慢来。\n/context 看看余量？\n改坏了还有 /undo\n喝口水再继续？\n小步提交，心里不慌。\n/mode readonly 更安心",
+  "pet.happy": "搞定！\n漂亮。\n这一步走得好。",
+  "pet.worried": "别急，看看报错。\n换个思路试试？",
+  "pet.approval": "这步要你点个头。",
+  "pet.on": "小伙伴回来了（/pet off 可关闭）。",
+  "pet.off": "小伙伴先去休息了（/pet on 叫回来）。",
+  "pet.hidden": "当前终端不显示（需要 TTY、至少 80 列、非 ASCII、非 CI）。",
+  "pet.usage": "用法：/pet [on|off]",
+  // /lang
+  "lang.switched": "已切换到中文。",
+  "lang.usage": "用法：/lang zh|en（当前：{lang}）",
+  "lang.badFlag": "--lang 只能是 zh 或 en（收到：{value}）",
+  // REPL 命令
+  "repl.help": "命令：\n  /help                     帮助\n  /exit                     退出\n  /clear                    清空会话\n  /context                  查看上下文占用\n  /compact                  压缩会话\n  /compact focus <关键词>   按重点压缩会话（重点保留与关键词相关的内容）\n  /mode <readonly|auto|full|creator>   切换模式\n  /lang <zh|en>             切换界面语言（中文 / English）\n  /pet [on|off]             小伙伴开关\n  /creator                  进入创造模式\n  /commands                 列出自定义命令\n  /undo                     撤销最近一轮改动\n  /rewind N                 撤销最近 N 轮文件改动\n  /rewind-msg <消息 id>     回退到该消息\n  /rewind-edit <消息 id> <新文本>   编辑重发\n  /rewind-fork <消息 id>    fork 新会话",
+  "repl.cleared": "会话已清空。",
+  "repl.compactUsage": "用法：/compact 或 /compact focus <关键词>",
+  "repl.compacted": "已压缩{focus}：{before} 条 → {after} 条（{method}）",
+  "repl.compactFocus": "（focus：{focus}）",
+  "repl.compactFailed": "压缩失败：{err}",
+  "repl.modeSwitched": "已切换到 {mode} 模式。",
+  "repl.modeInvalid": "模式必须是 readonly / auto / full / creator。",
+  "repl.creatorOn": "已进入创造模式：一句话描述想要的功能，我来对齐 spec、生成插件、验证后请你确认安装。",
+  "repl.creatorFailed": "切换到创造模式失败。",
+  "repl.noCommands": "还没有自定义命令。在 ~/.nyra/commands/ 或 <工作目录>/.nyra/commands/ 放 Markdown 文件即可。",
+  "repl.rewindMsgUsage": "用法：/rewind-msg <消息 id>；/rewind-edit <消息 id> <新文本>；/rewind-fork <消息 id>",
+  "repl.rewindEditUsage": "用法：/rewind-edit <消息 id> <新文本>",
+  "repl.rewound": "已回退到消息 {id}：保留 {kept} 条，删除 {deleted} 条。",
+  "repl.forked": "已 fork 新会话 {sid}（复制 {kept} 条，原会话不动）。用 nyra --resume {sid} 继续。",
+  "repl.rewindFailed": "回退失败：{err}",
+  "repl.noCheckpoints": "当前后端不支持检查点撤销。",
+  "repl.rewindUsage": "用法：/rewind N（1 至 10）",
+  "repl.undone": "已撤销 {turns} 轮，恢复 {files} 个文件。",
+  "repl.undoFailed": "撤销失败：{err}",
+  "repl.usageTitle": "本次运行用量：",
+  // 通用
+  "err.prefix": "错误：{err}",
+  "err.unknownOption": "未知选项：{opt}",
+  "err.maxTurns": "--max-turns 必须为正整数",
+  "err.contextWindow": "错误：--context-window 必须为正整数",
+  "fallback.notice": "模型切换：{from} 失败（{reason}），已切换到 {to} 继续",
+  "inbox.title": "未读任务通知（{n}）：",
+  // /context
+  "ctx.empty": "上下文为空，无需优化。",
+  "ctx.sysTop": "系统提示占比最高：检查 AGENTS.md / 长期记忆是否过长，或精简常驻技能索引。",
+  "ctx.skillsTop": "技能全文占比最高：减少本轮命中的技能，或先 /compact 精简会话后再试。",
+  "ctx.historyTop": "对话历史占比最高：可用 /compact 压缩会话，或 /compact focus <关键词> 只保留重点。",
+  "ctx.toolsTop": "工具结果占比最高：可用 /compact 压缩会话，旧工具结果会被先折叠。",
+  "ctx.balanced": "各部分占比均衡，暂无需压缩。",
+  "ctx.title": "上下文占用（字符数）：",
+  "ctx.system": "  系统提示：{n}（{pct}）",
+  "ctx.skills": "  技能全文：{n}（{pct}）",
+  "ctx.history": "  对话历史：{n}（{pct}）",
+  "ctx.tools": "  工具结果：{n}（{pct}）",
+  "ctx.total": "  总计：{n} 字符",
+  "ctx.windowUnset": "  模型窗口：未配置（未配置该模型的 context_window_tokens）",
+  "ctx.window": "  模型窗口：{n} tokens",
+  "ctx.usedUnknown": "  已用 token：未知",
+  "ctx.usedEstimated": "  已用 token：约 {n}（估算：4 字符 ≈ 1 token，模型未报告用量）",
+  "ctx.usedReported": "  已用 token：{n}（模型实报）",
+  "ctx.suggest": "建议：{s}",
+  // 用量
+  "usage.notReported": "未报告",
+  "usage.calls": "模型调用：{calls} 次；返回用量：{reported} 次",
+  "usage.tokens": "Token（已报告）：输入 {p} / 输出 {c} / 合计 {t}",
+  "usage.missing": "注：{n} 次响应未返回 token 用量，累计值不完整。",
+  "usage.windowUnset": "上下文剩余：未知（未配置该模型的 context_window_tokens）。",
+  "usage.noRecent": "上下文剩余：未知（配置上限 {window}，尚无可用输入 token 数据）。",
+  "usage.recent": "最近请求输入：{recent} / 配置窗口：{window} tokens；参考余量约 {remaining}（不含本轮生成和下一次输入）。",
+  // 看板行
+  "dash.head": "看板 [轮次 {turn}/{max}]",
+  "dash.ctxLeft": "上下文剩余 {n}",
+  "dash.ctxUnknown": "上下文剩余未知",
+  "dash.noLimit": "未设上限",
+  "dash.limit": "上限 {limit}（剩余 {left}）",
+  "dash.priced": "{head} 已花费 {spent} / {limit} · {tokens} · {ctx}",
+  "dash.unpriced": "{head} 成本：未知（{reason}）· {tokens} · {ctx}",
+  "dash.noData": "数据不足",
+  // 无 Key / 凭据
+  "sum.write": "写入文件：{path}（{n} 字符）",
+  "sum.edit": "编辑文件：{path}",
+  "sum.editRemote": "编辑文件：{path}\n（远端文件不支持本地 diff 预览）",
+  "sum.patch": "应用补丁：{path}",
+  "sum.shell": "执行命令：{cmd}（cwd: {cwd}；timeout: {timeout}s）",
+  "sum.verify": "执行验证命令：{cmd}（cwd: {cwd}；timeout: {timeout}s）",
+  "sum.browserOpen": "浏览器打开：{url}",
+  "sum.browserClick": "浏览器点击：{sel}",
+  "sum.browserShot": "浏览器截图",
+  "sum.screenShot": "电脑截屏",
+  "sum.click": "电脑点击（{x}, {y}，{button}键）",
+  "sum.type": "电脑输入：{text}",
+  "sum.key": "电脑按键：{key}",
+  "sum.windows": "电脑列窗口",
+  "sum.memory": "写入记忆：{text}",
+  "sum.skill": "保存技能：{name}",
+  "sum.plan": "写入计划文件：{path}",
+  "sum.post": "POST 请求：{url}",
+  "main.configBad": "模型配置有问题：{err}",
+  "main.exampleMissing": "示例文件不存在：{file}",
+  "main.exampleFailed": "示例任务失败：{err}",
+  "main.resumeRunCombo": "--resume-run 不能与任务文本、--resume、计划、压缩或列表命令组合使用",
+  "list.current": "（当前）",
+  "list.cliAuth": "复用本机登录，不用 Key",
+  "list.localModel": "本地模型，不用 Key",
+  "list.envKey": "Key 环境变量：{key}",
+  "list.providerLine": "{name}{mark}：默认模型 {model}；{auth}",
+  "list.needModel": "（需指定）",
+  "list.customHint": "自定义 provider：在 ~/.nyra/config.json 的 custom_providers 里添加。",
+  "list.noModels": "{name} 未返回可用模型。",
+  "list.noProfiles": "暂无 provider 档案（在 ~/.nyra/config.json 的 profiles 里添加）",
+  "list.noSkills": "暂无技能",
+  "list.noSessions": "暂无历史会话",
+  "list.sessionLine": "- {id}（{n} 条消息）{preview}",
+  "list.mcpOff": "MCP 未启用或无可用服务器。\n在 ~/.nyra/config.json 里设置 \"mcp_enabled\": true 并配置 mcp_servers 或 mcp_presets 后可用。",
+  "list.mcpPresets": "内置预置（{n} 个）：{names}。",
+  "list.mcpTitle": "已配置的 MCP 服务器（原生客户端，第 3 阶段）：",
+  "list.mcpHint": "工具列表需启动服务器后查看：nyra ui（full 模式）→ 设置 → MCP 工具与成本。",
+  "main.sessionMissing": "错误：找不到会话 {id}",
+  "main.compacted": "已压缩会话 {id}：{before} 条 → {after} 条（{method}）",
+  "cost.noPricing": "未配置该模型的单价（config.pricing），无法计算金额",
+  "cost.noUsage": "provider 未上报 usage，无法计算金额",
+  "cost.missing": "有 {n} 次调用未上报 usage，金额不完整，不做超支判定",
+  "cost.noTokens": "usage 里没有可用的 token 数",
+  // 无 Key
+  "setup.noCreds": "未找到可用的 API 凭据。\n设置方法（二选一）：\n  1. 环境变量：export DEEPSEEK_API_KEY=<redacted>\n     或通用：export NYRA_API_KEY=<redacted>\n  2. 已保存的连接器：如果 DeepSeek / xAI 的 Key 已通过安全流程保存，直接用 --provider deepseek 或 --provider xai 即可，无需再填 Key。\n当前 provider：{provider}",
+} as const;
+
+export type MsgKey = keyof typeof zh;
+
+const en: Record<MsgKey, string> = {
+  "banner.tagline": "An open-source AI agent that runs on your computer",
+  "card.model": "Model",
+  "card.mode": "Mode",
+  "card.dir": "Folder",
+  "card.branch": "Branch",
+  "tips.head": "Tips",
+  "tips.help": "commands",
+  "tips.mode": "switch mode",
+  "tips.undo": "undo",
+  "tips.lang": "中文",
+  "tips.langCmd": "/lang zh",
+  "tips.pet": "buddy",
+  "tips.plain": "  Type /help for commands, /lang zh for Chinese, /exit to quit.",
+  "trust.title": "Do you trust this folder?",
+  "trust.body": "Nyra will be able to read, edit and run files here.",
+  "trust.question": " Trust and continue? (y/N) ",
+  "trust.denied": "Folder not trusted. Exiting.",
+  "trust.warn": "Warning: could not record workspace trust: {err}",
+  "trust.warnContinue": "Warning: could not record workspace trust (continuing anyway): {err}",
+  "status.context": "context",
+  "status.modeHint": "shift+tab to switch modes",
+  "status.costUnknown": "cost unknown",
+  "status.cost": "cost {cost}",
+  "spinner.thinking": "Thinking…",
+  "spinner.running": "Running {tool}…",
+  "spinner.tool": "tool",
+  "approval.yes": "Yes, run once",
+  "approval.no": "No",
+  "approval.always": "Always allow (this session)",
+  "approval.alwaysFile": "Always allow this tool on this file (this session)",
+  "approval.alwaysShell": "Always allow this command, folder, backend and timeout (this session)",
+  "approval.alwaysRule": "Always allow (this session): {label}",
+  "approval.rulePrefix": "commands starting with `{prefix}`",
+  "approval.footer": "Enter to confirm · Esc to cancel",
+  "approval.lineChoices": "[y/n]",
+  "approval.question": "Allow this?",
+  "approval.pending": "Waiting for approval: {tool} (recorded; approve with nyra task approve to continue)",
+  "pet.idle": "Read first, then edit.\nI'm here. No rush.\nCheck /context?\n/undo has your back.\nWater break?\nCommit small, stay calm.\nTry /mode readonly",
+  "pet.happy": "Done!\nNice.\nGood step.",
+  "pet.worried": "Easy. Read the error.\nTry another angle?",
+  "pet.approval": "Need your OK here.",
+  "pet.on": "Buddy is back (/pet off to hide).",
+  "pet.off": "Buddy is taking a break (/pet on to bring back).",
+  "pet.hidden": " Not shown in this terminal (needs a TTY, 80+ columns, no ASCII mode, not CI).",
+  "pet.usage": "Usage: /pet [on|off]",
+  "lang.switched": "Switched to English.",
+  "lang.usage": "Usage: /lang zh|en (current: {lang})",
+  "lang.badFlag": "--lang must be zh or en (got: {value})",
+  "repl.help": "Commands:\n  /help                     this help\n  /exit                     quit\n  /clear                    clear the session\n  /context                  show context usage\n  /compact                  compact the session\n  /compact focus <keyword>  compact, keeping what relates to the keyword\n  /mode <readonly|auto|full|creator>   switch mode\n  /lang <zh|en>             switch UI language (中文 / English)\n  /pet [on|off]             toggle the buddy\n  /creator                  enter creator mode\n  /commands                 list custom commands\n  /undo                     undo the last turn's changes\n  /rewind N                 undo file changes from the last N turns\n  /rewind-msg <message id>  rewind to that message\n  /rewind-edit <message id> <new text>   edit and resend\n  /rewind-fork <message id> fork a new session",
+  "repl.cleared": "Session cleared.",
+  "repl.compactUsage": "Usage: /compact or /compact focus <keyword>",
+  "repl.compacted": "Compacted{focus}: {before} messages → {after} ({method})",
+  "repl.compactFocus": " (focus: {focus})",
+  "repl.compactFailed": "Compaction failed: {err}",
+  "repl.modeSwitched": "Switched to {mode} mode.",
+  "repl.modeInvalid": "Mode must be readonly / auto / full / creator.",
+  "repl.creatorOn": "Creator mode on: describe the feature in one sentence; I'll agree on a spec, build a plugin, verify it, then ask you before installing.",
+  "repl.creatorFailed": "Could not switch to creator mode.",
+  "repl.noCommands": "No custom commands yet. Put Markdown files in ~/.nyra/commands/ or <workdir>/.nyra/commands/.",
+  "repl.rewindMsgUsage": "Usage: /rewind-msg <message id>; /rewind-edit <message id> <new text>; /rewind-fork <message id>",
+  "repl.rewindEditUsage": "Usage: /rewind-edit <message id> <new text>",
+  "repl.rewound": "Rewound to message {id}: kept {kept}, removed {deleted}.",
+  "repl.forked": "Forked new session {sid} (copied {kept} messages; the original is untouched). Continue with nyra --resume {sid}.",
+  "repl.rewindFailed": "Rewind failed: {err}",
+  "repl.noCheckpoints": "This backend does not support checkpoint undo.",
+  "repl.rewindUsage": "Usage: /rewind N (1 to 10)",
+  "repl.undone": "Undid {turns} turn(s), restored {files} file(s).",
+  "repl.undoFailed": "Undo failed: {err}",
+  "repl.usageTitle": "Usage this run:",
+  "err.prefix": "Error: {err}",
+  "err.unknownOption": "Unknown option: {opt}",
+  "err.maxTurns": "--max-turns must be a positive integer",
+  "err.contextWindow": "Error: --context-window must be a positive integer",
+  "fallback.notice": "Model fallback: {from} failed ({reason}); continuing with {to}",
+  "inbox.title": "Unread task notifications ({n}):",
+  "ctx.empty": "Context is empty; nothing to optimize.",
+  "ctx.sysTop": "System prompt is the largest part: check whether AGENTS.md / long-term memory is too long, or trim the resident skill index.",
+  "ctx.skillsTop": "Skill text is the largest part: match fewer skills this turn, or /compact the session first.",
+  "ctx.historyTop": "Conversation history is the largest part: /compact the session, or /compact focus <keyword> to keep only what matters.",
+  "ctx.toolsTop": "Tool results are the largest part: /compact the session; old tool results are folded first.",
+  "ctx.balanced": "Parts are balanced; no need to compact yet.",
+  "ctx.title": "Context usage (characters):",
+  "ctx.system": "  System prompt: {n} ({pct})",
+  "ctx.skills": "  Skill text: {n} ({pct})",
+  "ctx.history": "  History: {n} ({pct})",
+  "ctx.tools": "  Tool results: {n} ({pct})",
+  "ctx.total": "  Total: {n} characters",
+  "ctx.windowUnset": "  Model window: not configured (no context_window_tokens for this model)",
+  "ctx.window": "  Model window: {n} tokens",
+  "ctx.usedUnknown": "  Tokens used: unknown",
+  "ctx.usedEstimated": "  Tokens used: about {n} (estimate: 4 chars ≈ 1 token; the model reported no usage)",
+  "ctx.usedReported": "  Tokens used: {n} (reported by the model)",
+  "ctx.suggest": "Suggestion: {s}",
+  "usage.notReported": "not reported",
+  "usage.calls": "Model calls: {calls}; with usage reported: {reported}",
+  "usage.tokens": "Tokens (reported): input {p} / output {c} / total {t}",
+  "usage.missing": "Note: {n} response(s) did not report token usage, so totals are incomplete.",
+  "usage.windowUnset": "Context left: unknown (no context_window_tokens for this model).",
+  "usage.noRecent": "Context left: unknown (configured limit {window}; no input token data yet).",
+  "usage.recent": "Last request input: {recent} / configured window: {window} tokens; about {remaining} left (excluding this turn's output and the next input).",
+  "dash.head": "Dashboard [turn {turn}/{max}]",
+  "dash.ctxLeft": "context left {n}",
+  "dash.ctxUnknown": "context left unknown",
+  "dash.noLimit": "no limit",
+  "dash.limit": "limit {limit} ({left} left)",
+  "dash.priced": "{head} spent {spent} / {limit} · {tokens} · {ctx}",
+  "dash.unpriced": "{head} cost: unknown ({reason}) · {tokens} · {ctx}",
+  "dash.noData": "not enough data",
+  "sum.write": "Write file: {path} ({n} chars)",
+  "sum.edit": "Edit file: {path}",
+  "sum.editRemote": "Edit file: {path}\n(no local diff preview for remote files)",
+  "sum.patch": "Apply patch: {path}",
+  "sum.shell": "Run command: {cmd} (cwd: {cwd}; timeout: {timeout}s)",
+  "sum.verify": "Run verify command: {cmd} (cwd: {cwd}; timeout: {timeout}s)",
+  "sum.browserOpen": "Open in browser: {url}",
+  "sum.browserClick": "Browser click: {sel}",
+  "sum.browserShot": "Browser screenshot",
+  "sum.screenShot": "Take a screenshot",
+  "sum.click": "Click at ({x}, {y}, {button} button)",
+  "sum.type": "Type: {text}",
+  "sum.key": "Press key: {key}",
+  "sum.windows": "List windows",
+  "sum.memory": "Save to memory: {text}",
+  "sum.skill": "Save skill: {name}",
+  "sum.plan": "Write plan file: {path}",
+  "sum.post": "POST request: {url}",
+  "main.configBad": "Model configuration problem: {err}",
+  "main.exampleMissing": "Example file not found: {file}",
+  "main.exampleFailed": "Example task failed: {err}",
+  "main.resumeRunCombo": "--resume-run cannot be combined with a task, --resume, plan, compact or list options",
+  "list.current": " (current)",
+  "list.cliAuth": "reuses your local login, no key",
+  "list.localModel": "local model, no key",
+  "list.envKey": "key env var: {key}",
+  "list.providerLine": "{name}{mark}: default model {model}; {auth}",
+  "list.needModel": "(must be set)",
+  "list.customHint": "Custom providers: add them under custom_providers in ~/.nyra/config.json.",
+  "list.noModels": "{name} returned no models.",
+  "list.noProfiles": "No provider profiles yet (add them under profiles in ~/.nyra/config.json)",
+  "list.noSkills": "No skills",
+  "list.noSessions": "No past sessions",
+  "list.sessionLine": "- {id} ({n} messages) {preview}",
+  "list.mcpOff": "MCP is off or has no servers.\nSet \"mcp_enabled\": true and configure mcp_servers or mcp_presets in ~/.nyra/config.json.",
+  "list.mcpPresets": "Built-in presets ({n}): {names}.",
+  "list.mcpTitle": "Configured MCP servers (native client):",
+  "list.mcpHint": "To see their tools, start the server: nyra ui (full mode) → Settings → MCP tools & cost.",
+  "main.sessionMissing": "Error: session not found: {id}",
+  "main.compacted": "Compacted session {id}: {before} → {after} messages ({method})",
+  "cost.noPricing": "no price configured for this model (config.pricing)",
+  "cost.noUsage": "the provider reported no usage",
+  "cost.missing": "{n} call(s) reported no usage; amount incomplete, no overspend check",
+  "cost.noTokens": "no token counts in usage",
+  "setup.noCreds": "No usable API credentials found.\nSet one up (either way):\n  1. Environment variable: export DEEPSEEK_API_KEY=<redacted>\n     or generic: export NYRA_API_KEY=<redacted>\n  2. Saved connector: if your DeepSeek / xAI key was saved through the secure flow, just use --provider deepseek or --provider xai.\nCurrent provider: {provider}",
+};
+
+export const MESSAGES: Record<Lang, Record<MsgKey, string>> = { zh, en };
+
+let current: Lang = "zh";
+
+export function getLang(): Lang { return current; }
+export function setLang(lang: Lang): void { current = lang; }
+
+/** 把 "zh_CN.UTF-8" / "en-US" / "zh" / "chinese" 之类归一成 zh|en；认不出返回 null。 */
+export function normalizeLang(value: unknown): Lang | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (!v || v === "c" || v === "posix" || v.startsWith("c.")) return null;
+  if (v === "zh" || v.startsWith("zh_") || v.startsWith("zh-") || v.startsWith("zh.") || v === "chinese" || v === "中文" || v.startsWith("chinese")) return "zh";
+  if (v === "en" || v.startsWith("en_") || v.startsWith("en-") || v.startsWith("en.") || v === "english") return "en";
+  return null;
+}
+
+type Env = Record<string, string | undefined>;
+
+/**
+ * 系统语言：LC_ALL > LC_MESSAGES > LANG（POSIX 优先级；C/POSIX 视为未设置）；
+ * Windows 上这些变量通常为空，用 Intl 的 locale。非中文的系统语言一律按 en。
+ */
+export function systemLang(env: Env = process.env, platform: string = process.platform, intlLocale?: () => string): Lang | null {
+  for (const k of ["LC_ALL", "LC_MESSAGES", "LANG"]) {
+    const raw = env[k];
+    if (!raw) continue;
+    const v = raw.trim().toLowerCase();
+    if (v === "c" || v === "posix" || v.startsWith("c.")) continue;
+    return normalizeLang(v) ?? "en";
+  }
+  if (platform === "win32" || intlLocale) {
+    try {
+      const loc = (intlLocale ?? (() => Intl.DateTimeFormat().resolvedOptions().locale))();
+      return normalizeLang(loc) ?? (loc ? "en" : null);
+    } catch { /* 取不到就当没有 */ }
+  }
+  return null;
+}
+
+/** 按优先级决定语言：flag > NYRA_LANG > config.language > 系统语言 > en。 */
+export function detectLang(opts: { flag?: string | null; env?: Env; config?: Record<string, unknown> | null; platform?: string; intlLocale?: () => string } = {}): Lang {
+  const env = opts.env ?? process.env;
+  return normalizeLang(opts.flag)
+    ?? normalizeLang(env.NYRA_LANG)
+    ?? normalizeLang(opts.config?.language)
+    ?? systemLang(env, opts.platform ?? process.platform, opts.intlLocale)
+    ?? "en";
+}
+
+/**
+ * 从 argv 里取出 --lang X / --lang=X（任何位置，子命令前后都行），返回剩余参数。
+ * value 为 undefined = 没给；invalid = 给了但不是 zh/en。
+ */
+export function extractLangFlag(argv: string[]): { value?: string; lang: Lang | null; rest: string[] } {
+  const rest: string[] = [];
+  let value: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") { rest.push(...argv.slice(i)); break; }
+    if (a === "--lang") { value = argv[i + 1] ?? ""; i++; continue; }
+    if (a.startsWith("--lang=")) { value = a.slice(7); continue; }
+    rest.push(a);
+  }
+  return { value, lang: value === undefined ? null : normalizeLang(value), rest };
+}
+
+function fill(s: string, vars?: Vars): string {
+  if (!vars) return s;
+  return s.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
+}
+
+/** 取当前语言的文案，{name} 占位符用 vars 填。 */
+export function t(key: MsgKey, vars?: Vars, lang: Lang = current): string {
+  return fill(MESSAGES[lang][key] ?? MESSAGES.zh[key] ?? key, vars);
+}
+
+/** 多条文案（台词表等）：按 "\n" 拆开。 */
+export function tList(key: MsgKey, lang: Lang = current): string[] {
+  return MESSAGES[lang][key].split("\n");
+}

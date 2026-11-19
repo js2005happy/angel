@@ -13,6 +13,7 @@ import { RunStore, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, reso
 import { ApprovalRequired } from "./tools.ts";
 import { Agent } from "./agent.ts";
 import { pythonJsonDump } from "./pyjson.ts";
+import { t } from "./i18n.ts";
 
 export const TASKS_DIR = "tasks";
 export const WORKER_LOCK = "worker.lock";
@@ -202,7 +203,7 @@ export function markInboxRead(home?: string): number {
 export function formatUnreadInbox(home?: string): string {
   const items = loadInbox(home, true);
   if (!items.length) return "";
-  const lines = [`未读任务通知（${items.length}）：`];
+  const lines = [t("inbox.title", { n: items.length })];
   for (const item of items) lines.push(`- ${item.run_id}  ${item.status}  ${item.summary ?? ""}`);
   return lines.join("\n");
 }

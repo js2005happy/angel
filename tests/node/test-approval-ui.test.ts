@@ -2,7 +2,7 @@
 // Claude 式选择器：编号选项、Enter 确认、Esc 取消，默认选“是”。
 import { test, expect } from "bun:test";
 import {
-  YES, NO, ALWAYS, APPROVAL_FOOTER, approvalOptions, renderApprovalMenu, menuSelect,
+  YES, NO, ALWAYS, APPROVAL_FOOTER, approvalFooter, approvalOptions, renderApprovalMenu, menuSelect,
 } from "../../src/approvalUi.ts";
 
 function runMenu(keys: string[], allowAlways = true): string {
@@ -78,7 +78,7 @@ test("ApprovalUiTest.test_menu_renders_selected_inverted", () => {
   expect(out).toContain("1.");
   expect(out).toContain("2.");
   expect(out).toContain("3.");
-  expect(out).toContain(APPROVAL_FOOTER);
+  expect(out).toContain(approvalFooter()); // 页脚随界面语言（en 版即 APPROVAL_FOOTER）
   expect(APPROVAL_FOOTER).toContain("Enter to confirm");
   expect(APPROVAL_FOOTER).toContain("Esc to cancel");
 });
