@@ -1,7 +1,7 @@
 # Nyra 沙箱（隔离执行）
 
 > 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI + Gemini CLI + OpenClaw）。
-> 目标版本 0.5.0。沙箱与审批拆成两轴：沙箱定“物理上能做什么”，
+> 目标版本 0.5.1。沙箱与审批拆成两轴：沙箱定“物理上能做什么”，
 > 审批定“何时问人”。两把旋钮互相独立，互不替代。
 
 ## 两轴模型
@@ -40,7 +40,7 @@
 | `auto`（默认） | Linux 且本机装了 bwrap → 用 bwrap（OS 沙箱）；否则回落到工具级隔离（现有工作区 containment + shell 黑名单），并在 doctor 与首次 shell 执行时给一次提示，说明这是工具级隔离、不是 OS 沙箱。 | 默认就用它。对普通用户无感。 |
 | `local` | 显式只要工具级，即使用户机器上有 bwrap 也不用。 | 想退出 OS 沙箱的开关（例如 bwrap 与某个工具不兼容时）。 |
 | `bwrap` | 强制要求 bwrap：找不到 bwrap、或非 Linux 平台、或启动失败 → 直接报错退出（fail-closed），绝不静默降级裸奔。 | 想确保“没有 OS 沙箱就宁可不跑”时用。 |
-| `e2b` | 0.5.0 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植），会直接报错。 | 现在别用。 |
+| `e2b` | 0.5.1 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植），会直接报错。 | 现在别用。 |
 
 默认行为对普通用户无感：工作目录内读写、跑命令都不受影响。
 只有“出工作区写”与“联网”这两类在 bwrap 下会被挡住；挡住时报错会写清楚
@@ -77,6 +77,25 @@ bwrap 缺失是预期内的降级，不算故障）。
   物理上能碰到什么”。钩子拦不住的越界写，沙箱在内核层再拦一道；
   沙箱挡住的命令，钩子不会在沙箱内重跑一次。
 - 钩子本身的配置与写法见 `docs/hooks.md`。
+
+## 网关接线（`nyra ui`）
+
+网关会话与定时任务建 Agent 时，按与 CLI 同一套来源与优先级解析沙箱，
+不另发明配置键：`config.json` 的 `sandbox` / `sandbox_mode` /
+`sandbox_allow_net` + `NYRA_SANDBOX` / `NYRA_SANDBOX_MODE` /
+`NYRA_SANDBOX_ALLOW_NET` 环境变量（CLI 的 `--sandbox` 旗标只对 CLI 有效，
+网关没有对应旗标）。行为与 CLI 一致：
+
+- `auto`（默认）：Linux 且装了 bwrap 就进 OS 沙箱，否则回落工具级，
+  在该会话首次执行 shell 时提示一次；
+- 显式 `bwrap` 但本机无 bwrap、`e2b`、`danger-full-access` + `bwrap`：
+  fail-closed，会话启动失败（`send` 返回 error 状态），命令不跑；
+- 默认断网（`sandbox_allow_net` 未开时沙箱内 `--unshare-net`）。
+
+钩子仍在宿主机跑，不进沙箱。未接线的执行路径：MCP 工具调用
+（走 MCP 服务器子进程，不走 shell）与群聊机器人（`src/groups.ts`
+的 `defaultBotRunner` 建 Agent 时暂未传沙箱配置）目前仍走旧行为，
+后续再接。
 
 ## bwrap 安装指引
 

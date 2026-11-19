@@ -67,7 +67,7 @@ paths: docs/*.md
 
 同名技能项目层覆盖全局层。任务书“全局 → 项目”的写法是优先级由低到高的分层表述，代码里顺序正好反过来——先出现者胜，不要按字面把全局放最前。
 
-> 已知不一致（留给总协调）：`nyra --list-skills`（`src/cli.ts`）与网关的技能列表仍用旧顺序（工作目录 `skills` → 全局 `skills` → 插件），未纳入本项改动范围；列表展示用的顺序与 Agent 实际加载顺序以 Agent 为准。
+> 顺序统一：`--list-skills`（`src/cli.ts`）、网关状态的 `skills`（`src/gateway.ts` 的 `info()`）与 Agent 提示词技能索引（`skillIndex()`）三处都用同一来源——`src/skills.ts` 的 `canonicalSkillDirs()`（目录分层顺序）与 `canonicalSkillOrder()`（同名去重、先出现者胜）。网关此前用 `process.cwd()` 且缺 `<workdir>/.nyra/skills` 一层，现改用网关自身的 `workdir` 与同一目录表，三处输出的技能名序列完全一致。
 
 ## `read_skill` 用法
 

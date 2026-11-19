@@ -1,12 +1,12 @@
 # 签名与验证（SIGNING）
 
-Nyra 有三层签名，分别解决不同问题。**第 1 层已经自动化，第 2 层是本地约定，第 3 层需要商业证书（当前未启用）。**
+Nyra 有三层签名，分别解决不同问题。**第 1 层已经自动化，第 2 层是本地约定，第 3 层接线已就绪（0.5.1），等商业证书到位。**
 
 | 层 | 签什么 | 解决什么 | 状态 |
 |---|---|---|---|
 | 1 | Release 产物 | 用户能证明下载的二进制确实由本仓库构建、且没被篡改 | ✅ 已自动（`.github/workflows/release-sign.yml`） |
 | 2 | Git 提交 | 提交确实来自维护者本人 | ⚙️ 本地 SSH 签名（见下） |
-| 3 | Windows/macOS 二进制 | 消除 SmartScreen / Gatekeeper 首次运行警告 | ⏳ 需 Certum OSS 证书 / Apple Developer ID |
+| 3 | Windows/macOS 二进制 | 消除 SmartScreen / Gatekeeper 首次运行警告 | ⚙️ 接线已就绪（0.5.1，条件式），证书未配置、产物仍未签名 |
 
 ---
 
@@ -89,42 +89,119 @@ git log --show-signature -1
 
 ---
 
-## 第 3 层：二进制代码签名（可选，需商业证书）
+## 第 3 层：二进制代码签名（条件式，需商业证书）
 
-当前 `node-binaries.yml` 与 `desktop.yml` 的注释都写着"产物未签名、未公证"，所以 Windows SmartScreen / macOS Gatekeeper 会拦首次运行。补齐方式：
+> 目标版本 0.5.1：签名接线已就绪，证书尚未配置，**本版产物仍是未签名的**。证书到位后，下版构建自动带签名，不用再改代码。
 
-### Windows（Authenticode + Certum Open Source Code Signing）
+### 现在是什么状态
 
-Certum 的 OSS 证书**只发给开源项目**，正好符合本仓库（MIT）。流程：
+- Windows 桌面安装包（.msi / .exe）：未签名。
+- macOS 桌面安装包（.app / .dmg）：只有 ad-hoc 签名，未公证。
+- Windows 命令行版（nyra-windows-x64.exe）：未签名。
+- macOS 命令行版：未签名（见文末说明）。
 
-1. 在 Certum 申请 **Open Source Code Signing**（需提供仓库地址与许可证证明）。
-2. 拿到证书后，GitHub Actions 里注入两个 secret：
-   - `WINDOWS_CERT_PFX_BASE64`（`certutil -encode` 后的 base64）
-   - `WINDOWS_CERT_PASSWORD`
-3. 在 `node-binaries.yml` 的 Windows 产物步骤后加：
+### 工作原理（条件式，不拖发版）
 
-```yaml
-      - name: Sign Windows binary
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        env:
-          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          PFX_PWD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
-          & "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe" sign `
-            /fd sha256 /td sha256 /tr http://time.certum.pl `
-            /f $pfx /p $env:PFX_PWD `
-            dist\nyra-windows-x64.exe
-          & "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe" verify /pa /all dist\nyra-windows-x64.exe
+CI 里的签名是“有证书就签、没证书照常出未签名包”：
+
+- 仓库里**一个签名秘密都没有**时，构建与以前完全一致，产物未签名。
+- 秘密配齐后，下一次构建自动签名（桌面端走 Tauri 自身的签名流程，Windows 命令行版走 osslsigncode）。
+- **秘密只配了一半时，构建会直接报错停住**，绝不悄悄出一个未签名包让你误以为签好了。
+
+证书和密码只放在 GitHub Secrets 里，**不要发给任何人（包括我），不要放进 git**。
+
+### Windows：OV 代码签名证书
+
+#### 买哪里
+
+OV（组织验证）代码签名证书，个人可办，需要身份验证（一般几天）：
+
+| 厂商 | 大约价格 | 备注 |
+| --- | --- | --- |
+| Sectigo | 约 $100–250/年 | 常用的 OV 证书 |
+| DigiCert | 约 $100–250/年 | 常用的 OV 证书 |
+| SSL.com | 约 $100–250/年 | 常用的 OV 证书 |
+| Certum（开源证书） | 约 $60–110/年 | 备选，便宜；只适用于开源项目名义 |
+
+买的时候确认两件事：① 是**代码签名（Code Signing）证书**，不是 SSL 证书（SSL 证书签不了程序）；② 问清楚私钥能不能导出 `.pfx` 文件（见下面一节）。
+
+#### 导出 .pfx 并配好秘密
+
+1. 拿到证书文件（`.cer`）和私钥文件（`.key`）后，合成 `.pfx`（会让你设一个导出密码，**记好它**）：
+   ```bash
+   openssl pkcs12 -export -in cert.cer -inkey private-key.key -out certificate.pfx
+   ```
+2. 把 `.pfx` 转成 base64（Windows 上用 `certutil -encode certificate.pfx base64cert.txt`，取文件内容；macOS/Linux 上用 `openssl base64 -A -in certificate.pfx`）。
+3. 到 GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret，加两个秘密：
+   | 秘密名 | 内容 |
+   | --- | --- |
+   | `WINDOWS_CERTIFICATE` | 上一步的 base64 文本 |
+   | `WINDOWS_CERTIFICATE_PASSWORD` | 导出 `.pfx` 时设的密码 |
+4. 下次跑桌面工作流或 Node binaries 工作流时，Windows 产物会自动签名（带 DigiCert 的 RFC 3161 时间戳，证书过期后签名仍有效）。
+
+#### 先问一句：你的证书导得出 .pfx 吗
+
+实话：2023 年 6 月 1 日起，证书厂商不再把代码签名私钥放进文件发给你，多数新证书发在**硬件 token（U 盘钥匙）或云 HSM**上（比如 DigiCert KeyLocker、SSL.com eSigner）。如果买到的证书导不出 `.pfx`，上面这套流程不适用，要改走厂商自己的签名服务（工作流要另改一小步，届时再接）。**买之前先问厂商一句“私钥能不能导出 .pfx”**，能导出的再按上面配。
+
+### macOS：Apple Developer Program
+
+#### 注册与建证书
+
+1. 注册 [Apple Developer Program](https://developer.apple.com/programs/)，$99/年（免费账号只能开发测试，不能公证）。
+2. 在自己的 Mac 上用“钥匙串访问”生成一个证书签名请求（CSR）。
+3. 到 Apple Developer 的 Certificates, Identifiers & Profiles 页面，建一个 **Developer ID Application** 证书（这是发给 App Store 以外用户的类型），上传 CSR，下载安装到钥匙串。
+4. 在“钥匙串访问”里找到这个证书，展开后右键私钥 → 导出，存成 `.p12` 文件并设一个导出密码。
+5. 把 `.p12` 转成 base64：
+   ```bash
+   openssl base64 -A -in /path/to/certificate.p12 -out certificate-base64.txt
+   ```
+
+#### 配好秘密
+
+到 GitHub 仓库 → Settings → Secrets and variables → Actions，加这些秘密：
+
+| 秘密名 | 内容 |
+| --- | --- |
+| `APPLE_CERTIFICATE` | `.p12` 的 base64 文本 |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设的密码 |
+| `KEYCHAIN_PASSWORD` | CI 里临时钥匙串的密码（自己编一个强密码，只放 Secrets 里） |
+| `APPLE_ID` | 你的 Apple ID 邮箱（公证用） |
+| `APPLE_PASSWORD` | **专用密码**（在 appleid.apple.com 上生成的 app-specific password，**不是**你的 Apple ID 账号密码） |
+| `APPLE_TEAM_ID` | 10 位的 Team ID（在 Apple Developer 账号页能看到） |
+
+配好后，下次跑桌面工作流时，macOS 安装包会自动签名并提交公证（只配了签名、没配公证的三个秘密时，只签名不公证，不报错）。
+
+### 怎么验证签好了
+
+Windows（在 Windows 上）：
+
+```powershell
+signtool verify /pa Nyra_0.5.1_x64_en-US.msi
+(Get-AuthenticodeSignature .\nyra-windows-x64.exe).Status  # 应为 Valid
 ```
 
-**注意**：`/tr` 时间戳必须带——否则证书到期后旧签名会一起失效。
+macOS（在 Mac 上）：
 
-### macOS（Developer ID + notarization）
+```bash
+codesign -dv --verbose=4 /Applications/Nyra.app
+spctl -a -vvv -t install Nyra_0.5.1_universal.dmg
+xcrun stapler validate Nyra_0.5.1_universal.dmg  # 公证票据已钉上时通过
+```
 
-需要 Apple Developer Program（$99/年）。Tauri 侧配 `APPLE_CERTIFICATE`、`APPLE_ID`、`APPLE_TEAM_ID` 等 secret，`desktop.yml` 现在用的是 `signingIdentity "-"`（ad-hoc），换成真实身份后 `codesign` + `notarytool submit --wait` 即可。
+Windows 命令行版（任意平台都可用 osslsigncode）：
+
+```bash
+osslsigncode verify -in nyra-windows-x64.exe
+```
+
+### 一句实话：签了也不等于立刻没警告
+
+OV 证书签好后，Windows SmartScreen 的警告**不会立刻消失**，要随安装量积累信任才会慢慢消失（微软 2024 年起不再给 EV 证书特殊待遇，OV 和 EV 在这点上一样）。也可以把文件提交给微软人工复核，但不保证通过。macOS 上签名 + 公证做好后，Gatekeeper 一般直接放行。
+
+### 还没做的事
+
+- **macOS 的 Node 命令行版暂不签名**：它是裸 Mach-O 文件，公证票据钉不上去（staple 只支持 .app/.dmg/.pkg），要签得走“打 zip 包再提交公证”的路，构建流程要另改。桌面端 .app/.dmg 是已签名的路，先用那条。
+- 证书到期前记得续费并更新 Secrets 里的证书（时间戳能保证旧签名在证书过期后仍有效，但新构建必须用有效期内的证书）。
 
 > 顺序建议：先把第 1、2 层跑顺（零成本、立刻生效），第 3 层等证书下来再补。**第 1 层比第 3 层更重要**——SmartScreen 只是"提示"，而产物签名解决的是"下载到的是不是官方构建"。
 

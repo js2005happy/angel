@@ -43,6 +43,11 @@
 失败时不重读：摘要失败走本地回退（fallback），或自动压缩 strict 失败时，
 不追加重读备注，避免在已损坏的会话上叠加内容。两边文件都空时也不追加。
 
+文件级压缩 `compactSessionFile`（`src/compact.ts`）走同一条路：压缩成功后
+自动重读并追加同一备注（默认从 `home` 的记忆与 `workdir` 的 AGENTS.md 算出，
+可用 `opts.reRead` 显式传入或传 `null` 关闭）；`nyra --compact <会话>` 走
+`Agent.compact()`，与 REPL 的 `/compact` 一致。
+
 重读备注本身计入 `/context` 的**系统提示**部分（按 `[压缩后重读` 开头识别），
 不让它成为看不见的隐藏占用。
 

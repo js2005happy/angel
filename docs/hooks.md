@@ -12,8 +12,26 @@
 |---|---|---|
 | `PreToolUse` | 工具执行前、审批之前；目前只对 `write_file` / `edit_file` / `apply_patch` / `shell` 四类工具触发 | 能：退出码 2 即拦截 |
 | `PostToolUse` | 四类工具执行成功后 | 不能：只通知 |
-| `SessionStart` | 会话开始时（预留事件，当前版本由 `runHooks` 支持调用，CLI 主循环暂未接线） | 不能 |
-| `SessionEnd` | 会话结束时（预留事件，同上） | 不能 |
+| `SessionStart` | 会话开始时：CLI REPL 启动后（首个提示前）；网关新建会话或首次 `send` 建 Agent 成功后 | 不能 |
+| `SessionEnd` | 会话结束时：CLI REPL 退出时（`/exit`、EOF、Ctrl+C）；网关关停时，为每个已开始的会话触发 | 不能 |
+
+## 会话钩子触发点
+
+- **CLI REPL**：`SessionStart` 在会话建立后、首个提示前等一次；
+  `SessionEnd` 由 `try/finally` 保证，`/exit`、Ctrl+D（EOF）、循环内异常
+  都触发；Ctrl+C 尽力触发一次（3 秒宽限后退出，退出码 130，不等满 10 秒
+  钩子超时；连按两次时第二次走默认行为直接退出）。一次性任务
+  （`nyra "任务"`）没有会话开始/结束，只有 REPL 会话才触发这两个事件。
+- **网关**：`SessionStart` 在 `POST /api/sessions` 新建会话、或首次
+  `send` 隐式建出会话时触发，每个会话只触发一次；为不阻塞 HTTP 响应，
+  以 fire-and-forget 方式触发。`SessionEnd` 在网关关停（`stop()`）时为
+  每个已开始的会话触发一次（`stop` 里 await，等钩子跑完再关停，有超时
+  封顶）。网关没有逐会话关闭接口，所以没有更细的结束点——会话在网关里
+  一直活到关停。
+- 约定与其它事件一致：超时走 `config.json` 的 `hooks.timeout_ms`
+  （默认 10 秒）、fail-open、退出码 2 只通知不拦截；无钩子时零 spawn
+  零打扰。钩子超时被杀后若留了孤儿孙子进程（如钩子里的 `sleep`），
+  主进程仍能正常退出（超时兜底会销毁钩子管道，不等孙子进程）。
 
 ## 放脚本的位置
 
