@@ -70,6 +70,16 @@ export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan"]);
 export const SESSION_GRANT_TOOLS = new Set([...SESSION_FILE_TOOLS, "shell"]);
 export const APPROVE_ALWAYS = "always";
 
+/** S4：委派选项——子 Agent 的隔离方式、工具白名单与模型。 */
+export interface DelegateOptions {
+  /** worktree = 在独立 git worktree 里跑，主工作区不受影响，结束后给 diff 摘要。 */
+  isolation?: "none" | "worktree";
+  /** 工具白名单；给了就只保留这些工具（其余对子 Agent 禁用）。 */
+  tools?: string[];
+  /** 子任务使用的模型（用便宜模型跑搜索类子任务）。 */
+  model?: string;
+}
+
 export interface ToolContext {
   workdir: string;
   mode: string;
@@ -81,7 +91,7 @@ export interface ToolContext {
   getSkills?: (() => Skill[]) | null;
   /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
   home?: string;
-  delegateFn?: ((task: string, maxTurns?: number) => Promise<string>) | null;
+  delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
   evidence?: EvidenceStore | null;
   backend?: { name?: string; readFile?(p: string): string; writeFile?(p: string, c: string): string; listDir?(p: string): string; runCommand?(cmd: string, cwd: string, timeout: number): string } | null;
   approveFn?: ((tool: string, summary: string, details?: Record<string, unknown>) => boolean | string | Promise<boolean | string>) | null;
@@ -175,8 +185,14 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("read_skill", "按名读取一个技能的全文（描述、适用时机与完整步骤）。只读，不改文件、不需审批；不存在的技能名会返回可用技能列表",
     { name: { type: "string", description: "技能名，如 debugging" } },
     ["name"]),
-  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮",
-    { task: { type: "string", minLength: 1 }, max_turns: { type: "integer", default: 6, minimum: 1, maximum: 12 } },
+  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响",
+    {
+      task: { type: "string", minLength: 1 },
+      max_turns: { type: "integer", default: 6, minimum: 1, maximum: 12 },
+      isolation: { type: "string", enum: ["none", "worktree"], default: "none" },
+      tools: { type: "array", items: { type: "string" } },
+      model: { type: "string" },
+    },
     ["task"]),
   schema("plan", "先写一份执行计划文件",
     { title: { type: "string" }, steps: { type: "array", items: { type: "string" } }, path: { type: "string", default: "plan.md" } },
@@ -1286,9 +1302,9 @@ async function toolReadSkill(ctx: ToolContext, name: string): Promise<string> {
   return body;
 }
 
-async function toolDelegate(ctx: ToolContext, task: string, maxTurns = 6): Promise<string> {
+async function toolDelegate(ctx: ToolContext, task: string, maxTurns = 6, opts: DelegateOptions = {}): Promise<string> {
   if (!ctx.delegateFn) return "错误：子 agent 不可用";
-  return ctx.delegateFn(task, maxTurns);
+  return ctx.delegateFn(task, maxTurns, opts);
 }
 
 async function toolPlan(ctx: ToolContext, title: string, steps: string[], path = "plan.md"): Promise<string> {
@@ -1516,7 +1532,16 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case "memory_append": return await toolMemoryAppend(ctx, String(args.text));
       case "save_skill": return await toolSaveSkill(ctx, String(args.name), String(args.description), String(args.when), args.keywords as string | string[], String(args.instructions));
       case "read_skill": return await toolReadSkill(ctx, String(args.name));
-      case "delegate": return await toolDelegate(ctx, String(args.task), args.max_turns === undefined ? 6 : Number(args.max_turns));
+      case "delegate": return await toolDelegate(
+        ctx,
+        String(args.task),
+        args.max_turns === undefined ? 6 : Number(args.max_turns),
+        {
+          isolation: args.isolation === "worktree" ? "worktree" : "none",
+          ...(Array.isArray(args.tools) ? { tools: (args.tools as unknown[]).map((t) => String(t)).filter(Boolean) } : {}),
+          ...(typeof args.model === "string" && args.model.trim() ? { model: args.model.trim() } : {}),
+        },
+      );
       case "plan": return await toolPlan(ctx, String(args.title), args.steps as string[], args.path === undefined ? "plan.md" : String(args.path));
       case "grep_search": return await toolGrepSearch(ctx, String(args.pattern), args.path === undefined ? "." : String(args.path), args.regex === true, args.case_sensitive === true, args.max_results === undefined ? 50 : Number(args.max_results));
       case "git_status": return await toolGitStatus(ctx, args.path === undefined ? "." : String(args.path));
