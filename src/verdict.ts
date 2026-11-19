@@ -193,3 +193,114 @@ export function formatVerdict(v: Verdict): string {
   }
   return lines.join("\n");
 }
+
+// ---- 单次运行的结论（nyra verdict --run <id>）----
+// 与配置级 verdict 的区别：配置级问"这套设置值不值"，运行级问"这一次跑成了没有、代价多大"。
+// 判定只认三样东西：**验证结果**（有没有证据）、**运行状态**（跑完没跑完）、**花费**（代价多大）。
+// 状态字符串的语义在 runs.ts 里定义：verified / verify_failed / completed_unverified / failed / running …
+
+export interface RunVerdictInput {
+  run_id: string;
+  task?: string | null;
+  status: string;
+  verify_result?: Record<string, unknown> | null;
+  verify_cmd?: string | null;
+  changed_files?: readonly string[] | null;
+  /** 本次运行（主 agent）已花费；未计价为 null。 */
+  spent_usd?: number | null;
+  /** 子任务花费合计。 */
+  delegate_spent_usd?: number | null;
+  error?: string | null;
+}
+
+/** 本次运行的总花费：主 + 子；两处都未知时为 null。 */
+function runTotal(input: RunVerdictInput): number | null {
+  const main = typeof input.spent_usd === "number" && Number.isFinite(input.spent_usd) ? input.spent_usd : null;
+  const del = typeof input.delegate_spent_usd === "number" && Number.isFinite(input.delegate_spent_usd) ? input.delegate_spent_usd : null;
+  if (main === null && del === null) return null;
+  return (main ?? 0) + (del ?? 0);
+}
+
+/**
+ * 单次运行打分。规则（顺序即优先级）：
+ *
+ * | 条件 | 等级 | 依据 |
+ * |---|---|---|
+ * | verify_failed | red | 有证据表明改坏了 |
+ * | failed | red | 没跑完，谈不上值 |
+ * | verified（exit 0 / passed） | green | 有验证证据 |
+ * | completed_unverified | yellow | 跑完了但没有证据 |
+ * | 其它状态 | yellow | 状态不明（running 等），不当通过 |
+ */
+export function buildRunVerdict(input: RunVerdictInput): Verdict {
+  const reasons: string[] = [];
+  const blockers: string[] = [];
+  const nextSteps: string[] = [];
+  const unknowns: string[] = [];
+
+  const status = String(input.status ?? "");
+  const vr = input.verify_result ?? {};
+  const exitCode = typeof vr.exit_code === "number" ? (vr.exit_code as number) : null;
+  const passed = typeof vr.passed === "boolean" ? (vr.passed as boolean) : null;
+  const files = Array.isArray(input.changed_files) ? input.changed_files : [];
+  const cost = runTotal(input);
+  const del = typeof input.delegate_spent_usd === "number" && input.delegate_spent_usd > 0 ? input.delegate_spent_usd : null;
+
+  // ---- 状态与证据 ----
+  let grade: VerdictGrade;
+  if (status === "verify_failed") {
+    grade = "red";
+    blockers.push(`验证未通过${exitCode !== null ? `（退出码 ${exitCode}）` : ""}：改动没被证明是对的`);
+    nextSteps.push(input.verify_cmd ? `先手工跑一次 \`${input.verify_cmd}\` 看真实报错` : "补一条 verify_command，否则下次还是没有证据");
+  } else if (status === "failed") {
+    grade = "red";
+    blockers.push(`运行失败${input.error ? `：${input.error}` : ""}`);
+    nextSteps.push("看 `nyra runs` 的失败分类，别在黑盒里重跑");
+  } else if (status === "verified" && exitCode === 0) {
+    grade = "green";
+    reasons.push(`已验证：${input.verify_cmd ?? "验证命令"} 退出码 0`);
+  } else if (status === "verified" && exitCode === null) {
+    // 状态说 verified 但没退出码：只信状态，标注证据不全
+    grade = "yellow";
+    reasons.push("状态记为 verified，但没有退出码：证据链不完整");
+    unknowns.push("验证退出码缺失（旧运行可能没记）");
+  } else if (status === "completed_unverified") {
+    grade = "yellow";
+    reasons.push("跑完了但没有验证证据：不知道改对没改对");
+    nextSteps.push("补 `--verify <cmd>` 重跑一次，或手工验证后在报告里写清结论");
+  } else {
+    grade = "yellow";
+    reasons.push(`状态 ${status || "未知"}：既不算通过也不算失败`);
+    unknowns.push(`状态 ${status || "空"} 的语义未覆盖`);
+  }
+
+  if (passed === false && grade !== "red") {
+    grade = "red";
+    blockers.push("验证结果 passed=false");
+  }
+
+  // ---- 产物 ----
+  if (files.length) {
+    reasons.push(`改动 ${files.length} 个文件${files.length <= 3 ? `：${files.join("、")}` : ""}`);
+  } else if (status === "verified") {
+    reasons.push("没有文件改动（可能是纯查询/分析型任务）");
+  }
+
+  // ---- 代价 ----
+  if (cost === null) {
+    unknowns.push("花费未知（未配单价或 provider 没报 usage）");
+  } else {
+    reasons.push(`花费 $${cost.toFixed(4)}${del ? `（含子任务 $${del.toFixed(4)}）` : ""}`);
+    if (grade === "red" && cost > 0.01) {
+      nextSteps.push(`这次失败花了 $${cost.toFixed(4)}：先修根因再重跑，别用重跑碰运气`);
+    }
+  }
+
+  const headline = grade === "green"
+    ? `值：${input.task ? `「${input.task.slice(0, 30)}」` : "本次运行"}有验证证据`
+    : grade === "red"
+      ? "不值：本次运行没有拿到可用结果"
+      : "待定：跑完了，但证据不足以下结论";
+
+  return { grade, headline, reasons, blockers, nextSteps: nextSteps.slice(0, 3), unknowns };
+}

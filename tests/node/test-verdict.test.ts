@@ -103,3 +103,83 @@ test("formatVerdict：三个等级各有标记，未知与下一步都渲染", (
   const text = formatVerdict(buildVerdict({}));
   expect(text).toContain("未知（不当作通过）");
 });
+
+// ---- 单次运行的结论（buildRunVerdict）----
+import { buildRunVerdict } from "../../src/verdict.ts";
+
+const RUN_BASE = {
+  run_id: "r1",
+  task: "修 auth 的登录态",
+  status: "verified",
+  verify_result: { exit_code: 0, passed: true } as Record<string, unknown> | null,
+  verify_cmd: "npm test",
+  changed_files: ["src/auth.ts"],
+  spent_usd: 0.02,
+  delegate_spent_usd: 0,
+  error: null,
+};
+
+test("R1 verified + 退出码 0 → green", () => {
+  expect(buildRunVerdict(RUN_BASE).grade).toBe("green");
+});
+
+test("R2 verify_failed → red，并给出具体命令让人去复现", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, status: "verify_failed", verify_result: { exit_code: 2, passed: false } });
+  expect(v.grade).toBe("red");
+  expect(v.blockers.some((b) => b.includes("退出码 2"))).toBe(true);
+  expect(v.nextSteps.some((s) => s.includes("npm test"))).toBe(true);
+});
+
+test("R3 failed → red，带上错误原因", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, status: "failed", error: "工具报错" });
+  expect(v.grade).toBe("red");
+  expect(v.blockers.some((b) => b.includes("工具报错"))).toBe(true);
+});
+
+test("R4 completed_unverified → yellow（跑完了但没证据）", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, status: "completed_unverified", verify_result: null });
+  expect(v.grade).toBe("yellow");
+  expect(v.reasons.some((r) => r.includes("没有验证证据"))).toBe(true);
+});
+
+test("R5 状态 verified 但没有退出码 → yellow + unknown（状态不能替代证据）", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, verify_result: null });
+  expect(v.grade).toBe("yellow");
+  expect(v.unknowns.some((u) => u.includes("退出码"))).toBe(true);
+});
+
+test("R6 passed=false 即便状态 verified 也判 red", () => {
+  expect(buildRunVerdict({ ...RUN_BASE, verify_result: { exit_code: 0, passed: false } }).grade).toBe("red");
+});
+
+test("R7 花费未知 → 进 unknowns，不当 0", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, spent_usd: null, delegate_spent_usd: null });
+  expect(v.unknowns.some((u) => u.includes("花费未知"))).toBe(true);
+});
+
+test("R8 总花费含子任务", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, spent_usd: 0.02, delegate_spent_usd: 0.13 });
+  expect(v.reasons.some((r) => r.includes("$0.1500") && r.includes("含子任务 $0.1300"))).toBe(true);
+});
+
+test("R9 失败且烧了钱 → 明确劝阻「重跑碰运气」", () => {
+  const v = buildRunVerdict({ status: "verify_failed", verify_result: { exit_code: 1 }, spent_usd: 0.05 });
+  expect(v.nextSteps.some((s) => s.includes("花了 $0.0500"))).toBe(true);
+});
+
+test("R10 未覆盖状态（running）→ yellow + unknown，不当作通过", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, status: "running" });
+  expect(v.grade).toBe("yellow");
+  expect(v.unknowns.length).toBeGreaterThan(0);
+});
+
+test("R11 无文件改动但有验证 → 说明可能是查询型任务，不误判", () => {
+  const v = buildRunVerdict({ ...RUN_BASE, changed_files: [] });
+  expect(v.grade).toBe("green");
+  expect(v.reasons.some((r) => r.includes("没有文件改动"))).toBe(true);
+});
+
+test("R12 nextSteps 最多 3 条", () => {
+  const v = buildRunVerdict({ status: "verify_failed", verify_result: { exit_code: 1 }, spent_usd: 0.5, verify_cmd: "npm test" });
+  expect(v.nextSteps.length).toBeLessThanOrEqual(3);
+});

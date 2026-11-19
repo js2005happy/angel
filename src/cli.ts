@@ -30,7 +30,7 @@ import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
-import { buildVerdict, formatVerdict } from "./verdict.ts";
+import { buildVerdict, buildRunVerdict, formatVerdict } from "./verdict.ts";
 import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
@@ -2733,6 +2733,38 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "verdict") {
+    // --run <id>：给单次运行打分（配置级 verdict 只看设置，不看这一次的产物）。
+    const runIdFlag = (() => {
+      const sub = args.subArgs ?? [];
+      const i = sub.indexOf("--run");
+      if (i >= 0 && sub[i + 1]) return sub[i + 1];
+      const eq = sub.find((a) => a.startsWith("--run="));
+      return eq ? eq.slice("--run=".length) : null;
+    })();
+    if (runIdFlag) {
+      let state: Record<string, unknown> | null = null;
+      try {
+        state = new RunStore(join(home, "runs")).load(runIdFlag) as unknown as Record<string, unknown>;
+      } catch { state = null; }
+      if (!state) {
+        process.stderr.write(`找不到运行 ${runIdFlag}（用 nyra runs 查看现有记录）\n`);
+        return EXIT_ARGUMENT;
+      }
+      const us = (state.usage_summary ?? null) as Record<string, unknown> | null;
+      const v = buildRunVerdict({
+        run_id: String(state.run_id ?? runIdFlag),
+        task: typeof state.task === "string" ? state.task : null,
+        status: String(state.status ?? ""),
+        verify_result: (state.verify_result ?? null) as Record<string, unknown> | null,
+        verify_cmd: typeof state.verify_cmd === "string" ? state.verify_cmd : null,
+        changed_files: Array.isArray(state.changed_files) ? (state.changed_files as string[]) : [],
+        spent_usd: us && typeof us.spent_usd === "number" ? (us.spent_usd as number) : null,
+        delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
+        error: typeof state.error === "string" ? state.error : null,
+      });
+      process.stdout.write(formatVerdict(v) + "\n");
+      return v.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
+    }
     // 一条结论：把红线 + 省钱 + 回忆 + 运行历史拼成"这次跑得值不值"。
     const cfgV = loadConfig(home);
     const feats = resolveFeatures(cfgV, { enable: args.enableFeatures, disable: args.disableFeatures });
