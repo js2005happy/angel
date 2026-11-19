@@ -20,6 +20,8 @@ import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVe
 import { resolvePricing } from "./cost.ts";
 import { handleCost } from "./costCli.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
+import { parseRules } from "./permissionRules.ts";
+import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing } from "./banner.ts";
@@ -38,7 +40,7 @@ import { NetworkPolicy } from "./eigenfluxPolicy.ts";
 import { printDoctorResult, runDoctor } from "./doctor.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——main 入口做 fail-closed 校验，
 // buildAgent 把解析出的沙箱配置透传给 Agent（再进 ToolContext）。
-import { resolveSandboxBackend } from "./sandbox.ts";
+import { resolveSandboxBackend, getSandboxStatus } from "./sandbox.ts";
 import { runExampleTask } from "./exampleTask.ts";
 import { printNoKeyAndExitCode } from "./noKey.ts";
 import { defaultExampleFile, runWizard } from "./wizard.ts";
@@ -144,7 +146,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
   ]);
-  const subcommands = new Set(["evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -1684,6 +1686,21 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
+  if (args.subcommand === "redlines") {
+    // 上线红线自检：把 docs/VISION-NEXT.md 第七节变成可执行命令。
+    const cfgRed = loadConfig(home);
+    const sandboxStatus = getSandboxStatus(cfgRed, args.sandbox ?? null);
+    const perms = parseRules(cfgRed.permissions as { allow?: unknown; ask?: unknown; deny?: unknown } | null);
+    const result = checkRedlines({
+      config: cfgRed,
+      sandbox: { level: sandboxStatus.level, backend: String(sandboxStatus.backend) },
+      permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
+      hasCostLimit: typeof cfgRed.max_cost_usd === "number",
+      platform: process.platform,
+    });
+    process.stdout.write(formatRedlines(result) + "\n");
+    return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
+  }
   if (args.subcommand === "evidence") return handleEvidence(args.subArgs ?? [], home);
   if (args.subcommand === "ui") {
     return handleUi(args.subArgs ?? [], resolve(args.workdir), home);
