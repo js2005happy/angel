@@ -40,6 +40,21 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # 签名秘密先映射到 job 级 env：GitHub 不允许在 `if:` 里直接引用 secrets
+    #（官方文档：“Secrets cannot be directly referenced in `if:` conditionals.
+    # Instead, consider setting secrets as job-level environment variables,
+    # then referencing the environment variables to conditionally run steps.”），
+    #所以下面两个导入步骤的条件判断一律读 env.*。两个 matrix 任务都会拿到
+    #这些 env，但只有对应平台的导入步骤会读它们；秘密在日志里仍会被打码。
+    env:
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
     strategy:
       fail-fast: false
       matrix:
@@ -112,7 +127,7 @@ jobs:
       # 构建与以前完全一致（未签名）。秘密只配了一半时里面直接报错退出，
       # 绝不悄悄出未签名包。证书只活在本次 runner 里，不进 git。
       - name: Import Windows certificate (if configured)
-        if: matrix.os == 'windows-latest' && (secrets.WINDOWS_CERTIFICATE != '' || secrets.WINDOWS_CERTIFICATE_PASSWORD != '')
+        if: matrix.os == 'windows-latest' && (env.WINDOWS_CERTIFICATE != '' || env.WINDOWS_CERTIFICATE_PASSWORD != '')
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -144,7 +159,7 @@ jobs:
           Write-Host "Windows signing enabled: certificate imported, thumbprint $($cert.Thumbprint)"
 
       - name: Import Apple certificate (if configured)
-        if: matrix.os == 'macos-latest' && (secrets.APPLE_CERTIFICATE != '' || secrets.APPLE_CERTIFICATE_PASSWORD != '')
+        if: matrix.os == 'macos-latest' && (env.APPLE_CERTIFICATE != '' || env.APPLE_CERTIFICATE_PASSWORD != '')
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
