@@ -2,9 +2,22 @@
 // 密码箱字节级兼容已在验收里双向验证（见 docs/node-migration-phase2.md）。
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Vault, VaultError, getCredential } from "../../src/vault.ts";
+import {
+  Vault,
+  VaultError,
+  deriveKeys,
+  encryptEntry,
+  getCredential,
+  verifier,
+  PBKDF2_ITERATIONS,
+  PBKDF2_ITERATIONS_LEGACY,
+  MIN_MASTER_PASSWORD_LENGTH,
+  MAX_UNLOCK_ATTEMPTS,
+  VAULT_VERSION,
+} from "../../src/vault.ts";
 import { handleVault } from "../../src/cli.ts";
 
 function tmpHome(): string {
@@ -108,7 +121,7 @@ test("VaultCoreTest.test_change_password", () => {
 
 test("VaultCoreTest.test_change_password_wrong_old_raises", () => {
   const { vault } = makeVault();
-  expect(() => vault.changePassword("wrong", "new")).toThrow();
+  expect(() => vault.changePassword("wrong-old-pass", "new-pass")).toThrow();
 });
 
 test("VaultCoreTest.test_lock_then_get_raises", () => {
@@ -121,8 +134,8 @@ test("VaultCoreTest.test_lock_then_get_raises", () => {
 test("VaultCoreTest.test_init_twice_raises", () => {
   const home = tmpHome();
   const v = new Vault(join(home, "vault.json"));
-  v.init("pw");
-  expect(() => v.init("pw2")).toThrow();
+  v.init("password1");
+  expect(() => v.init("password2")).toThrow();
 });
 
 test("VaultCoreTest.test_add_duplicate_without_overwrite_raises", () => {
@@ -298,43 +311,43 @@ test("ResolveProviderVaultTest.test_vault_missing_entry_keeps_original_behavior"
 
 test("VaultCliTest.test_init_add_get_list_remove", async () => {
   const home = tmpHome();
-  expect(await handleVault(["init"], home, { passwords: ["pw1", "pw1"] })).toBe(0);
-  expect(await handleVault(["add", "K1"], home, { passwords: ["pw1"], secrets: ["secret1"] })).toBe(0);
+  expect(await handleVault(["init"], home, { passwords: ["password1", "password1"] })).toBe(0);
+  expect(await handleVault(["add", "K1"], home, { passwords: ["password1"], secrets: ["secret1"] })).toBe(0);
   expect(await handleVault(["list"], home)).toBe(0);
   const v = new Vault(join(home, "vault.json"));
-  expect(v.unlock("pw1")).toBe(true);
+  expect(v.unlock("password1")).toBe(true);
   expect(v.get("K1")).toBe("secret1");
-  expect(await handleVault(["remove", "K1"], home, { passwords: ["pw1"] })).toBe(0);
+  expect(await handleVault(["remove", "K1"], home, { passwords: ["password1"] })).toBe(0);
   expect(v.get("K1")).toBeNull();
 });
 
 test("VaultCliTest.test_init_password_mismatch", async () => {
   const home = tmpHome();
-  expect(await handleVault(["init"], home, { passwords: ["a", "b"] })).toBe(1);
+  expect(await handleVault(["init"], home, { passwords: ["password1", "password2"] })).toBe(1);
   expect(new Vault(join(home, "vault.json")).exists()).toBe(false);
 });
 
 test("VaultCliTest.test_add_refuses_argv_secret", async () => {
   const home = tmpHome();
-  await handleVault(["init"], home, { passwords: ["pw1", "pw1"] });
+  await handleVault(["init"], home, { passwords: ["password1", "password1"] });
   // 密钥绝不能出现在 argv 里：多一个参数即拒绝。
-  expect(await handleVault(["add", "K1", "secret-in-argv"], home, { passwords: ["pw1"] })).toBe(2);
+  expect(await handleVault(["add", "K1", "secret-in-argv"], home, { passwords: ["password1"] })).toBe(2);
 });
 
 test("VaultCliTest.test_change_password", async () => {
   const home = tmpHome();
-  await handleVault(["init"], home, { passwords: ["old", "old"] });
-  await handleVault(["add", "K"], home, { passwords: ["old"], secrets: ["v"] });
-  expect(await handleVault(["change-password"], home, { passwords: ["old", "new", "new"] })).toBe(0);
+  await handleVault(["init"], home, { passwords: ["old-pass", "old-pass"] });
+  await handleVault(["add", "K"], home, { passwords: ["old-pass"], secrets: ["v"] });
+  expect(await handleVault(["change-password"], home, { passwords: ["old-pass", "new-pass", "new-pass"] })).toBe(0);
   const v = new Vault(join(home, "vault.json"));
-  expect(v.unlock("new")).toBe(true);
+  expect(v.unlock("new-pass")).toBe(true);
   expect(v.get("K")).toBe("v");
 });
 
 test("VaultCliTest.test_change_password_mismatch", async () => {
   const home = tmpHome();
-  await handleVault(["init"], home, { passwords: ["old", "old"] });
-  expect(await handleVault(["change-password"], home, { passwords: ["old", "n1", "n2"] })).toBe(1);
+  await handleVault(["init"], home, { passwords: ["old-pass", "old-pass"] });
+  expect(await handleVault(["change-password"], home, { passwords: ["old-pass", "new-pass-1", "new-pass-2"] })).toBe(1);
 });
 
 test("VaultCliTest.test_get_missing_vault", async () => {
@@ -343,10 +356,78 @@ test("VaultCliTest.test_get_missing_vault", async () => {
 
 test("VaultCliTest.test_get_missing_entry", async () => {
   const home = tmpHome();
-  await handleVault(["init"], home, { passwords: ["pw", "pw"] });
-  expect(await handleVault(["get", "NOPE"], home, { passwords: ["pw"] })).toBe(1);
+  await handleVault(["init"], home, { passwords: ["password1", "password1"] });
+  expect(await handleVault(["get", "NOPE"], home, { passwords: ["password1"] })).toBe(1);
 });
 
 test("VaultCliTest.test_unknown_command", async () => {
   expect(await handleVault(["explode"], tmpHome())).toBe(2);
+});
+
+// -- 0.4.1 审查 12 项：第 1 项（PBKDF2 600k + 旧箱自动升级）、第 2 项（最小长度与限流） --
+test("Vault041Test.test_short_master_password_rejected", () => {
+  const v = new Vault(join(tmpHome(), "vault.json"));
+  expect(() => v.init("1234567")).toThrow(`主密码至少 ${MIN_MASTER_PASSWORD_LENGTH} 位`);
+  expect(() => v.changePassword("whatever-long", "short")).toThrow(`新主密码至少 ${MIN_MASTER_PASSWORD_LENGTH} 位`);
+  // 正好 8 位可以通过。
+  v.init("12345678");
+  expect(v.unlock("12345678")).toBe(true);
+});
+
+test("Vault041Test.test_new_vault_uses_600k_iterations", () => {
+  const { home } = makeVault();
+  const doc = JSON.parse(readFileSync(join(home, "vault.json"), "utf-8")) as { iterations?: number };
+  expect(doc.iterations).toBe(PBKDF2_ITERATIONS);
+  expect(PBKDF2_ITERATIONS).toBe(600_000);
+});
+
+test("Vault041Test.test_legacy_200k_vault_unlocks_and_upgrades", () => {
+  const home = tmpHome();
+  const path = join(home, "vault.json");
+  // 手写一个 0.4.0 式旧密码箱：200k 次、无 iterations 字段。
+  const salt = randomBytes(32);
+  const keys = deriveKeys("master-pass", salt, PBKDF2_ITERATIONS_LEGACY);
+  const doc = {
+    version: VAULT_VERSION,
+    salt: salt.toString("hex"),
+    verifier: verifier(keys.macKey),
+    entries: { K: encryptEntry(keys.encKey, keys.macKey, Buffer.from("v", "utf-8")) },
+  };
+  writeFileSync(path, JSON.stringify(doc, null, 2) + "\n", "utf-8");
+  const v = new Vault(path);
+  expect(v.unlock("master-pass")).toBe(true);
+  expect(v.get("K")).toBe("v");
+  // 解锁后已自动升级到 600k：文件里有了 iterations，旧口令照常用。
+  const upgraded = JSON.parse(readFileSync(path, "utf-8")) as { iterations?: number };
+  expect(upgraded.iterations).toBe(PBKDF2_ITERATIONS);
+  const reopened = new Vault(path);
+  expect(reopened.unlock("master-pass")).toBe(true);
+  expect(reopened.get("K")).toBe("v");
+});
+
+test("Vault041Test.test_unlock_rate_limit_and_backoff", () => {
+  const home = tmpHome();
+  const path = join(home, "vault.json");
+  let now = Date.now();
+  const clock = () => now;
+  const v = new Vault(path, { clock, lockoutBaseMs: 1000 });
+  v.init("master-pass");
+  expect(v.lockoutRemainingMs()).toBe(0);
+  for (let i = 0; i < MAX_UNLOCK_ATTEMPTS; i++) {
+    expect(v.unlock("wrong-pass")).toBe(false);
+  }
+  // 5 次输错后锁死：正确口令也进不去，限流状态落盘、换实例也认。
+  expect(v.lockoutRemainingMs()).toBeGreaterThan(0);
+  expect(v.unlock("master-pass")).toBe(false);
+  const other = new Vault(path, { clock, lockoutBaseMs: 1000 });
+  expect(other.lockoutRemainingMs()).toBeGreaterThan(0);
+  expect(other.unlock("master-pass")).toBe(false);
+  // 锁死期过后正确口令能进；再输错一次，锁死翻倍（第 6 次错 = 2 倍基础时长）。
+  now += 1000;
+  expect(v.unlock("wrong-pass")).toBe(false);
+  expect(v.lockoutRemainingMs()).toBeGreaterThan(1000);
+  expect(v.lockoutRemainingMs()).toBeLessThanOrEqual(2000);
+  now += 2000;
+  expect(v.unlock("master-pass")).toBe(true);
+  expect(v.lockoutRemainingMs()).toBe(0);
 });

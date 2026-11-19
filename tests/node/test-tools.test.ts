@@ -359,3 +359,75 @@ test("ToolsTest.test_creator_mode_asks_like_auto", async () => {
   const noCtx = newToolContext({ workdir: tmpdir(), mode: "creator", interactive: true, approveFn: async () => false });
   await expect(checkApproval(noCtx, "write_file", "写文件")).rejects.toThrow(ToolError);
 });
+
+// -- 0.4.1 审查 12 项：第 5 项（SSRF 工具层拦截）、第 6 项（只读工具目录限制）、第 9 项（shell 黑名单加固） --
+test("Tools041Test.test_web_fetch_and_http_post_block_private_urls", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
+  const ctx = fullCtx(wd);
+  // 内网/保留地址在发请求前就拦住，不会真的连过去。
+  const out = await executeTool("web_fetch", { url: "http://169.254.169.254/latest/meta-data/" }, ctx);
+  expect(out).toContain("已拦截内网");
+  const out2 = await executeTool("http_post", { url: "http://10.0.0.5/hook", body: "{}" }, ctx);
+  expect(out2).toContain("已拦截内网");
+});
+
+test("Tools041Test.test_read_tools_confined_to_workdir", async () => {
+  const wd = mkdtempSync(join(tmpdir(), "nyra-tools-"));
+  const outside = mkdtempSync(join(tmpdir(), "nyra-tools-outside-"));
+  writeFileSync(join(outside, "secret.txt"), "top-secret\n");
+  writeFileSync(join(wd, "a.txt"), "hello\n");
+  const ctx = fullCtx(wd);
+  expect(await executeTool("read_file", { path: "a.txt" }, ctx)).toContain("hello");
+  // 工作目录外：读文件、列目录、搜索、git 状态都拒绝，并给清楚提示。
+  const blocked: Array<[string, Record<string, unknown>]> = [
+    ["read_file", { path: join(outside, "secret.txt") }],
+    ["read_file", { path: "../escape.txt" }],
+    ["list_dir", { path: outside }],
+    ["grep_search", { pattern: "secret", path: outside }],
+    ["git_status", { path: outside }],
+  ];
+  for (const [name, args] of blocked) {
+    const out = await executeTool(name, args, ctx);
+    expect(out).toContain("只读工具只能访问工作目录内的路径");
+  }
+  // 显式放开后能读（用户自己负责）。
+  const saved = process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR;
+  process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR = "1";
+  try {
+    expect(await executeTool("read_file", { path: join(outside, "secret.txt") }, ctx)).toContain("top-secret");
+  } finally {
+    if (saved === undefined) delete process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR;
+    else process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR = saved;
+  }
+});
+
+test("Tools041Test.test_shell_denylist_stronger", () => {
+  for (const cmd of [
+    "rm -r -f /",
+    "rm -rfv /",
+    "rm --recursive --force /",
+    "rm -rf $HOME/",
+    "rm -rf ~/x",
+    "rm -rf /*",
+    "rm -rf .",
+    "rm -rf ..",
+    "rm -rf /; echo done",
+    "of=/dev/sda dd if=/dev/zero",
+    "chmod 777 -R /",
+    "chmod -R 777 /",
+  ]) {
+    expect(checkShellDenied(cmd)).not.toBeNull();
+  }
+  for (const cmd of [
+    "rm -rf /tmp/my-project",
+    "rm -r /tmp/x",
+    "rm -f /tmp/x",
+    "rm -rf ./build",
+    "rm -rf /tmp/x; ls",
+    "chmod 755 /tmp/x",
+    "chmod -R 755 /tmp/x",
+    "dd if=/dev/zero of=/tmp/out.img bs=1M count=1",
+  ]) {
+    expect(checkShellDenied(cmd)).toBeNull();
+  }
+});

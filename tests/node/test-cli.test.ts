@@ -11,8 +11,8 @@ import {
 import { VERSION } from "../../src/config.ts";
 
 test("CliTest.test_version_string", () => {
-  expect(VERSION).toBe("0.4.0");
-  expect(USAGE).toContain("0.4.0");
+  expect(VERSION).toBe("0.4.1");
+  expect(USAGE).toContain("0.4.1");
 });
 
 test("CliTest.test_parse_args_flags", () => {
@@ -130,7 +130,7 @@ test("CliTest.test_list_custom_commands", () => {
 
 test("CliTest.test_vault_init_add_get_list_remove", async () => {
   const home = mkdtempSync(join(tmpdir(), "nyra-vault-cli-"));
-  const input = { passwords: ["pw-123", "pw-123"], secrets: ["sk-test-abc"] };
+  const input = { passwords: ["pw-12345", "pw-12345"], secrets: ["sk-test-abc"] };
   expect(await handleVault(["init"], home, input)).toBe(0);
   expect(await handleVault(["add", "DEEPSEEK_API_KEY"], home, input)).toBe(0);
   expect(await handleVault(["list"], home, input)).toBe(0);
@@ -142,7 +142,7 @@ test("CliTest.test_vault_init_add_get_list_remove", async () => {
 
 test("CliTest.test_vault_rejects_password_from_argv", async () => {
   const home = mkdtempSync(join(tmpdir(), "nyra-vault-cli-"));
-  const input = { passwords: ["pw-123", "pw-123"], secrets: [] };
+  const input = { passwords: ["pw-12345", "pw-12345"], secrets: [] };
   // add 多一个 argv 参数即返回 2（密钥绝不从 argv 读）。
   expect(await handleVault(["add", "K", "secret-from-argv"], home, input)).toBe(2);
   expect(await handleVault(["bogus-cmd"], home, input)).toBe(2);
@@ -164,7 +164,7 @@ test("CliTest.test_binary_help_and_version", () => {
   expect(help.out).toContain("nyra");
   const ver = runCli(["--version"], home);
   expect(ver.code).toBe(0);
-  expect(ver.out).toContain("0.4.0");
+  expect(ver.out).toContain("0.4.1");
 });
 
 test("CliTest.test_binary_list_providers_skills_sessions", () => {

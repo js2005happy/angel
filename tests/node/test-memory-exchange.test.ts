@@ -215,3 +215,102 @@ function crc32(buf: Buffer): number {
   for (const b of buf) crc = (table as number[])[(crc ^ b) & 0xff] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
+
+// -- 0.4.1 审查 12 项：第 8 项（聊天 zip 存档脱敏 + PEM 块整块删） --
+test("MemoryExchange041Test.test_scrub_secrets_drops_whole_pem_block", () => {
+  const pem = [
+    "正常行",
+    "-----BEGIN PRIVATE KEY-----",
+    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC",
+    "AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+    "-----END PRIVATE KEY-----",
+    "另一行正常",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "AAAA",
+    "-----END RSA PRIVATE KEY-----",
+    "结尾",
+  ].join("\n");
+  const [cleaned, removed] = scrubSecrets(pem);
+  expect(removed).toBe(7);
+  expect(cleaned).toContain("正常行");
+  expect(cleaned).toContain("另一行正常");
+  expect(cleaned).toContain("结尾");
+  expect(cleaned).not.toContain("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC");
+  expect(cleaned).not.toContain("AbCdEfGhIjKlMnOpQrStUvWxYz012345");
+  expect(cleaned).not.toContain("PRIVATE KEY");
+  // 没有 END 行的块删到文末（末尾空行也算一行）。
+  const [c2, r2] = scrubSecrets("好行\n-----BEGIN PRIVATE KEY-----\nSECRETLINE\n");
+  expect(r2).toBe(3);
+  expect(c2).toContain("好行");
+  expect(c2).not.toContain("SECRETLINE");
+});
+
+test("MemoryExchange041Test.test_import_chat_zip_scrubs_archive", () => {
+  const h = home();
+  const payload = JSON.stringify([
+    { title: "t", messages: [
+      { role: "user", content: "hi" },
+      { role: "user", content: "my api_key = sk-secret-999" },
+      { role: "assistant", content: "-----BEGIN PRIVATE KEY-----\nMIISECRETLINE\n-----END PRIVATE KEY-----" },
+    ] },
+  ]);
+  const zipPath = join(h, "chat.zip");
+  writeFileSync(zipPath, makeStoredZip(payload));
+  const result = importChatZip(zipPath, h);
+  expect(result.conversations).toBe(1);
+  expect(result.removed).toBeGreaterThan(0);
+  const archived = readFileSync(result.archived, "utf-8");
+  expect(archived).not.toContain("sk-secret-999");
+  expect(archived).not.toContain("MIISECRETLINE");
+  expect(archived).not.toContain("PRIVATE KEY");
+  expect(archived).toContain("hi");
+  // 存档仍是合法 JSON。
+  expect(() => JSON.parse(archived)).not.toThrow();
+  const memory = readFileSync(join(h, "MEMORY.md"), "utf-8");
+  expect(memory).toContain("已删掉");
+});
+
+function makeStoredZip(payload: string): Buffer {
+  const name = "conversations.json";
+  const data = Buffer.from(payload, "utf-8");
+  const crc = crc32(data);
+  const localHeader = Buffer.alloc(30);
+  localHeader.writeUInt32LE(0x04034b50, 0);
+  localHeader.writeUInt16LE(20, 4);
+  localHeader.writeUInt16LE(0, 6);
+  localHeader.writeUInt16LE(0, 8);
+  localHeader.writeUInt16LE(0, 10);
+  localHeader.writeUInt16LE(0, 12);
+  localHeader.writeUInt32LE(crc, 14);
+  localHeader.writeUInt32LE(data.length, 18);
+  localHeader.writeUInt32LE(data.length, 22);
+  localHeader.writeUInt16LE(name.length, 26);
+  localHeader.writeUInt16LE(0, 28);
+  const centralHeader = Buffer.alloc(46);
+  centralHeader.writeUInt32LE(0x02014b50, 0);
+  centralHeader.writeUInt16LE(20, 4);
+  centralHeader.writeUInt16LE(20, 6);
+  centralHeader.writeUInt16LE(0, 8);
+  centralHeader.writeUInt16LE(0, 10);
+  centralHeader.writeUInt16LE(0, 12);
+  centralHeader.writeUInt32LE(crc, 16);
+  centralHeader.writeUInt32LE(data.length, 20);
+  centralHeader.writeUInt32LE(data.length, 24);
+  centralHeader.writeUInt16LE(name.length, 28);
+  centralHeader.writeUInt16LE(0, 30);
+  centralHeader.writeUInt16LE(0, 32);
+  centralHeader.writeUInt16LE(0, 34);
+  centralHeader.writeUInt16LE(0, 36);
+  centralHeader.writeUInt32LE(0, 38);
+  centralHeader.writeUInt32LE(0, 42);
+  const endRecord = Buffer.alloc(22);
+  endRecord.writeUInt32LE(0x06054b50, 0);
+  endRecord.writeUInt16LE(0, 4);
+  endRecord.writeUInt16LE(0, 6);
+  endRecord.writeUInt16LE(1, 8);
+  endRecord.writeUInt16LE(1, 10);
+  endRecord.writeUInt32LE(centralHeader.length, 12);
+  endRecord.writeUInt32LE(localHeader.length + name.length + data.length, 16);
+  endRecord.writeUInt16LE(0, 20);
+  return Buffer.concat([localHeader, Buffer.from(name), data, centralHeader, Buffer.from(name), endRecord]);
+}

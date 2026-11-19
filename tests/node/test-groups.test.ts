@@ -4,6 +4,7 @@ import { test, expect } from "bun:test";
 import {
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -26,6 +27,7 @@ import {
   ProviderError,
   type ProviderLike,
 } from "../../src/providers.ts";
+import { Vault } from "../../src/vault.ts";
 
 function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "nyra-groups-"));
@@ -298,16 +300,19 @@ test("增删 Key：满 5 把拒绝增、按值/下标删、删不存在的报错
     store.removeApiKey("dev", "bot1", 0);
     const stored = JSON.parse(
       readFileSync(join(root, "groups", "dev", "room.json"), "utf-8"),
-    ) as { bots: { id: string; api_keys: string[] | null }[] };
-    expect(stored.bots[0].api_keys).toEqual(["k2", "k4", "k5"]);
+    ) as { bots: { id: string; api_keys: string[] | null; api_keys_enc: string[] | null }[] };
+    // 磁盘上只剩加密串，明文 Key 已不在 room.json 里；解析后仍是同一组 Key。
+    expect(stored.bots[0].api_keys).toBeNull();
+    expect(store.resolveBotKeys(parseBot(stored.bots[0]))).toEqual(["k2", "k4", "k5"]);
     expect(() => store.removeApiKey("dev", "bot1", "nope")).toThrow(GroupError);
     expect(() => store.removeApiKey("dev", "bot1", 99)).toThrow(GroupError);
     expect(() => store.removeApiKey("dev", "ghost", "k2")).toThrow(GroupError);
     store.replaceApiKeys("dev", "bot1", null);
     const cleared = JSON.parse(
       readFileSync(join(root, "groups", "dev", "room.json"), "utf-8"),
-    ) as { bots: { api_keys: string[] | null }[] };
+    ) as { bots: { api_keys: string[] | null; api_keys_enc: string[] | null }[] };
     expect(cleared.bots[0].api_keys).toBeNull();
+    expect(cleared.bots[0].api_keys_enc).toBeNull();
   } finally {
     cleanup(root);
   }
@@ -319,11 +324,12 @@ test("不同机器人 Key 隔离：factory 各自只看到自己的 Key", async 
   const root = tmpRoot();
   try {
     const seenKeys = new Map<string, string[] | null>();
+    let store!: GroupStore;
     const factory: ProviderFactory = (bot) => {
-      seenKeys.set(bot.id, bot.api_keys ? [...bot.api_keys] : null);
+      seenKeys.set(bot.id, store.resolveBotKeys(bot));
       return mockProvider(bot.id, [`${bot.id} 答复`]);
     };
-    const store = new GroupStore(join(root, "groups"), { home: root, providerFactory: factory });
+    store = new GroupStore(join(root, "groups"), { home: root, providerFactory: factory });
     store.create("dev", "开发群", [
       { id: "bot1", name: "One", role: "R", instructions: "Own ideas", provider: "deepseek", api_keys: ["k1a", "k1b"] },
       { id: "bot2", name: "Two", role: "R", instructions: "Own ideas", provider: "deepseek", api_keys: ["k2a"] },
@@ -417,7 +423,7 @@ test("keyRotatingProvider：每 bot 独立建池，Key 值与顺序与 room.json
   }
 });
 
-test("Key 永不出现在返回数据里，但确实存在磁盘上", async () => {
+test("Key 永不出现在返回数据里，磁盘上只存加密串", async () => {
   const root = tmpRoot();
   try {
     const seen = new Map<string, ProviderLike & { calls: number }>();
@@ -432,11 +438,16 @@ test("Key 永不出现在返回数据里，但确实存在磁盘上", async () =
       expect(JSON.stringify(room)).not.toContain("sk-lead-111");
       expect(JSON.stringify(room)).not.toContain("sk-arch-222");
     }
-    const stored = JSON.parse(
-      readFileSync(join(root, "groups", "dev", "room.json"), "utf-8"),
-    ) as { bots: { api_keys: string[] }[] };
-    expect(stored.bots[0].api_keys).toEqual(["sk-lead-111"]);
-    expect(stored.bots[1].api_keys).toEqual(["sk-arch-222", "sk-arch-333"]);
+    const roomText = readFileSync(join(root, "groups", "dev", "room.json"), "utf-8");
+    expect(roomText).not.toContain("sk-lead-111");
+    expect(roomText).not.toContain("sk-arch-222");
+    expect(roomText).not.toContain("sk-arch-333");
+    const stored = JSON.parse(roomText) as { bots: { api_keys: string[] | null; api_keys_enc: string[] | null }[] };
+    expect(stored.bots[0].api_keys).toBeNull();
+    expect(stored.bots[0].api_keys_enc?.[0]).toMatch(/^v1:local:/);
+    expect(stored.bots[1].api_keys_enc).toHaveLength(2);
+    expect(store.resolveBotKeys(parseBot(stored.bots[0]))).toEqual(["sk-lead-111"]);
+    expect(store.resolveBotKeys(parseBot(stored.bots[1]))).toEqual(["sk-arch-222", "sk-arch-333"]);
     const result = await store.send("dev", "@bot1 请回答");
     expect(JSON.stringify(result)).not.toContain("sk-lead-111");
   } finally {
@@ -565,6 +576,88 @@ test("不存在的群 send 报不存在", async () => {
   try {
     const store = new GroupStore(join(root, "groups"), { home: root });
     await expect(store.send("ghost", "hi")).rejects.toThrow(/不存在/);
+  } finally {
+    cleanup(root);
+  }
+});
+
+// -- 0.4.1 审查 12 项：第 7 项（群 Key 加密存储） --
+test("Groups041Test.test_legacy_plaintext_keys_migrated_on_read", () => {
+  const root = tmpRoot();
+  try {
+    const store = new GroupStore(join(root, "groups"), { home: root });
+    // 手写一个旧版 room.json：明文 api_keys。
+    const dir = join(root, "groups", "dev");
+    mkdirSync(dir, { recursive: true });
+    const legacy = {
+      id: "dev", name: "开发群",
+      bots: [{ id: "bot1", name: "One", role: "R", instructions: "Own ideas", provider: null, model: null, api_keys: ["sk-old-111"], mode: "readonly" }],
+      messages: [], created_at: "2026-11-19T07:00:00+00:00", instance_id: "aabbccddeeff00112233445566778899",
+    };
+    writeFileSync(join(dir, "room.json"), JSON.stringify(legacy, null, 2), "utf-8");
+    // 读一次即迁移：Key 还能用，磁盘上不再有明文。
+    const room = store.get("dev");
+    expect(JSON.stringify(room)).not.toContain("sk-old-111");
+    const text = readFileSync(join(dir, "room.json"), "utf-8");
+    expect(text).not.toContain("sk-old-111");
+    const stored = JSON.parse(text) as { bots: { api_keys: string[] | null; api_keys_enc: string[] | null }[] };
+    expect(stored.bots[0].api_keys).toBeNull();
+    expect(stored.bots[0].api_keys_enc?.[0]).toMatch(/^v1:local:/);
+    expect(store.resolveBotKeys(parseBot(stored.bots[0]))).toEqual(["sk-old-111"]);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("Groups041Test.test_keys_encrypted_via_vault_when_available", () => {
+  const root = tmpRoot();
+  try {
+    const vault = new Vault(join(root, "vault.json"));
+    vault.init("master-pass");
+    const saved = process.env.NYRA_VAULT_PASSWORD;
+    process.env.NYRA_VAULT_PASSWORD = "master-pass";
+    try {
+      const store = new GroupStore(join(root, "groups"), { home: root });
+      store.create("dev", "开发群", [
+        { id: "bot1", name: "One", role: "R", instructions: "Own ideas", provider: "deepseek", api_keys: ["sk-vault-111"] },
+        { id: "bot2", name: "Two", role: "R", instructions: "Own ideas", provider: "deepseek" },
+      ]);
+      const text = readFileSync(join(root, "groups", "dev", "room.json"), "utf-8");
+      expect(text).not.toContain("sk-vault-111");
+      const stored = JSON.parse(text) as { bots: { api_keys_enc: string[] | null }[] };
+      expect(stored.bots[0].api_keys_enc?.[0]).toMatch(/^v1:vault:group-/);
+      expect(store.resolveBotKeys(parseBot(stored.bots[0]))).toEqual(["sk-vault-111"]);
+      // 密码箱里确实有这条；删 Key 后对应的密码箱条目也被尽力删掉。
+      expect(vault.listNames().some((n) => n.startsWith("group-"))).toBe(true);
+      store.removeApiKey("dev", "bot1", "sk-vault-111");
+      const reopened = new Vault(join(root, "vault.json"));
+      expect(reopened.unlock("master-pass")).toBe(true);
+      expect(reopened.listNames().some((n) => n.startsWith("group-"))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.NYRA_VAULT_PASSWORD;
+      else process.env.NYRA_VAULT_PASSWORD = saved;
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("Groups041Test.test_undecryptable_keys_report_clear_error", () => {
+  const root = tmpRoot();
+  try {
+    const store = new GroupStore(join(root, "groups"), { home: root });
+    const dir = join(root, "groups", "dev");
+    mkdirSync(dir, { recursive: true });
+    const room = {
+      id: "dev", name: "开发群",
+      bots: [{ id: "bot1", name: "One", role: "R", instructions: "Own ideas", provider: "deepseek", model: "deepseek-flash", api_keys: null, api_keys_enc: ["v1:local:00:00:00"], mode: "readonly" }],
+      messages: [], created_at: "2026-11-19T07:00:00+00:00", instance_id: "aabbccddeeff00112233445566778899",
+    };
+    writeFileSync(join(dir, "room.json"), JSON.stringify(room, null, 2), "utf-8");
+    const bot = parseBot(room.bots[0]);
+    // 解不出的 Key 不进轮换；providerForBot 说清楚原因，不静默当没配。
+    expect(store.resolveBotKeys(bot)).toEqual([]);
+    expect(() => store.providerForBot(bot)).toThrow(/无法解密/);
   } finally {
     cleanup(root);
   }

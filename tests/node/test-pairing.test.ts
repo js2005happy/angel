@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { createSocket } from "node:dgram";
 import {
   DeviceRegistry, PairingError, generateCode, hashDeviceToken,
-  startDiscoveryResponder, DISCOVERY_PORT, DISCOVERY_MAGIC, CODE_TTL_SECONDS,
+  startDiscoveryResponder, buildDiscoveryReply, DISCOVERY_PORT, DISCOVERY_MAGIC, CODE_TTL_SECONDS,
 } from "../../src/pairing.ts";
 
 function registry(ttl = CODE_TTL_SECONDS): { reg: DeviceRegistry; now: { t: number }; path: string } {
@@ -111,7 +111,46 @@ test("PairingDiscoveryTest.test_udp_discovery_replies", async () => {
     const data = JSON.parse(reply) as { magic: string; port: number };
     expect(data.magic).toBe(DISCOVERY_MAGIC);
     expect(data.port).toBe(18765);
+    // 发现回包绝不能带配对码或 token（审查报告第 4 项：无配对码预言机）。
+    expect("code" in data).toBe(false);
+    expect("token" in data).toBe(false);
   } finally {
     sock.close();
   }
+});
+
+// -- 0.4.1 审查 12 项：第 3 项（token 180 天不用自动失效）、第 4 项（保留 6 位码） --
+test("Pairing041Test.test_token_expires_after_180_days_idle", () => {
+  const { reg, now } = registry();
+  const { code } = reg.startPairing();
+  const device = reg.redeem(code, "手机");
+  expect(reg.authenticate(device.token)).not.toBe(null);
+  // 100 天不用：还有效，认证刷新 last_seen，常用设备永不过期。
+  now.t += 100 * 24 * 3600;
+  expect(reg.authenticate(device.token)).not.toBe(null);
+  now.t += 100 * 24 * 3600;
+  expect(reg.authenticate(device.token)).not.toBe(null);
+  // 再 181 天不用：过期，认证失败，设备从列表里剪掉。
+  now.t += 181 * 24 * 3600;
+  expect(reg.authenticate(device.token)).toBe(null);
+  expect(reg.listDevices().find((d) => d.id === device.id)).toBeUndefined();
+});
+
+test("Pairing041Test.test_discovery_reply_carries_no_code_or_token", () => {
+  // 不依赖 UDP 也能跑：回包内容是纯函数，直接断言形状（审查报告第 4 项）。
+  const data = JSON.parse(buildDiscoveryReply("Nyra-test", 18765)) as Record<string, unknown>;
+  expect(data).toEqual({ magic: DISCOVERY_MAGIC, name: "Nyra-test", port: 18765 });
+  expect(JSON.stringify(data)).not.toMatch(/code|token/i);
+});
+
+test("Pairing041Test.test_six_digit_code_kept_with_bruteforce_guards", () => {
+  // 保留 6 位码（审查报告第 4 项）：好记；暴力破解被错 5 次作废 + 300 秒 TTL + 一次性堵住。
+  const { reg } = registry();
+  const { code } = reg.startPairing();
+  expect(/^[0-9]{6}$/.test(code)).toBe(true);
+  expect(reg.pairingStatus().expires_in).toBeLessThanOrEqual(CODE_TTL_SECONDS);
+  for (let i = 0; i < 4; i++) expect(() => reg.redeem("000000", "x")).toThrow(PairingError);
+  // 第 5 次错码作废，正确码也没用了。
+  expect(() => reg.redeem("000000", "x")).toThrow(PairingError);
+  expect(() => reg.redeem(code, "x")).toThrow(PairingError);
 });
