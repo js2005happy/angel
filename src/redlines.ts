@@ -35,6 +35,8 @@ export interface RedlineInput {
   platform?: string;
   /** 工具集体检结果（由调用方用 toolBudget.measureToolBudget 算好传入）。 */
   toolBudget?: { totalTools: number; tokensPerTurn: number; contextRatio: number | null } | null;
+  /** 跨会话回忆状态（开关是否开、总历史数、30 天内的历史数）。 */
+  recall?: { enabled: boolean; total: number; fresh: number } | null;
 }
 
 export interface RedlineResult {
@@ -192,6 +194,41 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
       });
     } else {
       add({ code: "tools-lean", level: "ok", title: "工具集体积", detail: `${tb.totalTools} 个工具、每轮约 ${tb.tokensPerTurn} token，在可接受范围内` });
+    }
+  }
+  // 9) 跨会话回忆：开着但没有新鲜历史 = 看起来在省，其实一点没省
+  const rc = input.recall;
+  if (rc) {
+    if (!rc.enabled) {
+      add({
+        code: "recall-off",
+        level: "warn",
+        title: "跨会话回忆",
+        detail: "回忆已关闭：同类任务二次运行时会从零重新探索",
+        fix: "开 features.run_recall（默认开；被关掉通常是排障遗留）",
+      });
+    } else if (rc.total === 0) {
+      add({
+        code: "recall-empty",
+        level: "ok",
+        title: "跨会话回忆",
+        detail: "已开启；还没有历史运行（第一次跑自然不会省）",
+      });
+    } else if (rc.fresh === 0) {
+      add({
+        code: "recall-stale",
+        level: "warn",
+        title: "跨会话回忆",
+        detail: `已开启，但 ${rc.total} 条历史全部超过 30 天：现值等价于关闭`,
+        fix: "回忆只认 30 天内的运行；要么近期跑一次同类任务积累历史，要么别指望它省 token",
+      });
+    } else {
+      add({
+        code: "recall-ready",
+        level: "ok",
+        title: "跨会话回忆",
+        detail: `已开启；${rc.fresh}/${rc.total} 条历史在 30 天内，可复用`,
+      });
     }
   }
   const fails = findings.filter((f) => f.level === "fail").length;
