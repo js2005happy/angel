@@ -6,7 +6,7 @@ import {
   chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
   readdirSync, renameSync, rmSync, statSync, writeSync, appendFileSync, writeFileSync,
 } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, relative, sep, dirname, basename } from "node:path";
 import { pythonJsonDump } from "./pyjson.ts";
 import { tokenize, scoreBm25 } from "./knowledge.ts";
 
@@ -209,12 +209,28 @@ function parseMemoryLine(raw: string): { text: string; created_at: string } {
   return { text: raw.trim(), created_at: "" };
 }
 
+/** 原子写用的同目录 tmp 路径：文件名只取 basename，绝不把目标路径本身拼进去。
+ *  Windows 路径用反斜杠，`targetPath.split("/").pop()` 切不开整串绝对路径，
+ *  会把 `C:\...` 嵌进 tmp 文件名（组件里带冒号），`openSync` 报 ENOENT——
+ *  Node CI #156（6de24e7）只有 Windows 任务失败的根因；`basename` 两种
+ *  分隔符都能处理，POSIX 上行为不变。`pathMod` 参数只为测试注入
+ *  `node:path/win32`，生产调用一律用默认的本机 path。 */
+export function atomicTmpPath(
+  targetPath: string,
+  pathMod: Pick<typeof import("node:path"), "join" | "dirname" | "basename"> = { join, dirname, basename },
+): string {
+  return pathMod.join(
+    pathMod.dirname(targetPath),
+    `.${pathMod.basename(targetPath)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
+  );
+}
+
 /** 原子写 sidecar 索引（同目录 tmp 0600 + rename；失败不损坏旧索引）。 */
 function saveMemoryIndex(memoryPath: string, owner: string, entries: MemoryIndexEntry[]): void {
   const indexPath = memoryIndexPath(memoryPath);
   mkdirSync(join(indexPath, ".."), { recursive: true });
   const data = JSON.stringify({ version: 1, owner, entries }, null, 2) + "\n";
-  const tmp = join(join(indexPath, ".."), `.${indexPath.split("/").pop()}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+  const tmp = atomicTmpPath(indexPath);
   const fd = openSync(tmp, "w", 0o600);
   try {
     writeSync(fd, data, null, "utf-8");
@@ -467,7 +483,7 @@ export function deleteMemoryEntries(
   const mode = existsSync(memoryPath) ? statSync(memoryPath).mode & 0o777 : 0o600;
   const dir = join(memoryPath, "..");
   mkdirSync(dir, { recursive: true });
-  const tmp = join(dir, `.${memoryPath.split("/").pop()}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
+  const tmp = atomicTmpPath(memoryPath);
   const fd = openSync(tmp, "w", mode);
   try {
     writeSync(fd, content, null, "utf-8");
