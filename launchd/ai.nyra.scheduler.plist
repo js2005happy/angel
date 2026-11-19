@@ -5,13 +5,13 @@
 
   Install: see docs/macos-install.md. This is a *user* agent: it runs as
   your own user, needs no root, and writes nothing outside your home
-  directory. It only keeps `python3 -m nyra schedule daemon` running; the
+  directory. It only keeps `nyra schedule daemon` running; the
   daemon itself checks the schedule every 60 seconds and runs due tasks
   (see `nyra schedule list` / `nyra schedule add`).
 
-  Paths: `__NYRA_PYTHON__`, `__NYRA_PREFIX__` and `__NYRA_HOME__` are
-  placeholders replaced by scripts/install-macos.sh at install time with
-  the real python path, install dir and $HOME. Do not edit the installed
+  Paths: `__NYRA_BIN__` and `__NYRA_HOME__` are
+  placeholders replaced by scripts/install-node-macos.sh at install time with
+  the real binary path and $HOME. Do not edit the installed
   copy by hand (reinstalling overwrites it).
 
   systemd mirror: this plist is the macOS equivalent of
@@ -19,7 +19,6 @@
   becomes RunAtLoad=true; Restart=on-failure becomes
   KeepAlive/SuccessfulExit=false (restart only when the daemon exits with
   an error — the daemon loops internally, so a clean exit is not restarted).
-  PYTHONUNBUFFERED=1 matches the systemd unit's Environment line.
 -->
 <plist version="1.0">
 <dict>
@@ -27,19 +26,12 @@
     <string>ai.nyra.scheduler</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__NYRA_PYTHON__</string>
-        <string>-m</string>
-        <string>nyra</string>
+        <string>__NYRA_BIN__</string>
         <string>schedule</string>
         <string>daemon</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>__NYRA_PREFIX__</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PYTHONUNBUFFERED</key>
-        <string>1</string>
-    </dict>
+    <string>__NYRA_HOME__</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
