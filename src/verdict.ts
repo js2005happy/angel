@@ -456,3 +456,24 @@ export function toVerdictJson(v: Verdict, kind: VerdictKind): VerdictJson {
     unknowns: [...v.unknowns],
   };
 }
+
+// ---- 守门（nyra guard / pre-push 钩子）----
+// verdict 回答"值不值"，guard 回答"**能不能过**"——把判断变成退出码，交给钩子与 CI。
+//
+// 纪律：guard 只做一件事（把 grade 映射成退出码），不重新判断。这样"人看的报告"与
+// "机器看的门禁"永远同源，不会出现"报告说红、门禁放行"这种鬼故事。
+
+/** 等级 → 退出码。`strict` 下 yellow 也不放行（默认只拦 red）。 */
+export function guardExitCode(grade: VerdictGrade, opts: { strict?: boolean } = {}): number {
+  if (grade === "red") return 2;
+  if (grade === "yellow" && opts.strict) return 2;
+  return 0;
+}
+
+/** 一行输出（钩子里不该刷屏）。 */
+export function formatGuardLine(v: Verdict, opts: { strict?: boolean } = {}): string {
+  const code = guardExitCode(v.grade, opts);
+  const mark = code === 0 ? "✅" : "⛔";
+  const why = v.blockers.length ? v.blockers[0] : v.grade === "yellow" ? "有未设项（strict 下不放行）" : "";
+  return `${mark} guard ${code === 0 ? "放行" : "拦截"}：${v.grade}${why ? ` —— ${why}` : ""}`;
+}
