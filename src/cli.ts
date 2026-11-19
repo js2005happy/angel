@@ -565,7 +565,7 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     monthlyCostLimitUsd: monthlyLimit,
     monthlySpentBeforeUsd,
     // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
-    auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
+    auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate, tool: r.tool }; })(),
     // 缺口 5：对话中途手动换模型的允许列表（primary + fallback_providers，
     // 与兜底链同一份名单；不受 fallback_enabled 开关影响，见 config.ts）。
     modelSwitchAllowlist: resolveSwitchAllowlist(config, primaryCfg.name),
