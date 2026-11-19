@@ -70,6 +70,10 @@ test("RewindTest.test_unknown_message_and_cross_session_rejected", () => {
 });
 
 test("RewindGatewayTest.test_api_rewind_rebuilds_live_session", async () => {
+  // 超时放宽到 15 秒：本用例内部的轮询等待上限就是 10 秒（见下面的 Date.now()
+  // 判断），已超过 Bun 默认的 5 秒测试超时——在较慢的 Windows 运行器上网关
+  // 启动 + 首次问答很容易把 5 秒跑满（Node CI #46 的 Windows 超时就是这么
+  // 来的）。15 秒仍远小于轮询上限的容错空间，只给启动留余量，不改等待逻辑。
   const home = mkdtempSync(join(tmpdir(), "nyra-rw-"));
   const workdir = mkdtempSync(join(tmpdir(), "nyra-rw-wd-"));
   writeFileSync(join(workdir, "a.txt"), "a\n", "utf-8");
@@ -105,4 +109,4 @@ test("RewindGatewayTest.test_api_rewind_rebuilds_live_session", async () => {
   } finally {
     await gw.stop();
   }
-});
+}, 15000);

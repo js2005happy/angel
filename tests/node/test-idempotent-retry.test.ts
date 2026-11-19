@@ -178,6 +178,12 @@ function testCtx() {
 
 test("IdempotentRetry.test_readonly_tools_directly_retried", async () => {
   // 本地 HTTP 服务：第一次 500，之后 200。web_fetch 是只读工具，可直接重试。
+  // 注意：Bun 的 `bun test` 会在同一个进程里并发跑多个测试文件，process.env
+  // 是进程全局的——这个开关用完必须恢复，否则同进程里其他文件的 SSRF 拦截
+  // 测试（test-net 的 test_assert_public_url_blocks_private、test-tools 的
+  // test_web_fetch_and_http_post_block_private_urls）会被旁路掉，在 CI 上
+  // 全平台失败（Node CI #49 的教训：本文件第 181 行曾经只设不恢复）。
+  const savedAllowPrivate = process.env.NYRA_ALLOW_PRIVATE_URLS;
   process.env.NYRA_ALLOW_PRIVATE_URLS = "1";
   let hits = 0;
   const server = Bun.serve({
@@ -197,6 +203,8 @@ test("IdempotentRetry.test_readonly_tools_directly_retried", async () => {
     expect(hits).toBe(2);
   } finally {
     server.stop();
+    if (savedAllowPrivate === undefined) delete process.env.NYRA_ALLOW_PRIVATE_URLS;
+    else process.env.NYRA_ALLOW_PRIVATE_URLS = savedAllowPrivate;
   }
 });
 
