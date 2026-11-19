@@ -423,3 +423,36 @@ export function buildTrendVerdict(input: TrendVerdictInput): Verdict {
 
   return { grade, headline, reasons, blockers, nextSteps: nextSteps.slice(0, 3), unknowns: [] };
 }
+
+// ---- 机器可读输出（nyra verdict --json）----
+// 人工看 formatVerdict，机器看这里。CI 门禁只看 grade，看板画趋势线看 reasons 里的数字。
+// 字段一旦发布就当契约：不改名、不删字段，只加。
+
+export const VERDICT_JSON_SCHEMA = 1;
+
+export type VerdictKind = "config" | "run" | "trend";
+
+export interface VerdictJson {
+  schema_version: number;
+  kind: VerdictKind;
+  grade: VerdictGrade;
+  headline: string;
+  reasons: string[];
+  blockers: string[];
+  next_steps: string[];
+  unknowns: string[];
+}
+
+/** 转成机器可读结构。纯函数、字段顺序稳定（便于 diff 与快照测试）。 */
+export function toVerdictJson(v: Verdict, kind: VerdictKind): VerdictJson {
+  return {
+    schema_version: VERDICT_JSON_SCHEMA,
+    kind,
+    grade: v.grade,
+    headline: v.headline,
+    reasons: [...v.reasons],
+    blockers: [...v.blockers],
+    next_steps: [...v.nextSteps],
+    unknowns: [...v.unknowns],
+  };
+}

@@ -30,7 +30,7 @@ import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
-import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict } from "./verdict.ts";
+import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict, toVerdictJson, type Verdict as VerdictShape } from "./verdict.ts";
 import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
@@ -169,7 +169,7 @@ Usage:
   nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
-  nyra verdict --run <id>         score one run; --recent N: trend over the last N runs
+  nyra verdict --run <id>         score one run; --recent N: trend over the last N runs; --json: machine-readable
   nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
   nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
   nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
@@ -2734,6 +2734,12 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "verdict") {
+    // --json：机器可读输出（CI 门禁只看 grade，看板画趋势线看 reasons 里的数字）。
+    const verdictJson = (args.subArgs ?? []).includes("--json");
+    const emitVerdict = (v2: VerdictShape, kind: "config" | "run" | "trend"): void => {
+      if (verdictJson) process.stdout.write(JSON.stringify(toVerdictJson(v2, kind)) + "\n");
+      else process.stdout.write(formatVerdict(v2) + "\n");
+    };
     // --run <id>：给单次运行打分（配置级 verdict 只看设置，不看这一次的产物）。
     const runIdFlag = (() => {
       const sub = args.subArgs ?? [];
@@ -2779,7 +2785,7 @@ export async function main(argv: string[]): Promise<number> {
         failureCounts[cls] = (failureCounts[cls] ?? 0) + 1;
       }
       const v = buildTrendVerdict({ runs, failureCounts });
-      process.stdout.write(formatVerdict(v) + "\n");
+      emitVerdict(v, "run");
       return v.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
     }
     if (runIdFlag) {
@@ -2803,13 +2809,13 @@ export async function main(argv: string[]): Promise<number> {
         delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
         error: typeof state.error === "string" ? state.error : null,
       });
-      process.stdout.write(formatVerdict(v) + "\n");
+      emitVerdict(v, "trend");
       return v.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
     }
     // 一条结论：把红线 + 省钱 + 回忆 + 运行历史拼成"这次跑得值不值"。
     const cfgV = loadConfig(home);
     const feats = resolveFeatures(cfgV, { enable: args.enableFeatures, disable: args.disableFeatures });
-    const taskText = (args.subArgs ?? []).join(" ").trim() || (args.task ?? "").trim();
+    const taskText = (args.subArgs ?? []).filter((a) => !a.startsWith("-")).join(" ").trim() || (args.task ?? "").trim();
     const turns = typeof cfgV.max_turns === "number" ? cfgV.max_turns : 20;
 
     // 红线
@@ -2864,7 +2870,7 @@ export async function main(argv: string[]): Promise<number> {
     } catch { runStatusCounts = null; }
 
     const verdict = buildVerdict({ redlines, savings, modelSavings, recallAvailable, runStatusCounts, turns });
-    process.stdout.write(formatVerdict(verdict) + "\n");
+    emitVerdict(verdict, "config");
     return verdict.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
   }
   if (args.subcommand === "status") return handleStatus(home, resolve(args.workdir));

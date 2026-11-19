@@ -110,3 +110,35 @@ nyra verdict --recent 10
 ```
 
 失败分类由 CLI 侧算（`classifyFailure`），`verdict.ts` 保持零运行时依赖——这样它仍能在本地单文件自证。
+
+## 机器可读输出：`--json`
+
+```bash
+nyra verdict --json                    # 配置级
+nyra verdict --run abc123 --json        # 单次
+nyra verdict --recent 10 --json         # 趋势
+```
+
+字段（**契约：只加不改、不删**，客户端按 `schema_version` 判断兼容）：
+
+```json
+{
+  "schema_version": 1,
+  "kind": "config",
+  "grade": "yellow",
+  "headline": "勉强：能跑，但两侧数据不全",
+  "reasons": [],
+  "blockers": [],
+  "next_steps": [],
+  "unknowns": []
+}
+```
+
+| 字段 | 用途 |
+|---|---|
+| `schema_version` | 契约版本（当前 1） |
+| `kind` | `config` / `run` / `trend`，同一份结构装三种结论 |
+| `grade` | **CI 门禁只看这个**（`red` = 退出码非 0） |
+| `reasons` / `blockers` / `next_steps` / `unknowns` | 人看的解释，看板可提取数字 |
+
+配套：`exit code` 与 `grade` 一致（`red` → 非 0），所以 CI 里可以只看退出码，或解析 `grade`。
