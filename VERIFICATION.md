@@ -1,3 +1,7 @@
+## 2026-11-20 — ToolJournal 并发错误结果的派发复核（静态修复）
+
+- 静态检查：复核 `begin()` 的初始、写后和最终快照门禁；新增模拟并发错误的两项回归测试源码。**未运行测试、未执行 CI、未安装依赖**；未验证跨平台行为。此改动不能消除最终快照与实际派发之间的 TOCTOU 窗口，不能保证 exactly-once。
+
 ## 2026-11-20 — 已报告工具错误阻断后续派发（仅静态审阅）
 
 - 核对 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 与测试，检查主分支近期提交、开放 Issues/PR 和 CI 查询。发现 `inspect()` 已要求对 `result_error` 人工核查，但 `begin()` 只拒绝歧义/未知结果，允许继续派发。
