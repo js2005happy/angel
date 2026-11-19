@@ -51,7 +51,13 @@ def _safe_directory(path: Path) -> None:
                 raise JournalError("无法核验 Windows 日志目录重解析点") from exc
             if attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT:
                 raise JournalError("日志目录不能包含 Windows 重解析点")
-        if current.is_symlink() or (is_junction is not None and is_junction()):
+        try:
+            is_link = current.is_symlink()
+            is_joined = is_junction() if is_junction is not None else False
+        except OSError as exc:
+            # An inaccessible ancestor cannot be treated as an ordinary path.
+            raise JournalError("无法核验日志目录祖先的链接或联接状态") from exc
+        if is_link or is_joined:
             raise JournalError("日志目录不能是符号链接或目录联接")
         if current == current.parent:
             break
