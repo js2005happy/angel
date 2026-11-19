@@ -181,7 +181,10 @@ class ToolJournal:
                     os.close(directory_fd)
                 raise
         else:
-            names = [p.name for p in self.path.iterdir()]
+            try:
+                names = [p.name for p in self.path.iterdir()]
+            except OSError as exc:
+                raise JournalError("无法枚举日志目录；拒绝信任日志快照") from exc
         if len(names) > MAX_EVENTS:
             if directory_fd is not None:
                 os.close(directory_fd)
@@ -327,7 +330,10 @@ class ToolJournal:
             else:
                 # Path fallback needs a second enumeration as well:
                 # directory identity does not detect newly added entries.
-                final_names = [entry.name for entry in self.path.iterdir()]
+                try:
+                    final_names = [entry.name for entry in self.path.iterdir()]
+                except OSError as exc:
+                    raise JournalError("无法复核日志目录枚举；拒绝信任日志快照") from exc
             if set(final_names) != set(names):
                 raise JournalError("日志目录在读取期间发生并发变化")
             # The path fallback enumerates by name; a directory replacement
