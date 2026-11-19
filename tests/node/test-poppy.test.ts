@@ -576,7 +576,8 @@ test("poppy.ledger grant requires explicit confirmation, then check/list/audit/r
   const stored = JSON.parse(raw.toString("utf-8")) as Record<string, unknown>;
   expect(stored.version).toBe(1);
   expect(stored.sites).toEqual({ "example.com": { visitor: { "read:profile": { kind: "local_intent" } } } });
-  expect((statSync(path).mode & 0o777)).toBe(0o600);
+  // Windows 没有 POSIX 权限位，不断言 0600。
+  if (process.platform !== "win32") expect((statSync(path).mode & 0o777)).toBe(0o600);
   // 幂等 grant 与 revoke
   expect(ledger.grant(SITE, "read:profile", null, { confirmed: true }).changed).toBe(false);
   expect(ledger.revoke(SITE, "read:profile").changed).toBe(true);
