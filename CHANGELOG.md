@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal 孤立结果守卫源码换行修复）
+
+- 修复上一轮孤立结果全局歧义保护在提交时误将实际换行写成字面量 `\n` 的源码错误；恢复有效的 Python 注释及 `invalid` / `pending` 赋值语句。未改变预期 fail-closed 规则。仅静态核对，未运行 Python、测试或 CI。
+
 ## 未发布（2026-11-19，ToolJournal 孤立结果全局歧义）
 
 - 修复 inspect() 对孤立 result 的统计：过去 orphan 计入 unknown，却没有设置 journal_ambiguous，可能同时显示其他调用 reported_ok。现在孤立结果令整个快照歧义，所有成功/失败汇总归零、全部调用待人工核查。
