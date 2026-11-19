@@ -28,6 +28,20 @@ class JournalTests(unittest.TestCase):
                 with self.assertRaisesRegex(JournalError, "无法核验事件文件是否为符号链接"):
                     journal.inspect()
 
+    def test_ancestor_symlink_probe_denied_fails_closed(self):
+        from angel import tool_journal as module
+        target = self.root / "nested" / "journal"
+        original = Path.is_symlink
+
+        def denied(path):
+            if path == self.root:
+                raise PermissionError("access denied")
+            return original(path)
+
+        with mock.patch.object(Path, "is_symlink", denied):
+            with self.assertRaisesRegex(JournalError, "无法核验日志目录祖先"):
+                module._safe_directory(target)
+
     def test_safe_directory_permission_denied_is_not_missing(self):
         # No filesystem mutation: deny metadata lookup at the session path.
         from angel import tool_journal as module
