@@ -22,6 +22,7 @@ import { handleCost } from "./costCli.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
+import { resolveAuxRouting } from "./modelRouting.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import {
@@ -385,6 +386,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     // P2-2：成本硬顶。单价从 config.pricing 按模型名解析；未配置时金额未知（不编造）。
     maxCostUsd: args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null),
     pricing: resolvePricing(config.pricing, provider.model),
+    // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
+    auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
     sandbox: {
       backend: sandboxSettings.backend,
       mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",

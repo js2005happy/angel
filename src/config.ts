@@ -54,6 +54,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // P2-2：成本硬顶。max_cost_usd 为单次运行上限（美元），pricing 按模型配单价
   // （input_per_1m / output_per_1m）；未配单价时金额未知，不做超支判定。
   max_cost_usd: null,
+  // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩摘要与子 Agent 默认模型。
+  // 与主模型相同时会被忽略（等于没配）。
+  compact_model: null,
+  delegate_model: null,
   pricing: {},
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},
