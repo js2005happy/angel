@@ -365,7 +365,12 @@ class ToolJournal:
             # The final enumeration itself can race with chmod or replacement
             # of the held POSIX directory. Check its descriptor once more.
             if directory_fd is not None:
-                final_dir = os.fstat(directory_fd)
+                try:
+                    final_dir = os.fstat(directory_fd)
+                except OSError as exc:
+                    # The final handle check is part of snapshot validation.
+                    # An inaccessible descriptor must not appear as a usable log.
+                    raise JournalError("无法复核末次日志目录句柄；拒绝信任日志快照") from exc
                 if (not stat.S_ISDIR(final_dir.st_mode)
                         or (final_dir.st_dev, final_dir.st_ino) != identity
                         or stat.S_IMODE(final_dir.st_mode) & 0o077):
