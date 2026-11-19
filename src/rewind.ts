@@ -77,6 +77,31 @@ export function rewind(store: ConversationStore, sessionId: string, messageId: n
   throw new Error(`未知的回退操作：${action}`);
 }
 
+export interface SnapshotRewindResult {
+  kept: number;
+  deleted: number;
+}
+
+/**
+ * 缺口 9：影子快照恢复用的会话截断。有持久化水位（快照时刻最后一条消息
+ * id）时删到该消息；没有水位时（快照时尚未持久化任何消息，如一次性任务）
+ * 删掉快照时刻之后才记入的消息。水位消息不属于本会话时抛错、不删任何行。
+ */
+export function rewindToSnapshot(
+  store: ConversationStore, sessionId: string,
+  messageId: number | null, afterUnix: number,
+): SnapshotRewindResult {
+  if (messageId !== null) {
+    const target = store.getMessage(messageId);
+    if (!target) throw new Error(`消息不存在：${messageId}`);
+    if (target.session_id !== sessionId) throw new Error(`消息 ${messageId} 不属于会话 ${sessionId}`);
+    const deleted = store.deleteAfter(sessionId, messageId);
+    return { kept: keptCount(store, sessionId), deleted };
+  }
+  const deleted = store.deleteAfterTime(sessionId, afterUnix);
+  return { kept: keptCount(store, sessionId), deleted };
+}
+
 /** 把 store 里的历史转成 agent 消息格式（role/content），供回退后重建 live 会话。 */
 export function storeHistoryToAgentMessages(rows: MessageRow[]): Record<string, unknown>[] {
   return rows.map((r) => {

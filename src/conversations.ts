@@ -244,6 +244,15 @@ export class ConversationStore {
     return Number(info.changes);
   }
 
+  /** 删掉 sessionId 里指定时刻之后记入的消息（影子快照无持久化水位时用），返回删掉的行数。 */
+  deleteAfterTime(sessionId: string, afterUnix: number): number {
+    if (typeof afterUnix !== "number" || !Number.isFinite(afterUnix)) throw new Error("afterUnix must be a finite number");
+    const info = this.conn.prepare(
+      "DELETE FROM messages WHERE session_id = ? AND created_at > ?",
+    ).run(sessionId, afterUnix);
+    return Number(info.changes);
+  }
+
   /** 改写一条消息的文本（编辑重发用；存前同样过 scrubSecrets）。 */
   updateMessageText(id: number, text: string): MessageRow {
     const target = this.getMessage(id);

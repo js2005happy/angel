@@ -30,6 +30,11 @@ tool_start: ["id", "name", "args_hash"],
 tool_result: ["id", "name", "ok", "args_hash"],
 approval_wait: ["tool"],
 approval_done: ["tool", "approved"],
+// 缺口 9：影子快照与联合回滚进证据链——snapshot 记哪次批准写操作前拍了
+// 哪个快照（什么后端、拍了哪几个文件）；restore 记回滚到哪个检查点、谁触
+// 发的、恢复了什么文件与会话范围（files 为逗号分隔的相对路径）。
+snapshot: ["snapshot_id", "tool", "backend", "files"],
+restore: ["snapshot_id", "triggered_by", "mode", "files", "messages_deleted", "messages_kept"],
 final: [],
 max_turns: [],
 error: ["error_type"],
@@ -680,7 +685,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

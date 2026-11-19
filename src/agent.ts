@@ -41,6 +41,8 @@ import type { AuxTask } from "./modelRouting.ts";
 import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import { CheckpointStore } from "./checkpoints.ts";
+import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type ShadowSnapshotNotice } from "./shadowSnapshots.ts";
+import { ConversationStore } from "./conversations.ts";
 import { randomBytes } from "node:crypto";
 
 export class AgentError extends Error {
@@ -129,6 +131,8 @@ export interface AgentOptions {
   autoCompactEnabled?: boolean;
   autoCompactThreshold?: number;
   checkpointStore?: CheckpointStore | null;
+  /** 缺口 9：影子快照存储；不传时本地后端默认新建（与 checkpointStore 同款）。 */
+  shadowSnapshotStore?: ShadowSnapshotStore | null;
   poppyEnabled?: boolean;
   streamToolOutput?: boolean;
   home?: string;
@@ -245,6 +249,8 @@ export class Agent {
   mcpManager: AgentOptions["mcpManager"];
   backend: ToolContext["backend"];
   checkpoints: CheckpointStore | null;
+  /** 缺口 9：影子快照（批准写操作前快照 + 联合回滚）；远端后端为 null。 */
+  shadowSnapshots: ShadowSnapshotStore | null;
   evidence: EvidenceStore;
   ctx: ToolContext;
   home: string;
@@ -291,6 +297,10 @@ export class Agent {
     this.checkpoints = opts.checkpointStore !== undefined
       ? opts.checkpointStore
       : (this.backend === null ? new CheckpointStore(join(this.home, "checkpoints"), this.sessionId, this.workdir) : null);
+    // 缺口 9：影子快照存储与 checkpointStore 同款默认（本地后端才有）。
+    this.shadowSnapshots = opts.shadowSnapshotStore !== undefined
+      ? opts.shadowSnapshotStore
+      : (this.backend === null ? new ShadowSnapshotStore(this.home, this.workdir) : null);
     this.evidence = new EvidenceStore(join(this.home, "evidence"), this.sessionId);
     this.disabledTools = new Set(opts.disabledTools ?? []);
     this.ctx = newToolContext({
@@ -310,6 +320,8 @@ export class Agent {
       approveFn: opts.approveFn ?? null,
       sessionRules: opts.sessionRules ?? new SessionRules(),
       checkpoint: this.checkpoints,
+      // 缺口 9：写操作批准后、执行前落影子快照（见 takeShadowSnapshot）。
+      shadowSnapshotHook: (tool, target, summary) => this.takeShadowSnapshot(tool, target, summary),
       poppyEnabled: this.poppyEnabled,
       streamToolOutput: opts.streamToolOutput ?? false,
       onEvent: (kind, data) => this.emit(kind, data),
@@ -363,6 +375,56 @@ export class Agent {
   emit(kind: string, data: Record<string, unknown>): void {
     if (!this.onEvent) return;
     try { this.onEvent(kind, data); } catch { /* 观察器故障绝不破坏主循环 */ }
+  }
+
+  /**
+   * 缺口 9：批准写操作前落影子快照（tools.ts 的钩子在“批准后、执行前”调用）。
+   * 远端后端只拍会话（文件不在本地磁盘上）；已持久化对话的水位现取现用，
+   * 取不到时水位为 null（恢复时按快照时刻删，见 rewindToSnapshot）。
+   * 快照失败时抛错，由 tools.ts 的钩子吞掉并只发事件，绝不拦住已批准的写操作。
+   */
+  takeShadowSnapshot(tool: string, target: string, summary: string): ShadowSnapshotNotice | null {
+    const store = this.shadowSnapshots;
+    if (!store) return null;
+    let watermark: number | null = null;
+    try {
+      const conv = new ConversationStore(this.home);
+      try {
+        const rows = conv.history(this.sessionId, 1);
+        watermark = rows.length ? rows[rows.length - 1].id : null;
+      } finally {
+        conv.close();
+      }
+    } catch { watermark = null; }
+    return store.snapshot(tool, this.backend ? null : target, summary, this.messages, this.sessionId, watermark, {
+      recordEvidence: (fields) => this.emit("snapshot", fields),
+    });
+  }
+
+  /**
+   * 缺口 9：从影子快照联合回滚（CLI `/restore` 与 `nyra restore` 共用）。
+   * 会话模式恢复后内存会话回到快照时刻的 live 会话，并追加一条恢复记录
+   * （与 /undo 同款：模型不要假设此前改动仍存在）；原工具调用在返回结果
+   * 里，调用方展示给用户重跑 / 修改 / 忽略。
+   */
+  restoreShadowSnapshot(ref: string, mode: RestoreMode, triggeredBy: string): RestoreResult {
+    const store = this.shadowSnapshots;
+    if (!store) throw new Error("当前会话未启用影子快照");
+    const conv = new ConversationStore(this.home);
+    try {
+      const result = store.restore(ref, mode, {
+        conversationStore: conv, triggeredBy,
+        recordEvidence: (fields) => this.emit("restore", fields),
+      });
+      if ((mode === "both" || mode === "session") && result.live_messages) {
+        this.messages = [...result.live_messages];
+      }
+      this.messages.push({ role: "user", content: buildRestoreNote(result) });
+      saveSession(this.sessionId, this.messages, this.home);
+      return result;
+    } finally {
+      conv.close();
+    }
   }
 
   /**

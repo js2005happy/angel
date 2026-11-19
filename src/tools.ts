@@ -19,6 +19,7 @@ import { runWindowsSandboxed, WindowsSandboxUnavailableError } from "./windowsSa
 import { EvidenceStore } from "./evidence.ts";
 import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untrusted.ts";
 import { CheckpointStore, CheckpointError } from "./checkpoints.ts";
+import type { ShadowSnapshotNotice } from "./shadowSnapshots.ts";
 import { research as multiModelResearch } from "./multiModel.ts";
 import type { ProviderLike } from "./providers.ts";
 import { CDPBrowser } from "./cdpBrowser.ts";
@@ -135,6 +136,13 @@ export interface ToolContext {
   approvedShellCommands?: Set<string>;
   approveFnGrants?: Set<string>;
   checkpoint?: CheckpointStore | null;
+  /**
+   * 缺口 9：影子快照钩子——写操作批准后、执行前由 Agent 挂入（tools.ts 内
+   * 的 takeShadowSnapshot 调用）。钩子抛错或快照失败绝不拦住已批准的写
+   * 操作，只发 shadow_snapshot_failed 事件；幂等重试不重拍（首次调用已
+   * 拍过改前快照）。返回 null = 本次未落快照（如未启用）。
+   */
+  shadowSnapshotHook?: ((tool: string, target: string, summary: string) => ShadowSnapshotNotice | null) | null;
   /** P1-4：续跑时已在中断前成功执行过的写操作幂等键集合。只在 --resume-run 时由 CLI 填入；为空或缺失时不跳过任何调用。 */
   resumeCompletedWriteKeys?: Set<string>;
   /**
@@ -693,6 +701,27 @@ export function checkShellDenied(command: string): string | null {
 }
 
 // ---- 文件工具 ----
+// 缺口 9：批准写操作前落影子快照（批准后、执行前调用；快照失败不拦写操作）。
+// 返回钩子的快照回执（null = 未落快照）；Git 不可用退回文件快照时回执带
+// notice，调用方把它追加进工具结果、让模型转告用户（不静默失败）。
+function takeShadowSnapshot(ctx: ToolContext, tool: string, target: string, summary: string): ShadowSnapshotNotice | null {
+  if (ctx.idempotentRetry) return null; // 幂等重试不重拍：首次调用已拍过改前快照
+  const hook = ctx.shadowSnapshotHook;
+  if (!hook) return null;
+  try {
+    return hook(tool, target, summary);
+  } catch (err: unknown) {
+    try { ctx.onEvent?.("shadow_snapshot_failed", { tool, error: err instanceof Error ? err.message : String(err) }); } catch { /* ignore */ }
+    return null;
+  }
+}
+
+/** 文件后端快照的提示后缀（只在退回文件快照时追加，git 后端不打扰模型）。 */
+function shadowFallbackSuffix(notice: ShadowSnapshotNotice | null): string {
+  if (!notice || notice.backend !== "file" || !notice.notice) return "";
+  return `（影子快照：${notice.notice}，可用 /restore 恢复）`;
+}
+
 function writeLocalText(ctx: ToolContext, target: string, content: string): void {
   if (ctx.checkpoint && !ctx.backend) {
     try {
@@ -732,9 +761,10 @@ async function toolWriteFile(ctx: ToolContext, path: string, content: string): P
   let summary = tr("sum.write", { path, n: content.length });
   if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
   await checkApproval(ctx, "write_file", summary, { fileTarget: target });
-  if (ctx.backend?.writeFile) return ctx.backend.writeFile(String(target), content);
+  const snap = takeShadowSnapshot(ctx, "write_file", target, summary);
+  if (ctx.backend?.writeFile) return ctx.backend.writeFile(String(target), content) + shadowFallbackSuffix(snap);
   writeLocalText(ctx, target, content);
-  return `已写入 ${path}（${content.length} 字符）`;
+  return `已写入 ${path}（${content.length} 字符）` + shadowFallbackSuffix(snap);
 }
 
 async function toolEditFile(ctx: ToolContext, path: string, oldText: string, newText: string): Promise<string> {
@@ -747,7 +777,8 @@ async function toolEditFile(ctx: ToolContext, path: string, oldText: string, new
     if (count > 1) return `错误：找到 ${count} 处匹配，请提供更精确的 old_text`;
     const changed = content.replace(oldText, newText);
     await checkApproval(ctx, "edit_file", tr("sum.editRemote", { path }), { fileTarget: target });
-    return ctx.backend.writeFile!(String(target), changed);
+    const snapRemote = takeShadowSnapshot(ctx, "edit_file", target, tr("sum.editRemote", { path }));
+    return ctx.backend.writeFile!(String(target), changed) + shadowFallbackSuffix(snapRemote);
   }
   if (!existsSync(target) || !statSync(target).isFile()) return `错误：文件不存在：${path}`;
   const content = readFileSync(target, "utf-8");
@@ -763,8 +794,9 @@ async function toolEditFile(ctx: ToolContext, path: string, oldText: string, new
   if (readFileSync(target, "utf-8") !== content) {
     throw new ToolError("审批期间文件已发生变化，请重新生成补丁");
   }
+  const snap = takeShadowSnapshot(ctx, "edit_file", target, summary);
   writeLocalText(ctx, target, changed);
-  return `已编辑 ${path}`;
+  return `已编辑 ${path}` + shadowFallbackSuffix(snap);
 }
 
 // ---- unified diff 解析与预览（与 nyra/patches.py 同语义：严格、单文件、拒绝模糊） ----
@@ -894,8 +926,9 @@ async function toolApplyPatch(ctx: ToolContext, path: string, patch: string): Pr
   if (!readFileSync(target).equals(before)) {
     throw new ToolError("审批期间目标文件已发生变化，拒绝应用过期补丁");
   }
+  const snap = takeShadowSnapshot(ctx, "apply_patch", target, tr("sum.patch", { path: rel }));
   writeLocalText(ctx, target, replacement);
-  return `已应用补丁 ${rel}`;
+  return `已应用补丁 ${rel}` + shadowFallbackSuffix(snap);
 }
 
 async function toolListDir(ctx: ToolContext, path = "."): Promise<string> {
@@ -1624,12 +1657,13 @@ async function toolPlan(ctx: ToolContext, title: string, steps: string[], path =
   let summary = tr("sum.plan", { path });
   if ((ctx.mode === "auto" || ctx.mode === "creator") && ctx.interactive) summary += "\n" + changePreview(ctx, target, content);
   await checkApproval(ctx, "plan", summary, { fileTarget: target });
+  const snap = takeShadowSnapshot(ctx, "plan", target, summary);
   if (ctx.backend?.writeFile) {
     ctx.backend.writeFile(String(target), content);
-    return `已写入计划 ${path}（${steps.length} 步）`;
+    return `已写入计划 ${path}（${steps.length} 步）` + shadowFallbackSuffix(snap);
   }
   writeLocalText(ctx, target, content);
-  return `已写入计划 ${path}（${steps.length} 步）`;
+  return `已写入计划 ${path}（${steps.length} 步）` + shadowFallbackSuffix(snap);
 }
 
 const SKIP_DIRS = new Set([".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode"]);

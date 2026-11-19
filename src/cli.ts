@@ -76,6 +76,7 @@ import { Gateway } from "./gateway.ts";
 import { GatewayClient } from "./gatewayClient.ts";
 import { ConversationStore } from "./conversations.ts";
 import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from "./rewind.ts";
+import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
 import { loadMcpServers } from "./mcp.ts";
 import { listPresets } from "./mcpPresets.ts";
 import {
@@ -106,6 +107,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra --resume <会话 ID>        继续指定会话
   nyra --resume-run <运行 ID>    从运行记录断点续跑
   nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
+  nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
   nyra stats [--heatmap]         本月用量与每日用量热力图（详见 docs/cost.md）
   nyra cost --show               定价、单次上限与月度上限（本月已花）
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -153,6 +155,7 @@ Usage:
   nyra --resume <session id>     continue a session
   nyra --resume-run <run id>     resume a run from its record
   nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
+  nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
   nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
@@ -248,7 +251,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks", "stats"]);
+  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks", "stats"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -1193,6 +1196,111 @@ async function handleEvidence(argv: string[], home: string): Promise<number> {
   }
 }
 
+// ---- 子命令：restore（缺口 9，影子快照 + 文件与会话联合回滚） ----
+// 回滚本身记进证据链：优先追加到该会话最新的运行记录；该会话尚无运行时
+// 新建一条 restore 运行记录（状态 completed），保证 `nyra evidence` 能看到。
+function recordRestoreEvidence(home: string, workdir: string, sessionId: string, fields: Record<string, unknown>): void {
+  try {
+    const runStore = new RunStore(join(home, "runs"));
+    const runs = runStore.list().filter((r) => r.session_id === sessionId);
+    if (runs.length) {
+      runStore.appendEvent(runs[0].run_id, "restore", fields);
+    } else {
+      const state = runStore.create(`restore ${String(fields.snapshot_id ?? "")}`, sessionId, workdir, "auto", 20, "running");
+      runStore.appendEvent(state.run_id, "restore", fields);
+      runStore.setStatus(state.run_id, "completed");
+    }
+  } catch { /* 证据链写失败不影响已完成的恢复 */ }
+}
+
+function formatSnapshotLine(idx: number, rec: SnapshotRecord): string {
+  const when = rec.created_at.slice(0, 19).replace("T", " ");
+  const target = rec.tool_call.target ?? "（只拍会话）";
+  const backend = rec.backend === "git" ? "git" : "文件";
+  return `  ${idx}. ${rec.id}  ${when}  ${rec.tool_call.tool} ${target}  [${backend}]  会话 ${rec.message_count} 条`;
+}
+
+function printRestoreResult(result: RestoreResult): void {
+  const files = result.files_restored.length + result.files_deleted.length;
+  if (result.messages_deleted !== null) {
+    process.stdout.write(t("repl.restored", {
+      id: result.snapshot_id, mode: result.mode, files,
+      deleted: result.messages_deleted, kept: result.messages_kept ?? 0,
+    }) + "\n");
+  } else {
+    process.stdout.write(t("repl.restoredFilesOnly", { id: result.snapshot_id, files }) + "\n");
+  }
+  process.stdout.write(t("repl.restorePending", {
+    tool: result.tool_call.tool, target: result.tool_call.target ?? "",
+  }) + "\n");
+}
+
+function parseRestoreMode(args: string[]): RestoreMode | null {
+  let mode: RestoreMode = "both";
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--mode") {
+      const v = args[i + 1];
+      if (v !== "both" && v !== "files" && v !== "session") return null;
+      mode = v;
+      i++;
+    } else {
+      return null;
+    }
+  }
+  return mode;
+}
+
+async function handleRestore(argv: string[], home: string, workdir: string): Promise<number> {
+  const store = new ShadowSnapshotStore(home, workdir);
+  const [ref, ...rest] = argv;
+  if (ref === undefined) {
+    const records = store.list();
+    if (!records.length) {
+      process.stdout.write(t("repl.restoreNone") + "\n");
+      return EXIT_SUCCESS;
+    }
+    process.stdout.write(t("repl.restoreList", { n: records.length }) + "\n");
+    for (let i = 0; i < records.length; i++) process.stdout.write(formatSnapshotLine(i + 1, records[i]) + "\n");
+    process.stdout.write(t("repl.restoreUsage") + "\n");
+    return EXIT_SUCCESS;
+  }
+  if (ref === "--help" || ref === "-h") {
+    process.stdout.write(
+      "用法：nyra restore [检查点序号或 id] [--mode both|files|session]\n" +
+      "不带参数列出影子快照；带检查点恢复文件与会话（默认 both：两者一起）。\n" +
+      "恢复后原工具调用会重新提出，供重跑、修改后重跑，或忽略。\n",
+    );
+    return EXIT_SUCCESS;
+  }
+  const mode = parseRestoreMode(rest);
+  if (mode === null) {
+    process.stderr.write("用法：nyra restore [检查点序号或 id] [--mode both|files|session]\n");
+    return EXIT_ARGUMENT;
+  }
+  try {
+    const record = store.resolve(ref);
+    const conv = new ConversationStore(home);
+    try {
+      const result = store.restore(ref, mode, {
+        conversationStore: conv,
+        triggeredBy: "cli",
+        recordEvidence: (fields) => recordRestoreEvidence(home, workdir, record.session_id, fields),
+      });
+      // 无 live agent 时，会话文件也要回到快照时刻（否则 --resume 会读回已删的消息）。
+      if (result.live_messages !== null) {
+        saveSession(result.session_id, [...result.live_messages, { role: "user", content: buildRestoreNote(result) }], home);
+      }
+      printRestoreResult(result);
+    } finally {
+      conv.close();
+    }
+    return EXIT_SUCCESS;
+  } catch (err: unknown) {
+    process.stderr.write(t("repl.restoreFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
+    return EXIT_RUNTIME;
+  }
+}
+
 // ---- 子命令：vault（密码箱 CLI，与 python3 -m nyra.vault 同行为） ----
 // 密钥只从环境变量 NYRA_VAULT_PASSWORD 或交互输入读，绝不从 argv 读
 // （argv 会进进程表和 shell 历史）。
@@ -2012,6 +2120,47 @@ async function runRepl(args: CliArgs): Promise<number> {
       }
       continue;
     }
+    if (text === "/restore" || text.startsWith("/restore ")) {
+      // 缺口 9：影子快照联合回滚（文件 + 会话一起，或只文件 / 只会话）。
+      if (!agent.shadowSnapshots) {
+        process.stdout.write(t("repl.noShadow") + "\n");
+        continue;
+      }
+      const parts = text.split(/\s+/).filter(Boolean);
+      if (parts.length === 1) {
+        const records = agent.shadowSnapshots.list();
+        if (!records.length) {
+          process.stdout.write(t("repl.restoreNone") + "\n");
+          continue;
+        }
+        process.stdout.write(t("repl.restoreList", { n: records.length }) + "\n");
+        for (let i = 0; i < records.length; i++) process.stdout.write(formatSnapshotLine(i + 1, records[i]) + "\n");
+        continue;
+      }
+      let mode: RestoreMode = "both";
+      if (parts.length >= 3) {
+        if (parts[2] === "both" || parts[2] === "files" || parts[2] === "session") mode = parts[2];
+        else { process.stderr.write(t("repl.restoreUsage") + "\n"); continue; }
+      }
+      if (parts.length > 3) {
+        process.stderr.write(t("repl.restoreUsage") + "\n");
+        continue;
+      }
+      try {
+        const result = agent.restoreShadowSnapshot(parts[1], mode, "repl");
+        recordRestoreEvidence(home, workdir, agent.sessionId, {
+          snapshot_id: result.snapshot_id, triggered_by: "repl", mode,
+          files: [...result.files_restored, ...result.files_deleted].join(","),
+          ...(result.messages_deleted !== null
+            ? { messages_deleted: result.messages_deleted, messages_kept: result.messages_kept }
+            : {}),
+        });
+        printRestoreResult(result);
+      } catch (err: unknown) {
+        process.stdout.write(t("repl.restoreFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
+      }
+      continue;
+    }
     if (text === "/undo" || text === "/rewind" || text.startsWith("/rewind ")) {
       if (!agent.checkpoints) {
         process.stdout.write(t("repl.noCheckpoints") + "\n");
@@ -2397,6 +2546,7 @@ export async function main(argv: string[]): Promise<number> {
     return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
   }
   if (args.subcommand === "evidence") return handleEvidence(args.subArgs ?? [], home);
+  if (args.subcommand === "restore") return handleRestore(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "ui") {
     return handleUi(args.subArgs ?? [], resolve(args.workdir), home);
   }
