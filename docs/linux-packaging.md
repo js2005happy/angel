@@ -12,6 +12,10 @@ bash scripts/build-package-node.sh --arch arm64 --binary dist/nyra-linux-arm64
 bash scripts/build-package-node.sh --out-dir /tmp/nyra-pkg
 ```
 
+> 注意：tarball 与 `.deb` 不在 GitHub Release 里（Release 只有 5 个
+> Node 二进制与 Windows 桌面安装包），需要自己用上面命令打出来。
+> arm64 的包名是 `nyra-node_<版本>_arm64.deb`（`--arch arm64`）。
+
 产出：
 
 | 文件 | 内容 |
@@ -37,7 +41,7 @@ dpkg-deb --contents dist/nyra-node_0.5.1_amd64.deb # 看安装路径
 
 ```bash
 sudo dpkg -i nyra-node_0.5.1_amd64.deb
-nyra --version            # 应输出 Nyra 0.5.1 (node runtime)
+nyra --version            # 应输出 nyra 0.5.1 (node runtime)
 ```
 
 `.deb` 不装 maintainer 脚本：不碰用户 systemd、不动 `~/.nyra`。

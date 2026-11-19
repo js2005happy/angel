@@ -2,7 +2,9 @@
 
 两种装法：**Node 二进制 exe 单文件**（不用装 Python，推荐）或
 **`scripts/install-node.ps1` 一键脚本**（从 GitHub Releases 下载 exe 并
-装好，建桌面快捷方式）。手动一步步装见官网安装面板
+装好，建桌面快捷方式）。想要带窗口的桌面端（不是命令行）装
+Release 里的 `.msi` / `-setup.exe`，见 [docs/desktop.md](desktop.md)。
+手动一步步装见官网安装面板
 （Windows · PowerShell 一栏），和下面几种装法不冲突。
 
 > **先说实话（2026-11-19）**：Node 二进制 exe 是 `node-binaries` 工作流在
@@ -14,7 +16,9 @@
 
 > 0.4.0 注：旧 Python 版 exe（PyInstaller 打包，`build-windows.yml`
 > 工作流产出）已随 Python 一起删除；`scripts/install.ps1`（从源码装，
-> 需要 Python）也已删除（0.4.0 起）。0.5.0 只有 Node 二进制一种装法。
+> 需要 Python）也已删除（0.4.0 起）。命令行仍只有 Node 二进制一种装法；
+> 0.5.1 起 Release 里另有桌面安装包（`.msi` / `-setup.exe`，见
+> [docs/desktop.md](desktop.md)），那是带窗口的桌面端，不是命令行。
 
 ## 方式一：Node 二进制 exe 单文件（不用装 Python，推荐）
 

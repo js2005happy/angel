@@ -18,6 +18,9 @@ bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 
 它会：下载二进制到 `~/.local/share/nyra/nyra`、在 `~/.local/bin/nyra` 放符号链接、建 `~/.nyra`（0700）、跑 `nyra --version` 自检。重复跑就是升级，`~/.nyra` 里的数据不动。
 
+想要现成的发布包（tarball / `.deb`，需要 root 装 `.deb`）：见
+[docs/linux-packaging.md](linux-packaging.md)。
+
 前置条件：`curl` 或 `wget`（二选一）；`--with-systemd` 时还要 `systemctl --user`。
 
 > 0.5.1 说明：二进制是完整版（agent 核心、网页界面、插件市场、创造模式
@@ -43,7 +46,6 @@ bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 ## 前置条件
 
 - `curl` 或 `wget`（二选一，下载用）；
-- 从 GitHub 装时需要 `git`；从本地文件装时不需要；
 - 可选：`systemctl --user`（只要 `--with-systemd` 时用到）。
 
 脚本不联网装任何东西（除了下载二进制那一步）。
@@ -57,6 +59,7 @@ bash scripts/install-node.sh
 # 方式二：已经 clone 好了，从当前检出安装（不用再下一遍）
 git clone https://github.com/js2005happy/nyra.git
 cd nyra
+bash scripts/build-binaries.sh --only linux-x64   # 先编出 dist/nyra-linux-x64
 bash scripts/install-node.sh --from-file dist/nyra-linux-x64
 
 # 方式三：顺手把调度器装成 systemd 用户服务，开机自启、崩了自动重启

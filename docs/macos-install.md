@@ -26,12 +26,17 @@ bash scripts/install-node-macos.sh --version v0.5.1 --with-launchd
 > 确认无误后自己跑 `launchctl load ~/Library/LaunchAgents/ai.nyra.scheduler.plist`
 > 再启用（见“调度器”一节）。
 
-### .dmg / .pkg（待办，未做）
+### .dmg 安装包（桌面端，CI 构建，不在 Release 里）
 
-- 现状：只有上面的二进制直装脚本，没有 `.dmg`（拖放安装）与 `.pkg`
-  （安装器包）。本机是 Linux，做不出 macOS 安装包，也没法验证。
-- 待办：找一台 Mac（或 macOS CI）用 `create-dmg` / `pkgbuild` 做包，
-  并在真机上跑一次完整安装；做出来之前不要在文档里写“已提供”。
+- `.dmg` 有，但只在 GitHub Actions 的构建产物里：打开仓库的
+  **Actions → Build desktop app**，选一次成功的运行（`v0.5.1` 标签那次
+  就行），在页面底部 **Artifacts** 下载 `Nyra-macos-universal`（解压后是
+  `Nyra_<版本>_universal.dmg`，Apple 芯片与 Intel 通用）。下载产物需要
+  登录 GitHub。`.dmg` 是桌面端（带窗口），不是命令行；桌面端的安装与
+  打开未签名 App 的步骤见 [docs/desktop.md](desktop.md)。
+- `.pkg`（安装器包）没有，也不计划用它：macOS 只提供 `.dmg` 拖放安装。
+- 本机做 `.dmg` 是待办：这台开发机是 Linux，做不出 macOS 安装包，也没法
+  验证；做出来之前不要在文档里写“已提供”。
 
 ## 它会做什么
 
@@ -49,8 +54,6 @@ bash scripts/install-node-macos.sh --version v0.5.1 --with-launchd
 
 - macOS（本脚本会在非 macOS 系统上直接拒绝，不装一半）；
 - `curl`（下载用）；
-- 从 GitHub 装时需要 `git`（macOS 上跑 `xcode-select --install` 装
-  命令行工具就有）；从本地文件装时不需要；
 - 可选：`launchctl`（只要 `--with-launchd` 时用到；macOS 自带）。
 
 脚本不联网装任何东西（除了下载二进制那一步）。
@@ -58,7 +61,7 @@ bash scripts/install-node-macos.sh --version v0.5.1 --with-launchd
 ## 安装
 
 ```bash
-# 方式一：还没 clone 仓库，让脚本自己从 GitHub 拉
+# 方式一：直接从 GitHub Releases 下载安装（默认最新版）
 bash scripts/install-node-macos.sh
 
 # 方式二：已经 clone 好了，从本地已编好的二进制安装（不用再下一遍）
@@ -149,9 +152,8 @@ tail -f ~/.nyra/logs/scheduler.err.log  # 看 daemon 的报错
 
 - `这个脚本只在 macOS 上运行`：你在 Linux/Windows 上跑了它；Linux 用
   `scripts/install-node.sh`，Windows 用 `scripts/install-node.ps1`。
-- `git clone 失败`：检查网络与仓库地址；已 clone 好仓库时改用
-  `--from-file`，不走网络。macOS 上没装过 git 时先跑
-  `xcode-select --install`。
+- `下载失败`：检查网络与仓库地址；已编好二进制时改用
+  `--from-file`，不走网络。
 - `--with-launchd` 后提示“load 失败”：安装本身已成功，只是 agent
   没启动；按上文“调度器”一节手动跑 `launchctl load` 与 `list` 检查，
   或直接用 `nyra schedule daemon` 在终端里跑。

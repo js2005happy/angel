@@ -2,7 +2,7 @@
 
 Nyra 桌面端是一个原生窗口：用系统自带的 WebView（macOS 的 WKWebView、Windows 的 WebView2）显示本机的 Nyra 网页界面，外壳用 [Tauri 2](https://tauri.app)（Rust）写，源码在 `desktop/`。安装包只有几 MB，不内置浏览器内核，也**不内置 Python**。
 
-> 状态：预览版。安装包由 GitHub Actions 构建（工作流 “Build desktop app”，`.github/workflows/desktop.yml`），**没有代码签名**，也还没有正式发布到 Release。macOS 与 Windows 的安装包都没有在真机上手动装过，见文末“已知限制”。
+> 状态：预览版。安装包由 GitHub Actions 构建（工作流 “Build desktop app”，`.github/workflows/desktop.yml`），**没有代码签名**。Windows 的 `.msi` / `-setup.exe` 已随 0.5.1 手动挂到 Release 上；macOS 的 `.dmg` 只在 Actions 产物里，不在 Release 上。macOS 与 Windows 的安装包都没有在真机上手动装过，见文末“已知限制”。
 
 ## 它怎么工作
 
@@ -10,13 +10,15 @@ Nyra 桌面端是一个原生窗口：用系统自带的 WebView（macOS 的 WKW
    `nyra ui --host 127.0.0.1 --port 0 --print-url-json --exit-on-stdin-close --workdir ~/Nyra`
 2. Nyra 只监听 `127.0.0.1` 的随机端口，每次启动生成新的随机 token，把地址和 token 作为一行 JSON 打到标准输出；外壳读到后让窗口打开这个地址。
 3. 关闭窗口 / 退出 App 时，外壳关闭子进程的标准输入，Nyra 自行退出；3 秒内没退就强制结束。
-4. 找不到合适的 Python 或 Nyra 时，窗口显示引导页（怎么装 Python、怎么装 Nyra），并有“重新检测”按钮，不会崩溃。
+4. 找不到合适的 Nyra 二进制时，窗口显示引导页（怎么装 Nyra），并有“重新检测”按钮，不会崩溃。
 
-查找顺序：
+查找顺序（按 `desktop/src-tauri/src/lib.rs` 的 `nyra_binary_candidates`）：
 
-1. 环境变量 `NYRA_PYTHON` 指定的 Python（设了它就跳过第 2 步）；
-2. `PATH` 上的 `nyra` 命令（安装脚本放的启动器，或 Windows 单文件 `nyra.exe`；Node 运行时单文件版暂不支持桌面端——它没有 `ui` 子命令，遇到会跳过、继续找 Python 版）；
-3. Python 3.10+（Windows：`py -3`、`python`、`python3`、`%LOCALAPPDATA%\Programs\Python\*`；macOS：`python3`、`python3.1x`，并补上 Homebrew、python.org 安装包、`~/.local/bin`、pyenv 的常见目录），能直接 `import nyra` 就用它；否则依次带上这些源码目录再试：`NYRA_SOURCE`、`~/.local/share/nyra`（macOS / Linux 安装脚本的位置）、`~/nyra`（Windows 安装脚本或在主目录 `git clone` 的位置）。整个 Python 候选逐个探测最多 90 秒，超时就按已找到的结果显示引导页，不会一直停在“正在启动”。
+1. 环境变量 `NYRA_BIN` 指定的路径（设了它就优先用）；
+2. `PATH` 上的 `nyra` 命令（安装脚本放的启动器，或 Windows 单文件 `nyra.exe`）；
+3. 安装脚本的默认位置：`~/.local/share/nyra/nyra`（macOS / Linux 一键脚本装的地方）、`~/.local/bin/nyra`、`~/nyra/nyra`（Windows 一键脚本装在 `~/nyra/nyra.exe`，也在这里找）。
+
+每个候选都会先跑一次 `--version`，输出里含 `(node runtime)` 才算数（不是 Node 单文件二进制的就跳过）。**不需要 Python**：桌面端只认 Node 单文件二进制，Python 版 Nyra 已在 0.4.0 删除。
 
 工作目录默认是 `~/Nyra`（没有就新建），可用环境变量 `NYRA_DESKTOP_WORKDIR` 改。
 
@@ -24,22 +26,21 @@ macOS 上从程序坞 / 访达打开的 App 拿不到终端里 `~/.zshrc` 设置
 
 ## 安装
 
-### 先决条件：本机 Python 与 Nyra
+### 先决条件：先装好 Nyra 命令行版
 
-- **Python 3.10 或更高**。macOS 系统自带的 python3 是 3.9，不够，用 [python.org](https://www.python.org/downloads/macos/) 安装包或 `brew install python`；Windows 用 [python.org](https://www.python.org/downloads/windows/)（勾选 “Add python.exe to PATH”）或 `winget install Python.Python.3.12`。桌面端目前只认 Python 版 Nyra：单文件 `nyra.exe` 是 Node 运行时预览版，没有 `ui` 子命令，单独装它带不动桌面端。
-- **Nyra 本体**：macOS 见 [macos-install.md](macos-install.md)（`bash scripts/install-macos.sh --source .`），Windows 见 [windows-install.md](windows-install.md)（`irm …/install.ps1 | iex`）。已经 `git clone` 在别处的，设 `NYRA_SOURCE=<仓库目录>` 即可。
+- **Nyra 本体（Node 单文件二进制）**：macOS 见 [macos-install.md](macos-install.md)（`bash scripts/install-node-macos.sh`），Windows 见 [windows-install.md](windows-install.md)（`irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 | iex`）。装好后 `nyra --version` 应输出 `nyra 0.5.1 (node runtime)`。
+- 不需要 Python、不需要 Node、不需要 Bun：桌面端只启动已装好的 `nyra` 二进制（`nyra ui ...`），自己不带运行时。
+- 想让桌面端用指定位置的二进制，设环境变量 `NYRA_BIN=<完整路径>`。
 - 模型 Key 和命令行一样只从环境变量读（见 GUIDE“配置模型”）。
 
 ### 下载安装包
 
-目前只有 GitHub Actions 的构建产物（需要登录 GitHub）：打开仓库的 **Actions → Build desktop app**，选一次成功的运行，在页面底部 **Artifacts** 下载：
-
-| 产物 | 内容 |
+| 产物 | 怎么拿 |
 | --- | --- |
-| `Nyra-macos-universal` | `Nyra_<版本>_universal.dmg`（Apple 芯片与 Intel 通用） |
-| `Nyra-windows-x64` | `Nyra_<版本>_x64_en-US.msi` 与 `Nyra_<版本>_x64-setup.exe`（NSIS，装到当前用户，不需要管理员） |
+| `Nyra_<版本>_x64_en-US.msi` 与 `Nyra_<版本>_x64-setup.exe`（Windows，NSIS，装到当前用户，不需要管理员） | **Release v0.5.1 里直接下载**：[Releases](https://github.com/js2005happy/nyra/releases) |
+| `Nyra_<版本>_universal.dmg`（macOS，Apple 芯片与 Intel 通用） | 只在 GitHub Actions 产物里：打开仓库的 **Actions → Build desktop app**，选一次成功的运行（`v0.5.1` 标签那次就行），在页面底部 **Artifacts** 下载 `Nyra-macos-universal`（需要登录 GitHub，下载下来是 zip，先解压） |
 
-下载下来是 zip，先解压。
+两个安装包都是**未签名**的（见下文打开步骤）。
 
 ### macOS：打开未签名的 App
 
@@ -89,7 +90,7 @@ cd src-tauri && cargo test                      # 外壳的单元测试
 ## 已知限制 / 待办
 
 - **未签名**：没有 Apple Developer ID 签名与公证、没有 Windows 代码签名证书，所以有上面的 Gatekeeper / SmartScreen 提示。
-- **不内置 Python**：需要本机 Python 3.10+ 和 Nyra（或 Windows 的 `nyra.exe`）。
+- **不内置 Nyra 本体**：桌面端只是一个外壳，需要本机先装好 Nyra 命令行版（见“先决条件”）；没装或找不到时只显示引导页。
 - **没有自动更新**：新版本需要重新下载安装。
 - **没有在真机上手动验证**：只在 CI 上构建通过、在 Linux 上编译并跑过外壳单元测试；macOS / Windows 上的实际启动、Python 查找、退出清理还没在真机上点过。
 - 没有菜单栏 / 托盘、没有多窗口；网页界面里 `target="_blank"` 的同源链接不会打开新窗口。

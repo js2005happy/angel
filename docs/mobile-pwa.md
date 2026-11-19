@@ -6,14 +6,15 @@ Nyra 的手机版是电脑上 `nyra ui` 顺带提供的一个手机页面
 电脑上跑着的 Nyra，Nyra 的工具仍在电脑上执行。
 
 手机上能做的：看会话列表、进会话看对话流、发新任务、在审批卡上
-**允许一次 / 本会话始终允许 / 拒绝**（大按钮，diff 可左右滑动）。有待
+**允许一次 / 本会话始终允许 / 拒绝**（大按钮，diff 可左右滑动）。底部
+四个标签：**对话 / 自动化 / 技能 / 设置**。有待
 审批时，页面标题变成 `(1) Nyra`，支持的系统上主屏幕图标也会出现角标
 （Badging API，纯本地，不是推送通知；App 在后台被系统挂起时不会提醒）。
 
 > **如实说明：没有在真手机上验证过。** 这套流程只在电脑上用 Playwright
 > 模拟 iPhone 14 与 Pixel 7（Chromium 内核、模拟 standalone 显示模式）
 > 实际跑过：扫桌面二维码（截图后用解码器读出链接）→ 配对 → 以“已安装
-> App”方式启动、入场动画播放并结束 / 点击跳过 → 在手机页面上批准一次
+> App”方式启动、入场动画播放并结束 → 在手机页面上批准一次
 > 审批。真机上的“添加到主屏幕”菜单、系统启动屏、iOS 独立窗口的存储
 > 行为都还没亲手试过，第一次在真机上装时如有出入，以手机上实际出现的
 > 为准，并欢迎反馈。
@@ -45,7 +46,7 @@ nyra ui --pair
 
 二维码里是 `http://<电脑局域网 IP>:<端口>/m#pair=<6 位配对码>`。配对码
 放在 `#` 后面，不会出现在服务器日志或 Referer 里。二维码完全在本机生成
-（`nyra/qrcode.py`，纯 Python），不调用任何在线服务。
+（`src/qrcode.ts`，Node 版 QR 编码器），不调用任何在线服务。
 
 建议固定端口（默认 8765），并在路由器里给电脑设一个固定 IP（DHCP
 保留）：手机 App 记住的是“IP + 端口”，换了地址就得重新配对。
@@ -69,8 +70,9 @@ nyra ui --pair
 **iPhone（Safari）：** 点底部“分享” →**添加到主屏幕**。
 
 从主屏幕图标打开时，会先看到系统启动屏（纯黑 `#0B0B0C`），接着是 Nyra
-的入场动画（约 3 秒：圆点长出、光标飞入点击、`Nyra` 字标出现），点一下
-屏幕可跳过；然后进入会话列表。
+的入场动画（动画约 2.95 秒、终帧停到 3.8 秒再淡出进应用：圆盘从一点长出、
+光标从右下飞入带拖尾、点击处泛涟漪、`Nyra` 字标淡入；不能点按跳过）；
+然后进入会话列表。
 
 ### 已知限制与注意
 
@@ -90,7 +92,7 @@ nyra ui --pair
   横幅），每 4 秒检查一次。
 - **入场动画只在手机上以已安装 App（独立窗口）启动时播放**：每次冷启动
   一次（同一次运行里刷新页面不重播），系统开了“减少动态效果”时只淡入
-  标志。桌面浏览器、手机浏览器的普通标签页、项目官网都不播。动画是
+  终帧。桌面浏览器、手机浏览器的普通标签页、项目官网都不播。动画是
   页面内的 CSS/JS 绘制（SVG），不含视频文件，不发任何外部请求。
 
 ## 管理已配对的手机
@@ -119,23 +121,16 @@ nyra ui --pair
   公网**（路由器端口转发、内网穿透等）：拿到手机 token 的人就能通过 Nyra
   读写文件、执行命令（仍需经过审批模式）。手机丢了，第一时间在电脑上撤销。
 
-## 实现位置
+## 实现位置（Node 版）
 
-- `nyra/pairing.py`：`DeviceRegistry`（配对码、设备 token 哈希、撤销）。
-- `nyra/qrcode.py`：QR 编码器（字节模式，L/M 纠错级别；结构参考 Project
-  Nayuki 的 QR Code generator，MIT 许可，本文件为独立精简重写）。
-- `nyra/webui_mobile.py`：手机页面、manifest（`background_color` /
-  `theme_color` = `#0B0B0C`）、iOS `apple-touch-startup-image`（纯色 PNG，
-  与动画首帧同色）。
-- `nyra/webui_mobile_assets.py`：PNG 图标（由 `docs/assets/nyra-mark.svg`
-  渲染）。
-- 测试：`tests/test_mobile_pwa.py`（二维码可解码、配对码过期 / 一次性 /
-  限次、token 只存哈希与撤销、动画只在手机独立窗口播放的判断规则、
-  `/m` 与配对 API 的鉴权）。
+见下文“Node 版实现”。旧 Python 版（`nyra/pairing.py`、`nyra/qrcode.py`、
+`nyra/webui_mobile.py`、`nyra/webui_mobile_assets.py`、
+`tests/test_mobile_pwa.py`）已在 0.4.0 随 Python 一起删除，不要再按
+它们找代码。
 
 ## Node 版实现（Codex 式审批卡）
 
-- `src/webuiMobile.ts`：手机页（终端 v2 配色：深炭底、鼠尾草绿 → 雾蓝渐变字标、彩色模式徽章）、
+- `src/webuiMobile.ts`：手机页（黑白单色设计稿：底部四标签——对话 / 自动化 / 技能 / 设置；审批为底部弹层）、
   manifest、图标。图标从 `docs/assets/nyra-mark.svg` 的几何在本机光栅化：192/512 `any`（透明底）、
   192/512 `maskable`（深炭底铺满、标志在安全区内）、`apple-touch-icon` 180（不透明）、favicon
   （32 PNG + SVG）。光标填白，与 `desktop/icon-src` 的桌面图标一致。
@@ -156,7 +151,7 @@ nyra ui --pair
   接受 `{approve, scope: "session"|"project"}` 或 `{approve: false, feedback}`；
   `GET /api/rules[?session=<id>]` 列规则，`POST /api/rules/<id>/revoke` 撤销（手机也可撤销，只会收紧）。
 - 入场动画：只在手机主屏幕独立窗口（`display-mode: standalone` / iOS `navigator.standalone`）里播，
-  一次冷启动只播一次（sessionStorage），约 3.4 秒，轻点跳过；“减少动态效果”时只淡入。
+  一次冷启动只播一次（sessionStorage），动画 0–2.95 秒、终帧停到 3.8 秒再整层淡出进应用，不能点按跳过；“减少动态效果”时只淡入终帧。
 - 手机设置页（右上角“设置”）：已允许规则列表与撤销；模式切换，切到全权要两步确认，
   服务端也要求手机请求带 `confirm: "full"`；API Key 只提示在电脑上输入，手机不显示、不接收 Key；
   “断开这台手机”只清本机 token，彻底撤销仍在电脑上做。
