@@ -41,6 +41,8 @@ import {
   FallbackProvider,
   KeyRotatingProvider,
   Provider,
+  switchTriggerFor,
+  switchTriggerLabel,
   type ProviderLike,
   type SwitchRecord,
 } from "./providers.ts";
@@ -94,8 +96,9 @@ function validateText(value: unknown, label: string, maximum: number): string {
 function fallbackNotice(record: SwitchRecord): void {
   let reason = record.error;
   if (reason.length > 120) reason = reason.slice(0, 117) + "…";
+  const trigger = switchTriggerLabel(record.trigger ?? switchTriggerFor(record.kind));
   console.error(
-    `模型切换：${record.from} 失败（${reason}），已切换到 ${record.to} 继续`,
+    `模型切换（${trigger}）：${record.from} 失败（${reason}），已切换到 ${record.to} 继续`,
   );
 }
 
@@ -136,6 +139,15 @@ export interface BotConfig {
   api_keys?: string[] | null;
   api_keys_enc?: string[] | null;
   mode?: string;
+  /**
+   * 缺口 5：该机器人自己的用量触顶自动换开关与备用链（每 agent 显式
+   * opt-in）。null = 沿用全局 config（fallback_enabled / fallback_providers，
+   * 老行为不变）；false = 该机器人永不自动换（全局开了也不换）；
+   * true = 该机器人触顶就换（全局没开也换）。备用链只切列表里的，
+   * 空列表 = 无兜底；未知名字与 CLI provider 照样跳过。
+   */
+  fallback_enabled?: boolean | null;
+  fallback_providers?: string[] | null;
 }
 
 export interface Bot {
@@ -150,6 +162,9 @@ export interface Bot {
   /** 加密后的 Key（落盘形态）：`v1:vault:<密码箱条目名>` 或 `v1:local:<nonce>:<data>:<mac>`。 */
   api_keys_enc: string[] | null;
   mode: string;
+  /** 缺口 5：见 BotConfig（null = 沿用全局配置）。 */
+  fallback_enabled: boolean | null;
+  fallback_providers: string[] | null;
 }
 
 export type PublicBot = Omit<Bot, "api_keys" | "api_keys_enc">;
@@ -196,6 +211,8 @@ const BOT_FIELDS = new Set([
   "api_keys",
   "api_keys_enc",
   "mode",
+  "fallback_enabled",
+  "fallback_providers",
 ]);
 
 export function validateBot(bot: Bot): Bot {
@@ -210,6 +227,21 @@ export function validateBot(bot: Bot): Bot {
   }
   if (bot.provider !== null) validateText(bot.provider, "provider", 80);
   if (bot.model !== null) validateText(bot.model, "model", 180);
+  // 缺口 5：每机器人兜底 opt-in 的字段校验（类型不对就拒绝，不静默当没配）。
+  if (bot.fallback_enabled !== null && bot.fallback_enabled !== undefined && typeof bot.fallback_enabled !== "boolean") {
+    throw new GroupError("fallback_enabled 必须是布尔值或 null");
+  }
+  if (bot.fallback_providers !== null && bot.fallback_providers !== undefined) {
+    if (!Array.isArray(bot.fallback_providers)) {
+      throw new GroupError("fallback_providers 必须是字符串列表");
+    }
+    for (const name of bot.fallback_providers) {
+      if (typeof name !== "string" || !name.trim()) {
+        throw new GroupError("fallback_providers 里不能有空 provider 名");
+      }
+      validateText(name, "provider", 80);
+    }
+  }
   if (bot.api_keys !== null) {
     if (!Array.isArray(bot.api_keys)) {
       throw new GroupError("api_keys 必须是字符串列表");
@@ -264,6 +296,8 @@ export function parseBot(value: unknown): Bot {
     api_keys: (raw.api_keys as string[] | null | undefined) ?? null,
     api_keys_enc: (raw.api_keys_enc as string[] | null | undefined) ?? null,
     mode: (raw.mode as string | undefined) ?? "readonly",
+    fallback_enabled: (raw.fallback_enabled as boolean | null | undefined) ?? null,
+    fallback_providers: (raw.fallback_providers as string[] | null | undefined) ?? null,
   };
   return validateBot(bot);
 }
@@ -280,6 +314,8 @@ export const DEFAULT_BOTS: Bot[] = [
     api_keys: null,
     api_keys_enc: null,
     mode: "readonly",
+    fallback_enabled: null,
+    fallback_providers: null,
   },
   {
     id: "architect",
@@ -292,6 +328,8 @@ export const DEFAULT_BOTS: Bot[] = [
     api_keys: null,
     api_keys_enc: null,
     mode: "readonly",
+    fallback_enabled: null,
+    fallback_providers: null,
   },
   {
     id: "builder",
@@ -304,6 +342,8 @@ export const DEFAULT_BOTS: Bot[] = [
     api_keys: null,
     api_keys_enc: null,
     mode: "readonly",
+    fallback_enabled: null,
+    fallback_providers: null,
   },
   {
     id: "reviewer",
@@ -315,6 +355,8 @@ export const DEFAULT_BOTS: Bot[] = [
     api_keys: null,
     api_keys_enc: null,
     mode: "readonly",
+    fallback_enabled: null,
+    fallback_providers: null,
   },
 ];
 
@@ -795,7 +837,9 @@ export class GroupStore {
       (key) => new Provider({ ...base, apiKey: key, auth: "env" }),
     );
     const rotating = new KeyRotatingProvider(keyed, fallbackNotice);
-    const chainNames = resolveFallbackChain(config, base.name);
+    // 缺口 5：该机器人自己的兜底 opt-in（null = 沿用全局配置）；false =
+    // 该机器人永不自动换（全局开了也不换），true = 触顶就换（全局没开也换）。
+    const chainNames = resolveFallbackChain(config, base.name, bot.fallback_enabled ?? undefined, bot.fallback_providers ?? undefined);
     const fallbacks: ProviderLike[] = [];
     for (const name of chainNames.slice(1)) {
       let candidateCfg;
@@ -858,7 +902,7 @@ export class GroupStore {
         });
         provider = buildProviderChain(
           primary,
-          resolveFallbackChain(config, primary.name),
+          resolveFallbackChain(config, primary.name, bot.fallback_enabled ?? undefined, bot.fallback_providers ?? undefined),
           fallbackNotice,
           {
             providerCls: Provider,

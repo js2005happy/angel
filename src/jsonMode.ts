@@ -35,6 +35,18 @@ export class JsonLines {
       // 与 "cost" 事件不同：cost 只在 priced 时发，cost_update 每轮都发，
       // 算不出金额时 status 为 unpriced/missing、金额字段为 null。
       this.emit("cost_update", data);
+    } else if (kind === "model_switch") {
+      // 缺口 5：换模型进 JSON 事件流（from/to 是 provider 名与模型名，
+      // reason 是已脱敏的 provider 报错原文，截断后发出；手动切换时
+      // reason 是固定文案、trigger 为 manual）。
+      const reason = typeof data.reason === "string" ? data.reason : "";
+      this.emit("model_switch", {
+        from: data.from ?? "",
+        to: data.to ?? "",
+        reason: reason.length > 120 ? reason.slice(0, 117) + "…" : reason,
+        trigger: data.trigger ?? "other",
+        spent_usd: typeof data.spent_usd === "number" ? data.spent_usd : null,
+      });
     } else if (kind === "verify_started") {
       this.emit("verify_started", { command: data.command ?? "" });
     } else if (kind === "verify_result") {

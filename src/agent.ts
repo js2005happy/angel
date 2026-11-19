@@ -171,6 +171,12 @@ export interface AgentOptions {
   extraDirs?: string[] | null;
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
   auxModels?: { compact?: string; delegate?: string };
+  /**
+   * 缺口 5：对话中途手动换模型的允许列表（provider 名）。
+   * 只切列表里的服务商；null = 未配置（仅供直接构造 Agent 的嵌入 /
+   * 测试场景，CLI 与网关等生产入口一定传 resolveSwitchAllowlist 的结果）。
+   */
+  modelSwitchAllowlist?: string[] | null;
   /** 父级禁用的工具名；委派时子级工具集 = 父级减禁用。 */
   disabledTools?: string[] | null;
   /** MCP 工具执行器（第 3 阶段前为 null，走 worker 桥）。 */
@@ -223,6 +229,8 @@ export class Agent {
   private monthlySpentBeforeUsd: AgentOptions["monthlySpentBeforeUsd"];
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
+  /** 缺口 5：对话中途手动换模型的允许列表（provider 名）；见 AgentOptions。 */
+  private modelSwitchAllowlist: string[] | null;
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
   /** 跨会话回忆：上次同类任务的结论（历史，需复核）。 */
   private recallNote: string | null = null;
@@ -278,6 +286,7 @@ export class Agent {
     this.monthlyCostLimitUsd = typeof opts.monthlyCostLimitUsd === "number" ? opts.monthlyCostLimitUsd : null;
     this.monthlySpentBeforeUsd = opts.monthlySpentBeforeUsd ?? null;
     this.auxModels = opts.auxModels ?? {};
+    this.modelSwitchAllowlist = opts.modelSwitchAllowlist ?? null;
     this.recallNote = opts.recallNote ?? null;
     this.toolSearchRequested = opts.toolSearch?.enabled === true;
     this.toolSearchTopK = typeof opts.toolSearch?.topK === "number" ? opts.toolSearch.topK : MCP_LAZY_LOAD_THRESHOLD;
@@ -376,6 +385,62 @@ export class Agent {
     this.mode = mode;
     this.ctx.mode = mode;
     this.syncCreatorSkill();
+  }
+
+  /**
+   * 缺口 5：对话中途换模型（REPL `/model` 与网关共用）。
+   *
+   * 只换 provider，不动会话与工具状态：this.messages、工具上下文、
+   * 检查点、证据、用量累计原样保留——新模型接到的就是同一段对话，
+   * 不丢历史。上下文窗口与单价按新模型重配（调用方 resolve 好传进来；
+   * 不传时窗口与单价沿用旧值，不编新数字）。
+   *
+   * Fail-closed 三条：
+   * - 只切允许列表内服务商（modelSwitchAllowlist 配了时，列表外的拒绝）；
+   * - 只做同 OpenAI 兼容协议内切换：CLI provider（baseUrl 为 cli://）
+   *   不能中途接入或切出，Codex 走子进程、没有可复用的会话；
+   * - 目标 provider 必须有凭证，否则拒绝，不换到一个跑不起来的模型上。
+   * 换模型本身发 `model_switch` 事件（from/to/reason/trigger/spent_usd），
+   * 由 RunRecorder 写进 events.jsonl，进证据链。
+   */
+  switchModel(
+    provider: ProviderLike,
+    opts?: {
+      reason?: string;
+      contextWindowTokens?: number | null;
+      contextWindowSource?: WindowSource;
+      contextWindowModel?: string | null;
+      pricing?: Pricing | null;
+    },
+  ): { from: string; to: string } {
+    const from = `${this.provider.name} / ${this.provider.model}`;
+    const to = `${provider.name} / ${provider.model}`;
+    if ((provider.baseUrl ?? "").startsWith("cli://") || (this.provider.baseUrl ?? "").startsWith("cli://")) {
+      throw new AgentError("对话中途换模型只支持 OpenAI 兼容协议的 provider，Codex CLI provider 不能中途切换（请退出重进并用 --provider codex 指定）");
+    }
+    if (this.modelSwitchAllowlist !== null && this.modelSwitchAllowlist !== undefined && !this.modelSwitchAllowlist.includes(provider.name)) {
+      throw new AgentError(`模型 ${provider.name} 不在允许列表内（允许：${this.modelSwitchAllowlist.join("、") || "无"}）；请先在 config.json 的 fallback_providers 里加上它`);
+    }
+    if (!provider.hasCredentials()) {
+      throw new AgentError(`模型 ${provider.name} 没有可用凭证，无法切换；请先配置对应的 API Key`);
+    }
+    this.provider = provider;
+    if (opts?.contextWindowTokens !== undefined || opts?.contextWindowSource !== undefined || opts?.contextWindowModel !== undefined) {
+      this.usage.reconfigureWindow(
+        opts.contextWindowTokens ?? this.usage.configuredWindow,
+        opts.contextWindowSource ?? this.usage.windowSource,
+        opts.contextWindowModel ?? this.usage.windowModel,
+      );
+    }
+    if (opts?.pricing !== undefined) this.pricing = opts.pricing;
+    const spent = this.lastCost?.status === "priced" ? this.lastCost.spentUsd : null;
+    this.emit("model_switch", {
+      from, to,
+      reason: opts?.reason ?? "用户在对话中途手动切换模型",
+      trigger: "manual",
+      spent_usd: spent,
+    });
+    return { from, to };
   }
 
   emit(kind: string, data: Record<string, unknown>): void {

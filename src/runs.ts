@@ -35,6 +35,9 @@ approval_done: ["tool", "approved"],
 // 发的、恢复了什么文件与会话范围（files 为逗号分隔的相对路径）。
 snapshot: ["snapshot_id", "tool", "backend", "files"],
 restore: ["snapshot_id", "triggered_by", "mode", "files", "messages_deleted", "messages_kept"],
+// 缺口 5：换模型进证据链——何时换（at）、从谁换到谁（from/to）、为什么换
+// （reason/trigger/kind/status）、当时已花多少（spent_usd）。
+model_switch: ["from", "to", "reason", "trigger", "kind", "status", "spent_usd"],
 final: [],
 max_turns: [],
 error: ["error_type"],
@@ -685,7 +688,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

@@ -82,6 +82,18 @@ export class UsageTracker {
     }
   }
 
+  /**
+   * 缺口 5：对话中途换模型后重配上下文窗口。累计用量（calls / token）
+   * 原样保留——换模型不是新会话；只换“窗口多大、按哪个模型算”的口径，
+   * 供自动压缩阈值与 /context、用量汇总继续用。窗口未知时传 null，
+   * 来源写 unknown，不编数字。
+   */
+  reconfigureWindow(window: number | null, source?: WindowSource, model?: string | null): void {
+    this.configuredWindow = window ?? null;
+    this.windowSource = source ?? (this.configuredWindow !== null ? "manual" : "unknown");
+    this.windowModel = model ?? null;
+  }
+
   snapshot(): UsageSnapshot {
     const window = contextLimit(this.configuredWindow);
     const last = this.last_prompt_tokens;

@@ -709,6 +709,50 @@ export interface SwitchRecord {
   error: string;
   kind: ProviderErrorKind;
   status: number | null;
+  /**
+   * 缺口 5：这次切换的触发原因（与 kind 同源、但只分用户关心的档）：
+   * quota = 用量触顶（402 / 配额类文案的 429），rate_limit = 单纯限流，
+   * 其余按 kind 直通，无法归类的落 other。事件与提示都用它，不再让
+   * 用户从错误原文里猜“为什么换了模型”。
+   */
+  trigger: SwitchTrigger;
+}
+
+/** 模型切换的触发原因（SwitchRecord.trigger 的取值）。 */
+export type SwitchTrigger = "quota" | "rate_limit" | "server" | "timeout" | "network" | "other";
+
+export function switchTriggerFor(kind: ProviderErrorKind): SwitchTrigger {
+  if (kind === "quota") return "quota";
+  if (kind === "rate_limit") return "rate_limit";
+  if (kind === "server") return "server";
+  if (kind === "timeout") return "timeout";
+  if (kind === "network") return "network";
+  return "other";
+}
+
+/**
+ * 触发原因的中文短标签（groups.ts / gateway.ts 的硬编码中文提示共用；
+ * CLI 的提示走 i18n 的 `fallback.trigger.*`，中文值须与这里一致）。
+ */
+export function switchTriggerLabel(trigger: SwitchTrigger): string {
+  switch (trigger) {
+    case "quota": return "用量触顶";
+    case "rate_limit": return "请求过于频繁";
+    case "server": return "服务端错误";
+    case "timeout": return "请求超时";
+    case "network": return "网络错误";
+    default: return "调用失败";
+  }
+}
+
+/**
+ * 缺口 5：用量触顶判定——kind 为 quota（402，或 429 但文案是配额类，
+ * 见 classifyHttpError）就是“这个订阅/ Key 的用量用完了”，与单纯的
+ * 请求过于频繁（rate_limit）区分开：前者重试同一家没有意义、应直接
+ * 换下一家；后者先重试同一家。
+ */
+export function isQuotaExhaustionError(exc: unknown): boolean {
+  return exc instanceof ProviderError && exc.kind === "quota";
 }
 
 export interface RetryRecord {
@@ -826,7 +870,7 @@ export class FallbackProvider implements ProviderLike {
           if (!exc.recoverable) throw exc;
           if (index + 1 >= this.providers.length) break providerLoop;
           const nxt = this.providers[index + 1];
-          const record: SwitchRecord = { from: provider.name, to: nxt.name, error: String(exc.message), kind: exc.kind, status: exc.status };
+          const record: SwitchRecord = { from: provider.name, to: nxt.name, error: String(exc.message), kind: exc.kind, status: exc.status, trigger: switchTriggerFor(exc.kind) };
           this.switches.push(record);
           this.activeIndex = index + 1;
           this.onSwitch?.(record);
@@ -963,7 +1007,7 @@ export class KeyRotatingProvider implements ProviderLike {
           if (index + 1 >= this.providers.length) break keyLoop;
           const record: SwitchRecord = {
             from: this.label(index), to: this.label(index + 1),
-            error: safe, kind: exc.kind, status: exc.status,
+            error: safe, kind: exc.kind, status: exc.status, trigger: switchTriggerFor(exc.kind),
           };
           this.switches.push(record);
           this.activeIndex = index + 1;

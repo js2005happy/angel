@@ -19,7 +19,7 @@ import {
   loadConfig, resolveProfile, resolveProvider, resolveFallbackChain, validateMode,
   getProviderPresets, VERSION, VALID_MODES, resolveSandbox, type ResolvedProvider,
 } from "./config.ts";
-import { Provider, buildProviderChain, type ProviderLike } from "./providers.ts";
+import { Provider, buildProviderChain, switchTriggerFor, switchTriggerLabel, type ProviderLike, type SwitchRecord } from "./providers.ts";
 import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS, type ApproveResult } from "./tools.ts";
 import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, type RuleScope, type RuleSuggestion } from "./approvalRules.ts";
 import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
@@ -279,11 +279,12 @@ export class Gateway {
     }
   }
 
-  private onSwitch(record: { from: string; to: string; error: string }): void {
+  private onSwitch(record: SwitchRecord): void {
     const reason = record.error.length > 120 ? record.error.slice(0, 117) + "…" : record.error;
-    process.stderr.write(`模型切换：${record.from} 失败（${reason}），已切换到 ${record.to} 继续\n`);
+    const trigger = record.trigger ?? switchTriggerFor(record.kind);
+    process.stderr.write(`模型切换（${switchTriggerLabel(trigger)}）：${record.from} 失败（${reason}），已切换到 ${record.to} 继续\n`);
     for (const run of this.runs.values()) {
-      if (run.status === "running") this.record(run, "model_switch", { from: record.from, to: record.to, error: reason });
+      if (run.status === "running") this.record(run, "model_switch", { from: record.from, to: record.to, error: reason, trigger, kind: record.kind });
     }
   }
 

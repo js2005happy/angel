@@ -330,14 +330,19 @@ export function resolveProvider(opts: {
 /**
  * 兜底链（用户定的安全红线：默认关闭）。
  * 开关优先级：显式 enabled 参数 > NYRA_FALLBACK 环境变量 > config fallback_enabled > 默认 false。
- * 链顺序：NYRA_FALLBACK_PROVIDERS 环境变量 > config fallback_providers > 默认 [deepseek, xai, ollama]。
+ * 链顺序：显式 chainOverride 参数 > NYRA_FALLBACK_PROVIDERS 环境变量 > config fallback_providers > 默认 [deepseek, xai, ollama]。
  * 允许列表就是 fallback_providers：只切列表里的；显式空列表 = 无兜底。
  * CLI provider 绝不参与兜底（既不当目标、也不从它身上切）；未知名字跳过并报 stderr。
+ *
+ * 缺口 5：chainOverride 是该 agent 自己的备用链（群聊机器人的
+ * fallback_providers）；每 agent 的显式 opt-in 就落在这里——机器人
+ * 传自己的 enabled/chainOverride，null = 沿用全局配置（老行为不变）。
  */
 export function resolveFallbackChain(
   config: Record<string, unknown>,
   primary: string,
   enabled?: boolean,
+  chainOverride?: string[] | null,
 ): string[] {
   let on: boolean;
   if (enabled !== undefined) {
@@ -359,13 +364,15 @@ export function resolveFallbackChain(
   if (presets[primary]?.auth === "cli") return [primary];
 
   let chainNames: string[];
-  if (config.fallback_providers === undefined || config.fallback_providers === null) {
+  if (chainOverride !== undefined && chainOverride !== null) {
+    chainNames = [...chainOverride];
+  } else if (config.fallback_providers === undefined || config.fallback_providers === null) {
     chainNames = ["deepseek", "xai", "ollama"];
   } else {
     chainNames = [...(config.fallback_providers as string[])];
   }
   const envChain = envVar("FALLBACK_PROVIDERS");
-  if (envChain !== undefined) {
+  if (envChain !== undefined && (chainOverride === undefined || chainOverride === null)) {
     chainNames = envChain.split(",").map((p) => p.trim()).filter(Boolean);
   }
 
@@ -384,6 +391,20 @@ export function resolveFallbackChain(
   if (skipped.length) console.error(`兜底允许列表里跳过了未知 provider：${skipped.join(", ")}`);
   if (skippedCli.length) console.error(`兜底允许列表里跳过了 CLI provider（不进兜底链）：${skippedCli.join(", ")}`);
   return names;
+}
+
+/**
+ * 缺口 5：对话中途手动换模型的允许列表——主 agent 换模型只能切到这些
+ * 服务商。口径与兜底链的“允许列表”是同一份（primary + fallback_providers，
+ * 未知名字与 CLI provider 照样跳过），但不受 fallback_enabled 开关影响：
+ * 手动换是用户当场点的显式动作，不是静默自动切换；开关只管“触顶时
+ * 自动换不换”。显式空 fallback_providers 时列表只剩 primary。
+ */
+export function resolveSwitchAllowlist(
+  config: Record<string, unknown>,
+  primary: string,
+): string[] {
+  return resolveFallbackChain(config, primary, true);
 }
 
 export function listProfiles(config?: Record<string, unknown> | null): string[] {

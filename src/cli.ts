@@ -12,10 +12,10 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, realpathSync, chmodSync, renameSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  loadConfig, resolveHome, resolveProvider, resolveProfile, resolveFallbackChain,
+  loadConfig, resolveHome, resolveProvider, resolveProfile, resolveFallbackChain, resolveSwitchAllowlist,
   listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets, saveConfig,
 } from "./config.ts";
-import { Provider, buildProviderChain, ProviderError, type RetryRecord } from "./providers.ts";
+import { Provider, FallbackProvider, buildProviderChain, ProviderError, switchTriggerFor, type RetryRecord, type SwitchRecord } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport, computeRunStats } from "./runs.ts";
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
@@ -61,7 +61,7 @@ import { PermissionLedger, PermissionConflict } from "./poppy.ts";
 import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
 import { NetworkPolicy } from "./eigenfluxPolicy.ts";
 import { printDoctorResult, runDoctor } from "./doctor.ts";
-import { t, getLang, setLang, detectLang, extractLangFlag, normalizeLang } from "./i18n.ts";
+import { t, getLang, setLang, detectLang, extractLangFlag, normalizeLang, type MsgKey } from "./i18n.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——main 入口做 fail-closed 校验，
 // buildAgent 把解析出的沙箱配置透传给 Agent（再进 ToolContext）。
 import { resolveSandboxBackend, getSandboxStatus } from "./sandbox.ts";
@@ -351,10 +351,14 @@ function fallbackEnabled(args: CliArgs): boolean | null {
   return null;
 }
 
-function fallbackNotice(record: { from: string; to: string; error: string }): void {
+function fallbackNotice(record: { from: string; to: string; error: string; kind?: SwitchRecord["kind"]; trigger?: SwitchRecord["trigger"] }): void {
   let reason = record.error;
   if (reason.length > 120) reason = reason.slice(0, 117) + "…";
-  process.stderr.write(t("fallback.notice", { from: record.from, reason, to: record.to }) + "\n");
+  // 缺口 5：提示写明触发原因（用量触顶 / 限流 / 服务端错误…），不让用户
+  // 从报错原文里猜“为什么换了模型”。
+  const trigger = record.trigger ?? (record.kind ? switchTriggerFor(record.kind) : "other");
+  const label = t(`fallback.trigger.${trigger}` as MsgKey);
+  process.stderr.write(t("fallback.notice", { from: record.from, reason, to: record.to, trigger: label }) + "\n");
 }
 
 const TRUSTED_FILE = "trusted_workspaces.json";
@@ -443,6 +447,11 @@ interface BuiltAgent {
   home: string;
   /** 缺口 20/29：用量账本与本次运行已落盘的 LLM 花费 holder（月度口径要扣掉它，避免重复计）。 */
   monthly: { ledger: UsageLedger; flushed: { flushedUsd: number } };
+  /**
+   * 缺口 5：兜底切换回调（stderr 提示 + 经 Agent 发 model_switch 事件进
+   * 证据链）。REPL `/model` 建新链时复用同一回调，之后自动切换照样留痕。
+   */
+  onModelSwitch: (record: SwitchRecord) => void;
 }
 
 async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void }): Promise<BuiltAgent> {
@@ -455,9 +464,26 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     model: args.model ?? profile.model ?? undefined,
   });
   const chain = resolveFallbackChain(config, primaryCfg.name, fallbackEnabled(args) ?? undefined);
+  // 缺口 5：兜底切换的事件落点——provider 在 Agent 之前建成，先用 holder
+  // 占位；Agent 建好后挂上去，之后每次自动切换都经 agent.emit 发
+  // model_switch 事件，RunRecorder 写进 events.jsonl（与 REPL /model
+  // 的手动切换同一事件、同一口径：何时换、从谁换到谁、为什么换、花了多少）。
+  const switchAgent: { current: Agent | null } = { current: null };
+  const onModelSwitch = (r: SwitchRecord): void => {
+    fallbackNotice(r);
+    const a = switchAgent.current;
+    if (!a) return;
+    const spent = a.lastCost?.status === "priced" ? a.lastCost.spentUsd : null;
+    a.emit("model_switch", {
+      from: r.from, to: r.to, reason: r.error,
+      kind: r.kind, status: r.status,
+      trigger: r.trigger ?? switchTriggerFor(r.kind),
+      spent_usd: spent,
+    });
+  };
   const provider = buildProviderChain(
     primaryCfg, chain,
-    (r) => fallbackNotice(r as { from: string; to: string; error: string }),
+    onModelSwitch,
     {
       resolver: (name: string) => resolveProvider({ home, config, providerName: name }),
       // 缺口 20：同一 provider 重试前的回调（CLI 用来显示 429 冷却倒计时）。
@@ -533,6 +559,9 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     monthlySpentBeforeUsd,
     // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
     auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
+    // 缺口 5：对话中途手动换模型的允许列表（primary + fallback_providers，
+    // 与兜底链同一份名单；不受 fallback_enabled 开关影响，见 config.ts）。
+    modelSwitchAllowlist: resolveSwitchAllowlist(config, primaryCfg.name),
     // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
     disabledTools: [...(Array.isArray(config.disabled_tools) ? config.disabled_tools.filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
     // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
@@ -572,7 +601,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       allowNet: sandboxSettings.allowNet,
     },
   });
-  return { agent, providerName: primaryCfg.name, config, home, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed } };
+  switchAgent.current = agent;
+  return { agent, providerName: primaryCfg.name, config, home, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed }, onModelSwitch };
 }
 
 // ---- 缺口 20：用量账本 flush ----
@@ -1963,7 +1993,7 @@ async function runRepl(args: CliArgs): Promise<number> {
   };
   process.once("SIGINT", onReplSigint);
   try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：fail-open */ }
-  const providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
+  let providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
   // 终端外观 v2：TTY 且宽度够时是品牌化欢迎屏（渐变块字 + 信息卡 + Tips）、横线输入区、
   // 彩色状态栏、spinner 与右侧小伙伴；非 TTY / TERM=dumb / 太窄时退回纯文本状态行 + "> "
   // （管道与脚本不受影响）。颜色：truecolor → 256 → 16 → NO_COLOR 无色。
@@ -2226,6 +2256,57 @@ async function runRepl(args: CliArgs): Promise<number> {
         process.stdout.write(ok(t("repl.modeSwitched", { mode })) + "\n");
       } catch {
         process.stderr.write(fail(t("repl.modeInvalid")) + "\n");
+      }
+      continue;
+    }
+    // 缺口 5：对话中途换模型（/model）。只换 provider，不动会话与工具
+    // 状态（Agent.switchModel 保证）；新链以目标为 primary，兜底开关
+    // 与本次运行一致；窗口与单价按新模型重配。
+    if (text === "/model" || text.startsWith("/model ")) {
+      const spec = text.slice("/model".length).trim();
+      if (!spec) {
+        const allowlist = resolveSwitchAllowlist(config, agent.provider.name);
+        const fallbackOn = agent.provider instanceof FallbackProvider;
+        process.stdout.write(t("repl.modelCurrent", {
+          model: `${agent.provider.name} / ${agent.provider.model}`,
+          allowlist: allowlist.join("、"),
+          fallback: fallbackOn ? t("repl.modelFallbackOn") : t("repl.modelFallbackOff"),
+        }) + "\n");
+        continue;
+      }
+      const sep = spec.indexOf(":");
+      const targetName = (sep >= 0 ? spec.slice(0, sep) : spec).trim();
+      const targetModel = sep >= 0 ? spec.slice(sep + 1).trim() || undefined : undefined;
+      if (!targetName) {
+        process.stderr.write(fail(t("repl.modelUsage")) + "\n");
+        continue;
+      }
+      try {
+        const targetCfg = resolveProvider({ home, config, providerName: targetName, model: targetModel });
+        const chain = resolveFallbackChain(config, targetCfg.name, fallbackEnabled(args) ?? undefined);
+        const next = buildProviderChain(targetCfg, chain, built.onModelSwitch, {
+          resolver: (n: string) => resolveProvider({ home, config, providerName: n }),
+          onRetry: (r) => retryNotify?.(r),
+        });
+        // 推理档位与当前运行一致（provider.extraBody）。
+        (next as { extraBody?: Record<string, unknown> }).extraBody = toRequestBody(resolveReasoningOptions(config));
+        const manualWindow = manualWindowFromConfig(config);
+        const windowResolved = resolveContextWindow({
+          model: next.model, provider: targetCfg.name,
+          cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
+          cache: loadModelCache(home),
+        });
+        const switched = agent.switchModel(next, {
+          reason: "用户在对话中途手动切换模型",
+          contextWindowTokens: windowResolved.window,
+          contextWindowSource: windowResolved.source,
+          contextWindowModel: windowResolved.model,
+          pricing: resolvePricing(config.pricing, next.model),
+        });
+        providerDesc = `${agent.provider.name} / ${agent.provider.model}`;
+        process.stdout.write(ok(t("repl.modelSwitched", { from: switched.from, to: switched.to })) + "\n");
+      } catch (err: unknown) {
+        process.stderr.write(fail(t("repl.modelSwitchFailed", { err: err instanceof Error ? err.message : String(err) })) + "\n");
       }
       continue;
     }
