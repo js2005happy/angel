@@ -12,6 +12,7 @@ function snap(over: Partial<UsageSnapshot> = {}): UsageSnapshot {
     prompt_tokens: 1_000_000, completion_tokens: 1_000_000, total_tokens: 2_000_000,
     prompt_samples: 2, completion_samples: 2, total_samples: 2,
     last_prompt_tokens: 500_000, context_window_tokens: null, context_remaining_tokens: null,
+    context_window_source: "unknown", context_window_model: null,
     ...over,
   };
 }

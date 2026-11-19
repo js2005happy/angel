@@ -20,6 +20,7 @@ function snap(over: Partial<UsageSnapshot> = {}): UsageSnapshot {
     prompt_tokens: 10000, completion_tokens: 2000, total_tokens: 12000,
     prompt_samples: 2, completion_samples: 2, total_samples: 2,
     last_prompt_tokens: 6000, context_window_tokens: 100000, context_remaining_tokens: 94000,
+    context_window_source: "builtin", context_window_model: "deepseek-flash",
     ...over,
   };
 }

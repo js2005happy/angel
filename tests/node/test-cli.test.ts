@@ -389,7 +389,9 @@ test("ContextCliTest.test_format_context_usage_reported_and_estimated", () => {
   const estimated = { ...reported, usedTokens: 125, estimated: true, windowTokens: null };
   const out2 = formatContextUsage(estimated);
   expect(out2).toContain("约 125（估算：4 字符 ≈ 1 token，模型未报告用量）");
-  expect(out2).toContain("模型窗口：未配置");
+  // 窗口未知时不再只写“未配置”，同时给下一步（模型表自动识别后仍未知时）。
+  expect(out2).toContain("模型窗口：未知");
+  expect(out2).toContain("nyra models refresh");
 });
 
 test("ContextCliTest.test_context_suggestion_thresholds", () => {
