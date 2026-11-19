@@ -293,9 +293,12 @@ test("SkillsTest.test_agent_default_skills_dirs_project_first", () => {
   write(join(workdir, "skills"), "项目版");
   const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "auto" });
   // 默认顺序：项目层在前、全局层居中、插件层最后；同名技能项目层优先。
-  expect(agent.skillsDirs[0]).toBe(join(workdir, "skills"));
-  expect(agent.skillsDirs[1]).toBe(join(workdir, ".nyra", "skills"));
-  expect(agent.skillsDirs[2]).toBe(join(home, "skills"));
+  // canonicalSkillDirs 返回 POSIX 形式（Windows 上也是 /，见技能目录归一化修复），
+  // 所以期望值同样归一化；Linux/macOS 上 replace 是空操作。
+  const posix = (p: string): string => p.replace(/\\/g, "/");
+  expect(agent.skillsDirs[0]).toBe(posix(join(workdir, "skills")));
+  expect(agent.skillsDirs[1]).toBe(posix(join(workdir, ".nyra", "skills")));
+  expect(agent.skillsDirs[2]).toBe(posix(join(home, "skills")));
   expect(agent.skills.find((s) => s.name === "shared")?.description).toBe("项目版");
 });
 
