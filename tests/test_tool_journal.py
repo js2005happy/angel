@@ -11,6 +11,23 @@ from angel.tool_journal import JournalError, ToolJournal
 
 
 class JournalTests(unittest.TestCase):
+    def test_path_fallback_symlink_probe_denied_fails_closed(self):
+        # A denied metadata probe must not escape as an unclassified OSError.
+        from angel import tool_journal as module
+        journal = ToolJournal("symlink-probe-denied", root=self.root)
+        journal.begin("shell")
+        original = Path.is_symlink
+
+        def denied(path):
+            if path.parent == journal.path and path.suffix == ".json":
+                raise PermissionError("access denied")
+            return original(path)
+
+        with mock.patch.object(module.os, "supports_dir_fd", set()):
+            with mock.patch.object(Path, "is_symlink", denied):
+                with self.assertRaisesRegex(JournalError, "无法核验事件文件是否为符号链接"):
+                    journal.inspect()
+
     def test_safe_directory_permission_denied_is_not_missing(self):
         # No filesystem mutation: deny metadata lookup at the session path.
         from angel import tool_journal as module
