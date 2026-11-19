@@ -1,3 +1,7 @@
+## 未发布（2026-11-19，ToolJournal 祖先链接探测权限拒绝）
+
+- `_safe_directory()` 遍历祖先时将 `is_symlink()` / `is_junction()` 的 `OSError` 统一转为保留异常链的 `JournalError`，拒绝在无法核验链接状态时继续使用日志路径。新增模拟祖先访问拒绝的回归测试源码，未运行；不代表 Windows ACL 或稳定句柄已实现。
+
 ## 未发布（2026-11-19，ToolJournal 回退路径符号链接探测拒绝诊断）
 
 - Windows/path 回退读取在事件文件 `Path.is_symlink()` 元数据探测遭遇 `OSError` 时，现在保留异常链并统一抛出 `JournalError`，避免原始权限错误逃逸安全诊断；新增模拟拒绝的回归测试源码，未运行。不声称 Windows ACL、稳定句柄或跨进程事务已完成。
