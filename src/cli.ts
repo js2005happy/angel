@@ -29,6 +29,7 @@ import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
+import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
@@ -2718,6 +2719,12 @@ export async function main(argv: string[]): Promise<number> {
       const taskText = (args.subArgs ?? []).join(" ").trim() || (args.task ?? "").trim();
       if (taskText) recallCount = selectRecalledRuns(store.list(), taskText, { workdir: resolve(args.workdir), limit: 3 }).length;
     } catch { /* 历史读不了不影响汇总 */ }
+    // 账本实测：辅助模型到底省了多少（反事实 = 主模型单价 × 同样 tokens）
+    const ledgerRecords = (() => { try { return new UsageLedger(home).readAll(); } catch { return []; } })();
+    const modelSavings = summarizeModelSavings(ledgerRecords, {
+      mainModel: (cfgSav.model as string) ?? null,
+      mainPricing: resolvePricing(cfgSav.pricing, (cfgSav.model as string) ?? null),
+    });
     const summary = summarizeCostSavings({
       config: cfgSav,
       schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
@@ -2725,8 +2732,11 @@ export async function main(argv: string[]): Promise<number> {
       recallCount,
       toolSearchEnabled: featureOn(feats, "tool_search"),
       turns: typeof cfgSav.max_turns === "number" ? cfgSav.max_turns : 20,
+      modelSavings,
     });
     process.stdout.write(formatSavings(summary) + "\n");
+    // 逐模型明细：省了多少用真实账本反事实算，不写"算不出"。
+    process.stdout.write("\n" + formatModelSavings(modelSavings) + "\n");
     return EXIT_SUCCESS;
   }  if (args.subcommand === "recall") {
     // 回忆是隐式注入的，出问题时只能猜。这条命令把"这次任务能复用哪些历史"摊开给人看。
