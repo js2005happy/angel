@@ -145,7 +145,9 @@ test("KnowledgeTest.test_search_async_matches_sync_on_large_library", async () =
   } finally {
     await kb.closePool();
   }
-});
+  // Node CI #73：Windows 运行器上该用例 9084ms 超时（Bun 默认 5 秒），
+  // 大库建索引慢，非逻辑问题，单用例放宽到 15 秒。
+}, 15000);
 
 test("KnowledgeTest.test_search_async_small_library_uses_sync_path", async () => {
   const kb = new KnowledgeBase(base());

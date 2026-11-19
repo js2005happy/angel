@@ -147,7 +147,9 @@ test("网关沙箱：默认断网；config 与环境变量都能放开网络", a
       await gw3.stop();
     });
   });
-});
+  // Node CI #73：Windows 运行器上该用例 5187ms 超时（Bun 默认 5 秒），
+  // 与 rewind 用例同因——运行器偏慢，非逻辑问题，单用例放宽到 15 秒。
+}, 15000);
 
 test("网关沙箱：danger-full-access 与显式 bwrap 互斥，会话启动失败", async () => {
   const home = tmpDir("nyra-gw-sandbox-home-");
