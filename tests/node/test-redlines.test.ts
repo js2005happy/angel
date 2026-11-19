@@ -126,3 +126,32 @@ test("没传工具体积时不产生该检查（零影响）", () => {
   const r = checkRedlines(good());
   expect(r.findings.some((x) => x.code.startsWith("tools-"))).toBe(false);
 });
+
+test("跨会话回忆：关闭时告警（同类任务会从零重跑）", () => {
+  const r = checkRedlines({ ...good(), recall: { enabled: false, total: 5, fresh: 5 } });
+  expect(r.findings.some((x) => x.code === "recall-off" && x.level === "warn")).toBe(true);
+});
+
+test("跨会话回忆：没有历史不算问题（第一次跑自然不省）", () => {
+  const r = checkRedlines({ ...good(), recall: { enabled: true, total: 0, fresh: 0 } });
+  expect(r.findings.some((x) => x.code === "recall-empty" && x.level === "ok")).toBe(true);
+});
+
+test("跨会话回忆：历史全过期 → warn（开着等于没开）", () => {
+  const r = checkRedlines({ ...good(), recall: { enabled: true, total: 5, fresh: 0 } });
+  const f = r.findings.find((x) => x.code === "recall-stale");
+  expect(f?.level).toBe("warn");
+  expect(f?.detail).toContain("等价于关闭");
+  expect(r.ok).toBe(true); // 只是提醒
+});
+
+test("跨会话回忆：有新鲜历史 → ok 并报出比例", () => {
+  const r = checkRedlines({ ...good(), recall: { enabled: true, total: 5, fresh: 2 } });
+  const f = r.findings.find((x) => x.code === "recall-ready");
+  expect(f?.detail).toContain("2/5");
+});
+
+test("跨会话回忆：不传时零影响", () => {
+  const r = checkRedlines(good());
+  expect(r.findings.some((x) => x.code.startsWith("recall-"))).toBe(false);
+});

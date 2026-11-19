@@ -2169,6 +2169,17 @@ export async function main(argv: string[]): Promise<number> {
       sandbox: { level: sandboxStatus.level, backend: String(sandboxStatus.backend) },
       permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
       hasCostLimit: typeof cfgRed.max_cost_usd === "number",
+      // 跨会话回忆：开着但没有新鲜历史 = 看起来在省，其实一点没省。
+      recall: (() => {
+        const feats2 = resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures });
+        const all = new RunStore(join(home, "runs")).list();
+        const cutoff = Date.now() - 30 * 86_400_000;
+        const fresh = all.filter((r) => {
+          const ts = Date.parse(String((r as unknown as Record<string, unknown>).created_at ?? ""));
+          return Number.isFinite(ts) && ts >= cutoff;
+        }).length;
+        return { enabled: featureOn(feats2, "run_recall"), total: all.length, fresh };
+      })(),
       platform: process.platform,
       // 工具体积：原生工具每轮都发 schema，工具多就是每轮白烧 token。
       // （延迟加载只覆盖 MCP 工具且自动开启，这里不传开关——见 redlines.ts 检查 8。）
