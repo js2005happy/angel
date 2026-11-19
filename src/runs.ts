@@ -8,7 +8,7 @@ chmodSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync,
 readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync, fsyncSync,
 } from "node:fs";
 import { hostname} from "node:os";
-import { join, resolve} from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { pythonJsonDump} from "./pyjson.ts";
 import { ApprovalRequired} from "./tools.ts";
 import { checkApproval, checkShellDenied, workspaceShellCwd, type ToolContext} from "./tools.ts";
@@ -320,7 +320,9 @@ if (typeof runId!== "string" ||!RUN_ID_RE.test(runId)) throw new Error("运行 I
 const directory = join(this.baseDir, runId);
 if (existsSync(this.baseDir) && lstatSync(this.baseDir).isSymbolicLink()) throw new Error("运行目录不安全");
 if (existsSync(directory) && lstatSync(directory).isSymbolicLink()) throw new Error("运行目录不安全");
-if (resolve(directory).split("/").slice(0, -1).join("/")!== resolve(this.baseDir)) {
+// 父目录必须就是 baseDir：用 dirname 比较，不用 split("/")——Windows 的
+// resolve() 返回反斜杠路径，split("/") 永远切不出父目录，会误判所有运行都不安全。
+if (dirname(resolve(directory)) !== resolve(this.baseDir)) {
 throw new Error("运行目录不安全");
 }
 return directory;
