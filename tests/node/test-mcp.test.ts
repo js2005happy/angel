@@ -2,10 +2,10 @@
 // 假 MCP 服务器（stdio JSON-RPC）：现代版 discover、旧版 initialize 回退、
 // tools/list 分页、tools/call、多轮往返报错；预置清单；成本上限停手。
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { writeFakeMcpServer as fakeServerPath } from "./fake-mcp-server.ts";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   MCPClient, MCPServerConfig, MCPToolManager, loadMcpServers,
 } from "../../src/mcp.ts";
@@ -79,6 +79,17 @@ test("McpClientTest.test_input_required_reports_clearly", async () => {
   } finally {
     client.stop();
     await new Promise((r) => setTimeout(r, 300));
+    // 诊断（定位 Windows 上 need-more 请求确定性丢失）：假服务器把
+    // 收到的请求与发出的回复都记到了同目录 fake-mcp.log，这里把它
+    // 打印到测试进程的 stderr，让 CI 日志里能看到请求到底到没到
+    // 服务器、服务器回没回。定位完成后随 fake-mcp-server.ts 的日
+    // 志一起移除。
+    try {
+      const logPath = join(dirname(server), "fake-mcp.log");
+      process.stderr.write("FAKE-MCP-SERVER-LOG-BEGIN\n" + readFileSync(logPath, "utf-8") + "FAKE-MCP-SERVER-LOG-END\n");
+    } catch (readErr) {
+      process.stderr.write("FAKE-MCP-SERVER-LOG-MISSING: " + String(readErr) + "\n");
+    }
   }
 }, 25000);
 
