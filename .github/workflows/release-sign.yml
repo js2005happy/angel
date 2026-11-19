@@ -62,8 +62,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 竞态：Node binaries 工作流在 tag 触发后才把产物挂到 Release 上，
+          # 本工作流可能比它先跑到这一步。v0.5.1 就因此空手失败过（20:30 跑、
+          # 20:32 二进制才挂上）。先等 5 个 Node 二进制都出现，最多等 10 分钟；
+          # 等不到就按原样失败（fail-closed，不签不全的清单）。
+          TAG="${{ steps.tag.outputs.tag }}"
+          for i in $(seq 1 30); do
+            NAMES=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq -r '.assets[].name')
+            MISSING=0
+            for b in nyra-linux-arm64 nyra-linux-x64 nyra-macos-arm64 nyra-macos-x64 nyra-windows-x64.exe; do
+              echo "$NAMES" | grep -qx "$b" || MISSING=1
+            done
+            [ "$MISSING" = 0 ] && break
+            echo "等待 5 个 Node 二进制挂到 Release（第 $i/30 次）..."
+            sleep 20
+          done
           mkdir -p dist
-          gh release download "${{ steps.tag.outputs.tag }}" \
+          gh release download "$TAG" \
             --repo "${{ github.repository }}" --dir dist --clobber
           echo "--- 下载到的产物 ---"
           ls -la dist
