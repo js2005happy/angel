@@ -25,6 +25,10 @@ import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, t
 import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
 import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFont } from "./webuiMobile.ts";
 import { runHooks } from "./hooks.ts";
+  // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
+import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
+import { UsageLedger, monthKeyString } from "./usageLedger.ts";
+import type { UsageSnapshot } from "./usage.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { loadSession, saveSession, newSessionId, listSessions, resolveNyraHome, MemoryDeleteError } from "./memory.ts";
 import { ConversationStore } from "./conversations.ts";
@@ -113,6 +117,10 @@ export interface SessionRun {
   hooksStarted?: boolean;
   /** 会话钩子：SessionEnd 是否已触发过（只触发一次，见 fireSessionEnd）。 */
   hooksEnded?: boolean;
+  /** 缺口 30：上一次写进用量账本的用量快照（算增量用；不落盘）。 */
+  lastLedgerSnapshot?: UsageSnapshot | null;
+  /** 缺口 30：上一次写账本时的已花金额（算增量用；不落盘）。 */
+  lastLedgerSpent?: number | null;
 }
 
 export interface GatewayOptions {
@@ -456,7 +464,68 @@ export class Gateway {
     finally { this.projectsLock = false; }
   }
 
+  /**
+   * 缺口 30：网关入口的成本口径。此前 `nyra ui` 起的 agent 完全不接
+   * maxCostUsd / monthlyCostLimitUsd，Web UI 一跑就等于绕过 `--max-cost`——
+   * 硬顶只对 CLI 生效，那不叫硬顶。
+   *
+   * 与 cli.buildAgent 同语义：单价按 config.pricing 解析（未配置则金额未知，不编造），
+   * 月度上限 = 配置值（网关没有 CLI 覆盖），本月已花 = 账本里的 LLM + MCP 花费。
+   */
+  private costOptions(): {
+    maxCostUsd: number | null;
+    pricing: ReturnType<typeof resolvePricing>;
+    monthlyCostLimitUsd: number | null;
+    monthlySpentBeforeUsd: (() => { spentUsd: number; incomplete: boolean } | null) | null;
+  } {
+    const cfg = this.config as Record<string, unknown>;
+    const limit = typeof cfg.max_cost_usd === "number" ? cfg.max_cost_usd : null;
+    // provider 解析可能失败（未配 key / 无 providerFactory）：单价未知不影响封顶，
+    // 但不能让 costOptions 自己抛错——否则 send 直接起不来。
+    let model: string | null = null;
+    try {
+      model = this.provider().model ?? null;
+    } catch {
+      model = this.model ?? null;
+    }
+    const monthlyLimit = resolveMonthlyLimit(cfg, null);
+    const ledger = new UsageLedger(this.home);
+    const spentBefore = monthlyLimit === null ? null : (): { spentUsd: number; incomplete: boolean } | null => {
+      try {
+        const llm = ledger.monthTotal(monthKeyString());
+        const mcp = new McpCostTracker(this.home).monthTotalUsd(monthKeyString());
+        return { spentUsd: llm.spentUsd + mcp, incomplete: llm.incomplete };
+      } catch {
+        return null; // 账本读不了就不封顶，不假装
+      }
+    };
+    return {
+      maxCostUsd: limit,
+      pricing: resolvePricing(cfg.pricing, model),
+      monthlyCostLimitUsd: monthlyLimit,
+      monthlySpentBeforeUsd: spentBefore,
+    };
+  }
+
+  /** 缺口 30：把网关运行的用量增量写进账本（热力图与月度硬顶的事实源）。 */
+  private flushUsageToLedger(run: SessionRun, kind: string, data: Record<string, unknown>): void {
+    try {
+      if (kind === "usage" || kind === "cost_update") {
+        const agent = run.agent;
+        if (!agent) return;
+        const snap = agent.usage.snapshot();
+        const spent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
+        const rec = new UsageLedger(this.home).recordDelta(
+          snap, run.lastLedgerSnapshot ?? null, spent, run.lastLedgerSpent ?? null, agent.provider.model,
+        );
+        run.lastLedgerSnapshot = snap;
+        run.lastLedgerSpent = spent;
+        void rec;
+      }
+    } catch { /* 账本写失败绝不破坏运行 */ }
+  }
   record(run: SessionRun, kind: string, data: Record<string, unknown>): void {
+    this.flushUsageToLedger(run, kind, data);
     const clean: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(data)) {
       if (key === "content" || key === "result") clean[key] = clip(value);
@@ -749,6 +818,8 @@ export class Gateway {
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
           home: this.home,
+          // 缺口 30：成本硬顶与单价（与 CLI 同语义；Web UI 入口不再绕过 --max-cost）。
+          ...this.costOptions(),
           // 调研报告第 9 项：OS 级分级沙箱（网关接线）——与 CLI buildAgent 同语义：
           // 配置 + 环境变量解析、fail-closed 校验在 sandboxSettings 里；Agent 再
           // 透传给 ToolContext，shell 执行时由 toolShell 解析生效（含 auto 回落
@@ -965,6 +1036,8 @@ export class Gateway {
           const agent = new Agent(this.primaryProvider(), {
             workdir: this.workdir, mode: this.mode, maxTurns: this.maxTurns ?? 20,
             sessionId: `schedule-${task.name}`, interactive: false, home: this.home,
+            // 缺口 30：定时任务是无人值守入口，更要受成本硬顶约束。
+            ...this.costOptions(),
             mcpManager: null,
             // 调研报告第 9 项：定时任务用的 Agent 也接沙箱（与 send 同一套解析；
             // 配置非法时这里抛错，tick 的 catch 会记日志，任务不裸奔执行）。
