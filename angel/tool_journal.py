@@ -629,6 +629,11 @@ class ToolJournal:
             # Read-only reconciliation signal: never imply that an absent
             # pending intent proves external effects or authorizes replay.
             "manual_review_required": bool(pending or invalid),
+            # Machine-readable, read-only reason; never grants execution rights.
+            "review_reason": (
+                "journal_ambiguous" if invalid else
+                "unknown_outcomes" if pending else "none"
+            ),
             "execution_verified": False,
             "safe_to_auto_resume": False,
             "reason": "事件只记录元数据；未知结果和外部副作用必须人工对账，不自动重放",
