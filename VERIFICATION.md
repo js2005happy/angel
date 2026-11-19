@@ -1,3 +1,7 @@
+## 2026-11-19 静态核验：跨进程事务阻塞
+
+已核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 与测试源码，并检查仓库提交、开放 Issues/PR。当前 `begin()/finish()` 仍以多个非原子文件系统操作组成，无法保证跨进程执行所有权；本轮没有运行测试或 CI，也没有提交未经验证的锁实现。ROADMAP 已补充设计门槛、外部反馈出处及事实/推断区分。此记录不等于功能实现或验证通过。
+
 ## 2026-11-19 — ToolJournal finish 写后并发复核（仅静态）
 
 - 静态检查确认原 `finish()` 最后一步直接 `_write(result)` 后返回，无法发现写入期间新出现的未决 intent。现在写入后重新读取完整日志，存在未知或歧义时抛出 `JournalError`。
