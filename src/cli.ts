@@ -30,7 +30,7 @@ import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
-import { buildVerdict, buildRunVerdict, formatVerdict } from "./verdict.ts";
+import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict } from "./verdict.ts";
 import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
@@ -169,6 +169,7 @@ Usage:
   nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
+  nyra verdict --run <id>         score one run; --recent N: trend over the last N runs
   nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
   nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
   nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
@@ -2741,6 +2742,46 @@ export async function main(argv: string[]): Promise<number> {
       const eq = sub.find((a) => a.startsWith("--run="));
       return eq ? eq.slice("--run=".length) : null;
     })();
+    // --recent N：批量趋势（单次结论回答"这一次"，趋势回答"该修什么"）
+    const recentFlag = (() => {
+      const sub = args.subArgs ?? [];
+      const i = sub.indexOf("--recent");
+      if (i >= 0 && sub[i + 1]) return Number(sub[i + 1]);
+      const eq = sub.find((a) => a.startsWith("--recent="));
+      return eq ? Number(eq.slice("--recent=".length)) : NaN;
+    })();
+    if (Number.isFinite(recentFlag) && recentFlag > 0) {
+      const n = Math.min(100, Math.floor(recentFlag));
+      let states: Record<string, unknown>[] = [];
+      try {
+        states = (new RunStore(join(home, "runs")).list() as unknown as Record<string, unknown>[]).slice(0, n);
+      } catch { states = []; }
+      const toInput = (state: Record<string, unknown>) => {
+        const us = (state.usage_summary ?? null) as Record<string, unknown> | null;
+        return {
+          run_id: String(state.run_id ?? ""),
+          task: typeof state.task === "string" ? state.task : null,
+          status: String(state.status ?? ""),
+          verify_result: (state.verify_result ?? null) as Record<string, unknown> | null,
+          verify_cmd: typeof state.verify_cmd === "string" ? state.verify_cmd : null,
+          changed_files: Array.isArray(state.changed_files) ? (state.changed_files as string[]) : [],
+          spent_usd: us && typeof us.spent_usd === "number" ? (us.spent_usd as number) : null,
+          delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
+          error: typeof state.error === "string" ? state.error : null,
+        };
+      };
+      const runs = states.map(toInput);
+      // 失败分类：CLI 侧算好再传，verdict.ts 保持零运行时依赖
+      const failureCounts: Record<string, number> = {};
+      for (const r of runs) {
+        if (r.status !== "failed" && r.status !== "verify_failed") continue;
+        const cls = r.status === "verify_failed" ? "verify_error" : classifyFailure(r.error ?? r.status).class;
+        failureCounts[cls] = (failureCounts[cls] ?? 0) + 1;
+      }
+      const v = buildTrendVerdict({ runs, failureCounts });
+      process.stdout.write(formatVerdict(v) + "\n");
+      return v.grade === "red" ? EXIT_RUNTIME : EXIT_SUCCESS;
+    }
     if (runIdFlag) {
       let state: Record<string, unknown> | null = null;
       try {

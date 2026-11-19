@@ -183,3 +183,75 @@ test("R12 nextSteps 最多 3 条", () => {
   const v = buildRunVerdict({ status: "verify_failed", verify_result: { exit_code: 1 }, spent_usd: 0.5, verify_cmd: "npm test" });
   expect(v.nextSteps.length).toBeLessThanOrEqual(3);
 });
+
+// ---- 批量趋势（buildTrendVerdict / summarizeTrend）----
+import { buildTrendVerdict, summarizeTrend } from "../../src/verdict.ts";
+
+const R = (status: string, over: Record<string, unknown> = {}) => ({
+  run_id: "r", status,
+  verify_result: status === "verified" ? { exit_code: 0 } : null,
+  spent_usd: 0.02, delegate_spent_usd: 0, ...over,
+});
+
+test("T1 没有记录 → yellow + unknown（不谎报趋势）", () => {
+  const v = buildTrendVerdict({ runs: [] });
+  expect(v.grade).toBe("yellow");
+  expect(v.unknowns.length).toBe(1);
+});
+
+test("T2 一次都没通过 → red + 阻断项", () => {
+  const v = buildTrendVerdict({ runs: [R("failed"), R("verify_failed")] });
+  expect(v.grade).toBe("red");
+  expect(v.blockers.some((b) => b.includes("没有一次通过验证"))).toBe(true);
+});
+
+test("T3 通过率 ≥70% → green", () => {
+  expect(buildTrendVerdict({ runs: [R("verified"), R("verified"), R("verified"), R("failed")] }).grade).toBe("green");
+});
+
+test("T4 通过率 <70% → yellow", () => {
+  expect(buildTrendVerdict({ runs: [R("verified"), R("failed")] }).grade).toBe("yellow");
+});
+
+test("T5 单位成本 = 总花费 / 通过次数", () => {
+  const s = summarizeTrend({ runs: [R("verified", { spent_usd: 0.1 }), R("verified", { spent_usd: 0.3 })] });
+  expect(s.costPerVerifiedUsd).toBeCloseTo(0.2, 10);
+});
+
+test("T6 没有通过运行时不谈单位成本（分母为 0）", () => {
+  expect(summarizeTrend({ runs: [R("failed", { spent_usd: 0.1 })] }).costPerVerifiedUsd).toBeNull();
+});
+
+test("T7 失败严格过半 → 点名，并进 nextSteps", () => {
+  const v = buildTrendVerdict({ runs: [R("failed"), R("failed"), R("failed"), R("verified")], failureCounts: { tool_error: 3 } });
+  expect(v.reasons.some((r) => r.includes("tool_error"))).toBe(true);
+  expect(v.nextSteps.some((s) => s.includes("tool_error"))).toBe(true);
+});
+
+test("T8 两类各占一半时不点名（点名是误导）", () => {
+  const s = summarizeTrend({ runs: [R("failed"), R("failed")], failureCounts: { a: 1, b: 1 } });
+  expect(s.dominantFailure).toBeNull();
+});
+
+test("T9 未验证既不算通过也不算失败", () => {
+  const s = summarizeTrend({ runs: [R("completed_unverified"), R("completed_unverified")] });
+  expect(s.unverified).toBe(2);
+  expect(s.verified).toBe(0);
+  expect(s.failed).toBe(0);
+});
+
+test("T10 花费全未知 → 单位成本 null，但统计照出", () => {
+  const s = summarizeTrend({ runs: [R("verified", { spent_usd: null, delegate_spent_usd: null })] });
+  expect(s.costPerVerifiedUsd).toBeNull();
+  expect(s.verified).toBe(1);
+});
+
+test("T11 nextSteps 最多 3 条", () => {
+  const v = buildTrendVerdict({ runs: [R("failed"), R("failed"), R("verified")], failureCounts: { tool_error: 2 } });
+  expect(v.nextSteps.length).toBeLessThanOrEqual(3);
+});
+
+test("T12 通过率写进依据（百分比取整）", () => {
+  const v = buildTrendVerdict({ runs: [R("verified"), R("verified"), R("verified"), R("failed")] });
+  expect(v.reasons.some((r) => r.includes("75%"))).toBe(true);
+});
