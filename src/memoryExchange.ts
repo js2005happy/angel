@@ -7,6 +7,10 @@ import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { loadMemorySummary, appendMemory, resolveNyraHome } from "./memory.ts";
+import {
+  listStyleProfiles, loadStyleProfile, saveStyleProfile, validateChannel,
+  type StyleProfile,
+} from "./style.ts";
 
 export const SNAPSHOT_SECTIONS = ["身份", "事实", "偏好", "目标与承诺", "关系"] as const;
 
@@ -108,7 +112,7 @@ export function parseMarkdownSections(text: string): Record<string, string[]> {
 }
 
 /** 导出记忆快照。memoryPath 是记忆文件路径（与 Python 版 memory_path 同语义）；不传则用 ~/.nyra/MEMORY.md。 */
-export function exportSnapshot(memoryPath?: string): string {
+export function exportSnapshot(memoryPath?: string, home?: string): string {
   const target = memoryPath ?? join(resolveNyraHome(), "MEMORY.md");
   if (!existsSync(target)) {
     throw new SnapshotError(`记忆为空：${target} 不存在，先写几条记忆再导出`);
@@ -128,11 +132,119 @@ export function exportSnapshot(memoryPath?: string): string {
     lines.push("");
   }
   if (removed) lines.push(`<!-- 已删掉 ${removed} 行含凭据的内容 -->`);
+  // 缺口 4：画像随记忆快照一起导出（没有画像时输出与以前完全一致）。
+  const stylesText = exportStylesSnapshot(home ?? join(target, ".."));
+  if (stylesText) lines.push(stylesText);
   return lines.join("\n");
 }
 
+// ---- 缺口 4：文风画像随记忆快照导入/导出 ----
+//
+// 画像是提炼出的习惯描述，不是样本原文；导出与导入两端仍过同一套
+// scrubSecrets（备注是用户手写的自由文本，可能含凭据），含凭据的行
+// 直接删掉并计数。导入只追加不覆盖：同渠道已有画像就跳过。
+
+/** 把全部画像导成 Markdown（无画像返回 ""）。 */
+export function exportStylesSnapshot(home: string): string {
+  const channels = listStyleProfiles(home);
+  if (!channels.length) return "";
+  const chunks: string[] = [];
+  let removedTotal = 0;
+  for (const channel of channels) {
+    let profile: StyleProfile | null = null;
+    try { profile = loadStyleProfile(home, channel); } catch { continue; }
+    if (!profile) continue;
+    const body = [
+      `## 文风画像（${profile.channel}）`,
+      `- 语气：${profile.tone}`,
+      `- 长度：${profile.length}（典型约 ${profile.typical_chars} 字）`,
+      `- 问候：${profile.greeting}`,
+      `- 落款：${profile.signoff}`,
+      `- 标点：${profile.punctuation}`,
+      `- 缩写：${profile.abbreviations}`,
+      ...(profile.notes ? [`- 备注：${profile.notes}`] : []),
+      `- 样本数：${profile.sample_count}`,
+      ...(profile.learned_at ? [`- 更新时间：${profile.learned_at}`] : []),
+      "",
+    ].join("\n");
+    const [cleaned, removed] = scrubSecrets(body);
+    removedTotal += removed;
+    chunks.push(cleaned);
+  }
+  if (!chunks.length) return "";
+  const out = chunks.join("\n");
+  return removedTotal ? out + `\n<!-- 文风画像已删掉 ${removedTotal} 行含凭据的内容 -->\n` : out;
+}
+
+const STYLE_SECTION_RE = /^文风画像（([a-z][a-z0-9_-]{0,31})）$/;
+const STYLE_LENGTH_RE = /^(短|中|长)(?:（典型约 (\d+) 字）)?$/;
+
+/** 按 `## ` 标题原样切分（不走记忆快照的分区归一化，那边会把标题丢掉）。 */
+function parseRawSections(text: string): Record<string, string[]> {
+  const sections: Record<string, string[]> = {};
+  let current: string | null = null;
+  let inFence = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith("```")) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const heading = /^#{1,6}\s+(.+)$/.exec(line);
+    if (heading) { current = heading[1].trim(); continue; }
+    if (current === null) continue;
+    const bullet = /^(?:[-*•]\s+|\d+[.)]\s+)(.+)$/.exec(line);
+    const content = bullet ? bullet[1].trim() : line;
+    if (isPlaceholder(content)) continue;
+    (sections[current] ??= []).push(content);
+  }
+  return sections;
+}
+
+/** 从 Markdown 文本里导入文风画像：只追加不覆盖，同渠道已有就跳过。 */
+export function importStylesSnapshot(home: string, text: string): { added: number; skipped: number; removed: number } {
+  const [cleaned, removed] = scrubSecrets(text);
+  let added = 0;
+  let skipped = 0;
+  const sections = parseRawSections(cleaned);
+  for (const [heading, items] of Object.entries(sections)) {
+    const m = STYLE_SECTION_RE.exec(heading);
+    if (!m) continue;
+    let channel: string;
+    try { channel = validateChannel(m[1]); } catch { skipped += 1; continue; }
+    if (loadStyleProfile(home, channel)) { skipped += 1; continue; }
+    const fields: Record<string, string> = {};
+    for (const item of items) {
+      const kv = /^([^：:]+)[：:]\s*(.*)$/.exec(item);
+      if (kv) fields[kv[1].trim()] = kv[2].trim();
+    }
+    const lengthM = STYLE_LENGTH_RE.exec(fields["长度"] ?? "");
+    if (!["正式", "随意", "中性"].includes(fields["语气"] ?? "") || !lengthM) { skipped += 1; continue; }
+    if (["问候", "落款", "标点", "缩写"].some((k) => !fields[k])) { skipped += 1; continue; }
+    const profile: StyleProfile = {
+      version: 1,
+      channel,
+      tone: fields["语气"] as StyleProfile["tone"],
+      length: lengthM[1] as StyleProfile["length"],
+      typical_chars: lengthM[2] ? parseInt(lengthM[2], 10) : 0,
+      greeting: fields["问候"],
+      signoff: fields["落款"],
+      punctuation: fields["标点"],
+      abbreviations: fields["缩写"],
+      notes: fields["备注"] ?? "",
+      sample_count: fields["样本数"] ? parseInt(fields["样本数"], 10) || 0 : 0,
+      learned_at: fields["更新时间"] ?? new Date().toISOString(),
+      source: "从记忆快照导入（本地）",
+    };
+    try {
+      saveStyleProfile(home, profile);
+      added += 1;
+    } catch { skipped += 1; }
+  }
+  return { added, skipped, removed };
+}
+
 /** 导入记忆快照：只追加不覆盖。memoryPath 是记忆文件路径（与 Python 版 memory_path 同语义）。 */
-export function importSnapshot(text: string, memoryPath?: string): { added: number; skipped: number; removed: number } {
+export function importSnapshot(text: string, memoryPath?: string, home?: string): { added: number; skipped: number; removed: number; stylesAdded: number; stylesSkipped: number } {
   const target = memoryPath ?? join(resolveNyraHome(), "MEMORY.md");
   const [cleaned, removed] = scrubSecrets(text);
   const sections = parseMarkdownSections(cleaned);
@@ -145,7 +257,9 @@ export function importSnapshot(text: string, memoryPath?: string): { added: numb
       added += 1;
     }
   }
-  return { added, skipped, removed };
+  // 缺口 4：快照里带文风画像时一并导入（同渠道已有就跳过，不覆盖）。
+  const styles = importStylesSnapshot(home ?? join(target, ".."), cleaned);
+  return { added, skipped, removed, stylesAdded: styles.added, stylesSkipped: styles.skipped };
 }
 
 // -- 聊天 .zip 导入：最小 ZIP 读取器（stored + deflate），只取 conversations.json --

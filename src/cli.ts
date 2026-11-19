@@ -121,6 +121,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
   nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
   nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
+  nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
   nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
   nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
   nyra setup                     首次启动向导
@@ -169,6 +170,7 @@ Usage:
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
   nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
   nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
+  nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
   nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
   nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
   nyra setup                     first-run wizard
@@ -219,6 +221,8 @@ export interface CliArgs {
   discoverPoppy: string | null; inspectPoppyIdentity: string | null;
   provider?: string; model?: string; profile?: string;
   mode?: string; maxTurns: number | null; contextWindow: number | null;
+  /** 缺口 4：本次运行的代笔渠道（--channel gmail）；null = 不注入文风画像。 */
+  channel?: string | null;
   workdir: string; trust: boolean;
   sandbox?: string | null; sandboxId?: string | null; sandboxTemplate?: string | null; sandboxTimeout: number | null;
   doctor: boolean; setup: boolean; example: boolean; exampleFile?: string;
@@ -239,7 +243,7 @@ export function parseArgs(argv: string[]): CliArgs {
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
-    maxTurns: null, contextWindow: null,
+    maxTurns: null, contextWindow: null, channel: null,
     workdir: ".", trust: false, sandboxTimeout: null,
     doctor: false, setup: false, example: false,
   };
@@ -249,9 +253,9 @@ export function parseArgs(argv: string[]): CliArgs {
     "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
-    "--lang",
+    "--lang", "--channel",
   ]);
-  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks", "stats"]);
+  const subcommands = new Set(["recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -319,6 +323,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--sandbox-template": args.sandboxTemplate = value; break;
         case "--sandbox-timeout": args.sandboxTimeout = parseInt(value, 10); break;
         case "--lang": args.lang = value; break;
+        case "--channel": args.channel = value; break;
       }
     } else if (a.startsWith("--") && a.includes("=")) {
       const [flag, value] = a.split("=", 2);
@@ -514,6 +519,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     contextWindowSource: windowResolved.source,
     contextWindowModel: windowResolved.model,
     autoCompactEnabled: args.autoCompact,
+    // 缺口 4：分应用文风学习——--channel 指定本次运行的代笔渠道，按画像注入提示词。
+    channel: args.channel ?? null,
     autoCompactThreshold: args.autoCompactThreshold ?? undefined,
     poppyEnabled: args.poppy,
     home,
@@ -1142,6 +1149,182 @@ async function handleMemory(argv: string[], home: string): Promise<number> {
   }
   process.stdout.write("用法：nyra memory <export|export-prompt|import|local|import-zip|peer|search|forget>\n");
   return 2;
+}
+
+// ---- 子命令：style（缺口 4：分应用文风学习） ----
+async function handleStyle(argv: string[], home: string): Promise<number> {
+  const STYLE_USAGE = "用法：\n"
+    + "  nyra style learn <渠道> <样本文件|-> [--yes]   从已发送消息样本提炼文风画像（先展示、确认后才保存；样本原文不保存）\n"
+    + "  nyra style show [渠道]                        查看画像（不给渠道列出全部）\n"
+    + "  nyra style list                               列出已有画像的渠道\n"
+    + "  nyra style delete <渠道> [--yes]              删除画像\n"
+    + "  nyra style export                             导出全部画像（Markdown，可随记忆快照走）\n"
+    + "  nyra style import [文件]                      导入画像（只追加不覆盖；不给文件读 stdin）\n"
+    + "渠道：gmail、outlook、slack、imessage、whatsapp 等小写名；详见 docs/style.md";
+  const {
+    learnStyleProfile, parseSamples, saveStyleProfile, loadStyleProfile,
+    listStyleProfiles, deleteStyleProfile, formatStyleProfile, StyleError,
+  } = await import("./style.ts");
+  const { EvidenceStore } = await import("./evidence.ts");
+  const cmd = argv[0];
+  const readInput = async (src: string): Promise<string> => {
+    if (src === "-") {
+      return new Promise<string>((res) => {
+        let data = "";
+        process.stdin.setEncoding("utf-8");
+        process.stdin.on("data", (c: string) => { data += c; });
+        process.stdin.on("end", () => res(data));
+      });
+    }
+    const { readFileSync } = await import("node:fs");
+    return readFileSync(src, "utf-8");
+  };
+  try {
+    // nyra style learn <渠道> <样本文件|-> [--yes]
+    // 缺省先展示提炼出的画像再问一次；--yes 跳过确认（脚本里用，仍是用户显式调用）。
+    if (cmd === "learn") {
+      const channel = argv[1];
+      const src = argv[2];
+      const yes = argv.includes("--yes");
+      if (!channel || !src || src === "--yes") {
+        process.stderr.write("用法：nyra style learn <渠道> <样本文件|-> [--yes]\n");
+        return 2;
+      }
+      let text: string;
+      try {
+        text = await readInput(src);
+      } catch {
+        process.stderr.write(`读不到样本文件：${src}\n`);
+        return 1;
+      }
+      let profile;
+      try {
+        profile = learnStyleProfile(channel, parseSamples(text));
+      } catch (err: unknown) {
+        process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+        return 1;
+      }
+      process.stdout.write("提炼出的文风画像（样本原文不会保存）：\n" + formatStyleProfile(profile) + "\n");
+      if (!yes) {
+        const choice = await askApproval("确认保存这套文风画像吗？");
+        if (choice !== "yes") { process.stdout.write("已取消，未保存任何东西。\n"); return 0; }
+      }
+      const path = saveStyleProfile(home, profile);
+      try {
+        new EvidenceStore(join(home, "evidence"), "style").save(
+          "style_learn",
+          `style://${profile.channel}`,
+          [
+            "nyra style learn（终端）",
+            `渠道：${profile.channel}`,
+            `批准：用户（${yes ? "--yes 显式调用" : "终端确认"}）`,
+            `样本：${profile.sample_count} 条用户已发送消息（原文未保存，只存了提炼出的习惯）`,
+            "学到的画像：",
+            formatStyleProfile(profile),
+          ].join("\n"),
+        );
+      } catch { /* 证据落盘失败不破坏保存结果 */ }
+      process.stdout.write(`已保存 ${profile.channel} 的文风画像（${profile.sample_count} 条样本提炼）：${path}\n`);
+      process.stdout.write(`代笔时用它：nyra --channel ${profile.channel} "<任务>"\n`);
+      return 0;
+    }
+    // nyra style show [渠道]
+    if (cmd === "show") {
+      const channel = argv[1];
+      if (channel) {
+        let profile;
+        try {
+          profile = loadStyleProfile(home, channel);
+        } catch (err: unknown) {
+          process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+          return 1;
+        }
+        if (!profile) { process.stdout.write(`没有 ${channel} 的文风画像，先用 nyra style learn ${channel} <样本文件> 学一套。\n`); return 0; }
+        process.stdout.write(formatStyleProfile(profile) + "\n");
+        return 0;
+      }
+      const channels = listStyleProfiles(home);
+      if (!channels.length) { process.stdout.write("还没有文风画像，先用 nyra style learn <渠道> <样本文件> 学一套。\n"); return 0; }
+      for (const c of channels) {
+        const profile = loadStyleProfile(home, c);
+        if (profile) process.stdout.write(formatStyleProfile(profile) + "\n\n");
+      }
+      return 0;
+    }
+    // nyra style list
+    if (cmd === "list") {
+      const channels = listStyleProfiles(home);
+      if (!channels.length) { process.stdout.write("还没有文风画像。\n"); return 0; }
+      for (const c of channels) process.stdout.write(`- ${c}\n`);
+      return 0;
+    }
+    // nyra style delete <渠道> [--yes]
+    if (cmd === "delete") {
+      const channel = argv[1];
+      const yes = argv.includes("--yes");
+      if (!channel) { process.stderr.write("用法：nyra style delete <渠道> [--yes]\n"); return 2; }
+      let profile;
+      try {
+        profile = loadStyleProfile(home, channel);
+      } catch (err: unknown) {
+        process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+        return 1;
+      }
+      if (!profile) { process.stdout.write(`没有 ${channel} 的文风画像，无需删除。\n`); return 0; }
+      process.stdout.write("将删除以下文风画像：\n" + formatStyleProfile(profile) + "\n");
+      if (!yes) {
+        const choice = await askApproval("确认删除这套文风画像吗？");
+        if (choice !== "yes") { process.stdout.write("已取消，未删除任何东西。\n"); return 0; }
+      }
+      deleteStyleProfile(home, channel);
+      try {
+        new EvidenceStore(join(home, "evidence"), "style").save(
+          "style_delete",
+          `style://${channel}`,
+          [
+            "nyra style delete（终端）",
+            `渠道：${channel}`,
+            `批准：用户（${yes ? "--yes 显式调用" : "终端确认"}）`,
+            "删掉的画像：",
+            formatStyleProfile(profile),
+          ].join("\n"),
+        );
+      } catch { /* 证据落盘失败不破坏删除结果 */ }
+      process.stdout.write(`已删除 ${channel} 的文风画像。\n`);
+      return 0;
+    }
+    // nyra style export
+    if (cmd === "export") {
+      const { exportStylesSnapshot } = await import("./memoryExchange.ts");
+      const text = exportStylesSnapshot(home);
+      if (!text) { process.stdout.write("还没有文风画像。\n"); return 0; }
+      process.stdout.write(text);
+      return 0;
+    }
+    // nyra style import [文件]
+    if (cmd === "import") {
+      const { importStylesSnapshot } = await import("./memoryExchange.ts");
+      const src = argv[1];
+      let text: string;
+      try {
+        text = src ? await readInput(src) : await readInput("-");
+      } catch {
+        process.stderr.write(`读不到导入文件：${src}\n`);
+        return 1;
+      }
+      const result = importStylesSnapshot(home, text);
+      process.stdout.write(`已导入 ${result.added} 套文风画像，跳过 ${result.skipped} 套${result.removed ? `（已删掉 ${result.removed} 行含凭据的内容）` : ""}。\n`);
+      return 0;
+    }
+    process.stdout.write(STYLE_USAGE + "\n");
+    return cmd === undefined || cmd === "--help" || cmd === "-h" ? 0 : 2;
+  } catch (err: unknown) {
+    if (err instanceof StyleError) {
+      process.stderr.write(`错误：${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
 }
 
 // ---- 子命令：hooks（调研报告第 1 项：Hooks 确定性钩子层，学 Claude Code） ----
@@ -2419,6 +2602,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "plugin") return handlePlugin(args.subArgs ?? [], home);
   if (args.subcommand === "creator") return handleCreator(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
+  if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "recall") {

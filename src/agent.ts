@@ -26,6 +26,7 @@ import { SessionRules } from "./approvalRules.ts";
 import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, skillRenderOptionsFor, type Skill } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession, buildMemorySection } from "./memory.ts";
+import { loadStyleProfile, buildStyleSection } from "./style.ts";
 import {
   compactMessages, shouldAutoCompact, validateAutoCompactThreshold,
   DEFAULT_AUTO_COMPACT_THRESHOLD, trimOldToolResults, splitCompletedVsActive,
@@ -123,6 +124,8 @@ export interface AgentOptions {
   delegateBudget?: DelegationBudget | null;
   systemInstructions?: string;
   memoryPath?: string | null;
+  /** 缺口 4：分应用文风学习——当前代笔渠道（如 gmail）；null = 不注入文风画像。 */
+  channel?: string | null;
   contextWindowTokens?: number | null;
   /** 窗口数值的来源（cli/manual/cache/builtin/family/unknown），见 modelCatalog。 */
   contextWindowSource?: WindowSource;
@@ -209,6 +212,8 @@ export class Agent {
   lastTask = "";
   systemInstructions: string;
   memoryPath: string;
+  /** 缺口 4：当前代笔渠道；null = 不注入文风画像。 */
+  channel: string | null;
   delegateDepth: number;
   private delegateBudget: DelegationBudget;
   private maxCostUsd: number | null;
@@ -265,6 +270,7 @@ export class Agent {
     this.systemInstructions = opts.systemInstructions ?? "";
     this.home = opts.home ?? process.env.NYRA_HOME ?? join(process.env.HOME ?? "", ".nyra");
     this.memoryPath = opts.memoryPath ?? join(this.home, "MEMORY.md");
+    this.channel = opts.channel ?? null;
     this.delegateDepth = opts.delegateDepth ?? 0;
     this.delegateBudget = opts.delegateBudget ?? new DelegationBudget();
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
@@ -654,6 +660,14 @@ export class Agent {
     // 同类任务的结论，两边都留。
     const memory = buildMemorySection(this.memoryPath, this.home, task);
     if (memory) sections.push(memory);
+    // 缺口 4：分应用文风学习——按当前渠道注入画像（有画像才加，没有零影响；
+    // 画像损坏时不拦运行，只是不注入，损坏本身由 `nyra style show` 报错）。
+    if (this.channel) {
+      try {
+        const profile = loadStyleProfile(this.home, this.channel);
+        if (profile) sections.push(buildStyleSection(profile));
+      } catch { /* ignore */ }
+    }
     // 延迟加载（P3）：本轮没发出去的工具告诉模型一声，附上怎么拿回来
     // （调 search_tools 检索）。deferredNote 由 toolSchemas(task) 算出，
     // runLoop 先调 toolSchemas 再调这里；不经 runLoop 的调用不带这段。
