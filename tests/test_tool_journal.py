@@ -1099,5 +1099,21 @@ class JournalTests(unittest.TestCase):
             journal.begin("shell")
 
 
+    def test_path_fallback_initial_enumeration_permission_denied(self):
+        journal = ToolJournal("a", root=self.root)
+        journal.path.mkdir(parents=True)
+        with mock.patch("angel.tool_journal.os.name", "nt"):
+            with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+                with self.assertRaises(JournalError):
+                    journal._records()
+
+    def test_path_fallback_final_enumeration_permission_denied(self):
+        journal = ToolJournal("a", root=self.root)
+        journal.path.mkdir(parents=True)
+        with mock.patch("angel.tool_journal.os.name", "nt"):
+            with mock.patch.object(Path, "iterdir", side_effect=[iter(()), PermissionError("denied")]):
+                with self.assertRaises(JournalError):
+                    journal._records()
+
 if __name__ == "__main__":
     unittest.main()
