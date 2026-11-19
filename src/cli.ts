@@ -27,6 +27,7 @@ import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
+import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
@@ -2324,7 +2325,27 @@ export async function main(argv: string[]): Promise<number> {
       process.stdout.write("提示：用 --disable-tool <名字> 或 config.disabled_tools 裁剪用不到的工具，每轮都会省下这部分 token。\n");
     }
     return EXIT_SUCCESS;
-  }  if (args.subcommand === "config") return handleConfig(args.subArgs ?? [], home);
+  }  if (args.subcommand === "config") {
+    const sub = (args.subArgs ?? [])[0];
+    // nyra config explain [capability]：这个能力由哪个键控制、当前生效值、来源
+    if (sub === "explain") {
+      const cfgEx = loadConfig(home);
+      const input = { config: cfgEx, cli: { enableFeatures: args.enableFeatures, disableFeatures: args.disableFeatures, maxCost: args.maxCost, addDirs: args.addDirs } };
+      const wanted = (args.subArgs ?? [])[1];
+      if (wanted) {
+        const one = explainOne(input, wanted);
+        if (!one) {
+          process.stderr.write(`未知能力：${wanted}\n可用：${explainAll(input).map((c) => c.capability).join("、")}\n`);
+          return EXIT_ARGUMENT;
+        }
+        process.stdout.write(formatExplain([one]) + "\n");
+        return EXIT_SUCCESS;
+      }
+      process.stdout.write(formatExplain(explainAll(input)) + "\n");
+      return EXIT_SUCCESS;
+    }
+    return handleConfig(args.subArgs ?? [], home);
+  }
   if (args.subcommand === "redlines") {
     // 上线红线自检：把 docs/VISION-NEXT.md 第七节变成可执行命令。
     const cfgRed = loadConfig(home);

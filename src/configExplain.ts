@@ -1,0 +1,201 @@
+// src/configExplain.ts — 「这个能力到底由哪个配置控制、当前生效值是什么」。
+//
+// 问题：现在控制同一件事的入口有多个——features.tool_search、tool_search.enabled、
+// NYRA_LAZY_TOOLS 环境变量；cost 有 max_cost_usd / --max-cost；回忆有 features.run_recall。
+// 用户改了一处不生效，只能翻源码。这里给一张可查询的表。
+//
+// 设计纪律：
+//   - **只说生效值与其来源**，不重复计算业务逻辑（避免两套实现分叉）
+//   - 每个能力列出**所有入口**，即使只有一个被使用——让人看到"还有别的地方能改它"
+//   - 有冲突时明确指出（例如 features 关但 config 开），不装作没冲突
+import { featureOn, resolveFeatures, type FeatureResolution } from "./features.ts";
+import { resolveAuxRouting } from "./modelRouting.ts";
+import { resolveReasoningOptions } from "./reasoning.ts";
+import { resolveExtraDirs } from "./extraDirs.ts";
+
+export type ExplainSource = "cli" | "config" | "env" | "default" | "conflict";
+
+export interface CapabilityExplain {
+  /** 能力名（用户查询用的键）。 */
+  capability: string;
+  /** 当前是否生效（布尔能力）或生效值（字符串/数字能力）。 */
+  effective: string;
+  source: ExplainSource;
+  /** 控制它的所有入口（不只是实际生效的那个）。 */
+  keys: string[];
+  /** 一句话说明，含冲突提示。 */
+  note: string;
+}
+
+export interface ExplainInput {
+  config: Record<string, unknown>;
+  /** CLI 覆盖（--enable-feature / --disable-feature / --max-cost / --add-dir）。 */
+  cli?: { enableFeatures?: string[]; disableFeatures?: string[]; maxCost?: number | null; addDirs?: string[] } | null;
+  env?: Record<string, string | undefined>;
+}
+
+function envOf(input: ExplainInput, key: string): string | undefined {
+  const e = input.env ?? process.env;
+  return e[key];
+}
+
+function on(v: unknown): boolean | null {
+  if (v === true || v === 1 || v === "1" || v === "true" || v === "yes") return true;
+  if (v === false || v === 0 || v === "0" || v === "false") return false;
+  return typeof v === "undefined" || v === null ? null : null;
+}
+
+/** 把 config 里的一条路径取出来（a.b.c）。 */
+function pick(cfg: Record<string, unknown>, path: string): unknown {
+  let cur: unknown = cfg;
+  for (const seg of path.split(".")) {
+    if (!cur || typeof cur !== "object") return undefined;
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return cur;
+}
+
+/** 解析全部能力（按固定顺序，便于测试与展示）。 */
+export function explainAll(input: ExplainInput): CapabilityExplain[] {
+  const cfg = input.config ?? {};
+  const cli = input.cli ?? {};
+  const features: FeatureResolution = resolveFeatures(cfg, {
+    enable: cli.enableFeatures ?? [],
+    disable: cli.disableFeatures ?? [],
+  });
+  const out: CapabilityExplain[] = [];
+
+  // 1) 工具延迟加载
+  {
+    const envOff = (envOf(input, "NYRA_LAZY_TOOLS") ?? "").trim() === "0";
+    const configOn = on(pick(cfg, "tool_search.enabled")) === true;
+    const flagOn = featureOn(features, "tool_search");
+    const enabled = !envOff && (configOn || flagOn);
+    const source: ExplainSource = envOff ? "env" : flagOn ? "config" : configOn ? "config" : "default";
+    const conflict = !envOff && (configOn || flagOn);
+    out.push({
+      capability: "tool_search",
+      effective: enabled ? "on" : "off",
+      source,
+      keys: ["features.tool_search", "tool_search.enabled", "NYRA_LAZY_TOOLS", "--enable-feature tool_search"],
+      note: envOff
+        ? "NYRA_LAZY_TOOLS=0 一票否决（排障用），其余开关全部无效"
+        : enabled
+          ? `已开启（来源：${flagOn ? "features.tool_search" : "tool_search.enabled"}）`
+          : "未开启：MCP 工具超过 8 个时仍会自动开启",
+    });
+    if (conflict) out[out.length - 1].note += "；注意有两处都开着，改一处不会关掉";
+  }
+
+  // 2) 跨会话回忆
+  {
+    const enabled = featureOn(features, "run_recall");
+    const src = features.features.find((f) => f.name === "run_recall")?.source ?? "default";
+    out.push({
+      capability: "run_recall",
+      effective: enabled ? "on" : "off",
+      source: src === "cli" ? "cli" : src === "config" ? "config" : "default",
+      keys: ["features.run_recall", "--disable-feature run_recall", "redlines.thresholds.recallMaxAgeDays"],
+      note: enabled ? "已开启；过期天数由 redlines.thresholds.recallMaxAgeDays 决定（默认 30）" : "已关闭：同类任务会从零重新探索",
+    });
+  }
+
+  // 3) 成本硬顶
+  {
+    const limit = typeof cli.maxCost === "number" ? cli.maxCost : (typeof pick(cfg, "max_cost_usd") === "number" ? (pick(cfg, "max_cost_usd") as number) : null);
+    out.push({
+      capability: "cost_cap",
+      effective: limit === null ? "off" : `$${limit}`,
+      source: typeof cli.maxCost === "number" ? "cli" : limit === null ? "default" : "config",
+      keys: ["max_cost_usd", "--max-cost"],
+      note: limit === null ? "未设上限：长任务可能无限烧钱" : "超过该值立即中止运行（硬顶，不是警告）",
+    });
+  }
+
+  // 4) 辅助模型路由
+  {
+    const routing = resolveAuxRouting(cfg, typeof cfg.model === "string" ? cfg.model : null);
+    const parts = [routing.compact ? `压缩→${routing.compact}` : "", routing.delegate ? `子任务→${routing.delegate}` : ""].filter(Boolean);
+    out.push({
+      capability: "aux_model_routing",
+      effective: parts.length ? parts.join("，") : "off",
+      source: parts.length ? "config" : "default",
+      keys: ["compact_model", "delegate_model"],
+      note: parts.length ? "低智力需求的工作走便宜模型" : "未配置：压缩与子任务都用主模型（成本更高）",
+    });
+  }
+
+  // 5) 推理档位
+  {
+    const r = resolveReasoningOptions(cfg);
+    const val = [r.effort ? `effort=${r.effort}` : "", r.verbosity ? `verbosity=${r.verbosity}` : ""].filter(Boolean);
+    out.push({
+      capability: "reasoning_effort",
+      effective: val.length ? val.join("，") : "provider 默认",
+      source: val.length ? "config" : "default",
+      keys: ["reasoning_effort", "verbosity"],
+      note: val.length ? "已显式指定档位" : "未配置：不发这两个字段（payload 与默认一致）",
+    });
+  }
+
+  // 6) 额外可写根
+  {
+    const cfgDirs = Array.isArray(pick(cfg, "extra_writable_dirs")) ? (pick(cfg, "extra_writable_dirs") as string[]) : [];
+    const all = [...cfgDirs, ...(cli.addDirs ?? [])];
+    // 做真实校验（含存在性）：不存在的目录写不了，here 说「可写」就是撒谎。
+    const resolved = resolveExtraDirs(all);
+    out.push({
+      capability: "extra_writable_dirs",
+      effective: resolved.ok.length ? resolved.ok.join("、") : "none",
+      source: (cli.addDirs ?? []).length ? "cli" : cfgDirs.length ? "config" : "default",
+      keys: ["extra_writable_dirs", "--add-dir"],
+      note: resolved.rejected.length
+        ? `有 ${resolved.rejected.length} 条被拒：${resolved.rejected.map((r) => r.input).join("、")}`
+        : resolved.ok.length ? "这些目录可写（其余工作目录外仍拒绝）" : "只有工作目录可写",
+    });
+  }
+
+  // 7) 读侧禁读清单
+  {
+    const globs = Array.isArray(pick(cfg, "deny_read_globs")) ? (pick(cfg, "deny_read_globs") as string[]) : [];
+    out.push({
+      capability: "deny_read_globs",
+      effective: globs.length ? `${globs.length} 条规则` : "off",
+      source: globs.length ? "config" : "default",
+      keys: ["deny_read_globs"],
+      note: globs.length ? `命中即拒读：${globs.slice(0, 3).join("、")}${globs.length > 3 ? "…" : ""}` : "未配置：敏感文件（.env / secrets）可被读取并发给模型",
+    });
+  }
+
+  // 8) 沙箱
+  {
+    const mode = typeof cfg.sandbox === "string" ? cfg.sandbox : "auto";
+    out.push({
+      capability: "sandbox",
+      effective: mode,
+      source: typeof cfg.sandbox === "string" ? "config" : "default",
+      keys: ["sandbox", "sandbox_mode", "--sandbox"],
+      note: mode === "local" ? "工具级隔离：命令在宿主机上跑" : "auto：Linux 用 bwrap、macOS 用 seatbelt（需显式 --sandbox seatbelt）",
+    });
+  }
+
+  return out;
+}
+
+/** 查单个能力；找不到返回 null（由 CLI 决定怎么提示）。 */
+export function explainOne(input: ExplainInput, capability: string): CapabilityExplain | null {
+  const key = (capability ?? "").trim().toLowerCase();
+  if (!key) return null;
+  return explainAll(input).find((c) => c.capability === key) ?? null;
+}
+
+/** 人类可读输出。 */
+export function formatExplain(items: readonly CapabilityExplain[]): string {
+  const lines: string[] = [];
+  for (const c of items) {
+    lines.push(`${c.capability}: ${c.effective}（来源：${c.source}）`);
+    lines.push(`    可改的键：${c.keys.join("、")}`);
+    lines.push(`    ${c.note}`);
+  }
+  return lines.join("\n");
+}
