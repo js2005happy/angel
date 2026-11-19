@@ -91,3 +91,28 @@ test("verify_failed 的历史也会被回忆（带着失败信息更有用）", 
   expect(note).toContain("验证未通过");
   expect(note).toContain("退出码 2");
 });
+
+test("新鲜度：默认只回忆 30 天内的运行", () => {
+  const now = Date.parse("2026-11-20T00:00:00Z");
+  const mk = (id: string, daysAgo: number) => run({
+    run_id: id,
+    created_at: new Date(now - daysAgo * 86_400_000).toISOString(),
+  });
+  const got = selectRecalledRuns([mk("today", 0), mk("d10", 10), mk("d45", 45)], "重构 auth 模块", { now, workdir: "/proj" });
+  expect(got.map((r) => r.run_id).sort()).toEqual(["d10", "today"]);
+});
+
+test("新鲜度：maxAgeDays=0 表示不限", () => {
+  const now = Date.parse("2026-11-20T00:00:00Z");
+  const old = run({ run_id: "old", created_at: new Date(now - 400 * 86_400_000).toISOString() });
+  expect(selectRecalledRuns([old], "重构 auth 模块", { now, maxAgeDays: 0 }).length).toBe(1);
+});
+
+test("新鲜度：输出里带年龄，过期历史不出现", () => {
+  const now = Date.parse("2026-11-20T00:00:00Z");
+  const recent = run({ run_id: "r", created_at: new Date(now - 10 * 86_400_000).toISOString() });
+  const stale = run({ run_id: "s", created_at: new Date(now - 90 * 86_400_000).toISOString() });
+  const note = formatRecallNote(selectRecalledRuns([recent, stale], "重构 auth 模块", { now, workdir: "/proj" }))!;
+  expect(note).toContain("10 天前");
+  expect(note).not.toContain("90 天前");
+});
