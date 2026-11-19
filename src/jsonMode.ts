@@ -47,6 +47,14 @@ export class JsonLines {
         trigger: data.trigger ?? "other",
         spent_usd: typeof data.spent_usd === "number" ? data.spent_usd : null,
       });
+    } else if (kind === "parallel_delegate") {
+      // 缺口 3a：并行委派汇总进 JSON 事件流（成功/失败数、已计价花费合计、并发上限）。
+      this.emit("parallel_delegate", {
+        succeeded: data.succeeded ?? 0,
+        failed: data.failed ?? 0,
+        total_spent_usd: typeof data.total_spent_usd === "number" ? data.total_spent_usd : null,
+        max_concurrency: data.max_concurrency ?? 5,
+      });
     } else if (kind === "verify_started") {
       this.emit("verify_started", { command: data.command ?? "" });
     } else if (kind === "verify_result") {

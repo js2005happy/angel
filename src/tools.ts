@@ -1,4 +1,4 @@
-// src/tools.ts — 28 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
+// src/tools.ts — 29 个工具 + 审批 + denylist + untrusted 标记，与 Python 版 nyra/tools.py 同语义。
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
 // 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
 // src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
@@ -107,6 +107,8 @@ export interface DelegateOptions {
   tools?: string[];
   /** 子任务使用的模型（用便宜模型跑搜索类子任务）。 */
   model?: string;
+  /** 缺口 3a：并行线程身份（第 index+1 个，共 total 个）——agent.ts 据此把收敛规则写进子任务系统提示。 */
+  parallel?: { index: number; total: number };
 }
 
 export interface ToolContext {
@@ -126,6 +128,8 @@ export interface ToolContext {
   /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
   home?: string;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
+  /** 缺口 3a：并行委派入口（Agent.delegateParallel 的格式化版，返回汇总文本）。 */
+  delegateParallelFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number }) => Promise<string>) | null;
   evidence?: EvidenceStore | null;
   backend?: { name?: string; readFile?(p: string): string; writeFile?(p: string, c: string): string; listDir?(p: string): string; runCommand?(cmd: string, cwd: string, timeout: number): string } | null;
   approveFn?: ((tool: string, summary: string, details?: Record<string, unknown>) => ApproveResult | Promise<ApproveResult>) | null;
@@ -258,6 +262,26 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
       model: { type: "string" },
     },
     ["task"]),
+  schema("delegate_parallel", "把多个互不依赖的子任务并行交给子 agent 跑并汇总结果（缺口 3a，opt-in：只有显式调这个工具才并行）。默认最多 5 个同时跑（硬顶，给再大也只按 5 跑）、单个子任务 10 分钟超时；失败/超时的线程不拖垮其他线程，只返回成功者的结果并注明失败原因与已花成本。每个线程继承 delegate 的工具白名单与 worktree 隔离，收敛规则写进子任务系统提示；本批不做自动验证，验证结论待 review queue 验收",
+    {
+      tasks: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            task: { type: "string", minLength: 1 },
+            max_turns: { type: "integer", minimum: 1, maximum: 12 },
+            isolation: { type: "string", enum: ["none", "worktree"] },
+            tools: { type: "array", items: { type: "string" } },
+            model: { type: "string" },
+          },
+        },
+        description: "并行子任务列表（每项至少含 task；isolation/tools/model 与 delegate 同义）",
+      },
+      max_concurrency: { type: "integer", default: 5, minimum: 1, maximum: 5, description: "同时跑的线程数上限，默认 5，也是硬顶" },
+      timeout_ms: { type: "integer", default: 600000, minimum: 1000, description: "单个子任务超时（毫秒），默认 600000（10 分钟），到点即判该线程超时" },
+    },
+    ["tasks"]),
   schema("plan", "先写一份执行计划文件",
     { title: { type: "string" }, steps: { type: "array", items: { type: "string" } }, path: { type: "string", default: "plan.md" } },
     ["title", "steps"]),
@@ -1651,6 +1675,40 @@ async function toolDelegate(ctx: ToolContext, task: string, maxTurns = 6, opts: 
   return ctx.delegateFn(task, maxTurns, opts);
 }
 
+// 缺口 3a：并行 delegate 工具——参数只做形状校验，真正的并发/超时/失败隔离
+// 在 agent.ts 的 delegateParallel 与 parallelDelegate.ts 里；工具层不自造语义。
+async function toolDelegateParallel(
+  ctx: ToolContext,
+  rawTasks: unknown,
+  maxConcurrency?: number,
+  timeoutMs?: number,
+): Promise<string> {
+  if (!ctx.delegateParallelFn) return "错误：并行子 agent 不可用";
+  if (!Array.isArray(rawTasks) || rawTasks.length === 0) return "错误：delegate_parallel 至少需要一个子任务（tasks 非空数组）";
+  const tasks: import("./parallelDelegate.ts").ParallelTaskSpec[] = [];
+  for (let i = 0; i < rawTasks.length; i++) {
+    const raw = rawTasks[i] as Record<string, unknown> | null;
+    if (!raw || typeof raw !== "object" || typeof raw.task !== "string" || !raw.task.trim()) {
+      return `错误：delegate_parallel 第 ${i + 1} 个子任务缺少非空 task`;
+    }
+    const spec: import("./parallelDelegate.ts").ParallelTaskSpec = { task: raw.task.trim() };
+    if (typeof raw.max_turns === "number" && Number.isInteger(raw.max_turns) && raw.max_turns >= 1 && raw.max_turns <= 12) {
+      spec.maxTurns = raw.max_turns;
+    }
+    if (raw.isolation === "worktree" || raw.isolation === "none") spec.isolation = raw.isolation;
+    if (Array.isArray(raw.tools)) {
+      const tools = (raw.tools as unknown[]).map((t) => String(t)).filter(Boolean);
+      if (tools.length) spec.tools = tools;
+    }
+    if (typeof raw.model === "string" && raw.model.trim()) spec.model = raw.model.trim();
+    tasks.push(spec);
+  }
+  return ctx.delegateParallelFn(tasks, {
+    ...(typeof maxConcurrency === "number" ? { maxConcurrency } : {}),
+    ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+  });
+}
+
 async function toolPlan(ctx: ToolContext, title: string, steps: string[], path = "plan.md"): Promise<string> {
   const target = workspaceWritePath(ctx, path);
   const content = `# ${title}\n\n` + steps.map((s, i) => `${i + 1}. ${s}`).join("\n") + "\n";
@@ -1904,6 +1962,12 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
           ...(Array.isArray(args.tools) ? { tools: (args.tools as unknown[]).map((t) => String(t)).filter(Boolean) } : {}),
           ...(typeof args.model === "string" && args.model.trim() ? { model: args.model.trim() } : {}),
         },
+      );
+      case "delegate_parallel": return await toolDelegateParallel(
+        ctx,
+        args.tasks,
+        args.max_concurrency === undefined ? undefined : Number(args.max_concurrency),
+        args.timeout_ms === undefined ? undefined : Number(args.timeout_ms),
       );
       case "plan": return await toolPlan(ctx, String(args.title), args.steps as string[], args.path === undefined ? "plan.md" : String(args.path));
       case "grep_search": return await toolGrepSearch(ctx, String(args.pattern), args.path === undefined ? "." : String(args.path), args.regex === true, args.case_sensitive === true, args.max_results === undefined ? 50 : Number(args.max_results));

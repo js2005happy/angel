@@ -41,6 +41,12 @@ import { t } from "./i18n.ts";
 import type { AuxTask } from "./modelRouting.ts";
 import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
+import {
+  runParallelDelegate, formatParallelResults, parallelConvergenceNote,
+  resolveParallelOptions,
+  type ParallelTaskSpec, type ParallelDelegateResult, type ParallelThreadOutcome,
+  type ParallelThreadResult,
+} from "./parallelDelegate.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type ShadowSnapshotNotice } from "./shadowSnapshots.ts";
 import { ConversationStore } from "./conversations.ts";
@@ -88,7 +94,9 @@ export class DelegationBudget {
 
 export const SYSTEM_PROMPT_BASE =
   "你是 Nyra，一个全能 AI 助手，通过调用工具完成任务，而不是只靠说话。\n" +
-  "多步骤任务先调用 plan 写计划，再按计划执行；复杂子任务可以用 delegate 交给子 agent；每次任务最多 8 个子 agent，最多嵌套 3 层，每个子任务最多 12 轮。\n" +
+  "多步骤任务先调用 plan 写计划，再按计划执行；复杂子任务可以用 delegate 交给子 agent；" +
+  "多个互不依赖的子任务可以用 delegate_parallel 并行跑（默认最多 5 个同时跑、单个子任务 10 分钟超时，失败的线程不拖垮其他线程）；" +
+  "每次任务最多 8 个子 agent，最多嵌套 3 层，每个子任务最多 12 轮。\n" +
   "需要读取文件、执行命令、联网查资料时直接调用工具；不要猜测文件内容，不要编造信息。\n" +
   "修改文件前先调用 read_file 了解现状；edit_file 的 old_text 必须精确匹配且唯一。\n" +
   "shell 命令保持简单、安全，不执行破坏性命令。\n" +
@@ -205,7 +213,57 @@ export interface ContextUsage {
   estimated: boolean;
 }
 
+/** 缺口 3a：delegate 的结构化结果——文本之外，3b 的 review queue 要消费的证据字段都在这里。 */
+export interface DelegateResult {
+  ok: boolean;
+  /** 给模型/用户看的文本（含任务头、worktree 摘要或失败原因）。 */
+  text: string;
+  /** 该子任务已花美元；未计价时为 null，不编数字。 */
+  spentUsd: number | null;
+  /** 实际跑子任务的模型（provider.model）。 */
+  model: string | null;
+  /** worktree 隔离下改动留下的工作树路径；无改动、无隔离或已清理时为 null。 */
+  worktreePath: string | null;
+  /** worktree 隔离下改动的文件（相对路径）；非 worktree 为空。 */
+  changedFiles: string[];
+  /** worktree 隔离下的 `git diff --stat HEAD` 原文；无改动或非 worktree 为 null。 */
+  diffStat: string | null;
+}
+
+function delegateFailed(text: string): DelegateResult {
+  return { ok: false, text, spentUsd: null, model: null, worktreePath: null, changedFiles: [], diffStat: null };
+}
+
+export function parsePorcelainChangedFiles(porcelain: string): string[] {
+  // 注意：不能先 trim 再 slice(3)——porcelain 行是 `XY<空格>路径`，
+  // 前导空格是状态位的一部分，trim 会把 " M a.txt" 变成 "M a.txt" 再切错。
+  return porcelain
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => {
+      const p = l.slice(3).trim();
+      const arrow = p.indexOf(" -> ");
+      const raw = arrow >= 0 ? p.slice(arrow + 4) : p;
+      return raw.replace(/^"(.*)"$/, "$1");
+    })
+    .filter(Boolean);
+}
+
+export function emptyParallelThreadEvidence(): ParallelThreadResult["evidence"] {
+  return {
+    changedFiles: [],
+    diffStat: null,
+    worktreePath: null,
+    verification: {
+      status: "not-verified",
+      note: "3a 不做自动验证：本线程未经过独立验证，验证结论待 3b 的 review queue / verifier 填写；子任务自述的验证情况见摘要原文，不要把它当成已验证的结论。",
+    },
+    spentUsd: null,
+  };
+}
+
 export class Agent {
+
   provider: ProviderLike;
   poppyEnabled: boolean;
   usage: UsageTracker;
@@ -330,6 +388,9 @@ export class Agent {
       // 的技能集合（闭包活读 this.skills，setMode 换创造模式技能后同样有效）。
       getSkills: () => this.skills,
       delegateFn: (task, maxTurns) => this.delegate(task, maxTurns),
+      // 缺口 3a：并行 delegate——工具层 delegate_parallel 的入口，返回格式化文本。
+      delegateParallelFn: (tasks, opts) =>
+        this.delegateParallel(tasks, opts).then((r) => formatParallelResults(r)),
       evidence: this.evidence,
       backend: this.backend ?? null,
       approveFn: opts.approveFn ?? null,
@@ -996,13 +1057,18 @@ export class Agent {
   }
 
   async delegate(task: string, maxTurns = 6, opts: DelegateOptions = {}): Promise<string> {
-    if (typeof task !== "string" || !task.trim()) return "错误：子任务必须是非空字符串";
+    return (await this.delegateDetailed(task, maxTurns, opts)).text;
+  }
+
+  /** 缺口 3a：delegate 的结构化版——delegate() 是它的薄包装（只取 text）。 */
+  async delegateDetailed(task: string, maxTurns = 6, opts: DelegateOptions = {}): Promise<DelegateResult> {
+    if (typeof task !== "string" || !task.trim()) return delegateFailed("错误：子任务必须是非空字符串");
     if (typeof maxTurns === "boolean" || typeof maxTurns !== "number" ||
       !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_DELEGATE_TURNS) {
-      return `错误：子任务 max_turns 必须在 1 到 ${MAX_DELEGATE_TURNS} 之间`;
+      return delegateFailed(`错误：子任务 max_turns 必须在 1 到 ${MAX_DELEGATE_TURNS} 之间`);
     }
-    if (this.delegateDepth >= MAX_DELEGATE_DEPTH) return `错误：子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`;
-    if (!this.delegateBudget.consume()) return `错误：本次任务最多创建 ${MAX_DELEGATE_CALLS} 个子 Agent`;
+    if (this.delegateDepth >= MAX_DELEGATE_DEPTH) return delegateFailed(`错误：子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`);
+    if (!this.delegateBudget.consume()) return delegateFailed(`错误：本次任务最多创建 ${MAX_DELEGATE_CALLS} 个子 Agent`);
 
     const taskId = `task-${randomBytes(4).toString("hex")}`;
     const notes: string[] = [];
@@ -1049,7 +1115,7 @@ export class Agent {
     if (opts.isolation === "worktree") {
       const probe = spawnSync("git", ["rev-parse", "--git-dir"], { cwd: this.workdir, encoding: "utf-8", windowsHide: true });
       if (probe.status !== 0) {
-        return `错误：worktree 隔离要求工作目录是 git 仓库（${this.workdir} 不是，或本机没有 git）；改用 isolation:none 或先 git init`;
+        return delegateFailed(`错误：worktree 隔离要求工作目录是 git 仓库（${this.workdir} 不是，或本机没有 git）；改用 isolation:none 或先 git init`);
       }
       try {
         const dir = mkdtempSync(join(tmpdir(), "nyra-subagent-"));
@@ -1058,12 +1124,12 @@ export class Agent {
         });
         if (add.status !== 0) {
           rmSync(dir, { recursive: true, force: true });
-          return `错误：创建 worktree 失败：${`${add.stdout ?? ""}${add.stderr ?? ""}`.trim().slice(0, 300)}`;
+          return delegateFailed(`错误：创建 worktree 失败：${`${add.stdout ?? ""}${add.stderr ?? ""}`.trim().slice(0, 300)}`);
         }
         childWorkdir = dir;
         worktreePath = dir;
       } catch (err: unknown) {
-        return `错误：创建 worktree 失败：${err instanceof Error ? err.message : String(err)}`;
+        return delegateFailed(`错误：创建 worktree 失败：${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
@@ -1080,7 +1146,11 @@ export class Agent {
       sessionRules: this.ctx.sessionRules ?? null,
       delegateDepth: this.delegateDepth + 1,
       delegateBudget: this.delegateBudget,
-      systemInstructions: this.systemInstructions,
+      // 缺口 3a：并行线程的收敛规则写进子任务的系统提示（只做自己那件任务、
+      // 不碰别线程的文件、收尾写收敛小结）；串行 delegate 不受影响。
+      systemInstructions: opts.parallel
+        ? `${this.systemInstructions}\n${parallelConvergenceNote(opts.parallel.index, opts.parallel.total)}`
+        : this.systemInstructions,
       memoryPath: this.memoryPath,
       contextWindowTokens: this.usage.configuredWindow,
       contextWindowSource: this.usage.windowSource,
@@ -1116,10 +1186,12 @@ export class Agent {
     // 失败时（包括子任务自己撞上成本上限）在 catch 里补记——失败子任务
     // 已经花的钱不能凭空消失，否则账本与单次硬顶都会漏计。
     let delegateUsageRecorded = false;
+    let childSpentUsd: number | null = null;
     const recordChildUsage = (): void => {
       if (delegateUsageRecorded) return;
       delegateUsageRecorded = true;
       const childSpent = child.lastCost?.status === "priced" ? child.lastCost.spentUsd : null;
+      childSpentUsd = childSpent;
       if (childSpent !== null) this.delegateSpentUsd += childSpent;
       this.emit("delegate_usage", {
         snapshot: child.usage.snapshot() as unknown as Record<string, unknown>,
@@ -1127,30 +1199,153 @@ export class Agent {
         model: child.provider.model,
       });
     };
+    const detail = (text: string, overrides: Partial<DelegateResult> = {}): DelegateResult => ({
+      ok: true,
+      text,
+      spentUsd: childSpentUsd,
+      model: child.provider.model ?? null,
+      worktreePath: null,
+      changedFiles: [],
+      diffStat: null,
+      ...overrides,
+    });
     try {
       const summary = await child.run(task);
       recordChildUsage();
       const head = notes.length ? `[子任务 ${taskId} 已完成]\n（${notes.join("；")}）\n` : `[子任务 ${taskId} 已完成]\n`;
-      if (!worktreePath) return head + summary;
+      if (!worktreePath) return detail(head + summary);
 
       // 收尾：给 diff 摘要。有改动就保留工作树让人审，没改动就清掉。
       const st = spawnSync("git", ["status", "--porcelain"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
       const stat = spawnSync("git", ["diff", "--stat", "HEAD"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
       const changed = (st.stdout ?? "").trim();
       const diffStat = (stat.stdout ?? "").trim();
+      const changedFiles = parsePorcelainChangedFiles(changed);
       if (!changed) {
         spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
-        return head + summary + "\n\n（worktree 隔离：子任务没有改动任何文件，工作树已清理）";
+        return detail(head + summary + "\n\n（worktree 隔离：子任务没有改动任何文件，工作树已清理）");
       }
-      return head + summary +
+      return detail(
+        head + summary +
         `\n\n（worktree 隔离：改动留在独立工作树，主工作区未受影响）\n路径：${worktreePath}\n` +
         (diffStat ? `diffstat：\n${diffStat}` : "") +
-        `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"`;
+        `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"`,
+        { worktreePath, changedFiles, diffStat: diffStat || null },
+      );
     } catch (err: unknown) {
       recordChildUsage();
       if (worktreePath) spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
-      if (err instanceof AgentError) return `子任务失败：${err.message}`;
-      return `子任务异常：${(err as Error)?.name ?? "Error"}: ${err instanceof Error ? err.message : String(err)}`;
+      const text = err instanceof AgentError
+        ? `子任务失败：${err.message}`
+        : `子任务异常：${(err as Error)?.name ?? "Error"}: ${err instanceof Error ? err.message : String(err)}`;
+      return { ...delegateFailed(text), spentUsd: childSpentUsd, model: child.provider.model ?? null };
     }
+  }
+
+  /**
+   * 缺口 3a：并行 delegate——多个互不依赖的子任务同时跑。
+   *
+   * opt-in：只有显式调 delegate_parallel（或直接调本方法）才并行；串行 delegate
+   * 的行为一点没变，不会自动把一批串行调用改成并行。
+   * 硬约束：默认最多 5 个同时跑（多给也夹到 5）、单个子任务默认 10 分钟超时。
+   * 失败隔离：任一线程失败/超时只记自己那一项，其余照常跑完，主流程只汇总成功者。
+   * 权限边界：每线程照常走 delegateDetailed——工具白名单、worktree 隔离、沙箱、
+   * 成本上限（单次 + 月度）与审批回调全部继承，不另开旁路。
+   * 缺口 5 的规则同样守住：队列/定时任务里不自动换模型（tasks.ts 的 buildProvider
+   * 只给单个 provider，子任务继承父级 provider，不新增任何自动切换）；并行本身
+   * 不自动放行任何审批，approveFn 逐次照常走。
+   */
+  async delegateParallel(
+    tasks: ParallelTaskSpec[],
+    opts: { maxConcurrency?: number; timeoutMs?: number } = {},
+  ): Promise<ParallelDelegateResult> {
+    const resolved = resolveParallelOptions(opts);
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      throw new Error("并行委派至少需要一个子任务");
+    }
+    const emptyIndex = tasks.findIndex((t) => !t || typeof t.task !== "string" || !t.task.trim());
+    if (emptyIndex >= 0) throw new Error(`并行委派第 ${emptyIndex + 1} 个子任务为空`);
+    // 深度已满：一个线程都不启动，全部被拒（不消耗预算）。
+    if (this.delegateDepth >= MAX_DELEGATE_DEPTH) {
+      const results: ParallelThreadResult[] = tasks.map((t, i) => ({
+        index: i,
+        task: t.task,
+        status: "rejected",
+        summary: null,
+        error: `子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`,
+        durationMs: 0,
+        model: null,
+        evidence: emptyParallelThreadEvidence(),
+      }));
+      return {
+        results, succeeded: 0, failed: 0, timedOut: 0, rejected: tasks.length,
+        totalSpentUsd: null, totalDurationMs: 0,
+        maxConcurrency: resolved.maxConcurrency, timeoutMs: resolved.timeoutMs,
+        maxConcurrencyClamped: resolved.maxConcurrencyClamped,
+      };
+    }
+    // 预算：本次任务最多 MAX_DELEGATE_CALLS 个子 agent；超出的线程直接被拒，不启动。
+    // delegateDetailed 里每次还会再 consume 一次——两者一致（主 agent 在等工具结果，
+    // 期间没有别的调用能插队消耗预算），被拒的线程不占预算。
+    const startable = Math.min(tasks.length, this.delegateBudget.remaining);
+    const ran = await runParallelDelegate(
+      async (spec, index): Promise<ParallelThreadOutcome> => {
+        const d = await this.delegateDetailed(spec.task, spec.maxTurns ?? 6, {
+          isolation: spec.isolation,
+          ...(Array.isArray(spec.tools) ? { tools: spec.tools } : {}),
+          ...(typeof spec.model === "string" && spec.model.trim() ? { model: spec.model.trim() } : {}),
+          parallel: { index, total: tasks.length },
+        });
+        return {
+          ok: d.ok,
+          summary: d.text,
+          error: d.ok ? undefined : d.text,
+          spentUsd: d.spentUsd,
+          model: d.model,
+          worktreePath: d.worktreePath,
+          changedFiles: d.changedFiles,
+          diffStat: d.diffStat,
+        };
+      },
+      tasks.slice(0, startable),
+      opts,
+    );
+    const results: ParallelThreadResult[] = [...ran.results];
+    for (let i = startable; i < tasks.length; i++) {
+      results.push({
+        index: i,
+        task: tasks[i].task,
+        status: "rejected",
+        summary: null,
+        error: `超出本次任务的子 agent 总数上限（最多 ${MAX_DELEGATE_CALLS} 个，本批只放行前 ${startable} 个）`,
+        durationMs: 0,
+        model: null,
+        evidence: emptyParallelThreadEvidence(),
+      });
+    }
+    let succeeded = 0;
+    let failed = 0;
+    let timedOut = 0;
+    let rejected = 0;
+    let totalSpent: number | null = null;
+    for (const r of results) {
+      if (r.status === "ok") succeeded += 1;
+      else if (r.status === "failed") failed += 1;
+      else if (r.status === "timeout") timedOut += 1;
+      else rejected += 1;
+      if (typeof r.evidence.spentUsd === "number") totalSpent = (totalSpent ?? 0) + r.evidence.spentUsd;
+    }
+    this.emit("parallel_delegate", {
+      succeeded,
+      failed,
+      total_spent_usd: totalSpent,
+      max_concurrency: resolved.maxConcurrency,
+    });
+    return {
+      results, succeeded, failed, timedOut, rejected,
+      totalSpentUsd: totalSpent, totalDurationMs: ran.totalDurationMs,
+      maxConcurrency: ran.maxConcurrency, timeoutMs: ran.timeoutMs,
+      maxConcurrencyClamped: ran.maxConcurrencyClamped,
+    };
   }
 }
