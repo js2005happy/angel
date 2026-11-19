@@ -494,6 +494,10 @@ class ToolJournal:
             raise JournalError("日志存在歧义；必须人工核查后才能开始新工具调用")
         if status["unknown_outcomes"]:
             raise JournalError("存在结果未知的工具调用；人工核查前禁止新增调用")
+        if status["reported_errors"]:
+            # A reported failure may still have caused external side effects.
+            # Never dispatch another tool before an explicit reconciliation.
+            raise JournalError("存在工具报告失败；人工核查前禁止新增调用")
         if status["event_count"] >= MAX_EVENTS - 1:
             # Reserve a result slot before persisting an intent. Otherwise
             # the final allowed intent cannot be finished at MAX_EVENTS.
