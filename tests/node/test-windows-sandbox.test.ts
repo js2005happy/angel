@@ -81,12 +81,22 @@ test("WindowsSandbox.describe", () => {
 });
 
 test("WindowsSandbox.resolve_requires_windows", () => {
-  expect(() => resolveSandboxBackend({}, "jobobject")).toThrow("--sandbox jobobject 只支持 Windows");
   expect(SANDBOX_BACKENDS).toContain("jobobject");
-  // 非 Windows 上 getSandboxStatus 不抛错：level 记 none，原因写进 detail。
-  const st = getSandboxStatus({}, "jobobject");
-  expect(st.level).toBe("none");
-  expect(st.detail).toContain("只支持 Windows");
+  if (process.platform !== "win32") {
+    // “只支持 Windows”这个断言只在非 win32 上成立：win32 上平台检查通过，
+    // 接下来是 PowerShell 可用性检查，抛的是“要求本机有 PowerShell”
+    // （CI #88：原断言在 win32 上直接按后者报错）。
+    expect(() => resolveSandboxBackend({}, "jobobject")).toThrow("--sandbox jobobject 只支持 Windows");
+    // 非 Windows 上 getSandboxStatus 不抛错：level 记 none，原因写进 detail。
+    const st = getSandboxStatus({}, "jobobject");
+    expect(st.level).toBe("none");
+    expect(st.detail).toContain("只支持 Windows");
+    return;
+  }
+  // win32 上：PowerShell 一定存在（windows-latest 自带），应正常解析成功。
+  const resolved = resolveSandboxBackend({}, "jobobject");
+  expect(resolved.backend).toBe("jobobject");
+  expect(resolved.level).toBe("jobobject");
 });
 
 test("WindowsSandbox.level_text_and_detail", () => {
