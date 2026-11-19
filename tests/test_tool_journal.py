@@ -33,6 +33,44 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(journal.inspect()["reported_ok"], 1)
         self.assertFalse(journal.inspect()["safe_to_auto_resume"])
 
+    def test_finish_rejects_postcommit_missing_event_count(self):
+        journal = ToolJournal("postcommit-missing-event", root=self.root)
+        cid = journal.begin("shell")
+        original_inspect = journal.inspect
+        reads = 0
+
+        def missing_event_snapshot():
+            nonlocal reads
+            reads += 1
+            status = original_inspect()
+            if reads == 2:
+                status["event_count"] -= 1
+            return status
+
+        with mock.patch.object(journal, "inspect", side_effect=missing_event_snapshot):
+            with self.assertRaisesRegex(JournalError, "事件数量或成功计数不一致"):
+                journal.finish(cid, "shell", success=True)
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
+    def test_finish_rejects_postcommit_missing_own_error(self):
+        journal = ToolJournal("postcommit-missing-error", root=self.root)
+        cid = journal.begin("shell")
+        original_inspect = journal.inspect
+        reads = 0
+
+        def missing_error_snapshot():
+            nonlocal reads
+            reads += 1
+            status = original_inspect()
+            if reads == 2:
+                status["reported_errors"] = 0
+            return status
+
+        with mock.patch.object(journal, "inspect", side_effect=missing_error_snapshot):
+            with self.assertRaisesRegex(JournalError, "工具错误计数不一致"):
+                journal.finish(cid, "shell", success=False)
+        self.assertFalse(journal.inspect()["safe_to_auto_resume"])
+
     def test_finish_own_reported_error_is_not_competing_error(self):
         journal = ToolJournal("finish-own-error", root=self.root)
         cid = journal.begin("shell")
