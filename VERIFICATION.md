@@ -1,3 +1,8 @@
+## 2026-11-19 — Windows 已打开事件句柄元数据复核（仅静态）
+
+- 核对 `_records()`：原先 Windows reparse 检查只针对目录项的 `lstat`，未针对 `os.fstat` 返回的已打开事件句柄。现补充句柄检查并增加模拟测试源码。静态检查确认新增调用位于打开文件后、读取前。
+- 未运行测试、CI、安装或 Windows 实机验证。Windows 上 `fstat` 属性可用性及具体 reparse 行为仍需实机确认；不宣称解决 ACL、祖先路径 TOCTOU、事务或外部副作用核验。
+
 ## 2026-11-19 — 祖先目录链接探测异常保护（仅静态）
 
 - 源码静态审阅发现 `_safe_directory()` 遍历祖先时直接调用 `Path.is_symlink()` / `is_junction()`，可能将权限拒绝作为未分类 `OSError` 传播。现捕获并失败关闭为 `JournalError`，保留异常链；新增模拟祖先探测拒绝的测试源码，未执行。
