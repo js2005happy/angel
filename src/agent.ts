@@ -16,7 +16,7 @@ import { ProviderError, type ProviderLike } from "./providers.ts";
 import { CREATOR_SKILL_NAME, CREATOR_SKILL_TEXT } from "./creator.ts";
 import {
   TOOL_SCHEMAS, POPPY_TOOL_SCHEMA, POPPY_PERMISSION_SCHEMA, POPPY_IDENTITY_SCHEMA,
-  newToolContext, executeTool, executeToolIdempotent, ToolError, checkApproval,
+  newToolContext, executeTool, executeToolIdempotent, resumeWriteAlreadyDone, ToolError, checkApproval,
   type ToolContext, type DelegateOptions,
 } from "./tools.ts";
 import { RepeatGuard } from "./repeatGuard.ts";
@@ -550,11 +550,18 @@ export class Agent {
           arguments: args !== null && typeof args === "object" ? args : argsRaw,
         });
         let result: string;
+        // P1-4：续跑去重——中断前已成功、且读回仍证明生效的写操作直接跳过，不重复执行。
+        // 先于循环守卫判定（已成功的调用本就不该再被守卫计数）。
+        const resumeHit = args !== null && typeof args === "object" && !Array.isArray(args)
+          ? await resumeWriteAlreadyDone(fnName, args, this.ctx)
+          : false;
         // OpenMausBot B 项：调用前先问守卫——同一失败调用 3 次后拒绝执行。
-        const refusal = args !== null && typeof args === "object" && !Array.isArray(args)
+        const refusal = !resumeHit && args !== null && typeof args === "object" && !Array.isArray(args)
           ? repeatGuard.refuseCall(fnName, args)
           : null;
-        if (args === null || typeof args !== "object" || Array.isArray(args)) {
+        if (resumeHit) {
+          result = `已在中断前成功执行过（幂等键命中），跳过重复执行。工具：${fnName}`;
+        } else if (args === null || typeof args !== "object" || Array.isArray(args)) {
           result = "错误：工具参数不是合法的 JSON 对象";
         } else if (refusal !== null) {
           // 被拒的调用不执行，直接把纸条当工具结果回填给模型。
@@ -576,9 +583,9 @@ export class Agent {
           // OpenMausBot C 项：工具失败重试须幂等（只读直接重试、写操作先查状态）。
           result = await executeToolIdempotent(fnName, args, this.ctx);
         }
-        // OpenMausBot B 项：调用后记一笔（被拒的不重复记）；成功同答案
+        // OpenMausBot B 项：调用后记一笔（被拒的、续跑跳过的不重复记）；成功同答案
         // 3 次提醒、10 次停轮，提醒纸条附在工具结果后给模型看。
-        if (refusal === null) {
+        if (refusal === null && !resumeHit) {
           const note = repeatGuard.noteAfter(fnName, args ?? argsRaw, result);
           if (note.warn) result += `\n${note.warn}`;
         }

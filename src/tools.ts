@@ -2,6 +2,7 @@
 // 审批是 fail-closed：超时即拒绝、未命名 approval_id 即拒绝、EOF/Ctrl-C 即拒绝。
 // 浏览器 / 电脑 / Poppy 工具在第 4 阶段已原生化（src/cdpBrowser.ts、
 // src/computer.ts、src/poppy.ts）；worker 桥与 Python 运行时已移除。
+import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import {
   existsSync, mkdirSync, readFileSync, readdirSync,
@@ -102,6 +103,8 @@ export interface ToolContext {
   approvedShellCommands?: Set<string>;
   approveFnGrants?: Set<string>;
   checkpoint?: CheckpointStore | null;
+  /** P1-4：续跑时已在中断前成功执行过的写操作幂等键集合。只在 --resume-run 时由 CLI 填入；为空或缺失时不跳过任何调用。 */
+  resumeCompletedWriteKeys?: Set<string>;
   poppyEnabled?: boolean;
   streamToolOutput?: boolean;
   onEvent?: ((kind: string, data: Record<string, unknown>) => void) | null;
@@ -1728,6 +1731,52 @@ export async function verifyWriteApplied(
     return null;
   } catch {
     return null;
+  }
+}
+
+// ---- P1-4：断点续跑不重复副作用（幂等键） ----
+// 幂等键 = sha256(工具名 + "\n" + 参数的稳定序列化)。稳定序列化只排对象键的
+// 顺序（数组保序），所以模型两次发同一调用（键名顺序不同）算同一个键；参数
+// 里任何一个值变了，键就变了。键里只有哈希，没有参数原文，不会把文件内容、
+// 密钥等写进运行记录。
+export function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
+}
+
+export function idempotencyKey(tool: string, args: Record<string, unknown>): string {
+  return createHash("sha256").update(`${tool}\n${stableStringify(args)}`, "utf-8").digest("hex");
+}
+
+// 续跑时可跳过的写工具：只含 verifyWriteApplied 能读回核查的那 5 个。
+// 只有“同一调用已成功 + 现在读回仍能证明写入已生效”才跳过；shell、apply_patch、
+// http_post、浏览器/电脑操作、delegate、MCP 不在内——相同参数不等于相同结果
+// （命令依赖时间与外部状态、补丁依赖当前文件内容），无法证明重复执行是无操作，
+// 续跑时照常重执行，不静默跳过。
+export const RESUME_IDEMPOTENT_TOOLS = new Set([
+  "write_file", "edit_file", "plan", "memory_append", "save_skill",
+]);
+
+/**
+ * 续跑时的写操作去重判定：键在已完成集合里，且读回核查仍证明写入已生效，
+ * 才返回 true（跳过）。任一条件不满足都返回 false（正常执行）。
+ * 读回核查堵住了“中断后文件被外部改动/删除”的洞：只凭键命中就跳过会撒谎。
+ */
+export async function resumeWriteAlreadyDone(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<boolean> {
+  const keys = ctx.resumeCompletedWriteKeys;
+  if (!keys || !keys.size || !RESUME_IDEMPOTENT_TOOLS.has(name)) return false;
+  if (!keys.has(idempotencyKey(name, args))) return false;
+  try {
+    return (await verifyWriteApplied(name, args, ctx)) === true;
+  } catch {
+    return false;
   }
 }
 

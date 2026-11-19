@@ -1,17 +1,17 @@
 // src/runs.ts — 顶层任务运行记录，与 Python 版 nyra/runs.py 同语义。
 // 只记录状态和小型事件，不记录模型或工具内容；state.json 原子写（0600），
 // events.jsonl 追加写（0600）；验证命令在建任务时冻结，之后改 AGENTS.md 也不算。
-import { randomBytes} from "node:crypto";
+import { createHash, randomBytes} from "node:crypto";
 import { spawnSync} from "node:child_process";
 import {
 chmodSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync,
 readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync, fsyncSync,
 } from "node:fs";
 import { hostname} from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, sep } from "node:path";
 import { pythonJsonDump} from "./pyjson.ts";
 import { ApprovalRequired} from "./tools.ts";
-import { checkApproval, checkShellDenied, defaultShell, wrapShellCommand, workspaceShellCwd, type ToolContext} from "./tools.ts";
+import { checkApproval, checkShellDenied, defaultShell, wrapShellCommand, workspaceShellCwd, idempotencyKey, RESUME_IDEMPOTENT_TOOLS, type ToolContext} from "./tools.ts";
 import { loadSession, saveSession} from "./memory.ts";
 
 export const RUN_STATUSES = new Set(
@@ -25,8 +25,8 @@ verify_started: ["command"],
 verify_result: ["exit_code", "passed", "attempt", "tests_modified"],
 run_started: [],
 turn: ["turn"],
-tool_start: ["id", "name"],
-tool_result: ["id", "name", "ok"],
+tool_start: ["id", "name", "args_hash"],
+tool_result: ["id", "name", "ok", "args_hash"],
 approval_wait: ["tool"],
 approval_done: ["tool", "approved"],
 final: [],
@@ -286,6 +286,8 @@ updated_at: string;
 verify_cmd: string | null;
 verify_result: Record<string, unknown> | null;
 changed_files: string[];
+/** P1-2：运行结束时为每个改动文件记的 sha256（证据链的“产物”一环）。旧运行没有该字段。 */
+file_hashes?: Record<string, string>;
 error: string | null;
 pid: number;
 host: string;
@@ -342,7 +344,7 @@ if (typeof state.status!== "string" ||!RUN_STATUSES.has(state.status)) {
 throw new Error("运行状态无效");
 }
 const required = new Set(["session_id", "task", "workdir", "mode", "turn", "max_turns", "created_at", "updated_at", "verify_cmd", "verify_result", "changed_files", "error", "pid", "host"]);
-const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval"]);
+const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes"]);
 const keys = Object.keys(state);
 if (keys.some((k) =>!allowed.has(k)) || ![...required].every((k) => keys.includes(k)) ||!Array.isArray(state.changed_files)) {
 throw new Error("运行记录字段无效");
@@ -356,6 +358,8 @@ if (!strKeys.every((k) => typeof state[k] === "string") ||
 (state.error!== null && typeof state.error!== "string") ||
 (state.verify_cmd!== null && typeof state.verify_cmd!== "string") ||
 (state.verify_result!== null && (typeof state.verify_result!== "object" || Array.isArray(state.verify_result))) ||
+(state.file_hashes!== undefined && (typeof state.file_hashes!== "object" || Array.isArray(state.file_hashes) ||
+!Object.values(state.file_hashes as Record<string, unknown>).every((v) => typeof v === "string"))) ||
 (state.pending_approval!== undefined && state.pending_approval!== null && (typeof state.pending_approval!== "object" || Array.isArray(state.pending_approval)))) {
 throw new Error("运行记录字段类型无效");
 }
@@ -409,7 +413,7 @@ const state: RunState = {
 schema_version: 1, run_id: runId!, session_id: sessionId,
 task: redact(task)?? "", workdir: String(workdir), mode, status,
 turn: 0, max_turns: maxTurns, created_at: nowIso(), updated_at: nowIso(),
-verify_cmd: verifyCmd?? null, verify_result: null, changed_files: [], error: null,
+verify_cmd: verifyCmd?? null, verify_result: null, changed_files: [], file_hashes: {}, error: null,
 pid: process.pid, host: hostname(),
 };
 this.write(state);
@@ -469,7 +473,9 @@ const value = fields[key];
 if (value!== null && typeof value!== "string" && typeof value!== "boolean" && typeof value!== "number") {
 throw new Error("运行事件字段无效");
 }
-event[key] = typeof value === "string"? redact(value): value;
+// P1-4：args_hash 是单向指纹（只用于比对，不可还原参数原文），不参与脱敏——
+// 脱敏会把它毁成 "[已隐藏]"，续跑时再也认不出已完成的调用。
+event[key] = typeof value === "string" && key !== "args_hash" ? redact(value) : value;
 }
 }
 const path = this.filePath(runId, "events.jsonl");
@@ -481,6 +487,22 @@ fsyncSync(fd);
 } finally {
 closeSync(fd);
 }
+}
+
+/** 读回事件（供证据链复核与续跑幂等键使用）。中断可能截断最后一行，损坏行直接跳过。 */
+readEvents(runId: string): Record<string, unknown>[] {
+const path = this.filePath(runId, "events.jsonl");
+if (!existsSync(path)) return [];
+const out: Record<string, unknown>[] = [];
+for (const line of readFileSync(path, "utf-8").split("\n")) {
+const t = line.trim();
+if (!t) continue;
+try {
+const ev = JSON.parse(t) as Record<string, unknown>;
+if (ev && typeof ev === "object" && typeof ev.type === "string") out.push(ev);
+} catch { /* 损坏行跳过 */ }
+}
+return out;
 }
 
 effectiveStatus(state: RunState): string {
@@ -527,6 +549,8 @@ verifyTimeout: number;
 verifyRetries: number;
 verifyAttempts = 0;
 position: number;
+/** P1-4：本轮 tool_start 的调用 ID → 幂等键（tool_result 到时据此补 args_hash）。 */
+private argsHashes = new Map<string, string>();
 private previous: ((kind: string, data: Record<string, unknown>) => void) | null;
 private previousApproval: ((tool: string, approved: boolean | null) => void) | null;
 private previousFinal: AgentLike["onFinal"];
@@ -577,6 +601,24 @@ const files = this.agent.checkpoints? this.agent.checkpoints.filesChangedSince(t
 this.store.update(this.runId, { changed_files: [...new Set([...this.previousFiles,...files])].sort()});
 }
 
+/** P1-2：运行结束时为每个改动文件记一次 sha256（证据链的“产物”一环）。 */
+recordFileHashes(): void {
+try {
+this.changed();
+const state = this.store.load(this.runId);
+const hashes: Record<string, string> = {};
+for (const rel of state.changed_files ?? []) {
+const abs = resolve(state.workdir, rel);
+if (abs === state.workdir || !abs.startsWith(state.workdir + sep)) continue;
+try {
+if (!existsSync(abs) || !statSync(abs).isFile()) continue;
+hashes[rel] = createHash("sha256").update(readFileSync(abs)).digest("hex");
+} catch { /* 读不到的文件跳过，复核时会报产物缺失 */ }
+}
+this.store.update(this.runId, { file_hashes: hashes });
+} catch { /* 哈希落盘失败不影响运行本身；复核时会报缺少哈希证据 */ }
+}
+
 call(kind: string, data: Record<string, unknown>): void {
 const turn = this.agent.turn;
 if (typeof turn === "number" && turn!== this.turn) {
@@ -586,8 +628,14 @@ this.store.appendEvent(this.runId, "turn", { turn});
 }
 if (["tool_start", "tool_result", "final", "max_turns"].includes(kind)) {
 const fields = {...data};
+if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
+const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);
+this.argsHashes.set(data.id, key);
+fields.args_hash = key;
+}
 if (kind === "tool_result") {
 fields.ok =!String(data.result?? "").startsWith("错误：");
+if (typeof data.id === "string" && this.argsHashes.has(data.id)) fields.args_hash = this.argsHashes.get(data.id);
 }
 this.store.appendEvent(this.runId, kind, fields);
 }
@@ -668,6 +716,7 @@ async run(task: string): Promise<string> {
 try {
 const result = this.continuing? await this.agent.resume(task): await this.agent.run(task);
 this.changed();
+this.recordFileHashes();
 return (result || "") + formatRunReport(this.store.load(this.runId));
 } catch (err: unknown) {
 if (err instanceof ApprovalRequired) {
@@ -681,6 +730,7 @@ this.store.setStatus(this.runId, "awaiting_approval");
 throw err;
 }
 this.changed();
+this.recordFileHashes();
 this.store.appendEvent(this.runId, "error", { error_type: (err as Error)?.name?? "Error"});
 this.store.setStatus(this.runId, "failed", { error: `${(err as Error)?.name?? "Error"}: ${err instanceof Error? err.message: String(err)}`});
 throw err;
@@ -690,6 +740,21 @@ this.agent.ctx.approvalObserver = this.previousApproval?? undefined;
 this.agent.onFinal = this.previousFinal;
 }
 }
+}
+
+/**
+ * P1-4：从运行记录里读回中断前已成功的写操作幂等键。
+ * 只认 tool_result ok=true、工具在 RESUME_IDEMPOTENT_TOOLS 内、且带 args_hash 的调用；
+ * 旧运行（无 args_hash）的调用不认——续跑时照常重执行，不静默跳过。
+ */
+export function loadCompletedWriteKeys(store: RunStore, runId: string): Set<string> {
+  const keys = new Set<string>();
+  for (const ev of store.readEvents(runId)) {
+    if (ev.type !== "tool_result" || ev.ok !== true) continue;
+    if (typeof ev.name !== "string" || !RESUME_IDEMPOTENT_TOOLS.has(ev.name)) continue;
+    if (typeof ev.args_hash === "string" && ev.args_hash) keys.add(ev.args_hash);
+  }
+  return keys;
 }
 
 /**
@@ -783,4 +848,104 @@ export function downgradeCompletionClaim(text: string, status: string, verifyNot
     `【未验证】这条回复声称"${m[0]}"，但${verifyNote}。\n` +
     `以下内容按「未验证」对待，不要当作已完成；补验证：nyra --verify "<命令>" "<同一任务>"。\n\n`;
   return { text: banner + body, downgraded: true, claim: m[0] };
+}
+
+// ---- P1-2：证据链落盘与独立复核 ----
+// 三元组 = 工具调用（events.jsonl 的 tool_start/tool_result）→ 产物
+// （state.json 的 changed_files + 运行结束时记的 file_hashes）→ 校验结果
+// （state.json 的 verify_result）。复核不信任 status 字段本身，逐项从
+// 底层记录重算：状态必须由验证结果支撑，缺证据的完成声明直接失败（与 P1-1 一致）。
+// 注意：复核不重跑验证命令（那是 --verify 的事），只核对“记录本身是否自洽、
+// 产物是否还在且没被改过”。验证命令本身在建任务时已冻结，不在此重审。
+export interface EvidenceCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface EvidenceVerifyResult {
+  run_id: string;
+  status: string;
+  passed: boolean;
+  checks: EvidenceCheck[];
+}
+
+export function verifyEvidenceChain(store: RunStore, runId: string): EvidenceVerifyResult {
+  const state = store.load(runId);
+  const checks: EvidenceCheck[] = [];
+  const status = state.status;
+  const vr = (state.verify_result ?? {}) as Record<string, unknown>;
+  if (status === "verified") {
+    if (vr.passed === true && vr.exit_code === 0 && typeof state.verify_cmd === "string" && state.verify_cmd) {
+      checks.push({ name: "verify-result", ok: true, detail: `验证命令已通过（退出码 0，第 ${vr.attempt ?? 1} 次尝试）` });
+    } else {
+      checks.push({ name: "verify-result", ok: false, detail: "状态为 verified，但验证结果缺失或未通过，记录不一致" });
+    }
+  } else if (status === "completed_unverified") {
+    checks.push({ name: "verify-result", ok: false, detail: "运行未验证：无验证证据（未配置 --verify 或验证被跳过）" });
+  } else if (status === "verify_failed") {
+    checks.push({ name: "verify-result", ok: false, detail: `验证未通过（退出码 ${vr.exit_code ?? "未知"}）` });
+  } else {
+    checks.push({ name: "verify-result", ok: false, detail: `运行未完成（状态：${status}），无可复核的完成证据` });
+  }
+  const events = store.readEvents(runId);
+  const started = new Set<string>();
+  const finished = new Set<string>();
+  for (const ev of events) {
+    if (ev.type === "tool_start" && typeof ev.id === "string") started.add(ev.id);
+    if (ev.type === "tool_result" && typeof ev.id === "string") finished.add(ev.id);
+  }
+  const dangling = [...started].filter((id) => !finished.has(id));
+  checks.push(dangling.length === 0
+    ? { name: "tool-calls-closed", ok: true, detail: `工具调用 ${started.size} 次，全部有结果` }
+    : { name: "tool-calls-closed", ok: false, detail: `有 ${dangling.length} 个工具调用无结果（可能中断）：${dangling.slice(0, 5).join("、")}` });
+  const files = state.changed_files ?? [];
+  if (files.length === 0) {
+    checks.push({ name: "artifacts-present", ok: true, detail: "无产物文件（本次运行未改动文件）" });
+  } else {
+    const missing: string[] = [];
+    for (const rel of files) {
+      const abs = resolve(state.workdir, rel);
+      if (abs === state.workdir || !abs.startsWith(state.workdir + sep) || !existsSync(abs) || !statSync(abs).isFile()) missing.push(rel);
+    }
+    checks.push(missing.length === 0
+      ? { name: "artifacts-present", ok: true, detail: `${files.length} 个产物文件均存在` }
+      : { name: "artifacts-present", ok: false, detail: `产物丢失：${missing.slice(0, 5).join("、")}` });
+  }
+  if (files.length === 0) {
+    checks.push({ name: "artifacts-hash", ok: true, detail: "无产物文件，无需比对哈希" });
+  } else {
+    const hashes = state.file_hashes ?? {};
+    if (Object.keys(hashes).length === 0) {
+      checks.push({ name: "artifacts-hash", ok: false, detail: "缺少产物哈希证据（运行记录未落盘产物哈希，旧运行或中断前未记录）" });
+    } else {
+      const bad: string[] = [];
+      for (const rel of files) {
+        const want = hashes[rel];
+        if (typeof want !== "string") { bad.push(`${rel}（无哈希）`); continue; }
+        const abs = resolve(state.workdir, rel);
+        try {
+          const now = createHash("sha256").update(readFileSync(abs)).digest("hex");
+          if (now !== want) bad.push(rel);
+        } catch { bad.push(`${rel}（读不到）`); }
+      }
+      checks.push(bad.length === 0
+        ? { name: "artifacts-hash", ok: true, detail: `${files.length} 个产物文件哈希与记录一致` }
+        : { name: "artifacts-hash", ok: false, detail: `产物被改动或读不到：${bad.slice(0, 5).join("、")}` });
+    }
+  }
+  const modified = testsModified(files);
+  checks.push({
+    name: "tests-modified", ok: true,
+    detail: modified.length ? `测试文件被修改：${modified.join("、")}（验证结果请人工复核）` : "测试文件未被修改",
+  });
+  const passed = checks.every((c) => c.ok);
+  return { run_id: runId, status, passed, checks };
+}
+
+export function formatEvidenceReport(r: EvidenceVerifyResult): string {
+  const lines = ["", "----", `证据链复核：${r.run_id}`, `运行状态：${r.status}`];
+  for (const c of r.checks) lines.push(`${c.ok ? "✓" : "✗"} ${c.name}：${c.detail}`);
+  lines.push(r.passed ? "结论：通过（证据链完整，状态可信）" : "结论：失败（证据链不完整，状态不可信）");
+  return lines.join("\n");
 }

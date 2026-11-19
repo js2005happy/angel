@@ -16,7 +16,7 @@ import {
 } from "./config.ts";
 import { Provider, buildProviderChain, ProviderError } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
-import { RunStore, RunRecorder, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport } from "./runs.ts";
+import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport } from "./runs.ts";
 import { resolvePricing } from "./cost.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
@@ -76,6 +76,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   REPL：/context 查看上下文占用；/compact focus <关键词> 按重点压缩会话（详见 docs/context.md）
   nyra --resume <会话 ID>        继续指定会话
   nyra --resume-run <运行 ID>    从运行记录断点续跑
+  nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
   nyra --execute-plan --approve-plan <SHA256>   执行经校验值批准的 plan.md
   nyra --verify "<命令>"         任务完成后运行验证命令（退出码 0 才算验证通过）
@@ -140,7 +141,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
   ]);
-  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks", "evidence"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -861,6 +862,33 @@ async function handleHooks(argv: string[], home: string): Promise<number> {
   return 0;
 }
 
+// ---- 子命令：evidence（P1-2：证据链独立复核） ----
+async function handleEvidence(argv: string[], home: string): Promise<number> {
+  const [cmd, runId, ...rest] = argv;
+  if (cmd === undefined || cmd === "--help" || cmd === "-h") {
+    process.stdout.write(
+      "用法：nyra evidence verify <运行 ID>\n" +
+      "独立复核指定运行的证据链（工具调用 → 产物 → 校验结果），不信任状态字段本身，\n" +
+      "逐项重算：验证结果、调用闭合、产物存在、产物哈希。\n" +
+      "通过返回 0；链不完整返回 4（与 --verify 未通过同码）；用法错误返回 2。\n",
+    );
+    return EXIT_SUCCESS;
+  }
+  if (cmd !== "verify" || !runId || rest.length) {
+    process.stderr.write("用法：nyra evidence verify <运行 ID>\n");
+    return EXIT_ARGUMENT;
+  }
+  const store = new RunStore(join(home, "runs"));
+  try {
+    const result = verifyEvidenceChain(store, runId);
+    process.stdout.write(formatEvidenceReport(result) + "\n");
+    return result.passed ? EXIT_SUCCESS : EXIT_VERIFY;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return EXIT_RUNTIME;
+  }
+}
+
 // ---- 子命令：vault（密码箱 CLI，与 python3 -m nyra.vault 同行为） ----
 // 密钥只从环境变量 NYRA_VAULT_PASSWORD 或交互输入读，绝不从 argv 读
 // （argv 会进进程表和 shell 历史）。
@@ -1048,7 +1076,11 @@ async function runOneShot(args: CliArgs): Promise<number> {
     try {
       const store = new RunStore(join(home, "runs"));
       const [state, messages, count] = prepareResume(store, args.resumeRun, { workdir, home });
+      // P1-4：中断前已成功的写操作幂等键——续跑时同键调用跳过，不重复执行。
+      const completedKeys = loadCompletedWriteKeys(store, args.resumeRun);
       const { agent } = await buildAgent({ ...args, mode: state.mode, maxTurns: state.max_turns }, { interactive: true });
+      agent.ctx.resumeCompletedWriteKeys = completedKeys;
+      if (completedKeys.size) process.stderr.write(`续跑幂等：${completedKeys.size} 个已成功的写操作将被跳过（不重复执行）。\n`);
       agent.messages = messages;
       agent.sessionId = state.session_id;
       const [timeout, retries] = resolveVerifySettings(args.verifyTimeout, args.verifyRetries, config);
@@ -1593,6 +1625,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
+  if (args.subcommand === "evidence") return handleEvidence(args.subArgs ?? [], home);
   if (args.subcommand === "ui") {
     return handleUi(args.subArgs ?? [], resolve(args.workdir), home);
   }
