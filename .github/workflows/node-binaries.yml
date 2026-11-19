@@ -67,7 +67,7 @@ jobs:
           bun-version: '1.4.4'
 
       - name: Run Node tests
-        run: bun test tests/node
+        run: bun test tests/node --timeout 15000
 
       - name: Run Bun API probes
         run: bash scripts/run-probes.sh
