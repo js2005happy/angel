@@ -7,7 +7,7 @@ import stat
 import unittest
 from unittest import mock
 
-from angel.tool_journal import JournalError, ToolJournal
+from angel.tool_journal import JournalError, ToolJournal, MAX_EVENTS
 
 
 class JournalTests(unittest.TestCase):
