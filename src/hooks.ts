@@ -676,6 +676,16 @@ export async function runHooks(event: HookEvent, ctx: RunHooksContext): Promise<
       continue;
     }
     if (outcome.code !== 0) {
+      // Windows 上 .sh 脚本经 sh 启动：脚本不存在时 sh 本身能启动、只报退出码 127，
+      // 不像 POSIX 那样直接 spawn 失败。脚本文件本身不存在 = 钩子从未启动，
+      // 原因统一写成“无法启动”，三平台文案一致、诊断时一眼看清是脚本丢了；
+      // 脚本存在但内部命令缺失同样退 127，那是钩子自身出错，仍走下面的分支。
+      if (outcome.code === 127 && !existsSync(path)) {
+        const reason = `钩子无法启动（脚本不存在：${path}）`;
+        if (blocking) return failClosed(path, reason);
+        warn(`钩子 ${path} ${reason}，已跳过，主流程继续`);
+        continue;
+      }
       const reason = `钩子退出码 ${outcome.code ?? "?"}（钩子自身出错）`;
       if (blocking) return failClosed(path, reason);
       warn(`钩子 ${path} ${reason}，已跳过，主流程继续`);
