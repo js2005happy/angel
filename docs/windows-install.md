@@ -14,7 +14,7 @@
 
 > 0.4.0 注：旧 Python 版 exe（PyInstaller 打包，`build-windows.yml`
 > 工作流产出）已随 Python 一起删除；`scripts/install.ps1`（从源码装，
-> 需要 Python）也已删除（0.4.0 起）。0.4.1 只有 Node 二进制一种装法。
+> 需要 Python）也已删除（0.4.0 起）。0.5.0 只有 Node 二进制一种装法。
 
 ## 方式一：Node 二进制 exe 单文件（不用装 Python，推荐）
 
@@ -32,7 +32,7 @@
    $env:DEEPSEEK_API_KEY="sk-..."
    ```
 
-4. 验证：`nyra.exe --version` 应打印 `nyra 0.4.1 (node runtime)`，
+4. 验证：`nyra.exe --version` 应打印 `nyra 0.5.0 (node runtime)`，
    再跑 `nyra.exe setup` 走首次启动向导。
 
 Node exe 是 Bun `--compile` 打的单文件控制台程序，自带运行时，不用
@@ -52,7 +52,7 @@ irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node
 脚本会做这些事：
 
 - 从 GitHub Releases 下载 `nyra-windows-x64.exe` 到 `~\nyra`（默认
-  最新版，可用 `-Version v0.4.1` 指定）；
+  最新版，可用 `-Version v0.5.0` 指定）；
 - 把安装目录加进用户 PATH（新开终端生效）；
 - 在桌面建两个快捷方式：**Nyra 终端**（`nyra.exe`）与
   **Nyra 网页界面**（`nyra.exe ui --open`），图标用安装目录里的
@@ -61,7 +61,7 @@ irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node
 - 不写注册表、不装服务、不需要管理员权限。
 
 装完先配 Key（同方式一第 3 步），再双击桌面快捷方式开始用；
-验证：`nyra --version` 应打印 `nyra 0.4.1 (node runtime)`。
+验证：`nyra --version` 应打印 `nyra 0.5.0 (node runtime)`。
 
 ## 常见问题
 
