@@ -23,6 +23,20 @@ export interface RedlineFinding {
   fix?: string;
 }
 
+export interface RedlineThresholds {
+  /** 工具数量达到多少算"重"。默认 25。 */
+  maxTools?: number;
+  /** 每轮 schema token 达到多少算"重"。默认 2500。 */
+  maxTokensPerTurn?: number;
+  /** 占上下文比例达到多少算"重"。默认 0.05（5%）。 */
+  maxContextRatio?: number;
+}
+
+export const DEFAULT_THRESHOLDS: Required<RedlineThresholds> = {
+  maxTools: 25,
+  maxTokensPerTurn: 2500,
+  maxContextRatio: 0.05,
+};
 export interface RedlineInput {
   config: Record<string, unknown>;
   /** 沙箱探测结果（由调用方用 sandbox.ts 解析后传入；null = 未探测）。 */
@@ -37,6 +51,13 @@ export interface RedlineInput {
   toolBudget?: { totalTools: number; tokensPerTurn: number; contextRatio: number | null } | null;
   /** 跨会话回忆状态（开关是否开、总历史数、30 天内的历史数）。 */
   recall?: { enabled: boolean; total: number; fresh: number } | null;
+  /**
+   * 按项目调的阈值（config.redlines.thresholds）。
+   * 不同项目合理值不同：工具本来就多的项目 25 太紧，小项目 5% 太松。
+   */
+  thresholds?: RedlineThresholds | null;
+  /** 明确忽略的检查项 code（config.redlines.ignore）；被忽略的项不会出现在结果里。 */
+  ignore?: string[] | null;
 }
 
 export interface RedlineResult {
@@ -183,7 +204,8 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
   // 工具，不拿 tool_search 当开关。
   const tb = input.toolBudget;
   if (tb) {
-    const heavy = tb.totalTools >= 25 || tb.tokensPerTurn >= 2500 || (tb.contextRatio !== null && tb.contextRatio >= 0.05);
+    const th = { ...DEFAULT_THRESHOLDS, ...(input.thresholds ?? {}) };
+    const heavy = tb.totalTools >= th.maxTools || tb.tokensPerTurn >= th.maxTokensPerTurn || (tb.contextRatio !== null && tb.contextRatio >= th.maxContextRatio);
     if (heavy) {
       add({
         code: "tools-bloat",
@@ -231,15 +253,21 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
       });
     }
   }
-  const fails = findings.filter((f) => f.level === "fail").length;
-  const warns = findings.filter((f) => f.level === "warn").length;
+  // 明确忽略：项目可能"知道这条但暂时不改"，要求是不静默忽略——所以忽略的项不出现，
+  // 但被忽略的名字不合法的会在 warnings 里露出（见 validateIgnore）。
+  const ignore = new Set((input.ignore ?? []).map((s) => s.trim()).filter(Boolean));
+  const kept = ignore.size ? findings.filter((f) => !ignore.has(f.code)) : findings;
+    // 全部被忽略时给一条说明，而不是返回空列表——空列表会让人以为"没检查"。
+    if (!kept.length) kept.push({ level: "ok", code: "consistent", title: "红线自检", detail: "没有需要报告的检查项（全部通过或被显式忽略）" });
+    const fails = kept.filter((f) => f.level === "fail").length;
+    const warns = kept.filter((f) => f.level === "warn").length;
   const verdict = fails > 0
     ? `不宜上生产：${fails} 条红线被踩${warns ? `，另有 ${warns} 条提醒` : ""}`
     : warns > 0
       ? `可运行，但 ${warns} 条红线未设：长任务前建议补齐`
       : "红线全绿";
 
-  return { findings, ok: fails === 0, verdict };
+  return { findings: kept, ok: fails === 0, verdict };
 }
 
 /** CLI 用：格式化成文本。 */

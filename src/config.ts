@@ -67,6 +67,8 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   tool_search: { enabled: false, top_k: 12 },
   // 功能开关（对齐 Codex [features]）：键名为开关名，值为布尔；未知键会告警。
   features: {},
+  // 上线红线（docs/VISION-NEXT.md 第七节）的可调项：阈值按项目调、检查项可显式忽略。
+  redlines: { thresholds: {}, ignore: [] },
   // 额外可写根（对齐 Codex --add-dir）：工作目录之外、显式允许写入的绝对路径。
   extra_writable_dirs: [],
   pricing: {},

@@ -155,3 +155,44 @@ test("跨会话回忆：不传时零影响", () => {
   const r = checkRedlines(good());
   expect(r.findings.some((x) => x.code.startsWith("recall-"))).toBe(false);
 });
+
+test("阈值可调：放宽后重工具集不再报警", () => {
+  const r = checkRedlines({
+    ...good(),
+    toolBudget: { totalTools: 30, tokensPerTurn: 3000, contextRatio: 0.06 },
+    thresholds: { maxTools: 50, maxTokensPerTurn: 8000, maxContextRatio: 0.2 },
+  });
+  expect(r.findings.some((x) => x.code === "tools-bloat")).toBe(false);
+});
+
+test("阈值可调：收紧后小工具集也报警", () => {
+  const r = checkRedlines({
+    ...good(),
+    toolBudget: { totalTools: 10, tokensPerTurn: 900, contextRatio: 0.01 },
+    thresholds: { maxTools: 8 },
+  });
+  expect(r.findings.some((x) => x.code === "tools-bloat")).toBe(true);
+});
+
+test("忽略项生效：被忽略的检查不出现，也不阻塞", () => {
+  const r = checkRedlines({
+    ...good(),
+    toolBudget: { totalTools: 30, tokensPerTurn: 3000, contextRatio: 0.06 },
+    ignore: ["tools-bloat"],
+  });
+  expect(r.findings.some((x) => x.code === "tools-bloat")).toBe(false);
+  expect(r.ok).toBe(true);
+});
+
+test("全部忽略时给一条说明，而不是空列表", () => {
+  const r = checkRedlines({
+    config: {},
+    sandbox: { level: "tool-level", backend: "local" },
+    permissions: null,
+    hasCostLimit: false,
+    ignore: ["cost-limit-missing", "pricing-missing", "sandbox-tool-level", "deny-rules-empty", "verify-missing", "hooks-disabled"],
+  });
+  expect(r.findings.length).toBe(1);
+  expect(r.findings[0].code).toBe("consistent");
+  expect(r.ok).toBe(true);
+});
