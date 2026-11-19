@@ -39,15 +39,27 @@ SHA-256 摘要，逐调用计数（不要求连续，两个卡住的调用交替
 | 写操作，无法核查 | `apply_patch`、`shell`、`http_post`、浏览器 / 电脑操作、`delegate`、MCP：**不盲目重试**，直接返回原错误。 |
 | 截图类 | `browser_screenshot` / `computer_screenshot` 不在只读表里：每次执行都会在本地多存一个截图文件，故不自动重试。 |
 
-注意：每次重试都会重新走审批（`checkApproval`）与 PreToolUse 钩子；
-会话级“始终允许”授权能覆盖同一目标时不再打扰用户。审批拒绝
-（`ApprovalRequired`）直接冒泡，绝不重试。
+注意：重试**不**重走审批（`checkApproval`）与 Pre/PostToolUse 钩子——
+重试是对同一已批操作的再执行，首次调用已批过、钩子已跑过（钩子的入参
+改写是原地改 `args`，重试时仍生效）；实现是 `executeToolIdempotent`
+在重试调用前把 `ToolContext.idempotentRetry` 置 `true`、结束后在
+`finally` 里恢复原值。只读模式拒绝与权限规则 `deny` 仍是硬控制，
+重试也绕不过（短路点在它们之后）。审批拒绝（`ApprovalRequired`）
+直接冒泡，绝不重试。
 
 ## Provider 重试：分类表与退避
 
 `FallbackProvider.chat()`：同一 provider 失败时先做至多 **2 次**带退避重试，
 再切换。切换判定不动——`quota` 仍按现有 `RECOVERABLE_KINDS` 决定是否切换
 （用量上限是否应触发切换，待总协调另定）。
+
+`KeyRotatingProvider.chat()` 同款：换 Key 之前先重试同一把 Key（至多
+**2 次**、退避 1s / 3s + ±25% 抖动、可中断，受整条链 2× 单次超时总预算约束，
+重试超时按剩余预算封顶、低于 0.2 秒不重试），只有瞬时错误可重试
+（`rate_limit` / `server` / `timeout` / `network`，用量上限文案除外）；
+401/403 类认证错不重试同一把（换 Key 才有用），直接换下一把——轮换语义
+不变（`test_key_rotation_on_401` 钉住：认证错仍逐把切换）。重试记录在
+`KeyRotatingProvider.retries` 里（与 `switches` 并列，网页端可展示）。
 
 | 错误 | 重试？ | 备注 |
 |---|---|---|
@@ -59,7 +71,6 @@ SHA-256 摘要，逐调用计数（不要求连续，两个卡住的调用交替
 
 - 重试受整条链 2× 单次超时的总预算约束：剩余时间不够“一次退避 + 一次重试（重试超时按剩余预算封顶，低于 0.2 秒不重试）”时直接改走切换，免得重试一个挂起的 provider 吃光预算、后面的 provider 一次都试不到。
 - 重试记录在 `FallbackProvider.retries` 里（与 `switches` 并列，网页端可展示）。
-- `KeyRotatingProvider` 未改：多 Key 轮换语义不变。
 - `CliProvider` 的 `classifyCodexError` 本来就是用量上限模式先于 rate limit，本次未动。
 - 每次重试都是一次新的模型调用（可能重复计费）；瞬时失败且无任何模型调用
   已回答时才重发——一旦某次调用已成功返回，即按成功处理，不再重发。

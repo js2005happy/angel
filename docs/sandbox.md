@@ -42,11 +42,41 @@
 | `bwrap` | 强制要求 bwrap：找不到 bwrap、或非 Linux 平台、或启动失败 → 直接报错退出（fail-closed），绝不静默降级裸奔。 | 想确保“没有 OS 沙箱就宁可不跑”时用。 |
 | `seatbelt` | macOS `sandbox-exec`（SBPL profile）：强制要求 macOS 与 sandbox-exec，缺失即 fail-closed。 | macOS 上想用 OS 级沙箱时用（见“macOS：Seatbelt 后端”一节）。 |
 | `jobobject` | Windows Job Object（PowerShell + kernel32）：强制要求 Windows 与 PowerShell，缺失即 fail-closed。进程级沙箱：随作业死、进程数上限；**不管文件与网络**（见“Windows：Job Object 后端”一节）。 | Windows 上想用进程级沙箱时用。 |
-| `e2b` | 0.5.1 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植），会直接报错。 | 现在别用。 |
+| `e2b` | 暂不支持，会直接报错（评估见下节“e2b 接线评估”）。 | 现在别用。 |
 
 默认行为对普通用户无感：工作目录内读写、跑命令都不受影响。
 只有“出工作区写”与“联网”这两类在 bwrap 下会被挡住；挡住时报错会写清楚
 是哪条规则拦的（例如 `EPERM` / 网络不可达），以及怎么放开（见下节）。
+
+## e2b 接线评估（0.5.2，结论：暂不接线）
+
+E2B 云沙箱原型已跑通（Muse 连接器 `custom.e2b`，项目
+`angels-project-2c22`），但接成正式沙箱后端本批不做，原因如下：
+
+1. **Node 侧没有执行路径**：连接器的 REST API 只有控制面
+   （list/create/get/kill），没有“在沙箱里跑命令”的接口；沙箱内执行
+   要走 E2B SDK（Python SDK 在 `~/workspace/angel/.venv` 里有，Node
+   的 `@e2b/sdk` 不在 `bun.lock` / `node_modules` / `package.json` 里，
+   引入即新增依赖与锁文件改动）。连接器文档亦明确写着“在沙箱里跑命令
+   尚无 REST 接口，须 Python SDK”。
+2. **凭据不在 Nyra 的配置里**：`E2B_API_KEY` 只存在 Muse 连接器的安全
+   存储里，Nyra 没有对应的配置键与环境变量约定；接线要先定凭据落点
+   （新增 `E2B_API_KEY` 环境变量/配置项），不能把 Key 抄进 Nyra 配置文件。
+3. **生命周期与现有后端形态不匹配**：bwrap/Seatbelt/Job Object 都是一锤子
+   形态（`runSandboxed(command)`：起进程、等退出、回结果）；E2B 沙箱是
+   长驻的（建出来一直跑到超时或被杀，默认超时 1800 秒，免费档上限 1 小时）。
+   套进一锤子形态要么每次命令都新建沙箱（冷启动 + 多次 API 往返，慢），
+   要么新增一个有状态的长驻沙箱管理器（复用、续期、退出清理），都不是小改动。
+4. **网络与账号依赖**：e2b 要联网 + 云账号（用量/限速），而现有后端全是
+   本地进程；测试要求 mock-only，真实路径不拿真 Key 跑不通，等于发出去
+   一个本地验不了的后端。
+
+前置条件（以后要接时缺一不可）：① 引入 `@e2b/sdk`（或等价 Node 客户端）
+并锁定版本；② 定 `E2B_API_KEY` 的落点与读取方式；③ 定生命周期形态
+（每次命令新建 vs 长驻复用，含超时、续期、退出清理）；④ 用真 Key 在
+有网环境跑通一次端到端（含断网/超时/沙箱超时的 fail-closed 行为）。
+在那之前显式 `--sandbox e2b` 继续直接报错（`resolveSandboxBackend`
+里已写明），不静默降级。
 
 ## 默认断网与怎么放开网络
 
@@ -94,10 +124,37 @@ bwrap 缺失是预期内的降级，不算故障）。
   fail-closed，会话启动失败（`send` 返回 error 状态），命令不跑；
 - 默认断网（`sandbox_allow_net` 未开时沙箱内 `--unshare-net`）。
 
-钩子仍在宿主机跑，不进沙箱。未接线的执行路径：MCP 工具调用
-（走 MCP 服务器子进程，不走 shell）与群聊机器人（`src/groups.ts`
-的 `defaultBotRunner` 建 Agent 时暂未传沙箱配置）目前仍走旧行为，
-后续再接。
+钩子仍在宿主机跑，不进沙箱。
+
+## 群聊机器人与 MCP 服务器进沙箱
+
+0.5.1 留下的两处缺口已在 0.5.2 补齐，与 shell 工具同一后端解析口径
+（`resolveSandboxBackend`，配置来源与优先级不变），都是 fail-closed：
+
+- **群聊机器人**：`GroupStore` 增加 `sandbox` 选项，`defaultBotRunner`
+  建 Agent 时原样透传；网关构造 `GroupStore` 时传
+  `resolveSandbox(this.config)` 的结果（只做配置解析，不查后端二进制
+  是否存在——后端不可用时不拦网关启动，留给机器人跑 shell 时逐次
+  fail-closed）。注意：生产上群聊创建只允许 `readonly` 机器人
+  （`create()` 有守卫），机器人实际跑不到 shell；沙箱透传是纵深防御，
+  等以后有了“执行型机器人单独授权”的路径时直接生效。
+- **MCP 服务器进程**：`MCPToolManager` 增加 `sandbox` 选项
+  （`buildMcpManager` 透传，网关 `ensureMcpManager` 传
+  `sandboxSettings()` 与网关工作区）；`startAll()` 里用
+  `resolveSandboxBackend` 解析一次，解析失败整批拒绝启动。每个服务器
+  进程的 spawn 参数由 `sandboxedMcpSpawnArgs`（纯函数）算出：
+  `local` 原样启动；`bwrap` 复用 `buildBwrapArgv`（argv 版，不经过
+  `/bin/sh -c`，stdio 管道原样透传），服务器命令与绝对路径参数所在目录
+  追加只读绑定（服务器可执行文件本身常在工作区外，不绑就读不到）；
+  `seatbelt` 走 `sandbox-exec -p <profile>`（profile 与 shell 同款）；
+  `jobobject` 装不下长驻 stdio 进程、显式指定时直接拒绝；
+  `e2b` 未接线、显式指定时直接拒绝。服务器启动失败时沿用已有语义：
+  该服务器跳过并在 stderr 警告，不影响其他服务器——但沙箱原因导致的
+  失败绝不会让服务器裸奔启动。
+
+诚实边界：MCP 服务器在 bwrap/Seatbelt 里只能读写工作区与临时目录，
+需要写工作区外文件或缓存目录的服务器会跑不起来（报错里会写明）；这时
+改用 `--sandbox local`（工具级）或把服务器的工作目录/缓存指到工作区内。
 
 ## bwrap 安装指引
 
@@ -217,7 +274,14 @@ Job Object 只管**进程生命周期与资源**，不管文件与网络：
 |---|---|---|
 | 随作业死 | `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`（0x2000）：作业句柄一关，作业内全部进程一起死，孤儿进程不留 | 恒开 |
 | 进程数上限 | `JOB_OBJECT_LIMIT_ACTIVE_PROCESS`（0x8）+ `ActiveProcessLimit`：同时存活进程数 | 64 |
-| 作业总内存上限 | `JOB_OBJECT_LIMIT_JOB_MEMORY`（0x200）+ `JobMemoryLimit` | 默认不设（只在需要时配） |
+| 作业总内存上限 | `JOB_OBJECT_LIMIT_JOB_MEMORY`（0x200）+ `JobMemoryLimit`，走扩展结构 `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`（class 9） | 默认不设（只在需要时配） |
+
+> 语义修复（0.5.2）：旧代码把内存上限写进了 `JOBOBJECT_BASIC_LIMIT_INFORMATION`
+> （class 2）的第二个字段——那个槽位真实含义是 `PerJobUserTimeLimit`
+> （CPU 时间上限），不是内存上限；布局字节数恰好对得上所以 echo 测试没炸，
+> 但 512MB 会被当成约 54 秒 CPU 时间。现在改用扩展结构（class 9：嵌套
+> `BasicLimits` + 6 个 IO 计数器 + 4 个内存字段），`SetInformationJobObject`
+> 传 class 9；`BasicLimits` 里的第二个字段已正名为 `PerJobUserTimeLimit`。
 
 文件写与联网仍由工具级规则兜底（工作区 containment + shell 黑名单 + 审批），
 和 auto 回落到工具级时同一套。**不要把 Job Object 当成 bwrap/Seatbelt 那样的
