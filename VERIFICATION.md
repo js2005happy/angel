@@ -1,3 +1,9 @@
+## 2026-11-20 — ToolJournal 报告错误的人工核查语义（静态审阅）
+
+- 审阅 `inspect()`：原 `manual_review_required` 只取决于 pending/invalid，若工具返回 `result_error` 且事件完整配对，则错误地返回 false、`review_reason=none`；但失败的外部工具可能已产生部分副作用。
+- 改为将 `reported_errors` 纳入人工核查信号，保留原有 `reported_errors` 计数及 `execution_verified=false`、`safe_to_auto_resume=false`；增加只读回归测试源码。仅静态检查，**未运行测试、解析器、CI 或实机验证**。
+- 仍未实现跨进程原子执行所有权、可信外部副作用回执或自动恢复；报告错误与真实外部状态不得混同。
+
 ## 2026-11-20 — ToolJournal 人工对账原因分类（仅静态）
 
 - 本轮复核 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal、相关测试、主分支近期提交、开放 Issues/PR 和提交状态。现有 `manual_review_required` 仅表示需核查，不说明是未知结果还是日志歧义；本轮只增加派生枚举字段和模拟回归测试，不改变工具执行或日志写入流程。
