@@ -7,6 +7,7 @@
 //   - **只汇总已有数字，不新造估算**。每项的来源都写清楚，便于追查
 //   - 算不出的项标 "unknown"，不填 0——0 会被读成"没省"
 //   - 总量只加**可加**的项（token 类），把"比例类/布尔类"单列，不硬凑一个总数
+import type { ModelSavingsReport } from "./modelSavings.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings as summarizeToolSavings, type ToolSchemaLike } from "./toolBudget.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions } from "./reasoning.ts";
@@ -48,6 +49,8 @@ export interface SavingsInput {
   toolSearchEnabled?: boolean;
   /** 本次运行的预计轮次（用于把 /轮 折算成总量）。 */
   turns?: number;
+  /** 账本实测的辅助模型节省（有就写进 aux 行，不再写"算不出"）。 */
+  modelSavings?: ModelSavingsReport | null;
 }
 
 export function summarizeSavings(input: SavingsInput): SavingsSummary {
@@ -109,11 +112,13 @@ export function summarizeSavings(input: SavingsInput): SavingsSummary {
   // 3) 辅助模型
   {
     const routing = resolveAuxRouting(cfg, typeof cfg.model === "string" ? cfg.model : null);
-    const parts = [routing.compact ? "压缩" : "", routing.delegate ? "子任务" : ""].filter(Boolean);
+      const parts = [routing.compact ? "压缩" : "", routing.delegate ? "子任务" : "", routing.tool ? "工具轮" : ""].filter(Boolean);
     lines.push({
       mechanism: "aux_model_routing",
       enabled: parts.length > 0,
-      effect: parts.length ? `${parts.join("/")} 走便宜模型（单价差决定省多少，未配 pricing 时算不出）` : "未配置：压缩与子任务都用主模型",
+        effect: parts.length
+          ? `${parts.join("/")} 走便宜模型${input.modelSavings ? `；实测省 $${input.modelSavings.totalSavedUsd.toFixed(4)}` : "（跑过之后能算出实测省多少）"}`
+          : "未配置：压缩/子任务/工具轮都用主模型",
       tokensPerTurnSaved: null,
       additive: false,
       source: "modelRouting.resolveAuxRouting",
