@@ -310,6 +310,17 @@ const zh = {
   "m.set.disconnect": "断开这台手机",
   "m.set.disconnectConfirm": "断开这台手机？之后需要重新配对。",
   "m.set.version": "Nyra {v}",
+    "redlines.title": "上线红线自检：{verdict}",
+    "redlines.fix": "    修复：{fix}",
+    "features.title": "功能开关（CLI 覆盖 > config.features > 默认值）：",
+    "features.warnHead": "警告：",
+    "features.srcCli": "（CLI 覆盖）",
+    "features.srcConfig": "（配置文件）",
+    "features.srcDefault": "（默认）",
+    "tools.head": "工具集：{count} 个工具，每轮约 {tokens} token",
+    "tools.ratio": "占上下文窗口 {pct}%",
+    "tools.top": "最贵的几个：{list}",
+    "tools.hint": "提示：用 --disable-tool <名字> 或 config.disabled_tools 裁剪用不到的工具，每轮都会省下这部分 token。",
 } as const;
 
 export type MsgKey = keyof typeof zh;
@@ -593,6 +604,17 @@ const en: Record<MsgKey, string> = {
   "m.set.disconnect": "Disconnect this phone",
   "m.set.disconnectConfirm": "Disconnect this phone? You'll need to pair again.",
   "m.set.version": "Nyra {v}",
+    "redlines.title": "Production redlines: {verdict}",
+    "redlines.fix": "    Fix: {fix}",
+    "features.title": "Feature flags (CLI override > config.features > default):",
+    "features.warnHead": "Warnings:",
+    "features.srcCli": " (CLI override)",
+    "features.srcConfig": " (config file)",
+    "features.srcDefault": " (default)",
+    "tools.head": "Toolset: {count} tools, ~{tokens} tokens per turn",
+    "tools.ratio": "{pct}% of the context window",
+    "tools.top": "Most expensive: {list}",
+    "tools.hint": "Tip: drop unused tools with --disable-tool <name> or config.disabled_tools to save these tokens every turn.",
 };
 
 export const MESSAGES: Record<Lang, Record<MsgKey, string>> = { zh, en };

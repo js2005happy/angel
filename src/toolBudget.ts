@@ -8,6 +8,7 @@
 //   2. 支持按名字裁剪（config.disabled_tools / --disable-tool），并显示省了多少
 // 下一步才是延迟加载（工具检索），那一步的前提也是先把账算清楚。
 import type { ChatMessage } from "./providers.ts";
+import { t } from "./i18n.ts";
 
 /** 字符 → token 的粗算口径，与 cost.ts 保持一致（中英混排取 2.5）。 */
 export const CHARS_PER_TOKEN = 2.5;
@@ -112,13 +113,13 @@ export function estimateRunToolOverhead(
 
 /** 人类可读摘要（doctor / redlines / tools 子命令用）。 */
 export function formatToolBudget(budget: ToolBudget): string {
-  const lines = [`工具集：${budget.totalTools} 个工具，每轮约 ${budget.tokensPerTurn.toLocaleString()} token`];
+  const lines = [t("tools.head", { count: budget.totalTools, tokens: budget.tokensPerTurn.toLocaleString() })];
   if (budget.contextRatio !== null) {
-    lines.push(`占上下文窗口 ${(budget.contextRatio * 100).toFixed(1)}%`);
+    lines.push(t("tools.ratio", { pct: (budget.contextRatio * 100).toFixed(1) }));
   }
   const top = budget.byTool.slice(0, 5);
   if (top.length) {
-    lines.push("最贵的几个：" + top.map((t) => `${t.name}(${t.tokens})`).join("、"));
+    lines.push(t("tools.top", { list: top.map((x) => `${x.name}(${x.tokens})`).join("、") }));
   }
   return lines.join("；");
 }
