@@ -41,7 +41,10 @@ test("默认不执行内联命令，保留占位", () => {
   const skill = parseSkillText(SAMPLE, "/tmp/pr-summary.md");
   const out = renderSkill(skill);
   expect(out).toContain("未执行");
-  expect(out).not.toContain("feature-branch");
+  // 占位里会带命令原文（便于人排错），所以不能断言"不含 feature-branch"；
+  // 真正的判据是：没有出现"命令输出"那种行尾结束的形态（执行时正文是 `- 分支: feature-branch`）。
+  expect(out).toContain("未执行：echo feature-branch");
+  expect(out).not.toContain("feature-branch\n");
 });
 
 test("显式开启后注入真实命令输出", () => {
