@@ -1,3 +1,9 @@
+## 2026-11-19 — POSIX 日志枚举错误分类与用户反馈
+
+- **仓库事实（静态审查）**：POSIX `ToolJournal._records()` 的末次 `os.listdir(directory_fd)` 发生 `OSError` 时直接传播未分类错误；本轮增加 `JournalError` 失败关闭和模拟测试（价值中高 / 难度低 / 风险低 / 依赖现有 dir_fd；已提交待验证）。
+- **外部用户反馈（2026-11-19 查阅）**：[Codex #61154](https://github.com/openai/codex/issues/61154)（2026-11-12 讨论）和 [Codex #60057](https://github.com/openai/codex/issues/60057)（2026-11-07 创建）报告 Windows 沙箱权限拒绝与恢复困难。它们不证明 Angel 存在同样缺陷；本轮 POSIX 修复来自独立源码检查。
+- **工程推断与排序（价值 / 难度 / 安全风险 / 依赖）**：① Windows 原生 ACL 与稳定句柄（高/高/高/Win32 设计与实机验证，未完成）；② 跨进程 ToolJournal 事务（高/高/高/锁和崩溃恢复，未完成）；③ 外部副作用独立凭证（高/高/高/可信执行网关，未完成）；④ 人工审批安全续跑（高/中高/高/前述可信记录，未完成）；⑤ 成本预算硬停止（高/中/中/usage 数据和预算规则，未完成）。本分支 `angel/` 与 main `nyra/` 尚未集成，不合并或发布。
+
 ## 2026-11-19 — Windows 写入句柄身份补强与公开反馈
 
 - **仓库事实**：Windows/path 读取已检查打开的事件句柄 reparse 属性，但写入后的 `_verify_written_windows_entry()` 此前只检查路径目录项；本轮增加写句柄属性拒绝与模拟测试源码，未执行测试。无强制新依赖。
