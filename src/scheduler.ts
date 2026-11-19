@@ -1,8 +1,9 @@
 // src/scheduler.ts — 定时任务，与 Python 版 nyra/scheduler.py 同语义。
 // schedule.json 原子写；损坏文件先备份成 .corrupt-<时间戳> 再跳过。
 import { copyFileSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeSync, fsyncSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { enqueueAutomationResults } from "./reviewQueue.ts";
 
 export class ScheduleError extends Error {
   constructor(message: string) { super(message); this.name = "ScheduleError"; }
@@ -204,6 +205,18 @@ export async function runDaemon(
       }
       const results = await runDueTasks(data, agentFactory);
       saveSchedule(data, opts?.path);
+      // 缺口 3b：跑成功的定时任务结果进审阅队列（Automations → review queue），
+      // 人在队列里逐项批；失败的任务没有可审结果，inbox 已记。入队失败不破坏
+      // 守护进程（只记 stderr），队列本身 fail-closed：不批就不放行。
+      try {
+        const home = dirname(opts?.path ?? schedulePath());
+        const { enqueued } = enqueueAutomationResults(home, results);
+        for (const item of enqueued) {
+          process.stdout.write(`[定时任务] ${item.title} 已进审阅队列（${item.id}，nyra review list 查看）\n`);
+        }
+      } catch (err: unknown) {
+        process.stderr.write(`审阅队列入队失败：${err instanceof Error ? err.message : String(err)}\n`);
+      }
       for (const r of results) {
         process.stdout.write(`[定时任务] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
       }
