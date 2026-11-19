@@ -1,3 +1,9 @@
+## 2026-11-19 — begin 写后并发门禁（仅静态）
+
+- 静态检查 `ToolJournal.begin()`：原实现首次 `inspect()` 与 `_write("intent")` 之间可能插入竞争意图；新增写后 `inspect()`，发现多个未决结果或歧义则在工具调度前拒绝返回调用 ID。
+- 新增 `test_begin_rechecks_concurrent_intent_before_dispatch`，模拟另一进程在本次 intent 落盘后写入第二个 intent；**只编写源码，未执行测试或 CI**。
+- 剩余限制：第二次检查和工具实际调用之间仍存在竞争；未实现跨进程锁、外部副作用对账、Windows ACL 或原子事务。
+
 ## 2026-11-19 — POSIX 末次目录句柄 fstat 异常（仅静态）
 
 - 静态审阅 `ToolJournal._records()`：第二次枚举后最终 `os.fstat(directory_fd)` 原先可能传播未分类 `OSError`；现转为保留原异常链的 `JournalError`，拒绝信任日志快照。
