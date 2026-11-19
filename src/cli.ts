@@ -24,6 +24,7 @@ import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
+import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
@@ -183,6 +184,8 @@ export interface CliArgs {
   verify: string | null; verifyTimeout: number | null; verifyRetries: number | null;
   /** P2-2：本次运行的成本上限（美元）；null = 不设上限。 */
   maxCost: number | null;
+  /** 本次运行禁用的工具（可重复 --disable-tool）。 */
+  disableTools: string[];
   trustAgentsVerify: boolean;
   jsonMode: boolean; autoCompact: boolean; autoCompactThreshold: number | null;
   poppy: boolean; fallback: boolean; noFallback: boolean;
@@ -205,7 +208,7 @@ export function parseArgs(argv: string[]): CliArgs {
     listSkills: false, listSessions: false, listMcp: false,
     compact: null, resume: null, resumeRun: null,
     planMode: false, executePlan: false, approvePlan: null,
-    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null,
+    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, disableTools: [],
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
@@ -221,7 +224,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang",
   ]);
-  const subcommands = new Set(["config", "redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
+  const subcommands = new Set(["tools", "config", "redlines", "evidence", "cost", "schedule", "task", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "doctor", "setup", "vault", "hooks"]);
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -272,6 +275,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--resume-run": args.resumeRun = value; break;
         case "--verify": args.verify = value; break;
         case "--max-cost": args.maxCost = parseFloat(value); break;
+        case "--disable-tool": args.disableTools.push(value); break;
         case "--verify-timeout": args.verifyTimeout = parseInt(value, 10); break;
         case "--verify-retries": args.verifyRetries = parseInt(value, 10); break;
         case "--auto-compact-threshold": args.autoCompactThreshold = parseFloat(value); break;
@@ -455,6 +459,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     pricing: resolvePricing(config.pricing, provider.model),
     // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
     auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
+    // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
+    disabledTools: [...(Array.isArray(config.disabled_tools) ? config.disabled_tools.filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
     sandbox: {
       backend: sandboxSettings.backend,
       mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",
@@ -1938,7 +1944,26 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
-  if (args.subcommand === "config") return handleConfig(args.subArgs ?? [], home);
+  if (args.subcommand === "tools") {
+    // 工具集成本体检：每轮发多少 token、谁最贵、裁掉能省多少。
+    const cfgTools = loadConfig(home);
+    const disabled = [
+      ...(Array.isArray(cfgTools.disabled_tools) ? cfgTools.disabled_tools.filter((t): t is string => typeof t === "string") : []),
+      ...args.disableTools,
+    ];
+    const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
+    const { kept, dropped } = filterSchemas(schemas, disabled);
+    const full = measureToolBudget(schemas, args.contextWindow ?? (typeof cfgTools.context_window === "number" ? cfgTools.context_window : null));
+    const after = measureToolBudget(kept, args.contextWindow ?? (typeof cfgTools.context_window === "number" ? cfgTools.context_window : null));
+    const saving = summarizeSavings(schemas, kept);
+    process.stdout.write(formatToolBudget(full) + "\n");
+    if (dropped.length) {
+      process.stdout.write(`已裁剪：${dropped.join("、")} → 每轮 ${after.tokensPerTurn} token（省 ${saving.tokensPerTurnSaved}，${(saving.ratio * 100).toFixed(1)}%）\n`);
+    } else {
+      process.stdout.write("提示：用 --disable-tool <名字> 或 config.disabled_tools 裁剪用不到的工具，每轮都会省下这部分 token。\n");
+    }
+    return EXIT_SUCCESS;
+  }  if (args.subcommand === "config") return handleConfig(args.subArgs ?? [], home);
   if (args.subcommand === "redlines") {
     // 上线红线自检：把 docs/VISION-NEXT.md 第七节变成可执行命令。
     const cfgRed = loadConfig(home);

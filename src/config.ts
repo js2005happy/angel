@@ -61,6 +61,8 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 推理档位与输出冗长度（对齐 Codex）：minimal/low/medium/high/xhigh；null = 用 provider 默认。
   reasoning_effort: null,
   verbosity: null,
+  // 工具集裁剪：每轮少发 schema 就等于每轮省钱；支持前缀通配（如 "comp*"）。
+  disabled_tools: [],
   pricing: {},
   mcp_presets: ["memory", "sequential-thinking", "fetch", "time"],
   mcp_preset_args: {},
