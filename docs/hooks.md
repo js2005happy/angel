@@ -180,5 +180,7 @@ exit 0
   脚本是否有可执行权限（`ls -l` 看有没有 `x`）。
 - 钩子没生效：先确认 `config.json` 里 `hooks.enabled` 不是 `false`、
   环境变量 `NYRA_HOOKS` 不是 `0`；再看终端有没有 `警告：钩子 …` 的提示。
+- Windows 上 `.sh` 钩子走 Git Bash 的 `sh` 来跑（GitHub Windows 运行器自带；
+  用户机器没装 Git Bash 时钩子无法启动，只警告、不拦截、不阻塞主流程）。
 - 钩子把正常操作拦了：按提示里的脚本路径改脚本，或临时
   `NYRA_HOOKS=0 nyra "任务"` 关掉钩子跑一次（只影响这一次）。
