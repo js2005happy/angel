@@ -16,7 +16,7 @@ import {
 const TOOL_NAMES = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "shell",
   "web_fetch", "web_search", "browser_navigate", "browser_click", "browser_screenshot",
   "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_windows",
-  "multi_model_research", "memory_append", "save_skill", "read_skill", "delegate", "plan",
+  "multi_model_research", "memory_append", "memory_search", "memory_forget", "memory_delete", "save_skill", "read_skill", "delegate", "plan",
   "grep_search", "git_status", "http_post"];
 
 function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext {
@@ -26,7 +26,7 @@ function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext
 test("ToolsTest.test_schema_names_match_python_24_plus_read_skill", () => {
   const names = TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string);
   expect(names).toEqual(TOOL_NAMES);
-  expect(TOOL_SCHEMAS.length).toBe(25); // 调研报告第 2 项：新增只读工具 read_skill，Python 版 24 个 + 1。
+  expect(TOOL_SCHEMAS.length).toBe(28); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete。
   const poppy = [POPPY_TOOL_SCHEMA, POPPY_IDENTITY_SCHEMA, POPPY_PERMISSION_SCHEMA]
     .map((s) => (s.function as Record<string, unknown>).name as string);
   expect(poppy).toEqual(["poppy_discover", "poppy_identity_check", "poppy_permission_check"]);
@@ -35,10 +35,10 @@ test("ToolsTest.test_schema_names_match_python_24_plus_read_skill", () => {
 test("ToolsTest.test_mutating_tools_set", () => {
   // delegate 不进 MUTATING_TOOLS（与 multi_model_research 同例：只花模型调用，
   // 不写文件不跑命令，Python 版 tools.py:1411 注释）。
-  for (const name of ["write_file", "edit_file", "apply_patch", "shell", "memory_append", "save_skill", "plan", "mcp"]) {
+  for (const name of ["write_file", "edit_file", "apply_patch", "shell", "memory_append", "save_skill", "plan", "mcp", "memory_forget", "memory_delete"]) {
     expect(MUTATING_TOOLS.has(name)).toBe(true);
   }
-  for (const name of ["read_file", "list_dir", "grep_search", "git_status", "web_fetch", "web_search", "read_skill"]) {
+  for (const name of ["read_file", "list_dir", "grep_search", "git_status", "web_fetch", "web_search", "read_skill", "memory_search"]) {
     expect(MUTATING_TOOLS.has(name)).toBe(false);
   }
   expect(MUTATING_TOOLS.has("delegate")).toBe(false);

@@ -70,16 +70,16 @@ test("AgentTest.test_delegation_budget", () => {
 test("AgentTest.test_tool_schemas_count_and_disabled", () => {
   const { home, workdir } = setup();
   const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "full", skillsDirs: [] });
-  expect(agent.toolSchemas().length).toBe(25); // 调研报告第 2 项：新增只读工具 read_skill。
+  expect(agent.toolSchemas().length).toBe(28); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete。
   const noShell = new Agent(new FakeProvider([]) as never, {
     workdir, home, mode: "full", skillsDirs: [], disabledTools: ["shell", "write_file"],
   });
   const names = noShell.toolSchemas().map((s) => (s.function as Record<string, unknown>).name);
   expect(names).not.toContain("shell");
   expect(names).not.toContain("write_file");
-  expect(names.length).toBe(23);
+  expect(names.length).toBe(26);
   const poppy = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "full", skillsDirs: [], poppyEnabled: true });
-  expect(poppy.toolSchemas().length).toBe(28);
+  expect(poppy.toolSchemas().length).toBe(31); // 28 个基础工具 + 3 个 Poppy 工具。
 });
 
 test("AgentTest.test_tool_schemas_no_apply_patch_with_backend", () => {
