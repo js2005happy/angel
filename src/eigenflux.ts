@@ -164,19 +164,26 @@ export function homeForAgent(opts: { root?: string; room?: string | null; bot?: 
     target = join(root, "eigenflux", "agents", "main", ".eigenflux");
   }
   // root 本身是用户管理的 ~/.nyra 重定位，允许是符号链接；其下每一级都必须是实体路径。
+  // 只检查 root 之下的各级：root 之上是系统路径（macOS 的 /var → /private/var、
+  // Windows 的 8.3 短名），那些符号链接与身份隔离无关，不能因此拒绝。
+  // 注意循环用逻辑路径比较：canonicalize 会把 /var 解析成 /private/var、
+  // 把 8.3 短名解析成长名，用规范化路径比较时循环永远走不到 root。
+  const logicalRoot = resolve(root);
   let current = resolve(target);
-  const canonicalRoot = canonicalize(root);
-  while (current !== canonicalRoot && current !== resolve(current, "..")) {
+  while (current !== logicalRoot && current !== resolve(current, "..")) {
     if (isSymlink(current)) {
       throw new EigenFluxError("EigenFlux Home 路径包含符号链接，拒绝共享身份");
     }
     current = resolve(current, "..");
   }
+  const canonicalRoot = canonicalize(root);
   const canonicalTarget = canonicalize(target);
   if (!isWithinRoot(canonicalTarget, canonicalRoot)) {
     throw new EigenFluxError("EigenFlux Home 超出 Nyra 数据目录");
   }
-  return canonicalTarget;
+  // 返回逻辑路径（join(root, ...) 的形式）：调用方按传入的 root 拼路径，
+  // 规范化路径（/private/var、8.3 短名解析后）与之不等，会导致身份比对失败。
+  return resolve(target);
 }
 
 function isSymlink(path: string): boolean {
@@ -240,10 +247,14 @@ export type RunProbeFn = (binary: string, home: string, args: string[]) => Probe
 
 /** 默认探针：spawnSync 直调官方 CLI（shell=false、8 秒超时、最小环境）。 */
 export function defaultRunProbe(binary: string, home: string, args: string[]): ProbeResult {
-  const command = [binary, "--homedir", home, ...args];
+  // Windows 上 .cmd/.bat shim 不能直接 CreateProcess，须经 cmd.exe /d /c 调用；
+  // 原生 .exe 不受影响。EigenFlux 若以 npm/pip shim 形式安装，同样走这条路。
+  const isWinCmd = process.platform === "win32" && /\.(cmd|bat)$/i.test(binary);
+  const file = isWinCmd ? "cmd.exe" : binary;
+  const argv = isWinCmd ? ["/d", "/c", binary, "--homedir", home, ...args] : ["--homedir", home, ...args];
   let result;
   try {
-    result = spawnSync(command[0], command.slice(1), {
+    result = spawnSync(file, argv, {
       shell: false, encoding: "utf-8", timeout: DIAGNOSTIC_TIMEOUT_MS,
       env: minimalEnvironment(home),
     });
