@@ -1,0 +1,273 @@
+// tests/node/test-sandbox.test.ts — OS 级分级沙箱（调研报告第 9 项，学 Codex CLI）。
+// 本机无 bwrap（`which bwrap` 无结果），测试覆盖“bwrap 不可用”路径；
+// 需要 bwrap 的场景一律用 PATH 里放的假 bwrap 脚本（shim）验证，禁止依赖真实 bwrap。
+import { test, expect } from "bun:test";
+import { mkdtempSync, writeFileSync, chmodSync, existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  detectBwrap, resolveSandboxBackend, buildBwrapArgs, runSandboxed,
+  getSandboxStatus, SandboxUnavailableError, toolLevelFallbackNotice,
+} from "../../src/sandbox.ts";
+import { DEFAULT_CONFIG, VALID_SANDBOXES, resolveSandbox } from "../../src/config.ts";
+import { newToolContext, executeTool } from "../../src/tools.ts";
+
+const SANDBOX_ENV_KEYS = [
+  "NYRA_SANDBOX", "ANGEL_SANDBOX", "NYRA_SANDBOX_MODE", "ANGEL_SANDBOX_MODE",
+  "NYRA_SANDBOX_ALLOW_NET", "ANGEL_SANDBOX_ALLOW_NET",
+] as const;
+
+function tmpDir(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), prefix));
+}
+
+/** 临时改环境变量（含 PATH），用完原样恢复。 */
+async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void> | void): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) { saved[k] = process.env[k]; }
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+  try { await fn(); } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+}
+
+function cleanSandboxEnv(): Record<string, undefined> {
+  return Object.fromEntries(SANDBOX_ENV_KEYS.map((k) => [k, undefined])) as Record<string, undefined>;
+}
+
+/** PATH 里放一个假 bwrap：记录参数到 $BWRAP_LOG，再把最后一个参数当 shell 命令跑。 */
+function makeBwrapShim(): { dir: string; log: string } {
+  const dir = tmpDir("nyra-bwrap-shim-");
+  const log = join(dir, "bwrap-args.log");
+  writeFileSync(join(dir, "bwrap"), `#!/bin/sh
+echo "$@" >> "$BWRAP_LOG"
+for last; do :; done
+sh -c "$last"
+`, "utf-8");
+  chmodSync(join(dir, "bwrap"), 0o755);
+  return { dir, log };
+}
+
+test("detectBwrap：本机无 bwrap 返回 false；不存在的 PATH 目录也返回 false", () => {
+  expect(detectBwrap()).toBe(false);
+  expect(detectBwrap("/definitely/not/a/real/dir")).toBe(false);
+});
+
+test("detectBwrap：PATH 里放假 bwrap 脚本就能找到", () => {
+  // 假 shim 是 #!/bin/sh 脚本，detectBwrap 在非 Linux 直接返回 false，跳过。
+  if (process.platform !== "linux") { console.log("跳过：bwrap 只在 Linux，假 shim 依赖 /bin/sh"); return; }
+  const { dir } = makeBwrapShim();
+  expect(detectBwrap(dir)).toBe(true);
+});
+
+test("buildBwrapArgs：含 --bind 工作目录、--ro-bind 系统目录、默认 --unshare-net、--die-with-parent、--chdir", () => {
+  const wd = tmpDir("nyra-sandbox-wd-");
+  const args = buildBwrapArgs("echo hi", { workdir: wd, allowNet: false, mode: "workspace-write" });
+  expect(args[0]).toBe("bwrap");
+  expect(args).toContain("--bind");
+  expect(args).toContain(wd);
+  expect(args).toContain("--ro-bind");
+  expect(args).toContain("/usr");
+  expect(args).toContain("--unshare-net");
+  expect(args).toContain("--die-with-parent");
+  expect(args).toContain("--chdir");
+  expect(args.slice(-3)).toEqual(["/bin/sh", "-c", "echo hi"]);
+});
+
+test("buildBwrapArgs：allowNet 时无 --unshare-net；read-only 时工作目录只读", () => {
+  const wd = tmpDir("nyra-sandbox-wd-");
+  const netArgs = buildBwrapArgs("echo hi", { workdir: wd, allowNet: true, mode: "workspace-write" });
+  expect(netArgs).not.toContain("--unshare-net");
+  const roArgs = buildBwrapArgs("echo hi", { workdir: wd, allowNet: false, mode: "read-only" });
+  expect(roArgs).not.toContain("--bind");
+  const roIdx = roArgs.indexOf("--ro-bind");
+  expect(roIdx).toBeGreaterThanOrEqual(0);
+  expect(roArgs.slice(roIdx)).toContain(wd);
+});
+
+test("buildBwrapArgs：danger-full-access 拒绝进 bwrap", () => {
+  const wd = tmpDir("nyra-sandbox-wd-");
+  expect(() => buildBwrapArgs("echo hi", { workdir: wd, allowNet: false, mode: "danger-full-access" }))
+    .toThrow("danger-full-access 与沙箱互斥");
+});
+
+test("config 默认值：sandbox=auto、sandbox_mode=workspace-write、默认断网；VALID_SANDBOXES 含 auto/bwrap", () => {
+  expect(DEFAULT_CONFIG.sandbox).toBe("auto");
+  expect(DEFAULT_CONFIG.sandbox_mode).toBe("workspace-write");
+  expect(DEFAULT_CONFIG.sandbox_allow_net).toBe(false);
+  expect([...VALID_SANDBOXES]).toEqual(["auto", "local", "bwrap", "e2b"]);
+  const settings = resolveSandbox({});
+  expect(settings.backend).toBe("auto");
+  expect(settings.mode).toBe("workspace-write");
+  expect(settings.allowNet).toBe(false);
+});
+
+test("resolveSandbox：NYRA_SANDBOX_ALLOW_NET=1 放开网络；非法 mode 报错", async () => {
+  await withEnv({ ...cleanSandboxEnv(), NYRA_SANDBOX_ALLOW_NET: "1" }, () => {
+    expect(resolveSandbox({}).allowNet).toBe(true);
+    expect(resolveSandboxBackend({}, "auto").allowNet).toBe(true);
+  });
+  expect(() => resolveSandbox({ sandbox_mode: "nope" })).toThrow("Invalid sandbox_mode");
+  expect(() => resolveSandboxBackend({ sandbox_mode: "nope" }, "auto")).toThrow("Invalid sandbox_mode");
+});
+
+test("auto 在无 bwrap 时解析为 tool-level（本机即是），并给出工具级提示文案", async () => {
+  await withEnv(cleanSandboxEnv(), () => {
+    const r = resolveSandboxBackend({}, "auto");
+    expect(r.backend).toBe("local");
+    expect(r.level).toBe("tool-level");
+    expect(r.mode).toBe("workspace-write");
+    expect(r.allowNet).toBe(false);
+    expect(toolLevelFallbackNotice(r)).toMatch("工具级隔离，不是 OS 沙箱");
+  });
+});
+
+test("local：显式只要工具级，即便 PATH 里有 bwrap 也不用", async () => {
+  if (process.platform !== "linux") { console.log("跳过：bwrap 只在 Linux，假 shim 依赖 /bin/sh"); return; }
+  const { dir } = makeBwrapShim();
+  await withEnv({ ...cleanSandboxEnv(), PATH: `${dir}:${process.env.PATH ?? ""}` }, () => {
+    expect(detectBwrap()).toBe(true);
+    const r = resolveSandboxBackend({}, "local");
+    expect(r.backend).toBe("local");
+    expect(r.level).toBe("tool-level");
+  });
+});
+
+test("auto：PATH 里有 bwrap 时解析为 bwrap", async () => {
+  if (process.platform !== "linux") { console.log("跳过：bwrap 只在 Linux，假 shim 依赖 /bin/sh"); return; }
+  const { dir } = makeBwrapShim();
+  await withEnv({ ...cleanSandboxEnv(), PATH: `${dir}:${process.env.PATH ?? ""}` }, () => {
+    const r = resolveSandboxBackend({}, "auto");
+    expect(r.backend).toBe("bwrap");
+    expect(r.level).toBe("bwrap");
+  });
+});
+
+test("bwrap 强制缺失时报错信息清楚：点名缺 bwrap、给安装方法、给回退选项", async () => {
+  await withEnv(cleanSandboxEnv(), () => {
+    expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("找不到 bwrap");
+    expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("apt install bubblewrap");
+    expect(() => resolveSandboxBackend({}, "bwrap")).toThrow("auto");
+  });
+});
+
+test("e2b 保持不支持报错，文案写目标版本 0.5.0", async () => {
+  await withEnv(cleanSandboxEnv(), () => {
+    expect(() => resolveSandboxBackend({}, "e2b")).toThrow("0.5.0 暂不支持");
+  });
+});
+
+test("danger-full-access：显式 bwrap 时抛错；auto 时落到工具级", async () => {
+  await withEnv(cleanSandboxEnv(), () => {
+    expect(() => resolveSandboxBackend({ sandbox_mode: "danger-full-access" }, "bwrap"))
+      .toThrow("danger-full-access 与沙箱互斥");
+    const r = resolveSandboxBackend({ sandbox_mode: "danger-full-access" }, "auto");
+    expect(r.level).toBe("tool-level");
+    expect(r.mode).toBe("danger-full-access");
+  });
+});
+
+test("runSandboxed：无 bwrap 时抛 SandboxUnavailableError（绝不静默裸奔）", async () => {
+  const wd = tmpDir("nyra-sandbox-wd-");
+  await withEnv({ ...cleanSandboxEnv(), PATH: tmpDir("nyra-empty-path-") }, async () => {
+    expect(detectBwrap()).toBe(false);
+    await expect(runSandboxed("echo hi", { workdir: wd, allowNet: false, mode: "workspace-write" }))
+      .rejects.toBeInstanceOf(SandboxUnavailableError);
+  });
+});
+
+test("runSandboxed：假 bwrap shim 端到端跑通一次，参数里含工作目录绑定与默认断网", async () => {
+  if (process.platform !== "linux") { console.log("跳过：bwrap 只在 Linux，假 shim 依赖 /bin/sh"); return; }
+  const wd = tmpDir("nyra-sandbox-wd-");
+  const { dir, log } = makeBwrapShim();
+  await withEnv({ ...cleanSandboxEnv(), PATH: `${dir}:${process.env.PATH ?? ""}`, BWRAP_LOG: log }, async () => {
+    const result = await runSandboxed("echo shim-hello", { workdir: wd, allowNet: false, mode: "workspace-write" });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("shim-hello");
+    const recorded = readFileSync(log, "utf-8");
+    expect(recorded).toContain("--bind");
+    expect(recorded).toContain(wd);
+    expect(recorded).toContain("--unshare-net");
+  });
+});
+
+test("getSandboxStatus：auto 无 bwrap 时 level 为 tool-level；显式 bwrap 缺失时 level 为 none 且不抛错", async () => {
+  await withEnv(cleanSandboxEnv(), () => {
+    const auto = getSandboxStatus({});
+    expect(auto.level).toBe("tool-level");
+    expect(auto.bwrapAvailable).toBe(false);
+    expect(auto.detail).toMatch("工具级");
+    const forced = getSandboxStatus({}, "bwrap");
+    expect(forced.level).toBe("none");
+    expect(forced.detail).toMatch("bubblewrap");
+  });
+});
+
+test("toolShell 接线：auto 无 bwrap 时走现有路径跑通；首次执行给一次工具级提示", async () => {
+  const wd = tmpDir("nyra-shell-wd-");
+  await withEnv(cleanSandboxEnv(), async () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(String(args[0])); };
+    try {
+      const ctx = newToolContext({
+        workdir: wd, mode: "full", interactive: false,
+        sandbox: { backend: "auto", mode: "workspace-write", allowNet: false },
+      });
+      const out = await executeTool("shell", { command: "echo hello-shell", timeout: 10 }, ctx);
+      expect(out).toContain("hello-shell");
+      expect(errors.join("\n")).toMatch("工具级隔离，不是 OS 沙箱");
+      // 第二次不再重复提示。
+      errors.length = 0;
+      await executeTool("shell", { command: "echo again", timeout: 10 }, ctx);
+      expect(errors.join("\n")).not.toMatch("工具级隔离");
+    } finally {
+      console.error = origError;
+    }
+  });
+});
+
+test("toolShell 接线：显式 bwrap 但无 bwrap 时命令不跑、返回清楚的报错", async () => {
+  const wd = tmpDir("nyra-shell-wd-");
+  await withEnv(cleanSandboxEnv(), async () => {
+    const ctx = newToolContext({
+      workdir: wd, mode: "full", interactive: false,
+      sandbox: { backend: "bwrap", mode: "workspace-write", allowNet: false },
+    });
+    const out = await executeTool("shell", { command: "touch should-not-exist.txt", timeout: 10 }, ctx);
+    expect(out).toMatch("沙箱配置有问题");
+    expect(out).toMatch("bubblewrap");
+    expect(existsSync(join(wd, "should-not-exist.txt"))).toBe(false);
+  });
+});
+
+test("toolShell 接线：bwrap + 假 shim 时命令经 shim 跑通（含流式分支）", async () => {
+  if (process.platform !== "linux") { console.log("跳过：bwrap 只在 Linux，假 shim 依赖 /bin/sh"); return; }
+  const wd = tmpDir("nyra-shell-wd-");
+  const { dir, log } = makeBwrapShim();
+  await withEnv({ ...cleanSandboxEnv(), PATH: `${dir}:${process.env.PATH ?? ""}`, BWRAP_LOG: log }, async () => {
+    const streamed: string[] = [];
+    const ctx = newToolContext({
+      workdir: wd, mode: "full", interactive: false, streamToolOutput: true,
+      onEvent: (_kind, data) => { if (typeof data.text === "string") streamed.push(data.text); },
+      sandbox: { backend: "bwrap", mode: "workspace-write", allowNet: false },
+    });
+    const out = await executeTool("shell", { command: "echo via-shim", timeout: 10 }, ctx);
+    expect(out).toContain("via-shim");
+    expect(streamed.join("")).toContain("via-shim");
+    expect(readFileSync(log, "utf-8")).toContain("--bind");
+  });
+});
+
+test("toolShell 接线：未配 sandbox 的旧调用保持原行为（不解析、不提示）", async () => {
+  const wd = tmpDir("nyra-shell-wd-");
+  await withEnv(cleanSandboxEnv(), async () => {
+    const ctx = newToolContext({ workdir: wd, mode: "full", interactive: false });
+    const out = await executeTool("shell", { command: "echo legacy-path", timeout: 10 }, ctx);
+    expect(out).toContain("legacy-path");
+  });
+});

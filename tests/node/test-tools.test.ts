@@ -16,17 +16,17 @@ import {
 const TOOL_NAMES = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "shell",
   "web_fetch", "web_search", "browser_navigate", "browser_click", "browser_screenshot",
   "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_windows",
-  "multi_model_research", "memory_append", "save_skill", "delegate", "plan",
+  "multi_model_research", "memory_append", "save_skill", "read_skill", "delegate", "plan",
   "grep_search", "git_status", "http_post"];
 
 function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext {
   return newToolContext({ workdir, mode: "full", interactive: false, ...extra });
 }
 
-test("ToolsTest.test_schema_names_match_python_24", () => {
+test("ToolsTest.test_schema_names_match_python_24_plus_read_skill", () => {
   const names = TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string);
   expect(names).toEqual(TOOL_NAMES);
-  expect(TOOL_SCHEMAS.length).toBe(24);
+  expect(TOOL_SCHEMAS.length).toBe(25); // 调研报告第 2 项：新增只读工具 read_skill，Python 版 24 个 + 1。
   const poppy = [POPPY_TOOL_SCHEMA, POPPY_IDENTITY_SCHEMA, POPPY_PERMISSION_SCHEMA]
     .map((s) => (s.function as Record<string, unknown>).name as string);
   expect(poppy).toEqual(["poppy_discover", "poppy_identity_check", "poppy_permission_check"]);
@@ -38,7 +38,7 @@ test("ToolsTest.test_mutating_tools_set", () => {
   for (const name of ["write_file", "edit_file", "apply_patch", "shell", "memory_append", "save_skill", "plan", "mcp"]) {
     expect(MUTATING_TOOLS.has(name)).toBe(true);
   }
-  for (const name of ["read_file", "list_dir", "grep_search", "git_status", "web_fetch", "web_search"]) {
+  for (const name of ["read_file", "list_dir", "grep_search", "git_status", "web_fetch", "web_search", "read_skill"]) {
     expect(MUTATING_TOOLS.has(name)).toBe(false);
   }
   expect(MUTATING_TOOLS.has("delegate")).toBe(false);

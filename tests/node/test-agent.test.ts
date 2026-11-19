@@ -8,6 +8,7 @@ import {
   Agent, DelegationBudget, SYSTEM_PROMPT_BASE, MODE_NOTES,
   MAX_DELEGATE_DEPTH, MAX_DELEGATE_CALLS, MAX_DELEGATE_TURNS, AgentError,
 } from "../../src/agent.ts";
+import { Gateway } from "../../src/gateway.ts";
 
 class FakeProvider {
   name = "fake"; model = "fake-1"; baseUrl = "https://fake.invalid";
@@ -69,16 +70,16 @@ test("AgentTest.test_delegation_budget", () => {
 test("AgentTest.test_tool_schemas_count_and_disabled", () => {
   const { home, workdir } = setup();
   const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "full", skillsDirs: [] });
-  expect(agent.toolSchemas().length).toBe(24);
+  expect(agent.toolSchemas().length).toBe(25); // 调研报告第 2 项：新增只读工具 read_skill。
   const noShell = new Agent(new FakeProvider([]) as never, {
     workdir, home, mode: "full", skillsDirs: [], disabledTools: ["shell", "write_file"],
   });
   const names = noShell.toolSchemas().map((s) => (s.function as Record<string, unknown>).name);
   expect(names).not.toContain("shell");
   expect(names).not.toContain("write_file");
-  expect(names.length).toBe(22);
+  expect(names.length).toBe(23);
   const poppy = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "full", skillsDirs: [], poppyEnabled: true });
-  expect(poppy.toolSchemas().length).toBe(27);
+  expect(poppy.toolSchemas().length).toBe(28);
 });
 
 test("AgentTest.test_tool_schemas_no_apply_patch_with_backend", () => {
@@ -306,4 +307,172 @@ test("AgentTest.test_creator_mode_skill_matches_builtin_text", () => {
   const skill = agent.skills.find((s) => s.name === "creator-mode");
   expect(skill).toBeDefined();
   expect(skill?.description).toContain("一句话需求");
+});
+
+// ---- 调研报告第 3 项：上下文补齐（学 Claude Code）----
+
+test("ContextUsageTest.test_four_parts_sum_to_total_and_estimated", () => {
+  const { home, workdir } = setup();
+  const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "auto", skillsDirs: [] });
+  agent.messages = [
+    { role: "user", content: "你好世界" },
+    { role: "assistant", content: "你好呀" },
+    { role: "tool", content: "工具结果", tool_call_id: "c1" },
+  ];
+  const u = agent.contextUsage();
+  expect(u.skills).toBe(0);
+  expect(u.history).toBe(7);
+  expect(u.toolResults).toBe(4);
+  expect(u.system).toBe(agent.buildSystemPrompt().length);
+  expect(u.totalChars).toBe(u.system + u.skills + u.history + u.toolResults);
+  // 模型没报告用量：窗口未知、usedTokens 是估算并明确标记。
+  expect(u.windowTokens).toBeNull();
+  expect(u.estimated).toBe(true);
+  expect(u.usedTokens).toBe(Math.ceil(u.totalChars / 4));
+});
+
+test("ContextUsageTest.test_reported_usage_is_not_estimate", () => {
+  const { home, workdir } = setup();
+  const agent = new Agent(new FakeProvider([]) as never, {
+    workdir, home, mode: "auto", skillsDirs: [], contextWindowTokens: 1000,
+  });
+  agent.messages = [{ role: "user", content: "你好" }];
+  agent.usage.record({ usage: { prompt_tokens: 100, completion_tokens: 5, total_tokens: 105 } });
+  const u = agent.contextUsage();
+  expect(u.windowTokens).toBe(1000);
+  expect(u.usedTokens).toBe(100);
+  expect(u.estimated).toBe(false);
+});
+
+test("ContextUsageTest.test_re_read_note_counts_as_system_not_history", () => {
+  const { home, workdir } = setup();
+  const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "auto", skillsDirs: [] });
+  const reRead = "[压缩后重读：记忆与规则]\n## 长期记忆\n- 用户是学生";
+  agent.messages = [
+    { role: "user", content: reRead },
+    { role: "user", content: "普通问题" },
+  ];
+  const u = agent.contextUsage();
+  expect(u.system).toBe(agent.buildSystemPrompt().length + reRead.length);
+  expect(u.history).toBe("普通问题".length);
+  expect(u.totalChars).toBe(u.system + u.skills + u.history + u.toolResults);
+});
+
+function setupReReadFiles(home: string, workdir: string): void {
+  writeFileSync(join(home, "MEMORY.md"), "- [2026-11-19] 记忆锚点-XYZ\n- 喜欢中文\n");
+  writeFileSync(join(workdir, "AGENTS.md"), "# 项目说明\n\n第一段规则。\n\n第二段规则-锚点。\n\n第三段规则-锚点二。\n");
+}
+
+test("ContextUsageTest.test_compact_focus_keeps_keyword_and_re_reads_real_files", async () => {
+  const { home, workdir } = setup();
+  setupReReadFiles(home, workdir);
+  const agent = new Agent(new FakeProvider([textReply("摘要文本")]) as never, {
+    workdir, home, mode: "full", skillsDirs: [],
+    sessionId: "20261119-000000-ctx1",
+  });
+  agent.messages = [
+    { role: "user", content: "聊聊部署流程" },
+    { role: "assistant", content: "部署分三步" },
+    { role: "user", content: "今天天气不错" },
+    { role: "assistant", content: "是啊很晴朗" },
+    { role: "user", content: "最新问题" },
+    { role: "assistant", content: "最新回答" },
+  ];
+  const info = await agent.compact(2, "部署");
+  expect(info.method).toBe("model");
+  const text = JSON.stringify(agent.messages);
+  expect((agent.messages[0] as Record<string, unknown>).content).toContain("摘要文本");
+  // 重读备注在摘要之后（第 3 条），内容来自真实文件（记忆 + AGENTS.md 末尾段落）。
+  expect((agent.messages[2] as Record<string, unknown>).content).toContain("[压缩后重读：记忆与规则]");
+  expect(text).toContain("记忆锚点-XYZ");
+  expect(text).toContain("第二段规则-锚点");
+  expect(text).toContain("第三段规则-锚点二");
+  expect(text).not.toContain("第一段规则");
+  // focus：含关键词的旧消息保留，不含的不保留；尾部照常保留。
+  expect(text).toContain("聊聊部署流程");
+  expect(text).not.toContain("今天天气不错");
+  expect(text).toContain("最新问题");
+});
+
+test("ContextUsageTest.test_compact_without_focus_behaves_as_before_but_still_re_reads", async () => {
+  const { home, workdir } = setup();
+  setupReReadFiles(home, workdir);
+  const agent = new Agent(new FakeProvider([textReply("摘要文本")]) as never, {
+    workdir, home, mode: "full", skillsDirs: [],
+    sessionId: "20261119-000000-ctx2",
+  });
+  agent.messages = [
+    { role: "user", content: "聊聊部署流程" },
+    { role: "assistant", content: "部署分三步" },
+    { role: "user", content: "今天天气不错" },
+    { role: "assistant", content: "是啊很晴朗" },
+    { role: "user", content: "最新问题" },
+    { role: "assistant", content: "最新回答" },
+  ];
+  const info = await agent.compact(2);
+  expect(info.method).toBe("model");
+  const text = JSON.stringify(agent.messages);
+  // 不带 focus：旧消息只剩尾部 2 条；重读仍在（压缩成功）。
+  expect(text).not.toContain("聊聊部署流程");
+  expect(text).not.toContain("今天天气不错");
+  expect(text).toContain("最新问题");
+  expect(text).toContain("[压缩后重读：记忆与规则]");
+  expect(text).toContain("记忆锚点-XYZ");
+});
+
+test("ContextUsageTest.test_auto_compact_also_re_reads_memory", async () => {
+  const { home, workdir } = setup();
+  setupReReadFiles(home, workdir);
+  writeFileSync(join(workdir, "a.txt"), "content\n");
+  const provider = new FakeProvider([
+    {
+      choices: [{
+        message: {
+          content: "",
+          tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "a.txt" }) } }],
+        },
+      }],
+      usage: { prompt_tokens: 90, completion_tokens: 5, total_tokens: 95 },
+    },
+    textReply("摘要文本"),
+  ]);
+  const agent = new Agent(provider as never, {
+    workdir, home, mode: "full", maxTurns: 5, skillsDirs: [],
+    sessionId: "20261119-000000-ctx3",
+    contextWindowTokens: 100, autoCompactEnabled: true, autoCompactThreshold: 0.5,
+  });
+  agent.messages = [
+    { role: "user", content: "第一轮问部署：" + "背景描述。".repeat(12) },
+    { role: "assistant", content: "答一：" + "很长的解释。".repeat(12) },
+    { role: "user", content: "第二轮问部署：" + "背景描述。".repeat(12) },
+    { role: "assistant", content: "答二：" + "很长的解释。".repeat(12) },
+    { role: "user", content: "第三轮：" + "背景描述。".repeat(12) },
+    { role: "assistant", content: "答三：" + "很长的解释。".repeat(12) },
+  ];
+  const out = await agent.run("读 a.txt");
+  expect(out).toBe("摘要文本");
+  expect(agent.autoCompactCount).toBe(1);
+  const text = JSON.stringify(agent.messages);
+  expect(text).toContain("[压缩后重读：记忆与规则]");
+  expect(text).toContain("记忆锚点-XYZ");
+});
+
+test("ContextUsageTest.test_gateway_session_view_exposes_context", () => {
+  const { home, workdir } = setup();
+  const gw = new Gateway({ home, workdir, host: "127.0.0.1", port: 0, config: {} });
+  const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "auto", skillsDirs: [] });
+  agent.messages = [
+    { role: "user", content: "你好世界" },
+    { role: "tool", content: "工具结果", tool_call_id: "c1" },
+  ];
+  const run = gw.getRun("s-ctx");
+  run.agent = agent;
+  const view = gw.sessionView("s-ctx") as unknown as { context: Record<string, unknown> };
+  expect(view.context).not.toBeNull();
+  expect(view.context.totalChars).toBe(agent.contextUsage().totalChars);
+  expect((view.context.system as number) + (view.context.skills as number) +
+    (view.context.history as number) + (view.context.toolResults as number)).toBe(view.context.totalChars);
+  // 没有 live agent 的会话不编造 context。
+  const empty = gw.sessionView("no-such-session") as unknown as { context: unknown };
+  expect(empty.context).toBeNull();
 });

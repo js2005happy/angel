@@ -7,12 +7,13 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   parseArgs, isTrusted, addTrusted, listCustomCommands, handleVault, USAGE,
+  parseCompactCommand, formatContextUsage, contextSuggestion,
 } from "../../src/cli.ts";
 import { VERSION } from "../../src/config.ts";
 
 test("CliTest.test_version_string", () => {
-  expect(VERSION).toBe("0.4.1");
-  expect(USAGE).toContain("0.4.1");
+  expect(VERSION).toBe("0.5.0");
+  expect(USAGE).toContain("0.5.0");
 });
 
 test("CliTest.test_parse_args_flags", () => {
@@ -164,7 +165,7 @@ test("CliTest.test_binary_help_and_version", () => {
   expect(help.out).toContain("nyra");
   const ver = runCli(["--version"], home);
   expect(ver.code).toBe(0);
-  expect(ver.out).toContain("0.4.1");
+  expect(ver.out).toContain("0.5.0");
 });
 
 test("CliTest.test_binary_list_providers_skills_sessions", () => {
@@ -355,4 +356,52 @@ test("CliTest.test_parse_args_creator_mode", () => {
   expect(b.subcommand).toBe("creator");
   expect(b.subArgs).toEqual(["做个番茄钟", "--yes"]);
   expect(USAGE).toContain("creator");
+});
+
+// ---- 调研报告第 3 项：上下文补齐（学 Claude Code）----
+
+test("ContextCliTest.test_parse_compact_command", () => {
+  expect(parseCompactCommand("/compact")).toEqual({ focus: "" });
+  expect(parseCompactCommand("/compact focus 部署")).toEqual({ focus: "部署" });
+  expect(parseCompactCommand("/compact focus 部署 回滚")).toEqual({ focus: "部署 回滚" });
+  // 缺关键词、未知参数：分发返回 null，REPL 打印用法，不当任务发给模型。
+  expect(parseCompactCommand("/compact focus")).toBeNull();
+  expect(parseCompactCommand("/compact foo")).toBeNull();
+  expect(parseCompactCommand("/context")).toBeNull();
+});
+
+test("ContextCliTest.test_format_context_usage_reported_and_estimated", () => {
+  const reported = {
+    system: 100, skills: 0, history: 300, toolResults: 100, totalChars: 500,
+    windowTokens: 1000, usedTokens: 125, estimated: false,
+  };
+  const out = formatContextUsage(reported);
+  expect(out).toContain("系统提示：100（20%）");
+  expect(out).toContain("技能全文：0（0%）");
+  expect(out).toContain("对话历史：300（60%）");
+  expect(out).toContain("工具结果：100（20%）");
+  expect(out).toContain("总计：500 字符");
+  expect(out).toContain("模型窗口：1,000 tokens");
+  expect(out).toContain("已用 token：125（模型实报）");
+  expect(out).not.toContain("估算");
+  // 对话历史 > 50% 时建议 /compact focus。
+  expect(out).toContain("/compact focus");
+  const estimated = { ...reported, usedTokens: 125, estimated: true, windowTokens: null };
+  const out2 = formatContextUsage(estimated);
+  expect(out2).toContain("约 125（估算：4 字符 ≈ 1 token，模型未报告用量）");
+  expect(out2).toContain("模型窗口：未配置");
+});
+
+test("ContextCliTest.test_context_suggestion_thresholds", () => {
+  const base = { system: 0, skills: 0, history: 0, toolResults: 0, totalChars: 0, windowTokens: null, usedTokens: 0, estimated: true };
+  expect(contextSuggestion(base)).toContain("无需优化");
+  expect(contextSuggestion({ ...base, system: 30, history: 30, toolResults: 40, totalChars: 100 })).toContain("均衡");
+  expect(contextSuggestion({ ...base, system: 60, history: 40, totalChars: 100 })).toContain("系统提示");
+  expect(contextSuggestion({ ...base, skills: 60, history: 40, totalChars: 100 })).toContain("技能全文");
+  expect(contextSuggestion({ ...base, toolResults: 60, history: 40, totalChars: 100 })).toContain("工具结果");
+});
+
+test("ContextCliTest.test_usage_documents_context_and_compact_focus", () => {
+  expect(USAGE).toContain("/context");
+  expect(USAGE).toContain("/compact focus");
 });

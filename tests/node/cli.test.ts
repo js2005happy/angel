@@ -32,7 +32,7 @@ test("二进制 --help / --version 不用 Key，退出 0", () => {
   expect(run(["--help"]).code).toBe(0);
   const v = run(["--version"]);
   expect(v.code).toBe(0);
-  expect(v.out).toMatch("nyra 0.4.1");
+  expect(v.out).toMatch("nyra 0.5.0");
 });
 
 test("无 Key 跑任务：打印中文设置说明，退出码 1", () => {
@@ -48,10 +48,13 @@ test("有 Key 跑模型任务：假 Key 真实调接口，120s 超时后退出�
   // 等满 provider 默认 120s 超时才报错退出 1（实测 2026-11-19：exit=1，
   // “错误：ProviderError: API 请求超时，请稍后重试”）。provider 默认超时是
   // 第 2 阶段的设计，本阶段不改；是否收紧属第 4 阶段议题。
+  // 2026-11-19 16:xx 更新：上游行为变了——DashScope 现对假 Key 直接回 HTTP 401
+  // “Incorrect API key provided”（约 1.5 秒），不再等满 120 秒超时。测试本意是
+  // “假 Key 被上游拒绝、退出码 1”，两种报错都算通过；产品代码未动。
   if (!HAS_BIN) { console.log("跳过：dist/nyra-linux-x64 未编出"); return; }
   const r = run(["--provider", "qwen", "hi"], { DASHSCOPE_API_KEY: "sk-test" });
   expect(r.code).toBe(1);
-  expect(r.out).toMatch("API 请求超时");
+  expect(r.out).toMatch(/API 请求超时|认证失败 \(HTTP 401\)/);
   expect(r.out).not.toMatch("第 2 阶段");
 }, 150000);
 
