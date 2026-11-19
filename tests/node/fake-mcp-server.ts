@@ -4,19 +4,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 export const FAKE_MCP_SERVER = `
-import { appendFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-// 诊断日志：把收到的每行请求与发出的每条回复同步追加到同目录的
-// fake-mcp.log，供测试打印到 CI 日志里，确认 need-more 请求到底到
-// 没到服务器、服务器回没回。只用于定位 Windows 上 need-more 请求
-// 确定性丢失的问题，定位完成后应移除。
-const LOG_PATH = join(dirname(fileURLToPath(import.meta.url)), "fake-mcp.log");
-const fakeLog = (kind, text) => {
-  try { appendFileSync(LOG_PATH, new Date().toISOString() + " [" + kind + "] " + text + "\\n"); } catch {}
-};
-fakeLog("start", "pid=" + process.pid + " mode=" + (process.env.FAKE_MCP_MODE || "modern"));
-process.on("SIGTERM", () => { fakeLog("exit", "SIGTERM"); process.exit(0); });
 let buf = "";
 process.stdin.setEncoding("utf-8");
 process.stdin.on("data", (chunk) => {
@@ -27,13 +14,12 @@ process.stdin.on("data", (chunk) => {
     buf = buf.slice(idx + 1);
     if (!line.trim()) continue;
     let msg;
-    try { msg = JSON.parse(line); } catch { fakeLog("recv-bad", line); continue; }
-    fakeLog("recv", line);
+    try { msg = JSON.parse(line); } catch { continue; }
     if (msg.method === "notifications/initialized") continue;
     if (msg.method === undefined) continue;
     const mode = process.env.FAKE_MCP_MODE || "modern";
-    const reply = (result) => { const out = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n"; fakeLog("send", out.trim()); process.stdout.write(out, (err) => { fakeLog("sent", "id=" + msg.id + (err ? " err=" + err.message : " ok")); }); };
-    const replyErr = (code, message, data) => { const out = JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code, message, data } }) + "\\n"; fakeLog("send", out.trim()); process.stdout.write(out, (err) => { fakeLog("sent", "id=" + msg.id + (err ? " err=" + err.message : " ok")); }); };
+    const reply = (result) => { const out = JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n"; process.stdout.write(out); };
+    const replyErr = (code, message, data) => { const out = JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code, message, data } }) + "\\n"; process.stdout.write(out); };
     if (msg.method === "server/discover") {
       if (mode === "legacy") { replyErr(-32601, "Method not found"); continue; }
       reply({ supportedVersions: ["2026-07-28"], _meta: { "io.modelcontextprotocol/serverInfo": { name: "fake-modern", version: "1" } } });
