@@ -1,3 +1,8 @@
+## 2026-11-20 — 已报告工具错误阻断后续派发（仅静态审阅）
+
+- 核对 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 与测试，检查主分支近期提交、开放 Issues/PR 和 CI 查询。发现 `inspect()` 已要求对 `result_error` 人工核查，但 `begin()` 只拒绝歧义/未知结果，允许继续派发。
+- 现在 `begin()` 额外拒绝 `reported_errors > 0`，并新增不写入新 intent 的回归测试源码。仅静态检查，未执行解析器、测试、CI、安装或实机验证。已有失败日志没有自动清除流程；须由人工对账，不得自动重试。
+
 ## 2026-11-20 — ToolJournal 报告错误的人工核查语义（静态审阅）
 
 - 审阅 `inspect()`：原 `manual_review_required` 只取决于 pending/invalid，若工具返回 `result_error` 且事件完整配对，则错误地返回 false、`review_reason=none`；但失败的外部工具可能已产生部分副作用。
