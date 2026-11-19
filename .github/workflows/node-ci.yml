@@ -72,7 +72,7 @@ jobs:
         run: bun x tsc -p tsconfig.json --noEmit
 
       - name: Run Node tests
-        run: bun test tests/node
+        run: bun test tests/node --timeout ${{ matrix.os == 'windows-latest' && 30000 || 15000 }}
 
       - name: Run Bun API probes
         run: bash scripts/run-probes.sh
