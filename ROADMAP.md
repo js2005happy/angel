@@ -1,3 +1,9 @@
+## 2026-11-19 — 祖先目录元数据拒绝诊断与 Windows 用户反馈
+
+- **仓库事实（静态审查）**：`_safe_directory()` 对祖先 `is_symlink()` / `is_junction()` 的 `OSError` 未归一到 `JournalError`；本轮补充失败关闭与模拟测试源码（未运行）。该项价值中高／实现难度低／安全风险低／依赖现有 ToolJournal；不涉及原生 Windows ACL。
+- **外部用户反馈（2026-11-07 创建，2026-11-19 核对）**：[Codex #60057](https://github.com/openai/codex/issues/60057) 报告 Windows 沙箱 `Access is denied` 且人工 ACL 调整后仍可能失败；[Codex #61154](https://github.com/openai/codex/issues/61154) 在 2026-11-12 有关于 `WRITE_DAC` 访问拒绝的讨论。两者是其他产品的个案，不证明 Angel 存在相同缺陷。
+- **工程推断及未完成排序（价值／难度／风险／依赖）**：① Windows 原生 ACL 与稳定句柄（高／高／高／Win32 API 设计及 Windows 实机验证）；② 跨进程日志原子事务（高／高／高／锁与崩溃协议）；③ 外部副作用独立凭证（高／高／高／可信工具对账）；④ 人工审批安全续跑（高／高／高／可信事务和审批）；⑤ 成本硬停止（高／中／中／可靠 usage 计量）。继续保持无强制第三方依赖、未知结果不自动重放，且不合并 main。
+
 ## 2026-11-19 — 回退路径元数据探测诊断与外部反馈
 
 - **仓库事实（静态审查）：** `ToolJournal._records()` 的路径回退分支在 `Path.is_symlink()` 元数据探测时可能传播原始 `OSError`；本轮改为 `JournalError` 并保留异常链，新增模拟测试源码，未运行。
