@@ -626,6 +626,9 @@ class ToolJournal:
             "reported_ok": 0 if invalid else sum(x["outcome"] == "result_ok" for x in calls.values()),
             "reported_errors": 0 if invalid else sum(x["outcome"] == "result_error" for x in calls.values()),
             "journal_ambiguous": invalid,
+            # Read-only reconciliation signal: never imply that an absent
+            # pending intent proves external effects or authorizes replay.
+            "manual_review_required": bool(pending or invalid),
             "execution_verified": False,
             "safe_to_auto_resume": False,
             "reason": "事件只记录元数据；未知结果和外部副作用必须人工对账，不自动重放",
