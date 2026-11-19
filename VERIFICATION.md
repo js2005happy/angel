@@ -1,3 +1,8 @@
+## 2026-11-19 — POSIX 末次枚举异常分类（仅静态）
+
+- 源码静态确认 POSIX 读取的第二次 `os.listdir(directory_fd)` 原先未分类 `OSError`；现在明确失败关闭为 `JournalError` 并保留异常链。新增 `test_posix_final_dirfd_enumeration_denied_fails_closed`，仅编写未执行。
+- 未运行测试、CI 或 Windows 实机检查。模拟测试依赖 POSIX `dir_fd` 支持；Windows ACL、稳定目录句柄和跨进程事务仍未完成。
+
 ## 2026-11-19 — Windows 写入句柄 reparse 检查（仅静态）
 
 - 静态核对：`_verify_written_windows_entry()` 原先只核验路径 `os.lstat()` 的 reparse 属性，现先调用 `_reject_windows_event_reparse(written)`，拒绝已打开写入句柄报告的重解析点；仅在 `os.name == "nt"` 生效。
