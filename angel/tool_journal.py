@@ -343,7 +343,12 @@ class ToolJournal:
             # Detect entries added, removed or renamed while reading. This
             # is a snapshot consistency check, not a cross-process lock.
             if directory_fd is not None:
-                final_names = os.listdir(directory_fd)
+                try:
+                    final_names = os.listdir(directory_fd)
+                except OSError as exc:
+                    # A failed final snapshot must not escape as an unrelated
+                    # filesystem error or be mistaken for a complete journal.
+                    raise JournalError("无法复核日志目录枚举；拒绝信任日志快照") from exc
             else:
                 # Path fallback needs a second enumeration as well:
                 # directory identity does not detect newly added entries.
