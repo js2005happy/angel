@@ -12,6 +12,7 @@ import { appendMemory } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
 import { evaluate, parseRules, type RuleSet } from "./permissionRules.ts";
+import { runSeatbelt, SeatbeltUnavailableError } from "./seatbelt.ts";
 import { EvidenceStore } from "./evidence.ts";
 import { frameUntrusted, sanitizeUntrustedText, wrapUntrusted } from "./untrusted.ts";
 import { CheckpointStore, CheckpointError } from "./checkpoints.ts";
@@ -926,6 +927,21 @@ async function toolShell(ctx: ToolContext, command: string, cwd?: string | null,
     sandbox = resolveShellSandbox(ctx);
   } catch (err) {
     return `错误：沙箱配置有问题，命令未执行：${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (sandbox !== null && sandbox.level === "seatbelt") {
+    // P0-6：macOS Seatbelt。与 bwrap 分支同款语义：失败即 fail-closed，绝不裸奔。
+    try {
+      const result = await runSeatbelt(command, {
+        workdir: resolvedCwd, allowNet: sandbox.allowNet,
+        mode: sandbox.mode as "read-only" | "workspace-write", timeout,
+      });
+      return formatSandboxResult(result);
+    } catch (err) {
+      if (err instanceof SeatbeltUnavailableError) {
+        return `错误：Seatbelt 启动失败，命令未执行（未降级为裸奔）：${err.message}`;
+      }
+      return `错误：Seatbelt 执行失败，命令未完成：${err instanceof Error ? err.message : String(err)}（未降级为裸奔；改用 --sandbox local 可显式退出 OS 沙箱）`;
+    }
   }
   if (sandbox !== null && sandbox.level === "bwrap") {
     try {
