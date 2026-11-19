@@ -92,7 +92,7 @@ chmod +x nyra-linux-x64
 ./nyra-linux-x64 doctor     # 中文自检：Key、网络、目录权限、磁盘
 ```
 
-0.4.1 的 Node 二进制是完整版（agent 核心、网页界面、插件市场、创造模式都在内），不再有“预览版只含部分功能”的限制。
+0.5.0 的 Node 二进制是完整版（agent 核心、网页界面、插件市场、创造模式都在内），不再有“预览版只含部分功能”的限制。
 
 > 注意：带 Node 二进制的 Release 随 `v*` 标签发布，在第一个这样的 Release 出现之前，先本地构建：`bash scripts/build-binaries.sh --only linux-x64`（产物在 `dist/`）。
 
@@ -621,7 +621,7 @@ bun x tsc -p tsconfig.json --noEmit   # 类型检查
 ## 项目结构
 
 ```
-├── src/               Node 运行时（0.4.1 唯一实现，Bun --compile 打包成单文件二进制）
+├── src/               Node 运行时（0.5.0 唯一实现，Bun --compile 打包成单文件二进制）
 │   ├── cli.ts         入口：参数解析 + 交互 REPL + 全部子命令
 │   ├── agent.ts       agent 主循环（plan → 工具调用 → 汇报）+ 模式切换（含创造模式技能）
 │   ├── tools.ts       24 个工具 + 审批 + shell 黑名单
