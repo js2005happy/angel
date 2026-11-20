@@ -66,6 +66,21 @@ Codex 决定，Nyra 从配置里看不到窗口，走 unknown 分支说明原因
 - 内置表是发版时的人工快照，厂商改数值后会过期——过期了就靠刷新机制纠正，
   见下节。
 
+## 视觉支持（看图）
+
+`supportsVision`（`src/modelCatalog.ts`，缺口 16）：模型能不能看图。`true`
+确认支持、`false` 确认不支持、没填就是没核实——没核实的走模型名启发式兜底，
+启发式也不认的按看不了图拒绝（宁可拒绝，不假装能看）。
+
+当前确认支持的：grok-4.3、grok-4.5、gpt-4o-mini、gemini-2.5-flash、
+gemini-2.5-pro。确认不支持的（纯文本模型）：DeepSeek 两款、Hermes 两款、
+Qwen 全系、Kimi k2 系列、GLM-4.5/4.7-flash、Codestral、Groq 三款、
+Together 三款。没核实的（kimi-k3、glm-5.3/5.2、mistral-small/medium/
+large-latest）留空走启发式。
+
+`nyra --image <图片> "任务"` 前先过这一关：模型看不了图直接拒绝并告诉你
+换哪个模型，不烧 token。详见 `docs/vision.md`。
+
 ## 刷新机制：`nyra models refresh`
 
 ```
