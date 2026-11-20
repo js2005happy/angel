@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Node claim 存储目录预检）
+
+- `scripts/node_tool_claim.ts`：拒绝相对 claim 路径、符号链接/非目录祖先及 POSIX 非当前用户所有或权限过宽的叶目录；不自动修改权限。仅静态审阅，未运行测试或 CI，尚未接入运行时；Windows reparse/路径竞态与跨平台持久化仍待解决。
+
 ## 未发布（2026-11-20，Node operation claim 原语，未集成）
 
 - 新增 `scripts/node_tool_claim.ts`：Node 内置 fs/crypto 的排他 claim 文件与失败关闭 unknown 语义；不自动回收或重放，尚未接入主运行时。静态审阅，未运行测试或 CI，不能宣称解决工具重复执行。
