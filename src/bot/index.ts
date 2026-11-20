@@ -48,6 +48,7 @@ import { processAttachments } from "./attachments.ts";
 import { DedupStore, QuotaStore } from "./dedupAndQuota.ts";
 import { splitMessage } from "./formatter.ts";
 import { BotNotifier } from "./notifier.ts";
+import { computerResourceSummary, handleComputer, listComputers } from "./computer.ts";
 import { botToolRedlineVerdict, handleBusinessRedlines } from "../businessRedlines.ts";
 
 /** 给 schedule daemon / task worker 共用（buildNotifierFromConfig 的返回类型）。 */
@@ -818,6 +819,31 @@ function removePid(home: string, channel: "telegram" | "discord"): void {
 
 // -- CLI：nyra bot telegram <start|stop|status> ----
 
+/** `nyra bot status`：渠道（Telegram/Discord 运行态 + token 配置）+ 电脑总览（数量、醒/休眠、已声明内存）。 */
+export function handleBotStatus(home: string): number {
+  const resolvedHome = home || resolveHome();
+  const config = loadConfig(resolvedHome);
+  for (const channel of ["telegram", "discord"] as const) {
+    const label = channel === "telegram" ? "Telegram" : "Discord";
+    const pid = readPid(resolvedHome, channel);
+    const alive = pid !== null && pidAlive(pid);
+    const resolveToken = channel === "telegram" ? resolveTelegramToken : resolveDiscordToken;
+    const token = resolveToken(resolvedHome);
+    process.stdout.write(`${label} Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}，Token：${token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : "未配置"}\n`);
+  }
+  const summary = computerResourceSummary(resolvedHome);
+  process.stdout.write(`电脑：${summary.computers} 台（醒着 ${summary.active}，休眠 ${summary.sleeping}），已声明内存 ${summary.declaredMemoryMb} MB / 上限 ${summary.memoryCapMb} MB（系统 ${summary.systemMemoryMb} MB 的 80%）\n`);
+  if (summary.cpuOverSubscribed) {
+    process.stdout.write(`注意：CPU 已超配（醒着的电脑共声明 ${summary.declaredCpuPercent}%，${summary.cpuCores} 核共 ${100 * summary.cpuCores}%），跑满时会互相抢。\n`);
+  }
+  const computers = listComputers(resolvedHome);
+  for (const c of computers) {
+    process.stdout.write(`- ${c.id}（${c.name}，agent ${c.agent}）— ${c.state === "active" ? "醒着" : "休眠"}，${c.isolation === "dedicated" ? "独占" : "共享"}\n`);
+  }
+  process.stdout.write("详情见 docs/bot.md 与 docs/bot-computer.md。\n");
+  return 0;
+}
+
 export async function handleBot(argv: string[], home: string): Promise<number> {
   const resolvedHome = home || resolveHome();
   const channel = argv[0];
@@ -826,9 +852,17 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
   if (channel === "redlines") {
     return handleBusinessRedlines(argv.slice(1), resolvedHome);
   }
+  // 缺口 42 第一批：每 Bot 一台持久电脑（`nyra bot computer ...`）。
+  if (channel === "computer") {
+    return handleComputer(argv.slice(1), resolvedHome);
+  }
+  // 缺口 42 第一批：`nyra bot status`——渠道 + 电脑总览。
+  if (channel === "status") {
+    return handleBotStatus(resolvedHome);
+  }
   const action = argv[1];
   if (channel !== "telegram" && channel !== "discord") {
-    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
+    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>\n       nyra bot status\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
     return 2;
   }
   if (!action) {
