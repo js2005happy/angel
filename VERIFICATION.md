@@ -1,3 +1,9 @@
+## 2026-11-21 — Linux claim 同 fd 名称复核（仅静态审阅）
+
+- 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim；对照 main 的 src/agent.ts 与 src/tools.ts、近期提交和开放 Issues/PR。前一提交 combined status 与 PR-triggered workflow 查询均为空，不能视为 CI 通过。
+- 静态核对：claim 写后与目录 fsync 后两处名称检查现在均通过已打开目录描述符对应的 `/proc/self/fd` 路径进行；目录 fd 保持打开直至最后检查。未执行任何代码、测试、编译、CI 或故障注入。
+- 未验证 procfs 可信挂载、容器环境、异常清理及文件系统持久性；组件未接入真实 Node 工具派发，不保证 exactly-once。
+
 ## 2026-11-21 — Linux claim 同一目录 fd 同步（仅静态审阅）
 
 - 读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python Agent/Tools；核对 main 最新提交、开放 Issues/PR。原代码创建 claim 后关闭 directoryFd，随后按路径重新打开目录 fsync；现改为保留原目录 fd 直到目录同步和最终名称核对结束，失败关闭。
