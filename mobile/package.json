@@ -1,0 +1,20 @@
+{
+  "dependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/core": "8.6.2"
+  },
+  "description": "Nyra 手机端：Capacitor 壳，启动器页面连电脑上 Nyra 的手机页（/m）。工具仍在电脑上执行。",
+  "devDependencies": {
+    "@capacitor/assets": "4.0.0",
+    "@capacitor/cli": "8.6.2"
+  },
+  "name": "nyra-mobile",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "assets": "bun scripts/make-assets.ts",
+    "sync": "bun x cap sync android",
+    "build:apk": "bun x cap sync android && cd android && ./gradlew assembleDebug --no-daemon"
+  },
+  "version": "0.5.2"
+}
