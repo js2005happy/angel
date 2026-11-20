@@ -59,6 +59,9 @@ export interface ConnectorPermissionDeclaration {
   alwaysRequireApproval: string[];
   /** 永远禁做的操作（引用缺口 51 红线表；本批先写连接器自己的禁做清单）。 */
   alwaysForbidden: string[];
+  /** 缺口 51：本连接器的默认红线表 id（见 src/businessRedlines.ts 的
+   * DEFAULT_CONNECTOR_REDLINES；声明与执行共用同一张表，不各写一份）。 */
+  redlineTable: string;
 }
 
 /** 连接器目录：先接 3 个做深（缺口 44 定义）。Gmail（缺口 6）与 Shopify
@@ -90,6 +93,7 @@ export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
     dataAccessed: ["邮件元数据（发件人、主题、时间、摘要）", "邮件正文（仅按 id 读取时）", "账号邮箱地址", "附件（文件名、大小；内容仅按 id 下载时）", "标签列表"],
     alwaysRequireApproval: ["gmail_send", "gmail_label", "gmail_unlabel", "gmail_mark_read", "gmail_mark_unread", "gmail_trash"],
     alwaysForbidden: ["批量群发（一次只发一封）", "永久删除邮件（只支持进回收站）", "转发给外部", "改他人标签", "越权访问他人邮箱"],
+    redlineTable: "gmail",
   },
   {
     id: "shopify",
@@ -110,6 +114,7 @@ export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
     dataAccessed: ["店铺商品（标题、价格、库存数）", "订单（编号、金额、状态，不含客户邮箱与地址）", "库存水平（按地点与商品）"],
     alwaysRequireApproval: ["改价", "改库存", "下单", "退款", "发折扣码"],
     alwaysForbidden: ["改价", "改库存", "退款", "下单", "删单", "改客户支付信息"],
+    redlineTable: "shopify",
   },
   {
     id: "slack",
@@ -128,6 +133,7 @@ export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
     dataAccessed: ["频道列表（频道名、成员数）", "频道消息（消息文本、发送者 id、时间）", "workspace 名称"],
     alwaysRequireApproval: ["发消息", "发审批卡"],
     alwaysForbidden: ["删消息", "改频道", "管理成员", "删 workspace 数据"],
+    redlineTable: "slack",
   },
 ];
 
