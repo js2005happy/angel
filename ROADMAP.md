@@ -1,3 +1,11 @@
+## 2026-11-20 — P0 运行时派发链定位（静态证据，尚未改动执行器）
+
+- **仓库事实（2026-11-20）**：`js2005happy/angel` 重定向至 `js2005happy/nyra`；开发分支仍是 Python `angel/agent.py` → `angel/tool_journal.py`（显式可选），而 main 的 `package.json` 以 `src/cli.ts` 为构建入口，`src/agent.ts` 导入 `executeTool`/`executeToolIdempotent`，`src/tools.ts` 定义工具执行及审批。main 的 `src/tools.ts` 注释明确“worker 桥与 Python 运行时已移除”。**这是源码路径归属证据，不是运行时动态调用验证**。
+- **近期变更（事实）**：[main 8d48371](https://github.com/js2005happy/nyra/commit/8d4837107411a1c7a87ef6e291577bf8c61f533f)（2026-11-20 02:38 UTC）已经新增 JSON 出口统一契约测试；[PR #105](https://github.com/js2005happy/nyra/pull/105) 当前开放，正在覆盖任务→工具→落盘→结论端到端链路。避免重复开发这两项。开放 Issue 搜索为空；提交状态接口返回空列表，**不能推断 CI 通过**。
+- **公开用户需求证据**：PR #105（2026-11-20 检索时开放）描述“模型声称写文件”与“文件实际存在”的验收差距；这是项目维护者的工程需求陈述，**不是独立用户调查或行业频率证据**。另参考 [Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19），用户请求等待/恢复可观察性，属于外部个案。
+- **工程推断 / 候选排序（价值／难度／安全风险／依赖）**：P0 明确 Node 工具派发到结果持久化的完整路径与并发所有权边界（高／中／低／只读源码）；P0 Node 运行时原子所有权和崩溃 unknown 处理（高／高／高／前项、跨平台锁）；P1 拒绝原因结构化（高／中／中／权限路径）；P1 副作用回执（高／高／高／适配器）；P2 等待与审批续跑（高／高／高／所有权）；P2 预算硬停止（高／中／中／可信用量）。
+- **本轮决定**：Python 分支与 Node main 的执行路径不相通，不能在 Python 上增加检查后宣称保护 Node。虽然已定位 Node 入口文件，尚未完整审计 `executeToolIdempotent`、后台网关及崩溃落盘协议；在禁止运行测试的约束下，不安全地改变派发语义不符合范围清楚的增量要求。先保留阻塞，不自动重放未知工具结果。
+
 ## 2026-11-20 — P0 运行时归属核实：Python 开发分支与 Node 主分支分离（仅静态）
 
 - **仓库事实（2026-11-20）**：开发分支 README 明确 `python3 -m angel`、Python 标准库实现，`angel/agent.py` 显式引入 `ToolJournal`；默认主分支 README 标题为 **Nyra**，宣称 Node 单文件二进制与 `nyra` CLI。主分支最新检索提交 [24b6bd9](https://github.com/js2005happy/nyra/commit/24b6bd9ce0b1a605d56604f229fb91fd0b99f4db) 是 TypeScript CLI `savings --json`。因此**已确认两分支文档描述的是不同运行时**；尚未核实 Node 工具派发源码及其所有权实现，不能声称 Python ToolJournal 保护 Node 运行时。开发分支 `package.json` 不存在（查询返回 NOT_FOUND），不能以此证明整个仓库不存在其他 JS 文件。
