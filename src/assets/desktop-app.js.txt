@@ -325,8 +325,10 @@ function turnDuration(v){
 }
 function renderFeed(v){
   const all = v.messages || [];
-  const msgs = all.filter(m => m.role !== 'system').concat(liveTurn(v));
   const pend = S.approvals.find(a => a.session === S.session) || null;
+  // 正在等审批的那一步由审批卡表示，还没执行，不在步骤里提前写成“运行 / 编辑”
+  const live = liveTurn(v); if (pend && live.length && live[live.length - 1].tool_calls) live.pop();
+  const msgs = all.filter(m => m.role !== 'system').concat(live);
   const card = pend ? S.card[pend.id] || {} : {};
   const key = [msgs.length, msgs.length ? textOf(msgs[msgs.length - 1]).length : 0, v.status, v.next || 0, pend ? pend.id + (card.open || '') + (card.scope || '') : '', S.pending].join(':');
   const fu = msgs.find(m => m.role === 'user'); const newTitle = fu ? textOf(fu) : (S.pending || '');
