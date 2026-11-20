@@ -24,7 +24,7 @@ export interface OperationClaim {
 
 /** Preflight only: does not bind a stable directory handle against races. */
 function checkPrivateDirectory(directory: string): void {
-  if (!isAbsolute(directory)) throw new ClaimUnavailable();
+  // Windows junctions and other reparse points cannot be reliably rejected\n  // by this path-based lstat preflight. Disable claims rather than accept a\n  // potentially redirected storage location until handle-based checks exist.\n  if (process.platform === "win32") throw new ClaimUnavailable();\n  if (!isAbsolute(directory)) throw new ClaimUnavailable();
   let current = resolve(directory);
   const leaf = current;
   for (;;) {
