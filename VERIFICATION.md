@@ -1,3 +1,9 @@
+## 2026-11-20 — Node claim 目录预检（静态审阅）
+
+- 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 和 Node claim；核对主仓库近期提交及开放 Issues/PR。
+- `checkPrivateDirectory` 静态审阅：拒绝相对路径；从叶目录逐层 lstat 至根，拒绝符号链接/非目录；POSIX 叶目录要求当前 UID 所有、权限位不允许 group/other。未执行该函数。
+- **未运行测试、编译、脚本、CI**；未进行 Windows/Linux 实测。Windows junction/reparse point、祖先目录并发替换、目录 fsync 和外部文件系统仍可能不安全；claim 仍未接入真实工具执行器，不能视为防重放保证。
+
 ## 2026-11-20 — Node operation claim 原语（仅静态审阅）
 
 - 读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python Agent/ToolJournal/审计脚本，以及 main 的 package.json、src/agent.ts、src/tools.ts；检查最近提交、开放 Issues/PR、上一提交状态（statuses 为空，不等于 CI 通过）。
