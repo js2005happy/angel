@@ -1,3 +1,11 @@
+## 2026-11-20 — P0 运行时归属核实：Python 开发分支与 Node 主分支分离（仅静态）
+
+- **仓库事实（2026-11-20）**：开发分支 README 明确 `python3 -m angel`、Python 标准库实现，`angel/agent.py` 显式引入 `ToolJournal`；默认主分支 README 标题为 **Nyra**，宣称 Node 单文件二进制与 `nyra` CLI。主分支最新检索提交 [24b6bd9](https://github.com/js2005happy/nyra/commit/24b6bd9ce0b1a605d56604f229fb91fd0b99f4db) 是 TypeScript CLI `savings --json`。因此**已确认两分支文档描述的是不同运行时**；尚未核实 Node 工具派发源码及其所有权实现，不能声称 Python ToolJournal 保护 Node 运行时。开发分支 `package.json` 不存在（查询返回 NOT_FOUND），不能以此证明整个仓库不存在其他 JS 文件。
+- **本仓库事实**：主分支近期 [#97](https://github.com/js2005happy/nyra/commit/6dfd7f5ccea6d3e6a06d028fd2b7bb419b77a28e) 已增加权限规则静态体检，[#96](https://github.com/js2005happy/nyra/commit/259403d0abc19260c8230991dfee65c92d70dc25) 修复 URL 规则不命中；避免重复实现。开放 Issue/PR 搜索本轮为空；搜索结果不是全部 CI 运行记录。
+- **外部反馈（事实，非 Angel 复现）**：[Codex #62611](https://github.com/openai/codex/issues/62611)，2026-11-19 创建，请求长 CI/额度等待时事件驱动休眠、保存子任务状态、可选安全续跑；[Codex #58900](https://github.com/openai/codex/issues/58900)，用户报告 Windows Full access 下工具被策略拒绝但缺乏可操作解释。均为公开个案，不能推断发生率。
+- **工程推断与排序（价值／难度／风险／依赖）**：P0 Node 当前真实工具派发入口、权限门与分支归属审查（高／中／低／读取 Node 源码）；P0 跨进程原子执行所有权与崩溃对账（高／高／高／入口确认、跨平台锁协议）；P1 工具拒绝原因结构化、保密提示（高／中／中／权限门）；P1 可信副作用回执（高／高／高／适配器）；P2 事件驱动等待与可选安全续跑（高／高／高／所有权与审批）；P2 预算硬停止（高／中／中／可信计量）。
+- **安全阻塞**：不得把 Python 旧分支上的更多快照检查当作 Node 主运行时安全增量；未经运行时归属及锁协议核实，不提交会改变派发/恢复行为的代码。此轮仅提交审查文档，未运行测试、CI、安装、合并或发布。
+
 ## 2026-11-20 — P0 原子执行所有权：分支架构阻塞与新证据（仅静态）
 
 - **仓库事实（2026-11-20 查阅）**：本开发分支的 ToolJournal 位于 Python `angel/tool_journal.py`，`begin()/finish()` 依赖多次非原子的日志快照，最后一次检查与真实工具派发之间仍有竞态；默认主分支近期提交 [1c4389e](https://github.com/js2005happy/nyra/commit/1c4389e33e06db3a3db68a23ff1fd2f76abaa9ec) 则修改 TypeScript `src/` 运行时。两条代码路径是否仍共同投入使用尚未核实；不得在未经架构归属确认的旧路径上宣称实现当前主运行时的安全门禁。
