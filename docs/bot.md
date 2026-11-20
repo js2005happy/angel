@@ -1,11 +1,12 @@
-# Bot 方向：Telegram 渠道（Phase 1 骨架 + Phase 2 角色与审批）
+# Bot 方向：Telegram 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
 
 用户 2026-11-20 给的双场景架构：场景 A（外部社群/客服/办公 IM Bot）
 与场景 B（个人/业务自动化监控与任务 Bot）复用同一套 Bot Core（会话
 队列 + 幂等去重 + 权限策略 + 模型/工具执行 + 成本计量）。Phase 1 做
 了核心骨架 + Telegram 渠道；Phase 2 做了 router（角色与工具白名单）
-与 approvalBridge（聊天内审批）+ 用量硬顶；场景 B 的主动推送
-（notifier）是 Phase 3。
+与 approvalBridge（聊天内审批）+ 用量硬顶；Phase 3 做了场景 B 的主
+动推送（notifier：Heartbeat 静默巡查 + Watch 文件变化 + 任务结果推
+送）与附件处理（文本文档提取、图片只记元信息）。
 
 ## 快速开始
 
@@ -25,8 +26,12 @@ Telegram getUpdates 长轮询 → 归一化 InboundMessage
   → 确定性指令优先（/help、/status、/new、/stop、/model、/approve、/reject）
   → 群聊 @ 过滤（mentionOnly 默认开，没 @ 直接忽略）
   → 配额（单用户/天、单群聊/分钟、当天 token 预算）
+  → 月度硬顶预检（超了直接回绝，不调模型）
+  → 附件处理（Phase 3：文本文档提取进上下文，图片只记元信息）
   → 会话排队（同一 sessionKey 串行，不同会话并行）
-  → 先发“处理中…”占位 → Agent 执行（readonly）→ 分片回发（编辑占位 + 续发）
+  → 先发“处理中…”占位 → Agent 执行（画像定 mode）→ 分片回发（编辑占位 + 续发）
+（另有一条不进主链路的推送线：notifier 的 Heartbeat 巡查 + Watch +
+任务结果推送，见下文“Phase 3：主动推送”。）
 ```
 
 会话 key：群聊按 `telegram:<chatId>:<threadId>`，私聊按
@@ -94,6 +99,54 @@ Bot 人设。画像变了重建 Agent（会话记忆还在，换的是 mode 与�
 - 拒绝的审批不扣 token（只记审计与事件）；放行后执行的花费照常进
   用量账本（delta 制，与 CLI 同口径）。
 
+## Phase 3：主动推送（notifier）+ 附件处理
+
+### 主动推送（场景 B）
+
+notifier 默认全关，三个条件缺一个就不推：`bot.notifier.enabled`
+显式开 + 配了 `bot.owner`（只有机主能开）+ 配了
+`bot.notifier.target_chat_id`（推去哪个会话：私聊填 owner 的用户
+id，群聊填群 id）。推三类东西，内容只写结论与数字，不含用户原文
+与文件内容：
+
+- **任务结果**：定时任务（`nyra schedule daemon` 跑的）与队列任务
+  （`nyra task worker` 跑的，含事件触发进队列的任务）跑完后推送。
+  `notify_tasks` 决定推什么：`failures`（默认，只推失败）、`all`
+  （成功也推）、`none`（不推）。
+- **Heartbeat 静默巡查**：Bot 轮询进程里按
+  `heartbeat_interval_ms`（默认 5 分钟）巡查一次，无异常不打扰，
+  有异常才推：本月花费达到上限的 `monthly_spend_warn_ratio`（默认
+  0.8）或已用完、当天 token 预算用完、会话队列积压超过
+  `queue_depth_warn`（默认 5 条）、有审批超过
+  `pending_approval_warn_minutes`（默认 10 分钟）没人批。同一条件
+  在 `notify_cooldown_ms`（默认 1 小时）内只推一次，条件升级（如月
+  度比例从 0.8 档升到用完）立刻再推。
+- **Watch 文件变化**：`watches` 里每个监控项是一条 `{id, label,
+  file}`，文件内容哈希变了就推一次「监控目标「label」发生了变化」，
+  只报“变了”，不含文件内容、不读内容进推送；第一次见到文件只记基
+  线，不推。状态落盘 `~/.nyra/bot-notify-state.json`（0600、原子写）。
+
+每次推送记一行 `bot-audit.jsonl`（`notify:<kind>`）与运行事件
+`bot_notify_sent`；Watch 变化另记 `bot_watch_changed`（只记前后哈
+希）。网关内置的定时任务守护（`gw schedule`）本批不接 notifier，
+任务结果推送只走 `nyra schedule daemon` 与 `nyra task worker` 两个
+进程——网关进程里跑的任务结果仍进审阅队列与收件箱，不推 Telegram。
+
+### 附件处理
+
+- 图片（PNG/JPEG/WebP/GIF，按 magic bytes 认，不信扩展名）：下载后
+  只记元信息（尺寸、大小），**本批没有接视觉模型**，回复里老实说
+  “暂不支持看图”，不进模型、不假装看懂。
+- 文档：只提取纯文本类（.txt/.md/.json/.csv/.log/.yaml/.yml），内
+  容拼进发给 Agent 的提示词（单个文档最多取
+  `attachment_text_chars` 字，默认 20000，超了截断并注明）；pdf、
+  docx、可执行文件等一律不碰、不解析、不执行。
+- 上限与失败：单个附件超过 `attachment_max_bytes`（默认 10MB）直接
+  跳过；一条消息最多处理前 5 个附件；下载失败、超限、类型不在白名单、
+  空文件都回一句明确说明，不静默丢弃。附件下载走 `getFile` 拿到的临
+  时地址，处理完立即删临时文件（临时目录 `mkdtemp`，0600），不落盘
+  留痕；附件处理在配额与月度预检之后，光发附件绕不过限额。
+
 ## 配额与成本
 
 默认配额（config.json 的 `bot` 一节可改）：
@@ -122,7 +175,10 @@ provider，绝不自动换模型。
 - 去重与配额记录在 `~/.nyra/bot-dedup.json` / `~/.nyra/bot-quota.json`
   （0600、原子写）；每条处理过的消息写一行 `~/.nyra/bot-audit.jsonl`
  （只记 channel、sessionKey、messageId、结论、字数、花费，不记用户原文）。
-- 附件（图片/文件）Phase 1 不下载、不解析，只回一句说明。
+- 附件下载到临时目录处理完即删（不落盘）；图片不进模型（无视觉接线，
+  只记元信息）；文本文档提取的内容进 Agent 上下文，超长截断并注明。
+- 主动推送默认全关（须显式开 + 配 owner + 配目标会话）；推送只写结
+  论与数字，不含用户原文与文件内容；Watch 只记哈希。
 
 ## 配置（config.json 的 `bot` 一节）
 
@@ -143,6 +199,19 @@ provider，绝不自动换模型。
     "approval_chat_id": null,
     "chat_system_prompts": {},
     "profiles": {},
+    "notifier": {
+      "enabled": false,
+      "target_chat_id": null,
+      "heartbeat_interval_ms": 300000,
+      "notify_cooldown_ms": 3600000,
+      "notify_tasks": "failures",
+      "monthly_spend_warn_ratio": 0.8,
+      "queue_depth_warn": 5,
+      "pending_approval_warn_minutes": 10,
+      "watches": []
+    },
+    "attachment_max_bytes": 10485760,
+    "attachment_text_chars": 20000,
     "telegram": { "enabled": false, "username": null }
   }
 }
@@ -157,6 +226,16 @@ Phase 2 的审批指令认人；`owner` 是机主的 id（只认一个），`mem
 覆盖系统提示词、最大步数与超时（例：`"profiles": {"guest":
 {"maxTurns": 4}}`）。`timeout_ms` 是单条消息从入队到出结果的超时
 （默认 120 秒；超时按取消处理）。
+`notifier` 一节（Phase 3，见上文“主动推送”）：`enabled` 默认 false；
+`target_chat_id` 是推送目标会话的 id；`heartbeat_interval_ms` 默认
+300000（5 分钟，夹在 60 秒到 1 小时之间）；`notify_cooldown_ms` 默认
+3600000（1 小时，夹在 60 秒到 24 小时之间）；`notify_tasks` 是
+`failures`（默认）/`all`/`none`；`monthly_spend_warn_ratio` 默认
+0.8（夹在 0.1 到 1 之间）；`queue_depth_warn` 默认 5；
+`pending_approval_warn_minutes` 默认 10；`watches` 是
+`{id, label, file}` 的列表（`file` 须是绝对路径）。`attachment_max_bytes`
+默认 10485760（10MB，夹在 1KB 到 50MB 之间）；`attachment_text_chars`
+默认 20000（夹在 1000 到 100000 之间）。
 
 ## 已知局限（诚实边界）
 
@@ -174,3 +253,6 @@ Phase 2 的审批指令认人；`owner` 是机主的 id（只认一个），`mem
 - `nyra bot telegram start` 是前台进程（pid 记在
   `~/.nyra/bot-telegram.pid`）；机器重启后要重新启动，常驻化（系统
   服务/守护进程）是以后的一批。
+- 附件：图片没有接视觉模型（只记元信息）；pdf/docx 等非纯文本文档不
+  解析；网关内置的定时任务守护不推 Telegram（任务结果推送只走
+  `nyra schedule daemon` 与 `nyra task worker`）。
