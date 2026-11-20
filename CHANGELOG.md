@@ -1,6 +1,8 @@
 # Nyra 变更记录
 
-## 未发布（0.5.2）
+## 未发布（0.5.2：内置机器人市场 + 授权漏洞挖掘 + 缺口 6–11、19、20、29 补齐 + 品牌与终端标志）
+
+- 版本升到 0.5.2（五处一致：`src/config.ts` 的 `VERSION`、根 package.json、desktop/package.json、desktop/src-tauri/tauri.conf.json、desktop/src-tauri/Cargo.toml 与 Cargo.lock 里的 `nyra-desktop` 条目；`src/sandbox.ts` 的 e2b 报错文案与测试断言同步 0.5.2；安装文档里当前版本期望输出同步 0.5.2，历史叙述保留 0.5.1 不动）。
 
 - 终端欢迎屏标志全部用像素字符画（2026-11-20）：所有彩色终端都画 18×18 像素的半块字符标志（18 列 × 9 行，比之前的 14 列 × 7 行多 2 行，光标尾巴与箭头轮廓更接近原图），不再在 kitty / Ghostty / iTerm2 / WezTerm 里画内联图片（去掉图片协议探测、转义序列、延后补画、`NYRA_IMAGES`、`src/termMarkImage.ts` 与 `scripts/make-term-mark.ts`）；覆盖率常量仍由测试按 `src/brandMark.ts` 现算核对。浅色 / 16 色 / NO_COLOR 单色版、ASCII / 窄屏 / 非 TTY 单行回退不变。截图 `tui-mark3.png`（深色 + 浅色）。
 - 终端欢迎屏改用代码拼的标志（2026-11-20）：去掉鼠尾草绿渐变块字 NYRA，换成圆盘 + 光标标志（新模块 `src/termMark.ts`）：按 `src/brandMark.ts` 的几何光栅化成 14×14 覆盖率网格（预计算常量，测试用 brandMark 现算比对），半块字符 ▀▄█ 每格上下两像素画成 14 列 × 7 行；深色终端 256 色 / truecolor 用 fg/bg 抗锯齿（浅色圆盘 #F5F5F7，光标露出终端底色），浅色终端（COLORFGBG 或 NYRA_THEME=light）/ 16 色 / NO_COLOR 用不带颜色的单色版；不能画块字符（老 conhost、NYRA_ASCII）、窄于 40 列或非 TTY 退回单行 “✻ Nyra”。右侧是纯文字 “Nyra 版本” + 介绍。截图 `tui-mark-*.png`，前后对比 `tui-mark-cmp.png`。
