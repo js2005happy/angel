@@ -1,3 +1,8 @@
+## 未发布（2026-11-20，静态审计证据 v2）
+
+- `scripts/audit_runtime_boundary.py` 输出源码引用行号和读取状态，限制单文件大小；不可读、符号链接、超限不再被误报为缺失。JSON schema 升至 v2；不运行目标代码，不增加依赖。
+- 同步 ROADMAP 与 VERIFICATION；未执行测试、CI、安装或发布，不宣称跨进程锁已实现。
+
 ## 2026-11-20 — 静态运行时边界审计（开发分支）
 
 - 新增 `scripts/audit_runtime_boundary.py`：标准库、只读、机器可读的 Python/Node 两工作树入口差异审计工具，防止把旧 Python ToolJournal 的安全语义误报为 Node 主运行时保护。
