@@ -10,7 +10,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fsyncSync, lstatSync, openSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export class ClaimUnavailable extends Error {
   constructor() { super("Operation already claimed or claim storage is unsafe; manual reconciliation required"); }
@@ -22,15 +22,31 @@ export interface OperationClaim {
   state: "unknown";
 }
 
+/** Preflight only: does not bind a stable directory handle against races. */
+function checkPrivateDirectory(directory: string): void {
+  if (!isAbsolute(directory)) throw new ClaimUnavailable();
+  let current = resolve(directory);
+  const leaf = current;
+  for (;;) {
+    let info;
+    try { info = lstatSync(current); } catch { throw new ClaimUnavailable(); }
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new ClaimUnavailable();
+    if (current === leaf && process.platform !== "win32") {
+      if (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
+        throw new ClaimUnavailable();
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+}
+
 /** Fail closed. No automatic stale-claim recovery or re-execution. */
 export function claimOperation(directory: string, operationId: string): OperationClaim {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) throw new ClaimUnavailable();
   // Caller must provision a private, stable parent. Do not create ancestors.
-  let dir;
-  try {
-    dir = lstatSync(directory);
-    if (!dir.isDirectory() || dir.isSymbolicLink()) throw new ClaimUnavailable();
-  } catch { throw new ClaimUnavailable(); }
+  checkPrivateDirectory(directory);
   const filename = createHash("sha256").update(operationId).digest("hex") + ".claim";
   const claimId = randomUUID();
   const path = join(directory, filename);
