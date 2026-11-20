@@ -68,6 +68,7 @@ import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTas
 import { handleTask } from "./tasks.ts";
 import { handleReview } from "./reviewQueue.ts";
 import { handleVerifier, resolveVerifierModel, verifierConfig } from "./verifier.ts";
+import { handleRegression } from "./regression.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
 import {
   loadEventTriggers, saveEventTriggers, addEventTrigger, removeEventTrigger, setEventTriggerEnabled,
@@ -141,6 +142,7 @@ nyra --resume-run <运行 ID>    从运行记录断点续跑
 nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
 nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]   执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行，详见 docs/timeline.md）
 nyra replay <运行 ID> [--verbose]   会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行）
+nyra regression <list|precipitate --run <运行 ID>|remove <用例 id>|status <用例 id> <open|verified|retired>>   回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 docs/regression.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -229,6 +231,7 @@ nyra --resume-run <run id>     resume a run from its record
 nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
 nyra timeline <run id> [--verbose] [--json] [--out <path>]   rebuild one multi-agent run as a timeline (read-only replay, no re-execution, see docs/timeline.md)
 nyra replay <run id> [--verbose]   replay one run step by step, grouped by turn (read-only, no re-execution)
+nyra regression <list|precipitate --run <run id>|remove <case id>|status <case id> <open|verified|retired>>   regression case library: precipitate failed steps of a run into cases (metadata only, no model calls, no auto re-run, see docs/regression.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -2882,7 +2885,7 @@ function recordRestoreEvidence(home: string, workdir: string, sessionId: string,
     } else {
       const state = runStore.create(`restore ${String(fields.snapshot_id ?? "")}`, sessionId, workdir, "auto", 20, "running");
       runStore.appendEvent(state.run_id, "restore", fields);
-      runStore.setStatus(state.run_id, "completed");
+      runStore.setStatus(state.run_id, "completed_unverified");
     }
   } catch { /* 证据链写失败不影响已完成的恢复 */ }
 }
@@ -5340,6 +5343,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (args.subcommand === "timeline") return handleTimeline(args.subArgs ?? [], home);
   if (args.subcommand === "replay") return handleReplay(args.subArgs ?? [], home);
+  if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
   if (args.subcommand === "verdict") {
     // --json：机器可读输出（CI 门禁只看 grade，看板画趋势线看 reasons 里的数字）。
     const verdictJson = (args.subArgs ?? []).includes("--json");
