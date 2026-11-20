@@ -81,7 +81,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
       // not by traversing the original directory pathname again.
       fd = openSync(`/proc/self/fd/${directoryFd}/${filename}`,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    } finally { closeSync(directoryFd); }
+    } catch (error) { closeSync(directoryFd); throw error; }
   } catch { throw new ClaimUnavailable(); }
   let claimFileIdentity: { dev: number; ino: number; size: number } | undefined;
   try {
@@ -109,16 +109,19 @@ export function claimOperation(directory: string, operationId: string): Operatio
     claimFileIdentity = { dev: opened.dev, ino: opened.ino, size: opened.size };
   } catch {
     // Never unlink: a partial claim is also a reason to block replay.
+    closeSync(directoryFd);
     throw new ClaimUnavailable();
   } finally {
     closeSync(fd);
+    // Keep directoryFd open until after directory fsync and name checks.
   }
-  if (!claimFileIdentity) throw new ClaimUnavailable();
-  // Directory durability varies by OS/filesystem; failure must not be treated
-  // as a successful durable reservation.
+  if (!claimFileIdentity) { closeSync(directoryFd); throw new ClaimUnavailable(); }
+  // Sync the SAME directory descriptor used for exclusive creation. A path
+  // reopen could sync a replacement directory instead of the reserved inode.
+  // Directory durability still depends on the underlying filesystem.
   try {
-    const dirfd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-    try {
+    const dirfd = directoryFd;
+    {
       const opened = fstatSync(dirfd);
       const named = lstatSync(directory);
       if (opened.dev !== before.dev || opened.ino !== before.ino) throw new ClaimUnavailable();
@@ -140,7 +143,8 @@ export function claimOperation(directory: string, operationId: string): Operatio
           (claimNamed.mode & 0o077) !== 0 || claimNamed.size !== claimFileIdentity.size) {
         throw new ClaimUnavailable();
       }
-    } finally { closeSync(dirfd); }
+    }
   } catch { throw new ClaimUnavailable(); }
+  finally { closeSync(directoryFd); }
   return { operationId, claimId, state: "unknown" };
 }
