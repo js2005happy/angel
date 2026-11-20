@@ -2,6 +2,7 @@
 // 三层判定：ok（已设好）/ warn（缺省可接受但长任务前该补）/ fail（明确危险）。
 import { test, expect } from "bun:test";
 import { checkRedlines, formatRedlines } from "../../src/redlines.ts";
+import { setLang } from "../../src/i18n.ts";
 import { parseRules } from "../../src/permissionRules.ts";
 
 function rules(allow: string[] = [], deny: string[] = [], ask: string[] = []) {
@@ -95,6 +96,9 @@ test("多条 fail 时结论给出数量", () => {
 });
 
 test("formatRedlines 带图标与修复建议", () => {
+  // 双保险：tests/node/preload.ts 已在每个用例前复位中文，这里再显式锁一次，
+  // 让这条断言不依赖任何全局约定（读者看这一个文件就懂）。
+  setLang("zh");
   const r = checkRedlines({ config: {}, sandbox: { level: "tool-level", backend: "local" }, permissions: null, hasCostLimit: false });
   const text = formatRedlines(r);
   expect(text).toContain("上线红线自检");
