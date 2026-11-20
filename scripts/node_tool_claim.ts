@@ -54,6 +54,19 @@ export function claimOperation(directory: string, operationId: string): Operatio
   const filename = createHash("sha256").update(operationId).digest("hex") + ".claim";
   const claimId = randomUUID();
   const path = join(directory, filename);
+  // Bind the directory identity before creation, not only after writing.
+  // This detects some replacements but is NOT an openat-style guarantee.
+  let before;
+  try {
+    const dirfd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      before = fstatSync(dirfd);
+      const named = lstatSync(directory);
+      if (!before.isDirectory() || !named.isDirectory() || named.isSymbolicLink() ||
+          before.dev !== named.dev || before.ino !== named.ino ||
+          before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0) throw new ClaimUnavailable();
+    } finally { closeSync(dirfd); }
+  } catch { throw new ClaimUnavailable(); }
   let fd: number;
   try {
     fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
@@ -81,6 +94,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
     try {
       const opened = fstatSync(dirfd);
       const named = lstatSync(directory);
+      if (opened.dev !== before.dev || opened.ino !== before.ino) throw new ClaimUnavailable();
       if (!opened.isDirectory() || !named.isDirectory() || named.isSymbolicLink() ||
           opened.dev !== named.dev || opened.ino !== named.ino ||
           opened.uid !== process.getuid?.() || (opened.mode & 0o077) !== 0) {
