@@ -1,3 +1,9 @@
+## 2026-11-21 — Node claim 祖先目录权限检查（仅静态）
+
+- 核对 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal；开发分支无 main 的 `src/agent.ts` 和 `src/tools.ts`。检查近期 main 提交、开放 Issues/PR、前一提交状态与关联 PR 工作流（均无返回检查）。
+- 静态审阅：目录遍历中新增 POSIX 祖先 UID 和 group/other 写权限拒绝；叶目录仍要求私有。没有创建目录或执行 claim。
+- **未运行脚本、编译、测试或 CI**；尚未进行 Linux/macOS/Windows 实测。路径创建不是 openat，祖先替换仍有 TOCTOU；不能宣称工具 exactly-once 或生产安全。
+
 ## 2026-11-20 — Node claim 创建前后目录身份检查（仅静态）
 
 - 读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim，核对 main 最新提交、开放 Issues/PR；开发分支缺少 main 的 `src/agent.ts`、`src/tools.ts`，运行时仍未接入。
