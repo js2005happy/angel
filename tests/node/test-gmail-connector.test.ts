@@ -361,6 +361,30 @@ class FakeGmailTransport implements GmailTransport {
     this.calls.push({ kind: "draft", arg: opts});
     return { id: "draft-9"};
   }
+  async listLabels() {
+    this.calls.push({ kind: "labels", arg: null});
+    return [{ id: "INBOX", name: "收件箱", type: "system"}, { id: "Label_1", name: "工作", type: "user"}];
+  }
+  async modifyLabels(id: string, addLabelIds: string[], removeLabelIds: string[]) {
+    this.calls.push({ kind: "modify", arg: { id, addLabelIds, removeLabelIds}});
+    return { id, labelIds: ["INBOX", ...addLabelIds] };
+  }
+  async markRead(id: string) {
+    this.calls.push({ kind: "mark-read", arg: id});
+    return { id, labelIds: ["INBOX"] };
+  }
+  async markUnread(id: string) {
+    this.calls.push({ kind: "mark-unread", arg: id});
+    return { id, labelIds: ["INBOX", "UNREAD"] };
+  }
+  async trash(id: string) {
+    this.calls.push({ kind: "trash", arg: id});
+    return { id };
+  }
+  async getAttachment(messageId: string, attachmentId: string) {
+    this.calls.push({ kind: "attachment", arg: { messageId, attachmentId}});
+    return { bytes: Buffer.from("附件内容", "utf-8"), filename: "note.txt", mimeType: "text/plain", size: 12 };
+  }
 }
 
 function toolCtx(home: string, workdir: string, extra: Partial<ToolContext> = {}): ToolContext {
