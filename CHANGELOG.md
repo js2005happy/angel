@@ -1,3 +1,7 @@
+## 未发布（2026-11-21，Node claim 祖先目录权限门禁）
+
+- `scripts/node_tool_claim.ts`：POSIX 拒绝不可信所有者或 group/other 可写的祖先目录，包括 sticky 目录；叶目录继续要求当前用户私有。只改善前置检查，仍有 TOCTOU、Windows 禁用、未接入运行时；仅静态审阅，未运行测试/CI。
+
 ## 未发布（2026-11-20，Node claim 创建前后目录身份核对）
 
 - `scripts/node_tool_claim.ts`：在排他创建 claim 前打开并核验目录句柄，创建后再次核对 dev/ino，检测部分路径替换时失败关闭。仍是路径创建而非 openat，存在 TOCTOU；未接入主运行时，未运行测试或 CI，无 exactly-once 保证。
