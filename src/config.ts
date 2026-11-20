@@ -51,6 +51,11 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   profiles: {},
   mcp_servers: {},
   mcp_enabled: false,
+  // 缺口 17：对外 MCP 服务（Nyra 当 MCP 服务器，供别的 agent 调记忆与任务）。
+  // 默认关闭；allow_writes 默认 false = 只读（search_memory / query_evidence），
+  // 写操作（add_memory / forget_session / dispatch_task）须显式开 allow_writes，
+  // 且每次写操作都要过独立审查层（reviewer 未开启时写操作直接拒绝，fail-closed）。
+  mcp_server: { enabled: false, allow_writes: false },
   // P0-5：权限规则语言（学 Claude Code 的 Tool(specifier)）。空 = 走默认交互式审批。
   // 例：deny: ["Bash(rm -rf *)"], allow: ["Bash(git *)", "Edit(src/**)"].
   permissions: { allow: [], ask: [], deny: [] },

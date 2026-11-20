@@ -93,6 +93,11 @@ patrol_write_blocked: ["tool", "reason"],
 marketplace_installed: ["item_name", "item_version", "kind", "source", "bot_ready", "reviewer_model"],
 marketplace_uninstalled: ["item_name", "kind"],
 marketplace_published: ["item_name", "item_version", "kind", "license", "bot_ready"],
+// 缺口 17：对外 MCP 服务调用进证据链——哪个工具、谁调的（owner/device）、
+// 参数指纹（args_hash 单向指纹，不可还原原文）、成功还是失败、审查结论
+// （写操作才有）、派发出的任务 run_id、失败原因。每次对外调用都记一条，
+// 与 reviewer_verdict（写操作的审查结论）是两条事件，不要混用。
+mcp_server_call: ["tool", "caller", "args_hash", "ok", "reviewer_decision", "run_id", "error"],
 final: [],
 max_turns: [],
 error: ["error_type"],

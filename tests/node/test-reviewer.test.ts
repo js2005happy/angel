@@ -102,7 +102,7 @@ test("ReviewerTest.test_resolve_model_fallback_chain", () => {
 
 test("ReviewerTest.test_reviewed_tools_default_and_override", () => {
     expect([...DEFAULT_REVIEWED_TOOLS]).toEqual(
-      ["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "http_post", "submit_bughunt_report", "marketplace_install", "marketplace_publish"],
+      ["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "http_post", "submit_bughunt_report", "marketplace_install", "marketplace_publish", "mcp_server_add_memory", "mcp_server_forget_session", "mcp_server_dispatch_task"],
     );
     const defaults = reviewedTools({});
     expect(defaults).toContain("shell");
@@ -115,6 +115,12 @@ test("ReviewerTest.test_reviewed_tools_default_and_override", () => {
     // 安装与发布前过审查，见 src/marketplace.ts 的 reviewMarketplaceAction。
     expect(defaults).toContain("marketplace_install");
     expect(defaults).toContain("marketplace_publish");
+    // mcp_server_add_memory / mcp_server_forget_session / mcp_server_dispatch_task
+    // 同样是虚拟敏感动作：对外 MCP 服务的写操作前过审查，见 src/mcp.ts 的
+    // reviewMcpServerAction。
+    expect(defaults).toContain("mcp_server_add_memory");
+    expect(defaults).toContain("mcp_server_forget_session");
+    expect(defaults).toContain("mcp_server_dispatch_task");
     expect(defaults).not.toContain("read_file");
     expect(reviewedTools({ reviewer: { tools: ["shell"] } })).toEqual(["shell"]);
   });

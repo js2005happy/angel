@@ -48,7 +48,7 @@ import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTas
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadModelCache, manualWindowFromConfig, resolveContextWindow, type WindowSource } from "./modelCatalog.ts";
-import { MCPToolManager, buildMcpManager } from "./mcp.ts";
+import { MCPToolManager, NyraMcpServer, appendMcpServerAudit, buildMcpManager, mcpServerConfig } from "./mcp.ts";
 import { McpCostTracker, estimateToolCost, costLimitUsd } from "./mcpCost.ts";
 import { DeviceRegistry, defaultDevicesPath, startDiscoveryResponder, PairingError } from "./pairing.ts";
 import { memoryScopes, memoryView, memorySave, deleteMemoryForScope, MemoryBrowserError } from "./memoryBrowser.ts";
@@ -307,6 +307,22 @@ export class Gateway {
       this.reviewerInstance = null;
       return null;
     }
+  }
+
+  /** 缺口 17：对外 MCP 服务实例（懒创建，一个网关进程一个；审查 runner 按需
+   * 解析，activeSessionIds 取网关当前会话——forget_session 的进行中保护用）。 */
+  private mcpServerInstance: NyraMcpServer | null = null;
+  private mcpServer(): NyraMcpServer {
+    if (!this.mcpServerInstance) {
+      this.mcpServerInstance = new NyraMcpServer({
+        home: this.home,
+        config: this.config,
+        workdir: this.workdir,
+        reviewerRunner: () => this.reviewer(),
+        activeSessionIds: () => this.runs.keys(),
+      });
+    }
+    return this.mcpServerInstance;
   }
 
   private onSwitch(record: SwitchRecord): void {
@@ -1565,6 +1581,26 @@ export class Gateway {
 
     if (method === "OPTIONS") { this.sendError(res, 403, "不支持跨域请求"); return; }
     if (method === "GET" && path === "/api/health") { this.sendJson(res, 200, { ok: true, version: VERSION }); return; }
+
+    // 缺口 17：对外 MCP 服务（Streamable HTTP，JSON-RPC）——POST /mcp。
+    // 默认关闭：关闭时当不存在（404），不泄露端点；开启后走通用 token 鉴权
+    //（owner 或设备 token，与 /api/* 同款 apiAuth），鉴权失败记一行审计。
+    // 无状态：只回 JSON，不要求 Mcp-Session-Id；GET 只接受 POST（405）。
+    if (path === "/mcp") {
+      if (method !== "POST") { this.sendError(res, 405, "对外 MCP 服务只接受 POST"); return; }
+      if (!mcpServerConfig(this.config).enabled) { this.sendError(res, 404, "未找到"); return; }
+      const who = this.apiAuth(req);
+      if (who === null) {
+        try { appendMcpServerAudit(this.home, { tool: "(auth)", caller: "unknown", ok: false, error: "token 无效" }); } catch { /* 审计写失败不破坏响应 */ }
+        this.sendError(res, 403, "token 无效"); return;
+      }
+      let body: Record<string, unknown>;
+      try { body = await this.readBody(req); } catch (err) { this.sendError(res, 400, `请求无效：${err instanceof Error ? err.message : String(err)}`); return; }
+      const result = await this.mcpServer().handle(body, who === "owner" ? "owner" : "device");
+      if (result.body === null) { res.writeHead(202); res.end(); return; }
+      this.sendJson(res, 200, result.body);
+      return;
+    }
 
     if (!path.startsWith("/api/")) { this.sendError(res, 404, "未找到"); return; }
 
