@@ -91,9 +91,9 @@ test("ConnectorAuthTest.test_declarations", () => {
   expect(gmail?.alwaysForbidden.length).toBeGreaterThan(0);
   expect(gmail?.dataAccessed.length).toBeGreaterThan(0);
 
-  // 试点连接器在目录里看得见、用不了；Shopify 在缺口 44 第一批改为已接入（只读）。
+  // 试点连接器在目录里看得见、用不了；Shopify 在缺口 44 第一批改为已接入（只读），Slack 在缺口 44 第二批改为已接入（读 + 发消息须批 + 审批卡）。
   expect(getDeclaration("shopify")?.status).toBe("available");
-  expect(getDeclaration("slack")?.status).toBe("pilot");
+  expect(getDeclaration("slack")?.status).toBe("available");
   expect(listDeclarations().map((d) => d.id).sort()).toEqual(["gmail", "shopify", "slack"]);
 
   // 声明缺失的连接器默认只读、每次使用重新确认（fail-closed）。
@@ -343,11 +343,11 @@ test("ConnectorAuthTest.test_cli_connector_via_handle", async () => {
   expect(await handleConnector(["approve"], home)).toBe(2);
   expect(await handleConnector(["approve", "nope"], home)).toBe(2);
   expect(await handleConnector(["revoke"], home)).toBe(2);
-  // 试点连接器拒绝批准。
+  // 没凭证的 Slack 拒绝批准（先跑 nyra slack auth）。
   expect(await handleConnector(["approve", "slack"], home)).toBe(1);
   // 没凭证的 Gmail 拒绝批准（先跑 nyra gmail auth）。
   expect(await handleConnector(["approve", "gmail"], home)).toBe(1);
-  // 撤销试点连接器：只记状态，不报错。
+  // 撤销 Slack 连接器：只记状态，不报错。
   expect(await handleConnector(["revoke", "slack", "--yes"], home)).toBe(0);
   expect(new ConnectorAuthStore(home).get("slack", "local")?.state).toBe("revoked");
 });

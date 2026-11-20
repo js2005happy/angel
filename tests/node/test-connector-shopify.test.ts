@@ -133,8 +133,8 @@ test("ConnectorShopifyTest.test_declaration_is_read_only", () => {
   expect(shopify?.toolGroups.map((g) => g.name)).toContain("库存");
   for (const op of ["改价", "改库存", "退款", "删单"]) expect(shopify?.alwaysForbidden).toContain(op);
   expect(shopify?.dataAccessed.length).toBeGreaterThan(0);
-  // Slack 仍是试点。
-  expect(getDeclaration("slack")?.status).toBe("pilot");
+  // Slack 在缺口 44 第二批改为已接入（读 + 发消息须批 + 审批卡）。
+  expect(getDeclaration("slack")?.status).toBe("available");
 });
 
 test("ConnectorShopifyTest.test_normalize_shop", () => {
