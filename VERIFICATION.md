@@ -1,3 +1,9 @@
+## 2026-11-20 — 运行时分叉静态核验
+
+- 已读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、`angel/agent.py`、`angel/tool_journal.py`，对照主分支 README 与最新提交，查询 Issues/PR；开发分支 Python CLI 与主分支 Node CLI 明确不同。尚未定位 Node 具体派发源码，不能宣称 Python ToolJournal 保护 Node。
+- 外部证据：Codex #62611（2026-11-19，事件驱动等待请求）、#58900（Windows 权限拒绝反馈）。均为外部报告，不构成 Angel 复现。
+- 本轮只做静态文件与元数据读取，未运行解释器、测试、CI、安装或部署；未实现锁、自动恢复或副作用凭证。提交状态检查与工作流未在本轮验证，不得宣称通过。
+
 ## 2026-11-20 — P0 所有权实现阻塞：静态核验
 
 - 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 及相关测试；查询仓库近期提交、开放 Issue/PR 与开发分支上一提交状态。主分支近期主要是 TypeScript `src/` 运行时，开发分支 ToolJournal 是 Python `angel/`；尚不能确认该 Python 门禁覆盖主分支真实工具执行入口。
