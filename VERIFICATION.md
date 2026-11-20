@@ -1,3 +1,9 @@
+## 2026-11-21 — Linux procfs 类型门禁（仅静态）
+
+- 检查开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python Agent/Tools，以及 main TypeScript Agent/Tools、package.json、近期提交、开放 Issues/PR；最新检索 main 提交 9230072（2026-11-20 23:32 UTC），提交状态检查为空，不能视为 CI 通过。
+- 静态核对：claim 创建前检查 `statfsSync("/proc/self/fd").type === 0x9fa0`，不匹配或异常即 `ClaimUnavailable`，不创建 claim；仅使用 Node 标准库。
+- **未运行测试、编译、脚本或 CI**；尚未实机验证 mount namespace、procfs 竞态或文件系统语义。该组件未接入真实 Node 工具派发，不提供 exactly-once。
+
 ## 2026-11-21 — Linux claim 同 fd 名称复核（仅静态审阅）
 
 - 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim；对照 main 的 src/agent.ts 与 src/tools.ts、近期提交和开放 Issues/PR。前一提交 combined status 与 PR-triggered workflow 查询均为空，不能视为 CI 通过。
