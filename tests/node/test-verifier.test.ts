@@ -96,7 +96,7 @@ test("配置：默认关闭、rework 默认关闭；模型走 reviewer 便宜链
   expect(resolveVerifierModel({})).toEqual({ provider: "deepseek", model: "deepseek-flash" });
   expect(resolveVerifierModel({ verifier: { model: "my-model" } }).model).toBe("my-model");
   expect(resolveVerifierModel({ smart_approvals: { reviewer_model: "cheap-1" } }).model).toBe("cheap-1");
-  expect(VERIFIER_CHECKLIST.map((c) => c.id)).toEqual(["has-changes", "files-exist", "diff-stat", "evidence-complete"]);
+  expect(VERIFIER_CHECKLIST.map((c) => c.id)).toEqual(["has-changes", "files-exist", "diff-stat", "evidence-complete", "draft-labeled", "ui-before-shot"]);
 });
 
 // ---- 确定性检查 ----
@@ -105,7 +105,7 @@ test("确定性检查：全部通过", () => {
   const dir = makeWorkdir({ "a.txt": "x\n" });
   const checks = runDeterministicChecks(baseInput(dir));
   expect(checks.every((c) => c.passed)).toBe(true);
-  expect(checks).toHaveLength(4);
+  expect(checks).toHaveLength(6);
 });
 
 test("确定性检查：无改动时只有 has-changes 失败", () => {
