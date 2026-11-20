@@ -242,6 +242,14 @@ export async function runOne(
     const output = await recorder.run(state.task);
     const final = opts.store.load(recorder.runId);
     appendInbox(final.run_id, final.status, output, opts.home);
+    // 缺口 22：邮件任务跑完回信（只回白名单发件人、只回原线程、一次一封；
+    // 回信失败不破坏任务结果，只记 stderr）。
+    try {
+      const { replyMailResultForRun } = await import("./mailInbox.ts");
+      await replyMailResultForRun(final.run_id, final.status, output, { home: opts.home });
+    } catch (err: unknown) {
+      process.stderr.write(`邮件入口：回信失败：${err instanceof Error ? err.message : String(err)}\n`);
+    }
     return [final, output];
   } catch (err: unknown) {
     if (err instanceof ApprovalRequired) {
@@ -288,6 +296,13 @@ export async function approveTask(runId: string, opts?: { store?: RunStore; prov
   const output = await recorder.run(next.task);
   const final = store.load(recorder.runId);
   appendInbox(final.run_id, final.status, output, opts?.home);
+  // 缺口 22：邮件任务跑完回信（同 runOne：批复后跑完才回，等待审批时不回）。
+  try {
+    const { replyMailResultForRun } = await import("./mailInbox.ts");
+    await replyMailResultForRun(final.run_id, final.status, output, { home: opts?.home });
+  } catch (err: unknown) {
+    process.stderr.write(`邮件入口：回信失败：${err instanceof Error ? err.message : String(err)}\n`);
+  }
   return [final, output];
 }
 

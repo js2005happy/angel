@@ -67,6 +67,7 @@ import {
   loadEventTriggers, saveEventTriggers, addEventTrigger, removeEventTrigger, setEventTriggerEnabled,
   listEventTriggers, matchEventTrigger, buildTriggerPrompt, pollGmailTriggers, EventTriggerError,
 } from "./eventTriggers.ts";
+import { MailInboxError } from "./mailInbox.ts";
 import { knowledgeMain } from "./knowledge.ts";
 import { PermissionLedger, PermissionConflict } from "./poppy.ts";
 import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
@@ -131,6 +132,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra task <add|list|show|cancel|worker|approve>   管理后台任务队列
   nyra review <list|show|approve|reject|apply|verify|enqueue>   审阅队列：并行线程与定时任务结果逐项批（详见 docs/review-queue.md）
   nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
+  nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -186,6 +188,7 @@ Usage:
   nyra task <add|list|show|cancel|worker|approve>   manage the background task queue
   nyra review <list|show|approve|reject|apply|verify|enqueue>   review queue: approve parallel threads and scheduled-task results one by one (see docs/review-queue.md)
   nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
+  nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
   nyra kb <create|list|add|search|ask|remove>  local knowledge base
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -931,6 +934,26 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           });
         }
       } catch { /* 轮询器建不起来就不轮询，不破坏定时任务 */ }
+      // 缺口 22：守护进程每轮顺带跑邮件入口轮询（白名单邮件直接进任务队列）。
+      // 只有邮件入口已启用、白名单非空且 Gmail 已启用+已授权时才轮询；轮询器
+      // 自己按 5 分钟间隔跳过，不到间隔不打 API。轮询只入队，执行靠 `nyra task worker`。
+      try {
+        const { loadMailInboxSettings, pollMailInbox } = await import("./mailInbox.ts");
+        const { getGmailStatus, createGmailTransport } = await import("./connectors/gmail.ts");
+        const cfg1 = loadConfig(home);
+        const inbox = loadMailInboxSettings(home);
+        const st1 = getGmailStatus(home, cfg1);
+        if (inbox.enabled && inbox.allowlist.length && st1.enabled && st1.configured) {
+          pollers.push(async () => {
+            const transport = createGmailTransport(home, loadConfig(home));
+            const r = await pollMailInbox(transport, { home });
+            if (r.enqueued) process.stdout.write(`[邮件入口] Gmail 新邮件 ${r.newMail} 封，入队 ${r.enqueued} 个任务\n`);
+            else if (r.skipped && !["not-due", "disabled", "no-allowlist", "first-run-baseline"].includes(r.skipped)) {
+              process.stdout.write(`[邮件入口] Gmail 轮询跳过：${r.skipped}\n`);
+            }
+          });
+        }
+      } catch { /* 轮询器建不起来就不轮询，不破坏定时任务 */ }
       const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds, pollers });
       void done;
       return 0;
@@ -1054,6 +1077,99 @@ async function handleEvents(argv: string[], workdir: string): Promise<number> {
     return 2;
   } catch (err: unknown) {
     if (err instanceof EventTriggerError) process.stderr.write(`错误：${err.message}\n`);
+    else process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+// ---- 子命令：mail-inbox（缺口 22：邮件即任务入口） ----
+async function handleMailInbox(argv: string[], workdir: string): Promise<number> {
+  const action = argv[0];
+  const home = resolveHome();
+  if (!action) {
+    process.stdout.write("用法：nyra mail-inbox <status|enable|disable|allowlist|set|poll> [选项]\n");
+    return 2;
+  }
+  const get = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  try {
+    const { loadMailInboxSettings, saveMailInboxSettings, addMailInboxSender, removeMailInboxSender, listMailInboxPublic, pollMailInbox } = await import("./mailInbox.ts");
+    if (action === "status") {
+      const pub = listMailInboxPublic(home);
+      process.stdout.write(`邮件入口：${pub.enabled ? "启用" : "禁用"}\n`);
+      process.stdout.write(`模式：${pub.mode}；跑完回信：${pub.reply_results ? "是" : "否"}；待回信：${pub.pending_replies} 封\n`);
+      process.stdout.write(`白名单（${pub.allowlist.length}）：${pub.allowlist.length ? pub.allowlist.join("、") : "（空）"}\n`);
+      return 0;
+    }
+    if (action === "enable" || action === "disable") {
+      const settings = loadMailInboxSettings(home);
+      settings.enabled = action === "enable";
+      saveMailInboxSettings(settings, home);
+      process.stdout.write(`已${action === "enable" ? "启用" : "禁用"}邮件入口${settings.enabled && !settings.allowlist.length ? "（白名单还是空的，先加发件人才能派活）" : ""}\n`);
+      return 0;
+    }
+    if (action === "allowlist") {
+      const sub = argv[1];
+      const settings = loadMailInboxSettings(home);
+      if (sub === "list") {
+        for (const addr of settings.allowlist) process.stdout.write(`${addr}\n`);
+        return 0;
+      }
+      const email = argv[2];
+      if ((sub === "add" || sub === "remove") && email) {
+        const changed = sub === "add" ? addMailInboxSender(settings, email) : removeMailInboxSender(settings, email);
+        if (!changed) {
+          process.stdout.write(sub === "add" ? `白名单里已有：${email.trim().toLowerCase()}\n` : `白名单里没有：${email.trim().toLowerCase()}\n`);
+          return 0;
+        }
+        saveMailInboxSettings(settings, home);
+        process.stdout.write(`已${sub === "add" ? "加入" : "移出"}白名单：${email.trim().toLowerCase()}\n`);
+        return 0;
+      }
+      process.stderr.write("错误：用法：nyra mail-inbox allowlist <list|add <邮箱>|remove <邮箱>>\n");
+      return 2;
+    }
+    if (action === "set") {
+      const settings = loadMailInboxSettings(home);
+      const mode = get("--mode");
+      if (mode) {
+        if (mode !== "readonly" && mode !== "auto") { process.stderr.write("错误：--mode 只允许 readonly 或 auto\n"); return 2; }
+        settings.mode = mode;
+      }
+      const reply = get("--reply-results");
+      if (reply) {
+        if (reply !== "on" && reply !== "off") { process.stderr.write("错误：--reply-results 只允许 on 或 off\n"); return 2; }
+        settings.reply_results = reply === "on";
+      }
+      const maxBody = get("--max-body-chars");
+      if (maxBody) {
+        const n = parseInt(maxBody, 10);
+        if (!Number.isInteger(n) || n < 100 || n > 7000) { process.stderr.write("错误：--max-body-chars 必须是 100–7000 的整数\n"); return 2; }
+        settings.max_body_chars = n;
+      }
+      saveMailInboxSettings(settings, home);
+      process.stdout.write(`邮件入口设置已保存：模式 ${settings.mode}，跑完回信 ${settings.reply_results ? "开" : "关"}，正文上限 ${settings.max_body_chars} 字\n`);
+      return 0;
+    }
+    if (action === "poll") {
+      const { getGmailStatus, createGmailTransport } = await import("./connectors/gmail.ts");
+      const cfg = loadConfig(home);
+      const st = getGmailStatus(home, cfg);
+      if (!st.enabled || !st.configured) {
+        process.stderr.write("错误：Gmail 未启用或未授权（先运行 nyra gmail auth），轮询需要 Gmail 连接器\n");
+        return 1;
+      }
+      const transport = createGmailTransport(home, cfg);
+      const r = await pollMailInbox(transport, { home, force: true });
+      process.stdout.write(`检查 ${r.checked} 封，新邮件 ${r.newMail} 封，入队 ${r.enqueued} 个任务（非白名单跳过 ${r.skippedNotAllowlisted} 封，读失败 ${r.errors} 封）${r.skipped ? `（跳过：${r.skipped}）` : ""}\n`);
+      return 0;
+    }
+    process.stderr.write(`错误：未知子命令 mail-inbox ${action}\n`);
+    return 2;
+  } catch (err: unknown) {
+    if (err instanceof MailInboxError) process.stderr.write(`错误：${err.message}\n`);
     else process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
@@ -3108,6 +3224,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "models") return handleModels(args.subArgs ?? [], home);
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "events") return handleEvents(args.subArgs ?? [], resolve(args.workdir));
+  if (args.subcommand === "mail-inbox") return handleMailInbox(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);

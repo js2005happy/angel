@@ -57,6 +57,9 @@ hook_blocked: ["event", "tool", "hook", "reason"],
 // 什么模式、什么鉴权。event_id 过长时只记指纹（见 eventTriggers.ts 的 shortEventId），
 // 完整 id 在 ~/.nyra/event-deliveries.json。
 event_triggered: ["trigger_id", "trigger_name", "source", "event_id", "event_type", "run_id", "mode", "auth"],
+// 缺口 22：邮件入口进证据链——哪封邮件、哪个线程、谁发的、进了哪个任务、
+// 什么模式。回信只记在账本里（mail-inbox-runs.json），事件是审计副本。
+mail_task_enqueued: ["message_id", "thread_id", "from", "subject", "run_id", "mode"],
 final: [],
 max_turns: [],
 error: ["error_type"],
