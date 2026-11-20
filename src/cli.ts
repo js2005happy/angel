@@ -176,6 +176,8 @@ nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：we
 nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
 nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
 nyra bot telegram <start|stop|status>   Bot 方向 Phase 1：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；外部用户强制只读，详见 docs/bot.md）
+nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>   Bot 缺口 42：每 Bot 一台持久电脑（持久 workspace + 浏览器 profile + 凭证 Vault + 隔离分级，详见 docs/bot-computer.md）
+nyra bot status   Bot 总览：Telegram/Discord 运行态 + 电脑数量与资源
 nyra bot redlines <status|list|show|tighten|loosen|set>   Bot 缺口 51：业务动作硬红线表——发消息/付款/删除永远须人批，转钱/交易证券永远禁做（详见 docs/business-redlines.md）
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   验收者：并行产出合入前先过验收门（确定性检查 + 便宜模型复核），未通过打回重做（详见 docs/verifier.md）
@@ -268,6 +270,8 @@ nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: 
 nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
 nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
 nyra bot telegram <start|stop|status>   bot direction phase 1: Telegram channel (long polling, per-session serial queue, dedup + quotas, deterministic commands; external users forced read-only, see docs/bot.md)
+nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>   bot gap 42: one persistent computer per Bot (persistent workspace + browser profile + credential vault + isolation tiers, see docs/bot-computer.md)
+nyra bot status   bot overview: Telegram/Discord state + computer count and resources
 nyra bot redlines <status|list|show|tighten|loosen|set>   bot gap 51: business-action hard redlines — sending messages / payments / deletions always need approval, moving money / trading securities are always forbidden (see docs/business-redlines.md)
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   verifier: parallel output passes an acceptance gate before merging (deterministic checks + cheap-model review); failures are sent back for rework (see docs/verifier.md)
