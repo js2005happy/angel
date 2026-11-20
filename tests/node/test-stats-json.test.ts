@@ -46,7 +46,7 @@ test("T4 没今日数据时 today 为 null（不编造 0 调用）", () => {
   expect(buildStatsJson({ ...base, today: null }).today).toBeNull();
 });
 
-test("T5 days 保留调用数（看板要画"每天几次"而不只是 token）", () => {
+test("T5 days 保留调用数（看板要画「每天几次」而不只是 token）", () => {
   const j = buildStatsJson(base);
   expect(j.days).toHaveLength(2);
   expect(j.days[0].calls).toBe(2);
