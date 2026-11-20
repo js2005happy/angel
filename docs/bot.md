@@ -11,6 +11,14 @@ Discord 渠道（Gateway 收消息 + REST 发消息）。
 
 ## 快速开始
 
+### 每 Bot 一台持久电脑（缺口 42 第一批）
+
+每个 Bot（Soul 身份）有一台自己的持久电脑：自己的工作目录、自己的
+浏览器配置与登录态、自己的 shell。详见 [`docs/bot-computer.md`](bot-computer.md)——
+创建（`nyra bot computer create --agent <Soul>`）、休眠/唤醒、凭证 Vault、
+隔离分级（默认独占；共享须用户显式 opt-in，默认只读、写操作须经审批）、
+资源上限（内存声明超系统 80% 时创建直接拒绝）。
+
 ### Telegram
 
 1. 在 Telegram 里找 @BotFather，发 `/newbot`，按提示起名字，拿到 token。
@@ -269,3 +277,8 @@ Phase 2 的审批指令认人；`owner` 是机主的 id（只认一个），`mem
 - 附件：图片没有接视觉模型（只记元信息）；pdf/docx 等非纯文本文档不
   解析；网关内置的定时任务守护不推 Telegram（任务结果推送只走
   `nyra schedule daemon` 与 `nyra task worker`）。
+- Bot 电脑（缺口 42 第一批）：没有容器后端（缺口 18 未做），隔离靠
+  目录 + 权限边界兜底，不是容器级隔离；CPU 上限只记声明、不做 cgroup
+  强制执行；浏览器 profile 只管配置与登录态清单，本批不真正打开页面
+  （打开页面与看屏幕是缺口 50 的事）；真实 Bot 未接通验证，只在假
+  transport 与假浏览器 profile 上验过。
