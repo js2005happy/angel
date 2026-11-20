@@ -94,22 +94,36 @@ def main() -> int:
     missing_node_anchors = [key for key in required_node_anchors
                             if main["text_references"][key]["status"] != "ok"
                             or not main["text_references"][key]["lines"]]
+    # Required entry files must exist even if textual probes elsewhere match.
+    required_files = {
+        "development": ("python_entry", "python_agent", "python_journal"),
+        "main": ("node_manifest", "node_cli", "node_agent", "node_tools", "node_gateway", "node_memory"),
+    }
+    missing_required_files = {
+        "development": [key for key in required_files["development"]
+                        if development["file_status"][key] != "ok"],
+        "main": [key for key in required_files["main"]
+                 if main["file_status"][key] != "ok"],
+    }
     # A failed inspection must not be mistaken for a missing runtime.
     errors = any(status not in ("ok", "missing")
                  for tree in (development, main)
                  for status in tree["file_status"].values())
+    incomplete = (errors or not split or bool(missing_node_anchors)
+                  or any(missing_required_files.values()))
     print(json.dumps({
-        "schema_version": 4,
+        "schema_version": 5,
         "development": development,
         "main": main,
         "runtime_split_detected": split if not errors else None,
-        "audit_incomplete": errors or bool(missing_node_anchors),
+        "audit_incomplete": incomplete,
+        "missing_required_files": missing_required_files,
         "missing_node_anchors": missing_node_anchors,
         "node_protected_by_python_journal": "not_established",
         "node_dispatch_and_persistence": "textual_anchors_only_not_complete_call_graph",
         "static_only": True,
     }, ensure_ascii=False, indent=2))
-    return 2 if errors or not split or missing_node_anchors else 0
+    return 2 if incomplete else 0
 
 
 if __name__ == "__main__":
