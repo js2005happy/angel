@@ -5,7 +5,8 @@
 # 任何人都能离线验证"这个产物确实由本仓库的这条 workflow 构建"。
 #
 # 产出（挂到同一个 Release）：
-#   SHA256SUMS              所有产物的哈希清单
+#   SHA256SUMS              所有产物的哈希清单（5 个 Node 二进制 + 桌面
+#                           安装包 .dmg/.msi/-setup.exe + 安卓 APK）
 #   SHA256SUMS.sig          对清单的 cosign 签名（keyless）
 #   SHA256SUMS.pem          签名时的短期证书（含 OIDC 身份）
 #   SHA256SUMS.bundle       sigstore bundle（签名+证书+Rekor 凭证，一体化验证用）
@@ -39,7 +40,7 @@ jobs:
   sign:
     name: Sign + attest
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Resolve tag
         id: tag
@@ -64,17 +65,25 @@ jobs:
         run: |
           # 竞态：Node binaries 工作流在 tag 触发后才把产物挂到 Release 上，
           # 本工作流可能比它先跑到这一步。v0.5.1 就因此空手失败过（20:30 跑、
-          # 20:32 二进制才挂上）。先等 5 个 Node 二进制都出现，最多等 10 分钟；
+          # 20:32 二进制才挂上）。先等全部产物都出现再下载；桌面 Tauri 构建
+          # （macOS 通用包 + Windows）比 Node 二进制慢得多（15–30 分钟），
+          # 手机 Gradle 构建也要约 10 分钟，所以上限放宽到 50 分钟；
           # 等不到就按原样失败（fail-closed，不签不全的清单）。
           TAG="${{ steps.tag.outputs.tag }}"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 150); do
             NAMES=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq -r '.assets[].name')
             MISSING=0
             for b in nyra-linux-arm64 nyra-linux-x64 nyra-macos-arm64 nyra-macos-x64 nyra-windows-x64.exe; do
               echo "$NAMES" | grep -qx "$b" || MISSING=1
             done
+            # 桌面安装包（Tauri 打包的文件名带版本号，用后缀匹配）与手机 APK：
+            # .dmg（macOS 通用包）、.msi 与 -setup.exe（Windows）、nyra-android-debug.apk。
+            echo "$NAMES" | grep -q '\.dmg$' || MISSING=1
+            echo "$NAMES" | grep -q '\.msi$' || MISSING=1
+            echo "$NAMES" | grep -q '\-setup\.exe$' || MISSING=1
+            echo "$NAMES" | grep -qx 'nyra-android-debug.apk' || MISSING=1
             [ "$MISSING" = 0 ] && break
-            echo "等待 5 个 Node 二进制挂到 Release（第 $i/30 次）..."
+            echo "等待产物挂到 Release（第 $i/150 次）：5 个 Node 二进制 + .dmg + .msi + -setup.exe + 安卓 APK ..."
             sleep 20
           done
           mkdir -p dist
