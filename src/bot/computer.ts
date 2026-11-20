@@ -22,6 +22,13 @@
 //     凭证存取）都记进活动账本 `~/.nyra/bot-computer-activity.jsonl`，
 //     有运行上下文时再镜像一条运行事件（`bot_computer_*`，只记元数据）。
 // 账本口径与本仓其他账本一致：原子写 0600、目录 0700、损坏先备份再抛错。
+//
+// 缺口 42 第二批（BotRunner 接线）：runComputerShell 多了凭证代填
+// （credentials：Vault 明文只进沙箱环境变量 NYRA_CRED_<账号>，代填记
+// credential.used 活动只记账号 + 掩码；返回值里的 filledValues 只供调用方
+// 做回复脱敏）与 approvedBy（审批流批了才跑时记进 shell.run）；活动 kind
+// 多了 "task"（BotRunner 一次消息任务的 task.run，只记会话 key 与花费）；
+// CLI 的 shell 子命令支持 --cred <账号>（可重复）。
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync, chmodSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -98,7 +105,7 @@ export interface ComputerStore {
   computers: BotComputer[];
 }
 
-export type ComputerActivityKind = "browser" | "file" | "shell" | "lifecycle" | "credential";
+export type ComputerActivityKind = "browser" | "file" | "shell" | "lifecycle" | "credential" | "task";
 
 /** 电脑活动账本的一行：只记元数据——目标只记 host/相对路径/命令摘要，绝不记凭证、绝不记绝对路径、绝不记文件内容。 */
 export interface ComputerActivity {
@@ -652,6 +659,9 @@ function defaultRunEvent(activity: ComputerActivity): { type: string; fields: Re
     case "browser":
     case "file":
     case "shell":
+    case "task":
+      // task：BotRunner 一次消息任务（target 是会话 key，只记字数与花费，不记
+      // 用户原文）；有运行上下文时同样镜像成 bot_computer_action。
       return {
         type: "bot_computer_action",
         fields: { computer_id: activity.computerId, kind: activity.kind, action: activity.action, target: activity.target, ok: activity.ok },
@@ -869,6 +879,24 @@ export interface RunComputerShellOptions {
   runId?: string | null;
   timeout?: number;
   allowNet?: boolean;
+  /**
+   * 缺口 42 第二批：要代填的凭证账号（Vault 应用代填，学 Dusk）。每个账号
+   * 的明文从电脑的 Vault 取出来，只放进沙箱进程的环境变量
+   * `NYRA_CRED_<账号大写>` 里，绝不写进命令、日志、活动账本与事件原文；
+   * 代填本身记一笔 credential.used 活动（只记账号 + 掩码）。没存的账号
+   * 直接抛错、不跑命令。
+   */
+  credentials?: string[];
+  /** 审批流批了才跑时，批的人（记进 shell.run 活动的 approvedBy）。非空还表示调用方已经走过审批流（BotRunner 的 /computer-shell 在 waitForDecision 批了之后传；CLI 不传），runComputerShell 不再重复拦 ask，只拦 deny。 */
+  approvedBy?: string | null;
+}
+
+/** runComputerShell 的返回值：多一个 filledValues（代填进去的凭证明文，调用方只拿它做回复脱敏——绝不记日志、绝不进事件；没代填时为空数组）。 */
+export interface RunComputerShellResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  filledValues: string[];
 }
 
 /**
@@ -881,14 +909,41 @@ export async function runComputerShell(
   computerId: string,
   command: string,
   opts: RunComputerShellOptions,
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<RunComputerShellResult> {
   const computer = getComputer(home, computerId);
   const access = checkComputerAccess(home, computerId, opts.agent, "write");
   if (access.decision === "deny") throw new ComputerError(access.reason);
-  if (access.decision === "ask") {
+  // ask + approvedBy 为空 → 还没批，先去审批；ask + approvedBy 非空 → 调用方
+  // 已经走过审批流（BotRunner 的 /computer-shell 等 waitForDecision 批了才传），
+  // 不再重复拦。deny 是硬边界，审批也绕不过。
+  if (access.decision === "ask" && !opts.approvedBy) {
     throw new ComputerError(`${access.reason}——先由 ${computer.agent} 或机主在 Bot 里发起审批，批了再跑`);
   }
   if (!command.trim()) throw new ComputerError("命令不能为空");
+  // 凭证代填（缺口 42 第二批）：先取明文、记 credential.used（只记账号 +
+  // 掩码），再把明文放进沙箱环境变量；没存的账号直接抛错，命令不跑。
+  const filledEnv: Record<string, string> = {};
+  const filledValues: string[] = [];
+  for (const account of opts.credentials ?? []) {
+    validateComputerAccount(account);
+    const value = getComputerCredential(home, computerId, account);
+    if (!value) {
+      throw new ComputerError(`凭证 ${account} 没存在这台电脑的 Vault 里，先 nyra bot computer credential ${computerId} store --account ${account} 存一条`);
+    }
+    filledEnv[`NYRA_CRED_${account.toUpperCase()}`] = value;
+    filledValues.push(value);
+    const masked = keyStatus(computerCredentialEntry(computerId, account), home).masked;
+    recordComputerActivity(home, {
+      computerId,
+      kind: "credential",
+      action: "credential.used",
+      target: account,
+      runId: opts.runId ?? null,
+      approvedBy: opts.approvedBy ?? null,
+      ok: true,
+      detail: `已代填进 shell 环境（${masked}）`,
+    });
+  }
   const workdir = computerWorkspacePath(home, computer);
   let result: { code: number; stdout: string; stderr: string };
   try {
@@ -897,6 +952,7 @@ export async function runComputerShell(
       allowNet: opts.allowNet ?? false,
       mode: "workspace-write",
       timeout: opts.timeout ?? 60,
+      env: Object.keys(filledEnv).length ? filledEnv : undefined,
     });
   } catch (err) {
     if (err instanceof SandboxUnavailableError) throw new ComputerError(`电脑的 shell 需要 bwrap 沙箱：${err.message}`);
@@ -909,10 +965,11 @@ export async function runComputerShell(
     action: "shell.run",
     target: command.trim(),
     runId: opts.runId ?? null,
+    approvedBy: opts.approvedBy ?? null,
     ok: result.code === 0,
     detail: result.code === 0 ? "退出码 0" : `退出码 ${result.code}`,
   });
-  return result;
+  return { ...result, filledValues };
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +986,7 @@ export const COMPUTER_USAGE =
   "  wake <电脑 id>                             唤醒\n" +
   "  remove <电脑 id> [--yes]                    删除（删 workspace 与 profile 目录、清掉这台电脑的全部凭证，不可恢复）\n" +
   "  credential <电脑 id> <store|list|remove> [--account <账号>]   凭证 Vault：存（交互输入，绝不回显到日志）/ 列（只给掩码）/ 删\n" +
-  "  shell <电脑 id> <命令...> [--timeout <秒>]   在电脑的 workspace 里跑一条命令（bwrap 沙箱；休眠的电脑先 wake）\n" +
+  "  shell <电脑 id> <命令...> [--timeout <秒>] [--cred <账号> ...]   在电脑的 workspace 里跑一条命令（bwrap 沙箱；休眠的电脑先 wake；--cred 把 Vault 里该账号的凭证代填进环境变量 NYRA_CRED_<账号>，命令里用 $NYRA_CRED_<账号> 引用，明文绝不进日志）\n" +
   "  sleep-due                                  把闲置到点的电脑全部休眠（可逆，唤醒即恢复）";
 
 export interface ComputerCliInput {
@@ -1126,20 +1183,22 @@ export async function handleComputer(argv: string[], home: string, input?: Compu
     }
     if (cmd === "shell") {
       const id = argv[1];
-      // 先摘掉 --timeout <秒>，剩下的才是命令（不要把超时秒数拼进命令里）。
+      // 先摘掉 --timeout <秒> 与 --cred <账号>（可重复），剩下的才是命令。
       const timeout = flagInt(argv, "--timeout");
+      const credentials: string[] = [];
       const commandParts: string[] = [];
       for (let i = 2; i < argv.length; i++) {
         if (argv[i] === "--timeout") { i++; continue; }
+        if (argv[i] === "--cred" && i + 1 < argv.length) { credentials.push(argv[++i]); continue; }
         commandParts.push(argv[i]);
       }
       const command = commandParts.join(" ").trim();
       if (!id || !command) {
-        process.stderr.write("用法：nyra bot computer shell <电脑 id> <命令...> [--timeout <秒>]\n");
+        process.stderr.write("用法：nyra bot computer shell <电脑 id> <命令...> [--timeout <秒>] [--cred <账号> ...]\n");
         return 2;
       }
       const computer = getComputer(home, id);
-      const result = await runComputerShell(home, id, command, { agent: computer.agent, timeout });
+      const result = await runComputerShell(home, id, command, { agent: computer.agent, timeout, credentials });
       if (result.stdout) process.stdout.write(result.stdout + (result.stdout.endsWith("\n") ? "" : "\n"));
       if (result.stderr) process.stderr.write(result.stderr + (result.stderr.endsWith("\n") ? "" : "\n"));
       if (result.code !== 0) {

@@ -29,6 +29,14 @@
 // bot_approval_requested / bot_approval_decided（有运行目录时写它的
 // events.jsonl，没有时写 evidence/bot/ 下的证据文件，见 approvalBridge.ts
 // 的 recordBotEvent）。
+//
+// 缺口 42 第二批（BotRunner 接线）：Bot 启动时按 config 的 bot.agent
+// （默认 "nyra"）绑一台电脑（binding.ts：已有就用、有 Soul 没电脑就自动建、
+// 没 Soul 就不接并提示）；Agent 的工作目录就是电脑的 workspace，消息到了
+// 先唤醒电脑、跑完记一笔 task.run 活动，闲置到点的电脑 5 分钟扫一次休眠。
+// 聊天里的 /computer-shell <id|own> <命令> 让机主/管理员在指定电脑上跑 shell：
+// 跨电脑写操作走 checkComputerAccess（deny 拒绝、ask 走 approvalBridge 审批、
+// allow 直接跑），--cred 把 Vault 凭证代填进沙箱环境变量，回显前脱敏。
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Agent, type ApproveFn } from "../agent.ts";
@@ -44,11 +52,26 @@ import { resolveReviewerModel } from "../reviewer.ts";
 import { monthKeyString, UsageLedger } from "../usageLedger.ts";
 import type { UsageSnapshot } from "../usage.ts";
 import { ApprovalBridge, approvalArgsHash } from "./approvalBridge.ts";
+import { resolveBotComputer, type BotComputerBinding } from "./binding.ts";
 import { processAttachments } from "./attachments.ts";
 import { DedupStore, QuotaStore } from "./dedupAndQuota.ts";
 import { splitMessage } from "./formatter.ts";
 import { BotNotifier } from "./notifier.ts";
-import { computerResourceSummary, handleComputer, listComputers } from "./computer.ts";
+import {
+  checkComputerAccess,
+  computerResourceSummary,
+  computerWorkspacePath,
+  getComputer,
+  handleComputer,
+  listComputers,
+  recordComputerActivity,
+  runComputerShell,
+  sleepDueComputers,
+  touchComputerActivity,
+  validateComputerId,
+  wakeComputer,
+  type BotComputer,
+} from "./computer.ts";
 import { botToolRedlineVerdict, handleBusinessRedlines } from "../businessRedlines.ts";
 
 /** 给 schedule daemon / task worker 共用（buildNotifierFromConfig 的返回类型）。 */
@@ -95,6 +118,8 @@ export interface BotRunnerOptions {
   adapter: ChannelAdapter;
   /** 注入的模型执行（测试用假 runner；不传用真 Agent）。 */
   agentRun?: AgentRunFn;
+  /** 本 Bot 的 Soul 身份（测试里模拟不同 agent 用；不传读 config 的 bot.agent）。 */
+  agent?: string;
 }
 
 export interface BotStatus {
@@ -147,7 +172,9 @@ export function parseBotCommand(text: string): { command: string; args: string }
   if (!body) return null;
   const at = body.indexOf("@");
   const command = (at >= 0 ? body.slice(0, at) : body).toLowerCase();
-  if (!/^[a-z][a-z0-9_]*$/.test(command)) return null;
+  // 缺口 42 第二批：命令名允许连字符（/computer-shell）。连字符只出现在命令
+  // 名里，参数部分不受影响；未知指令仍由 handleCommand 的 default 回“未知指令”。
+  if (!/^[a-z][a-z0-9_-]*$/.test(command)) return null;
   return { command, args: trimmed.slice(first.length).trim() };
 }
 
@@ -157,6 +184,12 @@ export class BotRunner {
   readonly config: Record<string, unknown>;
   readonly policy: BotPolicy;
   readonly adapter: ChannelAdapter;
+  /** 本 Bot 的 Soul 身份（config 的 bot.agent，默认 "nyra"；电脑挂在这个身份下）。 */
+  readonly agent: string;
+  /** 绑上的电脑（缺口 42 第二批；没接上时为 null，任务仍在启动目录跑）。 */
+  readonly boundComputer: BotComputer | null;
+  /** Agent 实际的工作目录：接上电脑时是电脑的 workspace，否则是启动目录。 */
+  readonly agentWorkdir: string;
   readonly queue = new SessionQueue();
   readonly dedup: DedupStore;
   readonly quota: QuotaStore;
@@ -178,6 +211,8 @@ export class BotRunner {
   private sessionCtx = new Map<string, { chatId: string; threadId: string | null; senderId: string; profile: BotProfile }>();
   /** 审批过期扫荡的定时器（startPolling 起、stopPolling 停）。 */
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** 电脑闲置休眠扫荡的定时器（缺口 42 第二批；startPolling 起、stopPolling 停）。 */
+  private computerSweepTimer: ReturnType<typeof setInterval> | null = null;
   /** 主动推送的巡查定时器（startPolling 起、stopPolling 停；notifier 没开时不建）。 */
   private notifyTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -189,6 +224,21 @@ export class BotRunner {
     this.config = opts.config;
     this.policy = botPolicyFromConfig(opts.config);
     this.adapter = opts.adapter;
+    // 缺口 42 第二批：BotRunner 接电脑。构造时定死绑定（运行中换电脑要重启）；
+    // 没接上（没 Soul 或建电脑失败）时任务仍在启动目录跑，并打一条提示——
+    // 没电脑的 Bot 在第一批之前就是这么跑的，不因电脑接不上而拒绝启动。
+    this.agent = opts.agent ?? this.policy.agent;
+    let binding: BotComputerBinding | null = null;
+    try {
+      binding = resolveBotComputer(opts.home, this.agent);
+    } catch (err) {
+      process.stderr.write(`Bot 电脑绑定失败（${err instanceof Error ? err.message : String(err)}）：先用启动目录跑任务。\n`);
+    }
+    this.boundComputer = binding?.computer ?? null;
+    this.agentWorkdir = binding?.workdir ?? opts.workdir;
+    if (!binding) {
+      process.stderr.write(`Bot 未接持久电脑（agent ${this.agent} 没有 Soul 或电脑建不出来）：任务在启动目录跑；跑 \`nyra soul init ${this.agent}\` 与 \`nyra bot computer create --agent ${this.agent}\` 接入持久电脑。\n`);
+    }
     this.dedup = new DedupStore(opts.home);
     this.quota = new QuotaStore(opts.home);
     this.bridge = new ApprovalBridge({
@@ -324,9 +374,10 @@ export class BotRunner {
     const monthlySpentBeforeUsd = monthlyLimit === null ? null : () => this.monthSpentBeforeUsd();
     // 画像定 Agent：mode / interactive / 白名单 / 系统提示词 / 步数都跟着角色走
     //（guest/member 只读；owner/admin 的写操作逐次走 approvalBridge）。
+    // 工作目录是 Bot 那台电脑的 workspace（缺口 42 第二批；没接电脑时是启动目录）。
     const ao = agentOptionsForProfile(profile);
     return new Agent(provider, {
-      workdir: this.workdir,
+      workdir: this.agentWorkdir,
       mode: ao.mode,
       maxTurns: ao.maxTurns,
       sessionId,
@@ -425,6 +476,46 @@ export class BotRunner {
     this.lastSpent.delete(sessionKey);
   }
 
+  /**
+   * Bot 在电脑里跑完一次消息任务，记一笔 task.run 活动（只记会话 key、花费
+   * 与成败，不记用户原文；没接电脑时不记）。目标是会话 key（telegram:7 这
+   * 种），不是文件路径，不含隐私。
+   */
+  private recordTaskActivity(sessionKey: string, ok: boolean, spentUsd: number | null): void {
+    if (!this.boundComputer) return;
+    try {
+      recordComputerActivity(this.home, {
+        computerId: this.boundComputer.id,
+        kind: "task",
+        action: "task.run",
+        target: sessionKey,
+        ok,
+        spentUsd,
+        detail: ok ? "完成" : "失败",
+      });
+    } catch { /* 活动记失败不破坏回复 */ }
+  }
+
+  /** 消息到了就是一次活动：休眠的电脑先唤醒，并把闲置计时拨回现在（免得
+   * 扫荡把正在干活的电脑睡了）。唤醒失败不挡任务——workspace 目录本身还在。 */
+  private wakeBoundComputer(): void {
+    if (!this.boundComputer) return;
+    try {
+      const current = getComputer(this.home, this.boundComputer.id);
+      if (current.state === "sleeping") wakeComputer(this.home, current.id);
+      touchComputerActivity(this.home, current.id);
+    } catch { /* ignore */ }
+  }
+
+  /** 闲置到点的电脑全部休眠（nyra bot computer sleep-due 的同款逻辑；Bot
+   * 自己的电脑闲置够久也会睡，下一条消息再唤醒）。startPolling 每 5 分钟
+   * 调一次；测试直接调这个方法，不用等定时器。 */
+  sweepSleepDue(): void {
+    try {
+      sleepDueComputers(this.home);
+    } catch { /* 扫荡失败不破坏轮询 */ }
+  }
+
   // -- 确定性指令（不走模型、不扣 token、不计配额） ----
 
   private helpText(profile: BotProfile): string {
@@ -438,6 +529,7 @@ export class BotRunner {
       "/stop — 停止当前正在处理的任务",
       "/model — 当前用的模型",
       "/approve <id>、/reject <id> — 批准/拒绝一条挂起的审批（只有 owner/admin 能批；也可以点审批提示下的按钮）",
+      "/computer-shell <电脑 id|own> <命令...> [--cred <账号> ...] — 在一台电脑上跑 shell（只机主/管理员；own 是 Bot 自己那台电脑；跨电脑写操作须审批；--cred 把 Vault 里的凭证代填进环境变量）",
       "群聊里只有 @ 我时才回复；私聊直接发消息就行。",
       "附件：图片只记元信息（本批暂不支持看图），纯文本文档（.txt/.md 等）会提取内容一起处理。",
     ].join("\n");
@@ -488,9 +580,12 @@ export class BotRunner {
       case "model":
         await reply(`当前模型：${this.modelName ?? "未配置"}`);
         break;
+      case "computer-shell": {
+        outcome = await this.handleComputerShellCommand(msg, profile, args);
+        break;
+      }
       case "approve":
-      case "reject": {
-        const id = args.split(/\s+/)[0] ?? "";
+      case "reject": {        const id = args.split(/\s+/)[0] ?? "";
         if (!id) {
           await reply("用法：/approve <审批 id> 或 /reject <审批 id>（审批提示里有 id）。");
           outcome = "approval:missing-id";
@@ -526,6 +621,111 @@ export class BotRunner {
         break;
     }
     appendAudit(this.home, { ts: new Date().toISOString(), channel: msg.channel, session_key: key, message_id: msg.messageId, outcome });
+  }
+
+  /**
+   * /computer-shell <电脑 id|own> <命令...> [--cred <账号> ...]（缺口 42 第二批）：
+   * 机主/管理员在聊天里让 Bot 在一台电脑上跑 shell。own = Bot 自己那台电脑。
+   * 跨电脑写操作走 checkComputerAccess：deny 直接拒绝；ask 走 approvalBridge
+   * 审批（批了才跑，批的人记进 shell.run 活动的 approvedBy）；allow 直接跑。
+   * --cred 把 Vault 里该账号的凭证代填进沙箱环境变量 NYRA_CRED_<账号>；
+   * 回显前把代填的明文脱敏成 ***，绝不把明文发回聊天（群聊里其他人也看不到）。
+   * 返回值是这次指令的审计 outcome（handleCommand 记进 bot-audit.jsonl）。
+   */
+  private async handleComputerShellCommand(msg: InboundMessage, profile: BotProfile, args: string): Promise<string> {
+    const reply = async (text: string): Promise<void> => {
+      await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text });
+    };
+    if (profile.role !== "owner" && profile.role !== "admin") {
+      await reply("只有机主/管理员能用 /computer-shell。");
+      return "command:computer-shell-denied-role";
+    }
+    const parts = args.split(/\s+/).filter(Boolean);
+    const creds: string[] = [];
+    const rest: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === "--cred" && i + 1 < parts.length) { creds.push(parts[++i]); continue; }
+      rest.push(parts[i]);
+    }
+    const target = rest[0] ?? "";
+    const command = rest.slice(1).join(" ").trim();
+    if (!target || !command) {
+      await reply("用法：/computer-shell <电脑 id|own> <命令...> [--cred <账号> ...]");
+      return "command:computer-shell-usage";
+    }
+    let computerId: string;
+    try {
+      if (target === "own" || target === "me" || target === "mine") {
+        if (!this.boundComputer) {
+          await reply(`这台 Bot 还没接电脑（agent ${this.agent} 没有 Soul 或电脑建不出来）：先跑 nyra soul init ${this.agent} 与 nyra bot computer create --agent ${this.agent}。`);
+          return "command:computer-shell-no-computer";
+        }
+        computerId = this.boundComputer.id;
+      } else {
+        validateComputerId(target);
+        computerId = target;
+      }
+    } catch (err) {
+      await reply(`电脑 id 不对：${err instanceof Error ? err.message : String(err)}`);
+      return "command:computer-shell-bad-id";
+    }
+    const key = sessionKeyFor(msg);
+    let access;
+    try {
+      access = checkComputerAccess(this.home, computerId, this.agent, "write");
+    } catch (err) {
+      await reply(`跑不了：${err instanceof Error ? err.message : String(err)}`);
+      return "command:computer-shell-denied";
+    }
+    if (access.decision === "deny") {
+      await reply(`跑不了：${access.reason}`);
+      return "command:computer-shell-denied";
+    }
+    let approvedBy: string | null = null;
+    if (access.decision === "ask") {
+      const computer = getComputer(this.home, computerId);
+      const approval = await this.bridge.requestApproval({
+        sessionKey: key,
+        chatId: msg.chatId,
+        threadId: msg.threadId,
+        tool: "computer-shell",
+        summary: `在电脑 ${computerId}（${computer.agent} 的电脑）上跑 shell：${command}`,
+        argsHash: approvalArgsHash({ tool: "computer-shell", command, cwd: computerWorkspacePath(this.home, computer) }),
+        requestedBy: msg.senderId,
+        requestedByRole: profile.role,
+      });
+      const decision = await this.bridge.waitForDecision(approval.id);
+      if (!decision.approved) {
+        await reply(`审批未通过：${decision.reason || "已拒绝"}`);
+        return "command:computer-shell-rejected";
+      }
+      approvedBy = decision.decidedBy;
+    }
+    let result;
+    try {
+      result = await runComputerShell(this.home, computerId, command, {
+        agent: this.agent, credentials: creds, approvedBy,
+      });
+    } catch (err) {
+      await reply(`执行失败：${err instanceof Error ? err.message : String(err)}`);
+      return "command:computer-shell-error";
+    }
+    // 回显脱敏：代填进去的凭证明文一律替换成 ***（命令本身 echo 了凭证也一样）。
+    const redact = (text: string): string => {
+      let out = text;
+      for (const v of result.filledValues) {
+        if (v) out = out.split(v).join("***");
+      }
+      return out;
+    };
+    const output = redact(`${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`.trim());
+    const full = `退出码 ${result.code}${output ? `\n${output}` : ""}`;
+    const chunks = splitMessage(full);
+    await reply(chunks[0]);
+    for (const chunk of chunks.slice(1)) {
+      await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: chunk });
+    }
+    return "command:computer-shell";
   }
 
   // -- 主链路 ----
@@ -640,8 +840,12 @@ export class BotRunner {
     const result = await this.queue.enqueue(key, async (signal) => {
       this.sessionCtx.set(key, ctx);
       try {
+        // 缺口 42 第二批：消息到了就唤醒 Bot 的电脑（休眠只是状态位，workspace
+        // 一直在），任务落在电脑的 workspace 里跑（Agent 的 workdir 已绑过去）。
+        this.wakeBoundComputer();
         const res = await this.agentRunFn(key, effectiveText, signal);
         if (signal.aborted) return;
+        this.recordTaskActivity(key, true, res.spentUsd);
         this.quota.recordSpent(res.spentUsd);
         // 附件说明贴在回复前面（“已读取文档 X”“图片暂不支持看图”这类
         // 提示用户要看到；没附件时 notices 为空，回复原样不变）。
@@ -664,6 +868,7 @@ export class BotRunner {
           audit("cancelled", { error: reason ?? "aborted" });
           return;
         }
+        this.recordTaskActivity(key, false, null);
         const message = err instanceof Error ? err.message : String(err);
         try { await this.adapter.editText(msg.chatId, placeholderId, `处理失败：${message}`); } catch { /* ignore */ }
         replied.done = true;
@@ -699,6 +904,10 @@ export class BotRunner {
       }, this.policy.notifier.heartbeatIntervalMs);
       if (typeof this.notifyTimer.unref === "function") this.notifyTimer.unref();
     }
+    // 缺口 42 第二批：电脑闲置休眠扫荡（5 分钟一次；先扫一次再起定时器）。
+    this.sweepSleepDue();
+    this.computerSweepTimer = setInterval(() => { this.sweepSleepDue(); }, 5 * 60 * 1000);
+    if (typeof this.computerSweepTimer.unref === "function") this.computerSweepTimer.unref();
     try {
       await this.adapter.getMe?.();
     } catch { /* username 拿不到不影响运行：@ 判定退化为看文本里的 @ */ }
@@ -730,6 +939,10 @@ export class BotRunner {
     if (this.notifyTimer) {
       clearInterval(this.notifyTimer);
       this.notifyTimer = null;
+    }
+    if (this.computerSweepTimer) {
+      clearInterval(this.computerSweepTimer);
+      this.computerSweepTimer = null;
     }
     this.stopController?.abort();
     this.stopController = null;
@@ -837,8 +1050,10 @@ export function handleBotStatus(home: string): number {
     process.stdout.write(`注意：CPU 已超配（醒着的电脑共声明 ${summary.declaredCpuPercent}%，${summary.cpuCores} 核共 ${100 * summary.cpuCores}%），跑满时会互相抢。\n`);
   }
   const computers = listComputers(resolvedHome);
+  // 缺口 42 第二批：标出本 Bot（config 的 bot.agent）那台电脑。
+  const botAgent = botPolicyFromConfig(config).agent;
   for (const c of computers) {
-    process.stdout.write(`- ${c.id}（${c.name}，agent ${c.agent}）— ${c.state === "active" ? "醒着" : "休眠"}，${c.isolation === "dedicated" ? "独占" : "共享"}\n`);
+    process.stdout.write(`- ${c.id}（${c.name}，agent ${c.agent}）— ${c.state === "active" ? "醒着" : "休眠"}，${c.isolation === "dedicated" ? "独占" : "共享"}${c.agent === botAgent ? "（本 Bot 的电脑）" : ""}\n`);
   }
   process.stdout.write("详情见 docs/bot.md 与 docs/bot-computer.md。\n");
   return 0;
@@ -930,7 +1145,7 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
       : new DiscordAdapter({ token: token.token });
     const runner = new BotRunner({ home: resolvedHome, workdir: process.cwd(), config, adapter });
     writePid(resolvedHome, channel);
-    process.stdout.write(`${label} Bot 已启动（pid ${process.pid}，模型：${runner.modelName ?? "未配置"}）。Ctrl+C 停止，或 nyra bot ${channel} stop。\n`);
+    process.stdout.write(`${label} Bot 已启动（pid ${process.pid}，模型：${runner.modelName ?? "未配置"}，电脑：${runner.boundComputer ? `${runner.boundComputer.id}（${runner.boundComputer.name}）` : "未接"}）。Ctrl+C 停止，或 nyra bot ${channel} stop。\n`);
     const shutdown = (): void => {
       runner.stopPolling();
       removePid(resolvedHome, channel);

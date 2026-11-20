@@ -128,6 +128,11 @@ export type BotAction =
 
 /** Bot 安全与配额策略（config.json 的 `bot` 一节，见 botPolicyFromConfig）。 */
 export interface BotPolicy {
+  /** 本 Bot 跑在哪个 Soul 身份下（缺口 42 第二批：BotRunner 接线；与 Soul 的
+   * agent id 同口径 `^[a-z][a-z0-9_-]{0,31}$`，非法值回默认 "nyra"）。
+   * Bot 的电脑挂在这个身份下（每 agent 一台）；没配 Soul 时 Bot 照常跑，
+   * 只不接电脑（工作目录仍是启动时的目录，并在启动时打一条提示）。 */
+  agent: string;
   /** 群聊里只有被 @ 才响应（默认 true；私聊不受影响）。 */
   mentionOnly: boolean;
   /** 每次 Bot 回复最多走几轮 agent（默认 12；超了诚实收尾，不烧完）。 */
@@ -167,6 +172,7 @@ export interface BotPolicy {
 }
 
 export const DEFAULT_BOT_POLICY: BotPolicy = {
+  agent: "nyra",
   mentionOnly: true,
   maxTurns: 12,
   timeoutMs: 120000,
@@ -257,6 +263,11 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
     }
   }
   return {
+    // 缺口 42 第二批：Bot 的 Soul 身份（电脑挂在它下面）；与 SOUL_AGENT_ID_RE
+    // 同口径，非法值回默认，不抛错（与本文件其他配置项的容错口径一致）。
+    agent: typeof b.agent === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(b.agent.trim())
+      ? b.agent.trim()
+      : DEFAULT_BOT_POLICY.agent,
     mentionOnly: b.mention_only === false ? false : DEFAULT_BOT_POLICY.mentionOnly,
     maxTurns: asPosInt(b.max_turns, DEFAULT_BOT_POLICY.maxTurns),
     timeoutMs: asPosInt(b.timeout_ms, DEFAULT_BOT_POLICY.timeoutMs),
