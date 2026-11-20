@@ -12,7 +12,9 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { effectiveValue, effectiveStringList } from "../../src/enforcedConfig.ts";
+import { effectiveValue, effectiveStringList, enforcedOnly } from "../../src/enforcedConfig.ts";
+import { resolveMonthlyLimit } from "../../src/cost.ts";
+import { resolveVerifyOrigin } from "../../src/runs.ts";
 import { isDenyReadPath, resetDenyReadCache } from "../../src/tools.ts";
 import { resolveSandbox } from "../../src/config.ts";
 
@@ -67,4 +69,35 @@ test("运行时关键：锁了 sandbox_mode，顶层写 danger-full-access 也�
 test("没锁时 sandbox 仍按顶层走（回归保护）", () => {
   const r = resolveSandbox({ sandbox: "local" });
   expect(String(r.backend)).not.toContain("bwrap");
+});
+
+// ---- 另外三个可锁键的运行时生效（同一类问题：锁了但没读）----
+// 上一个 PR 修了 deny_read_globs / permissions / sandbox；这里补齐月度上限、
+// 校验命令、工具裁剪——它们原先也直接读 config.json 顶层。
+
+test("锁定 monthly_cost_limit_usd 时，改 config 或加 CLI 参数都放宽不了", () => {
+  expect(resolveMonthlyLimit({ monthly_cost_limit_usd: 100, enforced: { monthly_cost_limit_usd: 10 } })).toBe(10);
+  expect(resolveMonthlyLimit({ monthly_cost_limit_usd: 100, enforced: { monthly_cost_limit_usd: 10 } }, 500)).toBe(10);
+});
+
+test("未锁 monthly_cost_limit_usd 时仍按 CLI > config（锁不影响正常优先级）", () => {
+  expect(resolveMonthlyLimit({ monthly_cost_limit_usd: 100 }, 50)).toBe(50);
+  expect(resolveMonthlyLimit({ monthly_cost_limit_usd: 100 })).toBe(100);
+});
+
+test("锁定 verify_command 时，config 里的校验命令被顶掉", () => {
+  const [cmd] = resolveVerifyOrigin(null, { verify_command: "npm test", enforced: { verify_command: "true" } });
+  expect(cmd).toBe("true");
+  const [plain] = resolveVerifyOrigin(null, { verify_command: "npm test" });
+  expect(plain).toBe("npm test");
+});
+
+test("锁定 disabled_tools 时生效（否则「禁用某工具」可被改 config 绕过）", () => {
+  const dis = effectiveStringList({ disabled_tools: ["a"], enforced: { disabled_tools: ["b", "c"] } }, "disabled_tools");
+  expect(dis).toEqual(["b", "c"]);
+});
+
+test("enforcedOnly 只在被锁时给值（防优先级判断失效——这个坑真踩过）", () => {
+  expect(enforcedOnly({ monthly_cost_limit_usd: 100 }, "monthly_cost_limit_usd")).toBeUndefined();
+  expect(enforcedOnly({ enforced: { monthly_cost_limit_usd: 10 } }, "monthly_cost_limit_usd")).toBe(10);
 });

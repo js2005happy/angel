@@ -39,7 +39,7 @@ import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } 
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
 import { resolveReviewerModel } from "./reviewer.ts";
-import { resolveEnforced, applyEnforced, formatEnforced } from "./enforcedConfig.ts";
+import { resolveEnforced, applyEnforced, formatEnforced, effectiveValue, effectiveStringList } from "./enforcedConfig.ts";
 import { buildRecallNote, selectRecalledRuns } from "./runRecall.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
@@ -631,7 +631,7 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     // 与兜底链同一份名单；不受 fallback_enabled 开关影响，见 config.ts）。
     modelSwitchAllowlist: resolveSwitchAllowlist(config, primaryCfg.name),
     // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
-    disabledTools: [...(Array.isArray(config.disabled_tools) ? config.disabled_tools.filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
+    disabledTools: [...(Array.isArray(effectiveValue(config, "disabled_tools")) ? effectiveStringList(config, "disabled_tools").filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
     // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
     // 跨会话回忆（features.run_recall 默认开）：上次同类任务的结论注入系统提示。
     recallNote: (() => {
@@ -3570,7 +3570,7 @@ export async function main(argv: string[]): Promise<number> {
     const savings = summarizeCostSavings({
       config: cfgV,
       schemas: TOOL_SCHEMAS as never,
-      disabledTools: Array.isArray(cfgV.disabled_tools) ? (cfgV.disabled_tools as string[]) : [],
+      disabledTools: Array.isArray(effectiveValue(cfgV, "disabled_tools")) ? (effectiveStringList(cfgV, "disabled_tools") as string[]) : [],
       recallCount: null,
       toolSearchEnabled: featureOn(feats, "tool_search"),
       turns,
@@ -3622,7 +3622,7 @@ export async function main(argv: string[]): Promise<number> {
     const cfgSav = loadConfig(home);
     const feats = resolveFeatures(cfgSav, { enable: args.enableFeatures, disable: args.disableFeatures });
     const disabled = [
-      ...(Array.isArray(cfgSav.disabled_tools) ? cfgSav.disabled_tools.filter((t): t is string => typeof t === "string") : []),
+      ...(Array.isArray(effectiveValue(cfgSav, "disabled_tools")) ? effectiveStringList(cfgSav, "disabled_tools").filter((t): t is string => typeof t === "string") : []),
       ...args.disableTools,
     ];
     let recallCount: number | null = null;
@@ -3689,7 +3689,7 @@ export async function main(argv: string[]): Promise<number> {
     // 工具集成本体检：每轮发多少 token、谁最贵、裁掉能省多少。
     const cfgTools = loadConfig(home);
     const disabled = [
-      ...(Array.isArray(cfgTools.disabled_tools) ? cfgTools.disabled_tools.filter((t): t is string => typeof t === "string") : []),
+      ...(Array.isArray(effectiveValue(cfgTools, "disabled_tools")) ? effectiveStringList(cfgTools, "disabled_tools").filter((t): t is string => typeof t === "string") : []),
       ...args.disableTools,
     ];
     const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
@@ -3774,7 +3774,7 @@ export async function main(argv: string[]): Promise<number> {
       // （延迟加载只覆盖 MCP 工具且自动开启，这里不传开关——见 redlines.ts 检查 8。）
       toolBudget: (() => {
         const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
-        const disabled = Array.isArray(cfgRed.disabled_tools) ? cfgRed.disabled_tools.filter((t): t is string => typeof t === "string") : [];
+        const disabled = Array.isArray(effectiveValue(cfgRed, "disabled_tools")) ? effectiveStringList(cfgRed, "disabled_tools").filter((t): t is string => typeof t === "string") : [];
         const kept = filterSchemas(schemas, disabled).kept;
         const m = measureToolBudget(kept, typeof cfgRed.context_window === "number" ? cfgRed.context_window : null);
         return { totalTools: m.totalTools, tokensPerTurn: m.tokensPerTurn, contextRatio: m.contextRatio };
@@ -3784,7 +3784,7 @@ export async function main(argv: string[]): Promise<number> {
     const savingsForRedlines = summarizeCostSavings({
       config: cfgRed,
       schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
-      disabledTools: Array.isArray(cfgRed.disabled_tools) ? cfgRed.disabled_tools.filter((t): t is string => typeof t === "string") : [],
+      disabledTools: Array.isArray(effectiveValue(cfgRed, "disabled_tools")) ? effectiveStringList(cfgRed, "disabled_tools").filter((t): t is string => typeof t === "string") : [],
       recallCount: result.findings.some((f) => f.code === "recall-ready") ? 1 : 0,
       toolSearchEnabled: featureOn(resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
       turns: typeof cfgRed.max_turns === "number" ? cfgRed.max_turns : 20,

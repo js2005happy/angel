@@ -115,3 +115,16 @@ export function effectiveStringList(config: Record<string, unknown> | null | und
   if (!Array.isArray(v)) return [];
   return v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
 }
+
+/**
+ * 只在**被锁**时返回锁定值；没锁返回 undefined。
+ *
+ * 与 ``effectiveValue`` 的区别（踩过）：effectiveValue 没锁时返回 config 顶层值，
+ * 拿它当"是否有锁"的判定会让**优先级顺序失效**——
+ * 例如月度上限：``enforcedOnly ?? cli ?? config`` 才是对的；
+ * 用 effectiveValue 会变成"config 有值就压过 CLI"，与文档写的 CLI 优先矛盾。
+ */
+export function enforcedOnly(config: Record<string, unknown> | null | undefined, key: string): unknown {
+  const enforced = resolveEnforced(config).values;
+  return Object.prototype.hasOwnProperty.call(enforced, key) ? enforced[key] : undefined;
+}
