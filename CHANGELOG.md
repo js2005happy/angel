@@ -1,3 +1,7 @@
+## 2026-11-20 — 静态审计 v4
+
+- `scripts/audit_runtime_boundary.py`：主分支 Node 派发、持久化文本锚点缺失时失败关闭，新增 `missing_node_anchors`，升级 JSON schema v4。避免上游重构后仍显示审计完整；仅静态源码修改，未运行测试，不提供运行时执行安全保证。
+
 ## 未发布（2026-11-20，Node 派发与持久化静态锚点 v3）
 
 - 扩充只读标准库审计脚本：纳入 Node gateway/memory，定位会话及调度 Agent 入口、工具结果消息追加和 saveSession 的源码行号锚点，JSON schema 升至 v3。
