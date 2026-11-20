@@ -63,6 +63,7 @@
 | `nyra hooks list` | 列出已安装的钩子 |
 | `nyra permissions` | Poppy 站点授权意向（本地账本，只记录不授权） |
 | `nyra eigenflux` | EigenFlux 接入检测与本地网络限制 |
+| `nyra gmail <status\|auth\|search\|read\|send\|revoke>` | Gmail 连接器：读邮件、按 thread 回复、代发草稿（发信走审批，详见 `docs/connectors-gmail.md`） |
 
 ## 自检与运维
 
