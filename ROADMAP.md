@@ -1,3 +1,9 @@
+## 2026-11-20 — P0 claim 创建前后目录身份一致性（静态审阅）
+
+- **仓库事实**：此前 claim 在文件创建后才用目录 fd 核验身份；本轮增加创建前 `O_DIRECTORY|O_NOFOLLOW` 打开、`fstat/lstat` 身份校验，并在创建后核验相同 dev/ino。主分支 [f35de0d](https://github.com/js2005happy/nyra/commit/f35de0dc53e9a3aeb071406803cc0695f5b806ae)（2026-11-20 15:28 UTC）涉及 repo-map 缓存与 LSP hover，不重复此项；开放 Issues/PR 检索为空。
+- **外部事实**：[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07，重复投递个案）、[Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19，安全恢复请求）。**工程推断**：持久操作所有权有助于降低重复副作用风险；不证明 Angel 复现或这些问题高频。
+- **排序（价值／难度／安全风险／依赖）**：P0 真正的目录相对原子创建 openat 等价实现（高／高／高／OS API）；P0 Windows reparse 句柄支持（高／高／高／原生 API）；P0 真实派发集成（高／高／高／可信存储）；P1 MCP 目录版本（中高／中／中／协议）；P1 外部回执（高／高／高／适配器）。本轮仅检测替换，仍存在检查到创建之间的竞态，未运行测试。
+
 ## 2026-11-20 — P0 claim 目录句柄与路径身份复核（单项增量）
 
 - **仓库事实**：开发分支 Node claim 仅在创建前预检目录，写入后对目录路径直接重新打开并 fsync，缺少打开句柄与路径对象身份对照。main 最新检索提交 [b53a9c5](https://github.com/js2005happy/nyra/commit/b53a9c5beace9c2d048a5809a247bf2bc1b7916f)（2026-11-20 14:17 UTC）为多 Agent 时间线/回放，不重复本项；开放 Issues/PR 查询为空。
