@@ -71,6 +71,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
           before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0) throw new ClaimUnavailable();
     } finally { closeSync(dirfd); }
   } catch { throw new ClaimUnavailable(); }
+  let claimFileIdentity: { dev: number; ino: number; size: number } | undefined;
   let fd: number;
   try {
     fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
@@ -97,12 +98,14 @@ export function claimOperation(directory: string, operationId: string): Operatio
         opened.size !== data.length || named.size !== data.length) {
       throw new ClaimUnavailable();
     }
+    claimFileIdentity = { dev: opened.dev, ino: opened.ino, size: opened.size };
   } catch {
     // Never unlink: a partial claim is also a reason to block replay.
     throw new ClaimUnavailable();
   } finally {
     closeSync(fd);
   }
+  if (!claimFileIdentity) throw new ClaimUnavailable();
   // Directory durability varies by OS/filesystem; failure must not be treated
   // as a successful durable reservation.
   try {
@@ -120,6 +123,15 @@ export function claimOperation(directory: string, operationId: string): Operatio
       const after = lstatSync(directory);
       if (after.dev !== opened.dev || after.ino !== opened.ino ||
           !after.isDirectory() || after.isSymbolicLink()) throw new ClaimUnavailable();
+      // Recheck the claim name after syncing the directory. This only detects
+      // replacement at this instant; it is not an openat-style atomic binding.
+      const claimNamed = lstatSync(path);
+      if (!claimNamed.isFile() || claimNamed.isSymbolicLink() ||
+          claimNamed.dev !== claimFileIdentity.dev || claimNamed.ino !== claimFileIdentity.ino ||
+          claimNamed.nlink !== 1 || claimNamed.uid !== process.getuid?.() ||
+          (claimNamed.mode & 0o077) !== 0 || claimNamed.size !== claimFileIdentity.size) {
+        throw new ClaimUnavailable();
+      }
     } finally { closeSync(dirfd); }
   } catch { throw new ClaimUnavailable(); }
   return { operationId, claimId, state: "unknown" };
