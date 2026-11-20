@@ -2,7 +2,7 @@
 
 Nyra 桌面端是一个原生窗口：用系统自带的 WebView（macOS 的 WKWebView、Windows 的 WebView2）显示本机的 Nyra 网页界面，外壳用 [Tauri 2](https://tauri.app)（Rust）写，源码在 `desktop/`。安装包只有几 MB，不内置浏览器内核，也**不内置 Python**。
 
-> 状态：预览版。安装包由 GitHub Actions 构建（工作流 “Build desktop app”，`.github/workflows/desktop.yml`），**没有代码签名**。Windows 的 `.msi` / `-setup.exe` 已随 0.5.1 手动挂到 Release 上；macOS 的 `.dmg` 只在 Actions 产物里，不在 Release 上。macOS 与 Windows 的安装包都没有在真机上手动装过，见文末“已知限制”。
+> 状态：预览版。安装包由 GitHub Actions 构建（工作流 “Build desktop app”，`.github/workflows/desktop.yml`），**没有代码签名**。Windows 的 `.msi` / `-setup.exe` 已随 0.5.2 手动挂到 Release 上；macOS 的 `.dmg` 只在 Actions 产物里，不在 Release 上。macOS 与 Windows 的安装包都没有在真机上手动装过，见文末“已知限制”。
 
 ## 它怎么工作
 
@@ -28,7 +28,7 @@ macOS 上从程序坞 / 访达打开的 App 拿不到终端里 `~/.zshrc` 设置
 
 ### 先决条件：先装好 Nyra 命令行版
 
-- **Nyra 本体（Node 单文件二进制）**：macOS 见 [macos-install.md](macos-install.md)（`bash scripts/install-node-macos.sh`），Windows 见 [windows-install.md](windows-install.md)（`irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 | iex`）。装好后 `nyra --version` 应输出 `nyra 0.5.1 (node runtime)`。
+- **Nyra 本体（Node 单文件二进制）**：macOS 见 [macos-install.md](macos-install.md)（`bash scripts/install-node-macos.sh`），Windows 见 [windows-install.md](windows-install.md)（`irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 | iex`）。装好后 `nyra --version` 应输出 `nyra 0.5.2 (node runtime)`。
 - 不需要 Python、不需要 Node、不需要 Bun：桌面端只启动已装好的 `nyra` 二进制（`nyra ui ...`），自己不带运行时。
 - 想让桌面端用指定位置的二进制，设环境变量 `NYRA_BIN=<完整路径>`。
 - 模型 Key 和命令行一样只从环境变量读（见 GUIDE“配置模型”）。
@@ -37,8 +37,8 @@ macOS 上从程序坞 / 访达打开的 App 拿不到终端里 `~/.zshrc` 设置
 
 | 产物 | 怎么拿 |
 | --- | --- |
-| `Nyra_<版本>_x64_en-US.msi` 与 `Nyra_<版本>_x64-setup.exe`（Windows，NSIS，装到当前用户，不需要管理员） | **Release v0.5.1 里直接下载**：[Releases](https://github.com/js2005happy/nyra/releases) |
-| `Nyra_<版本>_universal.dmg`（macOS，Apple 芯片与 Intel 通用） | 只在 GitHub Actions 产物里：打开仓库的 **Actions → Build desktop app**，选一次成功的运行（`v0.5.1` 标签那次就行），在页面底部 **Artifacts** 下载 `Nyra-macos-universal`（需要登录 GitHub，下载下来是 zip，先解压） |
+| `Nyra_<版本>_x64_en-US.msi` 与 `Nyra_<版本>_x64-setup.exe`（Windows，NSIS，装到当前用户，不需要管理员） | **Release v0.5.2 里直接下载**：[Releases](https://github.com/js2005happy/nyra/releases) |
+| `Nyra_<版本>_universal.dmg`（macOS，Apple 芯片与 Intel 通用） | 只在 GitHub Actions 产物里：打开仓库的 **Actions → Build desktop app**，选一次成功的运行（`v0.5.2` 标签那次就行），在页面底部 **Artifacts** 下载 `Nyra-macos-universal`（需要登录 GitHub，下载下来是 zip，先解压） |
 
 两个安装包都是**未签名**的（见下文打开步骤）。
 
