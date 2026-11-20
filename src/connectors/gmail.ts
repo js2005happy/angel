@@ -16,6 +16,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { getCredential, Vault, vaultPath } from "../vault.ts";
+import {
+  CONNECTOR_AUTH_STATE_LABELS,
+  ensureConnectorUsable,
+  markConnectorExpired,
+  peekConnectorState,
+  resolveConnectorUserId,
+  tokenFingerprint,
+  type ConnectorAuthState,
+} from "./registry.ts";
 
 export const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
 export const GMAIL_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -318,17 +327,22 @@ export class GmailApiTransport implements GmailTransport {
   private readonly client: GmailClient;
   private readonly fetchFn: FetchFn;
   private readonly onTokensRefreshed?: (tokens: GmailTokens) => void;
+  /** 缺口 44 第 0 批：refresh 失败（refresh token 坏了/被撤销）时回调，调用方
+   * 把授权状态标过期——access token 过期不走这里（正常刷新能换回来）。 */
+  private readonly onAuthFailure?: () => void;
 
   constructor(opts: {
     tokens: GmailTokens;
     client: GmailClient;
     fetchFn?: FetchFn;
     onTokensRefreshed?: (tokens: GmailTokens) => void;
+    onAuthFailure?: () => void;
   }) {
     this.tokens = opts.tokens;
     this.client = opts.client;
     this.fetchFn = opts.fetchFn ?? fetch;
     this.onTokensRefreshed = opts.onTokensRefreshed;
+    this.onAuthFailure = opts.onAuthFailure;
   }
 
   /** 当前 token（测试与 CLI 状态展示用；调用方绝不能把它写进日志）。 */
@@ -337,11 +351,19 @@ export class GmailApiTransport implements GmailTransport {
   }
 
   private async refresh(): Promise<void> {
-    const next = await refreshAccessToken({
-      client: this.client,
-      refreshToken: this.tokens.refresh_token,
-      fetchFn: this.fetchFn,
-    });
+    let next: GmailTokens;
+    try {
+      next = await refreshAccessToken({
+        client: this.client,
+        refreshToken: this.tokens.refresh_token,
+        fetchFn: this.fetchFn,
+      });
+    } catch (err: unknown) {
+      // refresh 失败 = 授权本身死了（不是 access token 正常过期）：标过期，
+      // 下次调用直接报“请重新授权”，不再拿死掉的 refresh token 反复试。
+      try { this.onAuthFailure?.(); } catch { /* 标过期失败不改变刷新失败本身 */ }
+      throw err;
+    }
     this.tokens = { ...next, ...(this.tokens.email ? { email: this.tokens.email } : {}) };
     try { this.onTokensRefreshed?.(this.tokens); } catch { /* 回调失败不破坏刷新本身 */ }
   }
@@ -501,6 +523,8 @@ export interface GmailConnectorStatus {
   configured: boolean;
   email?: string;
   scopes?: string;
+  /** 缺口 44 第 0 批：授权状态机的当前状态（只读看一眼，不写账本、不迁移）。 */
+  authState: ConnectorAuthState;
 }
 
 /** 密码箱里有没有 gmail-oauth 条目（只看条目名，不用解锁——status 能直接报）。 */
@@ -523,12 +547,21 @@ export function resolveGmailEnabled(config: Record<string, unknown>): boolean {
 export function getGmailStatus(home: string, config: Record<string, unknown>): GmailConnectorStatus {
   const enabled = resolveGmailEnabled(config);
   const tokens = loadGmailTokens(home);
+  const hasEntry = hasGmailTokensEntry(home);
   return {
     enabled,
-    configured: hasGmailTokensEntry(home),
+    configured: hasEntry,
     ...(tokens?.email ? { email: tokens.email } : {}),
     ...(tokens?.scope ? { scopes: tokens.scope } : {}),
+    // 密码箱里有条目就算“已授权”的候选：首次调用 createGmailTransport 时
+    // 会沿用已有授权正式记一笔；这里只读，不写账本。
+    authState: peekConnectorState(home, "gmail", resolveConnectorUserId(home), { hasTokens: hasEntry }),
   };
+}
+
+/** 授权状态的中文标签（CLI status 行用，与 registry 的标签表同源）。 */
+export function gmailAuthStateLabel(state: ConnectorAuthState): string {
+  return CONNECTOR_AUTH_STATE_LABELS[state];
 }
 
 /** 代发证据正文（工具与 CLI 共用）：发了什么、按哪条规则发的、谁批准的。 */
@@ -554,7 +587,10 @@ export function buildGmailSendEvidence(opts: {
 /**
  * 建一个能用的 Gmail 传输层：未启用、没配 token、没配客户端时直接抛错，
  * 调用方把错误原样告诉用户（里面已经写清下一步该跑什么命令）。
- * fetchFn 只供测试注入；生产永远用全局 fetch。
+ * 缺口 44 第 0 批：建之前先过授权状态机——已过期/已撤销/未批准的一律拦在
+ * 门外（fail-closed）；密码箱里已有凭证但状态账本还没记录的，沿用已有授权
+ * 迁移为已授权（不打断已跑过 nyra gmail auth 的用户）。fetchFn 只供测试
+ * 注入；生产永远用全局 fetch。
  */
 export function createGmailTransport(home: string, config: Record<string, unknown>, opts?: { fetchFn?: FetchFn }): GmailTransport {
   if (!resolveGmailEnabled(config)) {
@@ -564,11 +600,21 @@ export function createGmailTransport(home: string, config: Record<string, unknow
   if (!tokens) throw new GmailAuthError("Gmail 未授权：密码箱里没有 token，请运行 nyra gmail auth");
   const client = loadGmailClient(home);
   if (!client) throw new GmailAuthError("Gmail 未授权：密码箱里没有 OAuth 客户端，请重新运行 nyra gmail auth");
+  const userId = resolveConnectorUserId(home);
+  const usable = ensureConnectorUsable(home, "gmail", userId, {
+    hasTokens: true,
+    tokenFingerprint: tokenFingerprint(tokens.refresh_token),
+    scopes: tokens.scope,
+  });
+  if (!usable.ok) throw new GmailAuthError(usable.message);
   return new GmailApiTransport({
     tokens,
     client,
     fetchFn: opts?.fetchFn,
     onTokensRefreshed: (next) => { persistGmailTokens(home, next); },
+    onAuthFailure: () => {
+      try { markConnectorExpired(home, "gmail", userId, "refresh token 失效"); } catch { /* 标过期失败不改变调用失败本身 */ }
+    },
   });
 }
 
