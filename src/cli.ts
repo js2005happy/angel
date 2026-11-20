@@ -139,6 +139,7 @@ nyra tools                      工具集体检：每轮 schema 成本与裁剪�
 nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
 nyra vault <...>                凭据保险箱（加密存储，权限 0600）
 nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
+nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
 nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
@@ -212,6 +213,7 @@ nyra tools                     tool-pool health: per-turn schema cost and trim a
 nyra config export|import|explain  settings export/import/explain (secrets stripped)
 nyra vault <...>               credential vault (encrypted at rest, mode 0600)
 nyra gmail <search|read|reply|draft|send>   native Gmail connector
+nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
 nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
@@ -2983,7 +2985,7 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
   + "详见 docs/connectors-gmail.md";
   const {
     createGmailTransport, exchangeCodeForTokens, buildAuthUrl, newAuthState,
-    startLoopbackCallbackServer, getGmailStatus, hasGmailTokensEntry,
+    startLoopbackCallbackServer, getGmailStatus, hasGmailTokensEntry, gmailAuthStateLabel,
     revokeRefreshToken, formatGmailSearchResults, formatGmailMessage,
     buildGmailSendEvidence, GmailApiTransport,
     GMAIL_VAULT_CLIENT_ENTRY, GMAIL_VAULT_TOKENS_ENTRY, GmailError,
@@ -3044,6 +3046,7 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
       const status = getGmailStatus(home, loadConfig(home));
       process.stdout.write(`Gmail 连接器：${status.enabled ? "已启用" : "未启用（默认关闭）"}\n`);
       process.stdout.write(`授权：${status.configured ? "已授权" : "未授权"}\n`);
+      process.stdout.write(`授权状态：${gmailAuthStateLabel(status.authState)}${status.authState === "authorized" || status.authState === "unauthorized" ? "" : "（请重新运行 nyra gmail auth）"}\n`);
       if (status.email) process.stdout.write(`账号：${status.email}\n`);
       else if (status.configured) process.stdout.write("账号：（密码箱未解锁，看不到账号邮箱）\n");
       if (status.scopes) process.stdout.write(`scope：${status.scopes}\n`);
@@ -3095,6 +3098,14 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
       vault.add(GMAIL_VAULT_TOKENS_ENTRY, JSON.stringify({ ...tokens, ...(email ? { email } : {}) }), true);
       const cfg = loadConfig(home);
       saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), gmail: { enabled: true } } });
+      // 缺口 44 第 0 批：授权成功即在状态机里记一笔“已授权”（批准一次，之后不再重复问）。
+      try {
+        const { markConnectorAuthorized, resolveConnectorUserId, tokenFingerprint } = await import("./connectors/registry.ts");
+        markConnectorAuthorized(home, "gmail", resolveConnectorUserId(home), {
+          tokenFingerprint: tokenFingerprint(tokens.refresh_token),
+          ...(tokens.scope ? { scopes: tokens.scope } : {}),
+        });
+      } catch { /* 状态记录失败不破坏授权本身：下次调用时会沿用已有凭证迁移 */ }
       process.stdout.write(`授权成功${email ? `：${email}` : ""}，Gmail 连接器已启用。\n`);
       return 0;
     }
@@ -3187,6 +3198,12 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
       try { vault.remove(GMAIL_VAULT_TOKENS_ENTRY); } catch { /* 条目已不在就当删过了 */ }
       const cfg = loadConfig(home);
       saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), gmail: { enabled: false } } });
+      // 缺口 44 第 0 批：吊销即在状态机里记“已撤销”——之后每次调用都直接拒绝，
+      // 不等下次启动才失效；token 已删，迁移沿用那条路也被堵死了。
+      try {
+        const { markConnectorRevoked, resolveConnectorUserId } = await import("./connectors/registry.ts");
+        markConnectorRevoked(home, "gmail", resolveConnectorUserId(home));
+      } catch { /* 状态记录失败不改变吊销本身（token 已删，调用方照样进不去） */ }
       process.stdout.write("Gmail 授权已吊销，本地 token 已删除，连接器已关闭。\n");
       return 0;
     }
@@ -3198,6 +3215,159 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
       return 1;
     }
     throw err;
+  }
+}
+
+/** 缺口 44 第 0 批：nyra connector —— 连接器授权状态机的终端入口（状态/列表/批准/撤销）。 */
+export async function handleConnector(argv: string[], home: string): Promise<number> {
+  const CONNECTOR_USAGE = "用法：\n"
+  + "  nyra connector list                              列出全部连接器与授权状态\n"
+  + "  nyra connector status [连接器]                   查看一个/全部连接器的授权状态与权限声明\n"
+  + "  nyra connector approve <连接器>                  显式批准一次：批准后同应用同用户不再重复问\n"
+  + "  nyra connector revoke <连接器> [--yes]           撤销授权（立即失效；Gmail 同时吊销远端 token 并删除本地 token）\n"
+  + "详见 docs/connectors.md";
+  const reg = await import("./connectors/registry.ts");
+  const gmailMod = await import("./connectors/gmail.ts");
+  const userId = reg.resolveConnectorUserId(home);
+  const cmd = argv[0];
+  const knownIds = reg.listDeclarations().map((d) => d.id).join("、");
+
+  /** 密码箱里有没有该连接器的凭证（目前只有 Gmail 有真实凭证；试点连接器一律没有）。 */
+  const hasTokensEvidence = (connectorId: string): boolean => {
+    if (connectorId === "gmail") return gmailMod.hasGmailTokensEntry(home);
+    return false;
+  };
+
+  const printOne = (connectorId: string, detailed: boolean): void => {
+    const decl = reg.getDeclaration(connectorId);
+    if (!decl) return;
+    const state = reg.peekConnectorState(home, connectorId, userId, { hasTokens: hasTokensEvidence(connectorId) });
+    const record = new reg.ConnectorAuthStore(home).get(connectorId, userId);
+    const pilot = decl.status === "pilot" ? "（试点：尚未接入）" : "";
+    process.stdout.write(`${decl.displayName}（${decl.id}）：${reg.CONNECTOR_AUTH_STATE_LABELS[state]}${pilot}\n`);
+    if (!detailed) return;
+    if (record?.approvedAt) process.stdout.write(`  批准于：${record.approvedAt}\n`);
+    if (record?.tokenFingerprint) process.stdout.write(`  token 指纹：${record.tokenFingerprint}…\n`);
+    if (record?.scopes) process.stdout.write(`  scope：${record.scopes}\n`);
+    if (record?.migratedFrom) process.stdout.write(`  备注：沿用已有授权迁移（${record.migratedFrom}）\n`);
+    process.stdout.write(`  读：${decl.scopes.read.join("、") || "无"}\n`);
+    process.stdout.write(`  写：${decl.scopes.write.join("、") || "无"}\n`);
+    for (const g of decl.toolGroups) {
+      process.stdout.write(`  工具组「${g.name}」（${g.access === "read" ? "只读" : "可写"}）：${g.tools.join("、")}\n`);
+    }
+    process.stdout.write(`  会访问的数据：${decl.dataAccessed.join("；")}\n`);
+    process.stdout.write(`  永远须人批：${decl.alwaysRequireApproval.join("、") || "无"}\n`);
+    process.stdout.write(`  永远禁做：${decl.alwaysForbidden.join("、")}\n`);
+  };
+
+  try {
+    if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+      process.stdout.write(CONNECTOR_USAGE + "\n");
+      return 0;
+    }
+    if (cmd === "list") {
+      for (const decl of reg.listDeclarations()) printOne(decl.id, false);
+      return 0;
+    }
+    if (cmd === "status") {
+      const target = argv[1];
+      if (!target) {
+        for (const decl of reg.listDeclarations()) printOne(decl.id, true);
+        return 0;
+      }
+      if (!reg.getDeclaration(target)) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      printOne(target, true);
+      return 0;
+    }
+    if (cmd === "approve") {
+      const target = argv[1];
+      if (!target) {
+        process.stderr.write("用法：nyra connector approve <连接器>\n");
+        return 2;
+      }
+      const decl = reg.getDeclaration(target);
+      if (!decl) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      if (decl.status === "pilot") {
+        process.stderr.write(`${decl.displayName} 连接器尚未接入（试点），下一批做深连接器时开放。\n`);
+        return 1;
+      }
+      const current = reg.peekConnectorState(home, target, userId, { hasTokens: hasTokensEvidence(target) });
+      if (current === "authorized") {
+        process.stdout.write(`${decl.displayName} 已经是已授权状态，无需重复批准。\n`);
+        return 0;
+      }
+      if (!hasTokensEvidence(target)) {
+        process.stderr.write(`${decl.displayName} 还没有凭证：请先运行 ${reg.reauthHint(target)} 完成授权，再批准。\n`);
+        return 1;
+      }
+      const tokens = target === "gmail" ? gmailMod.loadGmailTokens(home) : null;
+      reg.markConnectorAuthorized(home, target, userId, {
+        ...(tokens ? { tokenFingerprint: reg.tokenFingerprint(tokens.refresh_token) } : {}),
+        ...(tokens?.scope ? { scopes: tokens.scope } : {}),
+      });
+      process.stdout.write(`已批准使用 ${decl.displayName}：之后同应用同用户不再重复问。\n`);
+      return 0;
+    }
+    if (cmd === "revoke") {
+      const target = argv[1];
+      if (!target) {
+        process.stderr.write("用法：nyra connector revoke <连接器> [--yes]\n");
+        return 2;
+      }
+      const decl = reg.getDeclaration(target);
+      if (!decl) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      if (!argv.includes("--yes")) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const ans = (await new Promise<string>((resolvePromise) => {
+          rl.question(`确认撤销 ${decl.displayName} 的授权？撤销后立即失效（[y/N] `, (a) => { rl.close(); resolvePromise(a); });
+        })).trim().toLowerCase();
+        if (ans !== "y" && ans !== "yes") {
+          process.stdout.write("已取消。\n");
+          return 1;
+        }
+      }
+      // 先记撤销（立即失效），再做清理：即使后面哪步失败，连接器也已经用不了了。
+      reg.markConnectorRevoked(home, target, userId);
+      if (target === "gmail") {
+        const vault = new Vault(join(home, "vault.json"));
+        if (vault.exists()) {
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          const password = await new Promise<string>((resolvePromise) => {
+            rl.question("主密码：", (a) => { rl.close(); resolvePromise(a); });
+          });
+          if (vault.unlock(password)) {
+            const raw = vault.get(gmailMod.GMAIL_VAULT_TOKENS_ENTRY);
+            let refreshToken: string | undefined;
+            try {
+              const d = JSON.parse(raw ?? "") as Record<string, unknown>;
+              if (typeof d.refresh_token === "string" && d.refresh_token) refreshToken = d.refresh_token;
+            } catch { /* 损坏的 token 条目直接删 */ }
+            if (refreshToken) {
+              try { await gmailMod.revokeRefreshToken({ token: refreshToken }); } catch { /* Google 吊销失败也不拦本地清理 */ }
+            }
+            try { vault.remove(gmailMod.GMAIL_VAULT_TOKENS_ENTRY); } catch { /* 条目已不在就当删过了 */ }
+          }
+        }
+        const cfg = loadConfig(home);
+        saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), gmail: { enabled: false } } });
+      }
+      process.stdout.write(`${decl.displayName} 的授权已撤销，立即失效。\n`);
+      return 0;
+    }
+    process.stderr.write(`未知命令：${cmd}\n${CONNECTOR_USAGE}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
   }
 }
 
@@ -4264,6 +4434,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "gmail") return handleGmail(args.subArgs ?? [], home);
+  if (args.subcommand === "connector") return handleConnector(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "guard") {
     // guard = verdict 的门禁形态：一行输出 + 退出码。等级判定与 verdict 同源，不另写一套。

@@ -109,6 +109,13 @@ bot_approval_decided: ["approval_id", "decision", "decided_by", "via", "reason"]
 // bot_approval_*（审批线）是不同的事件，不要混用。
 bot_notify_sent: ["kind", "target_chat_id", "summary"],
 bot_watch_changed: ["watch_id", "label", "from_hash", "to_hash"],
+// 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
+// scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
+// 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得
+// 被 appendEvent 的 redact 当长词串掩掉（与 approvalArgsHash 同款）。
+connector_authorized: ["connector", "user_id", "scopes_hash"],
+connector_expired: ["connector", "user_id", "reason"],
+connector_revoked: ["connector", "user_id"],
 final: [],
 max_turns: [],
 error: ["error_type"],
