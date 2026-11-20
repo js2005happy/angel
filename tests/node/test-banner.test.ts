@@ -284,7 +284,11 @@ test("BannerTest.test_supports_box_drawing_detection", () => {
   expect(supportsBoxDrawing({ WT_SESSION: "abc" }, "win32")).toBe(true);
   expect(supportsBoxDrawing({ TERM_PROGRAM: "vscode" }, "win32")).toBe(true);
   expect(supportsBoxDrawing({ ConEmuANSI: "ON" }, "win32")).toBe(true);
-  expect(supportsBoxDrawing({}, "win32")).toBe(false);
+  expect(supportsBoxDrawing({}, "win32", "10.0.22631")).toBe(true);   // Win11，快捷方式启动无 WT_SESSION
+  expect(supportsBoxDrawing({}, "win32", "10.0.18362")).toBe(true);   // Win10 1903
+  expect(supportsBoxDrawing({}, "win32", "10.0.17763")).toBe(false);  // 老 Win10
+  expect(supportsBoxDrawing({}, "win32", "6.1.7601")).toBe(false);    // Win7
+  expect(supportsBoxDrawing({ NYRA_ASCII: "1" }, "win32", "10.0.22631")).toBe(false);
   // 强制开关。
   expect(supportsBoxDrawing({ NYRA_ASCII: "1", WT_SESSION: "abc" }, "win32")).toBe(false);
   expect(supportsBoxDrawing({ NYRA_UNICODE: "1" }, "win32")).toBe(true);

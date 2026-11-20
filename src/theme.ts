@@ -9,6 +9,8 @@
 // VS Code 等）→ 256 色（TERM 含 256color）→ 16 色；NO_COLOR / 非 TTY / TERM=dumb → 无色。
 // NYRA_COLOR=truecolor|256|16|none 可强制。
 
+import { release as osRelease } from "node:os";
+
 export type ColorLevel = 0 | 1 | 2 | 3; // 0 无色 · 1 16 色 · 2 256 色 · 3 truecolor
 type Env = Record<string, string | undefined>;
 
@@ -77,7 +79,15 @@ export function detectColorLevel(env: Env = process.env, tty = true, platform: s
  *   （TERM=xterm*）才算能；裸 conhost 无法确认字体，按否处理。
  * - 其他平台：locale 明确是非 UTF-8 的编码（如 zh_CN.GBK）时否，其余是。
  */
-export function supportsBoxDrawing(env: Env = process.env, platform: string = process.platform): boolean {
+/** Windows 10 1903（build 18362）起，经典控制台 conhost 也能正确显示框线与半块字符。 */
+export function modernWindowsConsole(release: string): boolean {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(release);
+  if (!m) return false;
+  const major = Number(m[1]), build = Number(m[3]);
+  return major > 10 || (major === 10 && build >= 18362);
+}
+
+export function supportsBoxDrawing(env: Env = process.env, platform: string = process.platform, release: string = osRelease()): boolean {
   if (flag(env.NYRA_ASCII)) return false;
   if (flag(env.NYRA_UNICODE)) return true;
   const term = (env.TERM ?? "").toLowerCase();
@@ -87,7 +97,9 @@ export function supportsBoxDrawing(env: Env = process.env, platform: string = pr
     if (env.TERM_PROGRAM) return true;
     if ((env.ConEmuANSI ?? "").toUpperCase() === "ON") return true;
     if (term.startsWith("xterm") || term.includes("256color")) return true;
-    return false;
+    // 从快捷方式 / 资源管理器启动时，即使由 Windows Terminal 接管窗口也拿不到 WT_SESSION；
+    // 现代 Windows 一律按支持处理，老系统才退回 ASCII（NYRA_ASCII=1 可强制关掉）。
+    return modernWindowsConsole(release);
   }
   const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   if (locale && locale.includes(".") && !/utf-?8/i.test(locale)) return false;
