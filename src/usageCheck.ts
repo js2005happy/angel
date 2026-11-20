@@ -62,3 +62,54 @@ export function formatUsageCheck(result: UsageCheckResult): string {
   }
   return lines.join("\n");
 }
+
+// ---- 反向检查：帮助里写了但代码里没有 ----
+// usageCheck 防"命令隐形"（代码有、帮助没有）；这里防"帮助骗人"（帮助有、代码没有）。
+// 后者更伤：用户照着敲，得到"未知命令"，然后开始怀疑整个工具。
+
+/** 抽出帮助文本里所有形如 `nyra <word>` 的候选命令名（去重，按出现顺序）。 */
+export function usageCommands(text: string): string[] {
+  const seen: string[] = [];
+  const re = /^[ \t]*nyra[ \t]+([a-z][a-z0-9-]*)(?:[ \t]|$)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (!seen.includes(m[1])) seen.push(m[1]);
+  }
+  return seen;
+}
+
+export interface UsageTruthFinding {
+  code: "unknown-in-usage";
+  command: string;
+  lang: string;
+}
+
+/**
+ * 帮助里提到、代码里却没有的子命令。
+ *
+ * `ignore` 用来排除**正文里顺口出现的英文词**（例如 `nyra       interactive mode (REPL)`
+ * 会让 `interactive` 被当命令抽出来）。这类词不是命令，进白名单比改正则可靠。
+ */
+export function checkUsageTruth(
+  blocks: readonly UsageBlock[],
+  subcommands: readonly string[],
+  opts: { ignore?: readonly string[] } = {},
+): { findings: UsageTruthFinding[]; ok: boolean } {
+  const known = new Set(subcommands);
+  const ignore = new Set(opts.ignore ?? []);
+  const findings: UsageTruthFinding[] = [];
+  for (const block of blocks) {
+    for (const cmd of usageCommands(block.text)) {
+      if (known.has(cmd) || ignore.has(cmd)) continue;
+      findings.push({ code: "unknown-in-usage", command: cmd, lang: block.lang });
+    }
+  }
+  return { findings, ok: findings.length === 0 };
+}
+
+export function formatUsageTruth(result: { findings: UsageTruthFinding[]; ok: boolean }): string {
+  if (result.ok) return "帮助真实性：通过（帮助里没有不存在的子命令）";
+  const lines = [`帮助真实性：${result.findings.length} 处帮助写了但代码没有`];
+  for (const f of result.findings) lines.push(`  ⚠️  [${f.lang}] nyra ${f.command} —— 照着敲会得到"未知命令"`);
+  return lines.join("\n");
+}
