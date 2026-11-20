@@ -230,7 +230,7 @@ test("ReviewQueue.test_unknown_event_type_still_rejected_by_runstore", () => {
 
 // ---- 轻量 verifier ----
 
-test("ReviewQueue.test_verify_files_exist_pass_and_fail", () => {
+test("ReviewQueue.test_verify_files_exist_pass_and_fail", async () => {
   const home = makeHome();
   const wt = mkdtempSync(join(tmpdir(), "nyra-wt-"));
   writeFileSync(join(wt, "a.txt"), "x", "utf-8");
@@ -238,7 +238,7 @@ test("ReviewQueue.test_verify_files_exist_pass_and_fail", () => {
     source: "parallel", title: "有文件", worktreePath: wt,
     changedFiles: ["a.txt"], diffStat: " a.txt | 1 +",
   }).item;
-  const verified = verifyReviewItem(home, ok.id);
+  const verified = await verifyReviewItem(home, ok.id);
   expect(verified.item.verification.status).toBe("verified");
   expect(verified.item.verification.method).toBe("files-exist");
   // 写清没验证什么：不把“文件在”等同于“代码对”。
@@ -248,17 +248,17 @@ test("ReviewQueue.test_verify_files_exist_pass_and_fail", () => {
     source: "parallel", title: "缺文件", worktreePath: wt,
     changedFiles: ["missing.txt"], diffStat: " missing.txt | 1 +",
   }).item;
-  const failed = verifyReviewItem(home, bad.id);
+  const failed = await verifyReviewItem(home, bad.id);
   expect(failed.item.verification.status).toBe("failed");
   expect(failed.item.verification.note).toContain("missing.txt");
   // 验证本身也进证据链（无运行目录时走证据文件）。
   expect(verified.evidenceChannel).toBe("evidence");
 });
 
-test("ReviewQueue.test_verify_without_base_throws", () => {
+test("ReviewQueue.test_verify_without_base_throws", async () => {
   const home = makeHome();
   const item = enqueueReviewItem(home, { source: "automation", title: "无处核对" }).item;
-  expect(() => verifyReviewItem(home, item.id)).toThrow(ReviewQueueError);
+  await expect(verifyReviewItem(home, item.id)).rejects.toThrow(ReviewQueueError);
   expect(getReviewItem(home, item.id).verification.status).toBe("not-verified");
 });
 

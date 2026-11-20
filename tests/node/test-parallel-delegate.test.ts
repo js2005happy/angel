@@ -127,7 +127,7 @@ test("runner：空任务列表直接抛错", async () => {
   await expect(runParallelDelegate(async () => okOutcome(), [], {})).rejects.toThrow("至少需要一个子任务");
 });
 
-test("格式化：汇总只给成功者、失败注明原因与成本、末尾写明本批不做自动验证", async () => {
+test("格式化：汇总只给成功者、失败注明原因与成本、末尾写明本批未验收", async () => {
   const r = await runParallelDelegate(async (spec) => {
     if (spec.task === "坏") return { ...okOutcome(), ok: false, error: "原因：炸了", spentUsd: 0.005 };
     return { ...okOutcome("摘要原文"), spentUsd: 0.01, model: "fake-1" };
@@ -137,7 +137,8 @@ test("格式化：汇总只给成功者、失败注明原因与成本、末尾�
   expect(text).toContain("失败 1 个");
   expect(text).toContain("摘要原文");
   expect(text).toContain("原因：炸了");
-  expect(text).toContain("不做自动验证");
+  // 验收者未开启：汇总末尾如实写“本批未验收”，不编验证结论。
+  expect(text).toContain("本批未验收");
 });
 
 test("收敛规则：写明只做自己那件、不碰别线程文件、收尾写收敛小结", () => {

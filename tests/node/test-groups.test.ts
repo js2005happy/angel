@@ -98,13 +98,13 @@ function twoBots(): BotConfig[] {
 
 // ---- 房间读写往返 -------------------------------------------------------
 
-test("create 默认 4 机器人并可 get/list 往返", () => {
+test("create 默认 5 机器人并可 get/list 往返", () => {
   const root = tmpRoot();
   try {
     const store = new GroupStore(join(root, "groups"), { home: root });
     const room = store.create("dev", "开发群");
-    expect(room.bots.length).toBe(4);
-    expect(room.bots.map((b) => b.id)).toEqual(["lead", "architect", "builder", "reviewer"]);
+    expect(room.bots.length).toBe(5);
+    expect(room.bots.map((b) => b.id)).toEqual(["lead", "architect", "builder", "reviewer", "verifier"]);
     expect(room.id).toBe("dev");
     expect(room.name).toBe("开发群");
     expect(room.instance_id).toMatch(/^[0-9a-f]{32}$/);
@@ -115,7 +115,7 @@ test("create 默认 4 机器人并可 get/list 往返", () => {
     const again = store.get("dev");
     expect(again).toEqual(room);
     expect(store.listRooms()).toEqual([
-      { id: "dev", name: "开发群", bots: 4, messages: 0 },
+      { id: "dev", name: "开发群", bots: 5, messages: 0 },
     ]);
 
     // 磁盘上的 room.json 与 Python 格式一致：indent 2、末尾换行、含全部字段。
@@ -123,7 +123,7 @@ test("create 默认 4 机器人并可 get/list 往返", () => {
     expect(raw.endsWith("\n")).toBe(true);
     const stored = JSON.parse(raw) as Record<string, unknown>;
     expect(stored.id).toBe("dev");
-    expect((stored.bots as unknown[]).length).toBe(4);
+    expect((stored.bots as unknown[]).length).toBe(5);
     expect(typeof stored.instance_id).toBe("string");
     // 文件 0600、目录 0700（Windows 没有 POSIX 权限位，不断言）。
     if (process.platform !== "win32") {
@@ -143,21 +143,21 @@ test("send 持久化，换 store 实例后历史仍在", async () => {
     const store = new GroupStore(join(root, "groups"), { home: root, providerFactory: factory });
     store.create("dev", "开发群");
     const result = await store.send("dev", "设计一个小型 SaaS");
-    expect(result.total).toBe(5);
+    expect(result.total).toBe(6);
     expect(result.messages.map((m) => m.sender)).toEqual([
-      "user", "lead", "architect", "builder", "reviewer",
+      "user", "lead", "architect", "builder", "reviewer", "verifier",
     ]);
     expect(result.messages[1].content).toBe("lead 独立意见");
     // 各 bot 有独立工作目录与 session。
-    for (const botId of ["lead", "architect", "builder", "reviewer"]) {
+    for (const botId of ["lead", "architect", "builder", "reviewer", "verifier"]) {
       expect(existsSync(join(root, "groups", "dev", "bots", botId, "workspace"))).toBe(true);
       expect(existsSync(join(root, "sessions", `group-dev-${botId}.jsonl`))).toBe(true);
     }
     const store2 = new GroupStore(join(root, "groups"), { home: root, providerFactory: factory });
-    expect(store2.listRooms()[0].messages).toBe(5);
+    expect(store2.listRooms()[0].messages).toBe(6);
     expect(store2.get("dev").messages).toEqual(result.messages);
     await store2.send("dev", "@lead 继续");
-    expect(store2.get("dev").messages.length).toBe(7);
+    expect(store2.get("dev").messages.length).toBe(8);
   } finally {
     cleanup(root);
   }
