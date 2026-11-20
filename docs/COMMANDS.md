@@ -81,6 +81,7 @@
 | `nyra shopify <auth\|status\|products\|product\|orders\|order\|inventory>` | Shopify 连接器（只读）：查商品、订单、库存；写操作一律拒绝（详见 `docs/connectors.md`） |
 | `nyra slack <auth\|status\|channels\|history\|send\|card>` | Slack 连接器：读频道/消息、发消息（须显式批准）、发审批卡；删消息/改频道/管理成员一律拒绝（详见 `docs/connectors.md`） |
 | `nyra mcp server <status\|enable\|disable\|allow-writes-on\|allow-writes-off>` | 对外 MCP 服务开关：别的 agent 经网关 `POST /mcp` 调 Nyra 的记忆与任务（默认关闭；写操作须显式开且过独立审查，详见 `docs/mcp.md`） |
+| `nyra peer <status\|enable\|disable\|list\|auth\|ask\|handoff>` | 对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭；对外发送须开独立审查，详见 `docs/peer.md`） |
 
 ## 自检与运维
 
