@@ -139,6 +139,7 @@ nyra tools                      工具集体检：每轮 schema 成本与裁剪�
 nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
 nyra vault <...>                凭据保险箱（加密存储，权限 0600）
 nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
+nyra shopify <auth|status|products|product|orders|order|inventory>   Shopify 原生连接器（只读）：查商品 / 订单 / 库存（详见 docs/connectors.md）
 nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
@@ -213,6 +214,7 @@ nyra tools                     tool-pool health: per-turn schema cost and trim a
 nyra config export|import|explain  settings export/import/explain (secrets stripped)
 nyra vault <...>               credential vault (encrypted at rest, mode 0600)
 nyra gmail <search|read|reply|draft|send>   native Gmail connector
+nyra shopify <auth|status|products|product|orders|order|inventory>   native Shopify connector (read-only): products / orders / inventory (see docs/connectors.md)
 nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
@@ -3244,17 +3246,19 @@ export async function handleConnector(argv: string[], home: string): Promise<num
   + "  nyra connector list                              列出全部连接器与授权状态\n"
   + "  nyra connector status [连接器]                   查看一个/全部连接器的授权状态与权限声明\n"
   + "  nyra connector approve <连接器>                  显式批准一次：批准后同应用同用户不再重复问\n"
-  + "  nyra connector revoke <连接器> [--yes]           撤销授权（立即失效；Gmail 同时吊销远端 token 并删除本地 token）\n"
+  + "  nyra connector revoke <连接器> [--yes]           撤销授权（立即失效；Gmail 吊销远端 token 并删除本地 token；Shopify 删除本地凭证）\n"
   + "详见 docs/connectors.md";
   const reg = await import("./connectors/registry.ts");
   const gmailMod = await import("./connectors/gmail.ts");
+  const shopifyMod = await import("./connectors/shopify.ts");
   const userId = reg.resolveConnectorUserId(home);
   const cmd = argv[0];
   const knownIds = reg.listDeclarations().map((d) => d.id).join("、");
 
-  /** 密码箱里有没有该连接器的凭证（目前只有 Gmail 有真实凭证；试点连接器一律没有）。 */
+  /** 密码箱里有没有该连接器的凭证（Gmail 与 Shopify 有真实凭证；试点连接器一律没有）。 */
   const hasTokensEvidence = (connectorId: string): boolean => {
     if (connectorId === "gmail") return gmailMod.hasGmailTokensEntry(home);
+    if (connectorId === "shopify") return shopifyMod.hasShopifyCredentialsEntry(home);
     return false;
   };
 
@@ -3327,8 +3331,14 @@ export async function handleConnector(argv: string[], home: string): Promise<num
         return 1;
       }
       const tokens = target === "gmail" ? gmailMod.loadGmailTokens(home) : null;
+      const shopifyCreds = target === "shopify" ? shopifyMod.loadShopifyCredentials(home) : null;
+      if (target === "shopify" && !shopifyCreds) {
+        process.stderr.write("Shopify 凭证损坏或缺失：请重新运行 nyra shopify auth。\n");
+        return 1;
+      }
       reg.markConnectorAuthorized(home, target, userId, {
         ...(tokens ? { tokenFingerprint: reg.tokenFingerprint(tokens.refresh_token) } : {}),
+        ...(shopifyCreds ? { tokenFingerprint: reg.tokenFingerprint(shopifyCreds.accessToken), scopes: shopifyMod.SHOPIFY_READ_SCOPES.join(",") } : {}),
         ...(tokens?.scope ? { scopes: tokens.scope } : {}),
       });
       process.stdout.write(`已批准使用 ${decl.displayName}：之后同应用同用户不再重复问。\n`);
@@ -3380,10 +3390,224 @@ export async function handleConnector(argv: string[], home: string): Promise<num
         const cfg = loadConfig(home);
         saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), gmail: { enabled: false } } });
       }
+      if (target === "shopify") {
+        // 只删本地凭证：自定义应用的 token 没有远端吊销接口，Shopify 后台
+        // 的 custom app 仍需用户手动删除才能彻底作废 token（见 docs）。
+        const vault = new Vault(join(home, "vault.json"));
+        if (vault.exists()) {
+          const password = process.env.NYRA_VAULT_PASSWORD ?? await new Promise<string>((resolvePromise) => {
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            rl.question("主密码：", (a) => { rl.close(); resolvePromise(a); });
+          });
+          if (vault.unlock(password)) {
+            try { vault.remove(shopifyMod.SHOPIFY_VAULT_CREDENTIALS_ENTRY); } catch { /* 条目已不在就当删过了 */ }
+          }
+        }
+        const cfg = loadConfig(home);
+        saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), shopify: { enabled: false } } });
+        process.stdout.write("注意：本地凭证已删，但 Shopify 后台的自定义应用仍在——想彻底作废 token，请去 Shopify 后台删除该自定义应用。\n");
+      }
       process.stdout.write(`${decl.displayName} 的授权已撤销，立即失效。\n`);
       return 0;
     }
     process.stderr.write(`未知命令：${cmd}\n${CONNECTOR_USAGE}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+/** 缺口 44 第一批：nyra shopify —— Shopify 连接器的终端入口（只读：授权/状态/查商品/查订单/查库存）。 */
+export interface ShopifyCliInput {
+  /** 测试注入：按顺序回答交互提问（主密码、店铺域名、token）；fetchFn 供测试注入假 API。 */
+  secrets?: string[];
+  fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
+}
+
+export async function handleShopify(argv: string[], home: string, input?: ShopifyCliInput): Promise<number> {
+  const SHOPIFY_USAGE = "用法：\n"
+  + "  nyra shopify status                              查看 Shopify 连接器状态（是否启用、是否已授权、店铺域名）\n"
+  + "  nyra shopify auth                                授权 Shopify：粘贴自定义应用的 Admin API access token（只存密码箱）\n"
+  + "  nyra shopify products [--limit N] [--page-info X]  列出商品（默认 50 条一页，上限 250）\n"
+  + "  nyra shopify product <id>                        查一个商品\n"
+  + "  nyra shopify orders [--limit N] [--status any|open|closed|cancelled|archived] [--page-info X]\n"
+  + "                                                 列出订单（默认全部状态；不含客户邮箱与地址）\n"
+  + "  nyra shopify order <id>                          查一个订单\n"
+  + "  nyra shopify inventory [--location-id N] [--inventory-item-id N] [--limit N] [--page-info X]\n"
+  + "                                                 查库存水平（按地点 / 商品过滤）\n"
+  + "本批只读：改价、改库存、下单、退款、发折扣码、删单一律拒绝。\n"
+  + "详见 docs/connectors.md 的 Shopify 一节";
+  const {
+    createShopifyClient, getShopifyStatus, normalizeShopifyShop,
+    formatShopifyProducts, formatShopifyOrders, formatShopifyInventoryLevels,
+    SHOPIFY_VAULT_CREDENTIALS_ENTRY, SHOPIFY_READ_SCOPES, SHOPIFY_WRITE_COMMANDS, SHOPIFY_API_VERSION,
+    shopifyWriteRefusal,
+  } = await import("./connectors/shopify.ts");
+  const { CONNECTOR_AUTH_STATE_LABELS } = await import("./connectors/registry.ts");
+  const secretQueue = [...(input?.secrets ?? [])];
+  const askSecret = async (prompt: string): Promise<string> => {
+    if (secretQueue.length) return secretQueue.shift()!;
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolvePromise) => {
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
+    return answer;
+  };
+  const unlockVault = async (): Promise<Vault | null> => {
+    const vault = new Vault(join(home, "vault.json"));
+    if (!vault.exists()) {
+      process.stderr.write("密码箱不存在，先运行：nyra vault init\n");
+      return null;
+    }
+    if (!vault.unlock(await askSecret("主密码："))) {
+      const remaining = vault.lockoutRemainingMs();
+      if (remaining > 0) {
+        process.stderr.write(`尝试次数过多，请 ${Math.ceil(remaining / 1000)} 秒后再试\n`);
+      } else {
+        process.stderr.write("主密码错误或密码箱已损坏\n");
+      }
+      return null;
+    }
+    return vault;
+  };
+  const flagValue = (name: string): string | undefined => {
+    const idx = argv.indexOf(name);
+    return idx >= 0 && argv[idx + 1] !== undefined ? argv[idx + 1] : undefined;
+  };
+  const flagValues = (name: string): string[] => {
+    const out: string[] = [];
+    argv.forEach((a, i) => { if (a === name && argv[i + 1] !== undefined) out.push(argv[i + 1]); });
+    return out;
+  };
+  const parseLimit = (): number | undefined => {
+    const raw = flagValue("--limit");
+    if (raw === undefined) return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) throw new Error("--limit 须为 ≥1 的数字");
+    return n;
+  };
+  const client = () => createShopifyClient(home, loadConfig(home), { ...(input?.fetchFn ? { fetchFn: input.fetchFn } : {}) });
+  const cmd = argv[0];
+  try {
+    if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+      process.stdout.write(SHOPIFY_USAGE + "\n");
+      return 0;
+    }
+    // 写意图先拦：本批不提供任何写入口，撞见写词直接回一句明确拒绝。
+    if ((SHOPIFY_WRITE_COMMANDS as readonly string[]).includes(cmd)) {
+      process.stderr.write(shopifyWriteRefusal(cmd) + "\n");
+      return 1;
+    }
+    if (cmd === "status") {
+      const status = getShopifyStatus(home, loadConfig(home));
+      process.stdout.write(`Shopify 连接器：${status.enabled ? "已启用" : "未启用（默认关闭）"}\n`);
+      process.stdout.write(`授权：${status.configured ? "已授权" : "未授权"}\n`);
+      process.stdout.write(`授权状态：${CONNECTOR_AUTH_STATE_LABELS[status.authState]}${status.authState === "authorized" || status.authState === "unauthorized" ? "" : "（请重新运行 nyra shopify auth）"}\n`);
+      if (status.shop) process.stdout.write(`店铺：${status.shop}\n`);
+      if (!status.enabled || !status.configured) process.stdout.write("运行 nyra shopify auth 完成授权（授权成功会自动启用）。\n");
+      return 0;
+    }
+    if (cmd === "auth") {
+      const vault = await unlockVault();
+      if (!vault) return 1;
+      process.stdout.write("授权 Shopify 需要自定义应用的 Admin API access token：\n");
+      process.stdout.write("  在 Shopify 后台 → 设置 → 应用 → 开发自定义应用 → 建一个应用，只勾 read_products / read_orders / read_inventory，安装后复制 Admin API access token 粘贴进来（只存密码箱，不进配置文件）。\n");
+      process.stdout.write("  注意：本批只读，token 只需要读权限；localhost 没有公网回调，做不了 Shopify OAuth 回环，所以用自定义应用 token，不走授权码流程。\n");
+      const shop = normalizeShopifyShop(await askSecret("店铺域名（如 hollowandscale.myshopify.com）："));
+      if (!shop) {
+        process.stderr.write("店铺域名不合法：只接受 xxx.myshopify.com\n");
+        return 1;
+      }
+      const token = (await askSecret("Admin API access token（shpat_…）：")).trim();
+      if (!token || !token.startsWith("shpat_")) {
+        process.stderr.write("access token 不合法：自定义应用的 Admin API access token 以 shpat_ 开头\n");
+        return 1;
+      }
+      // 先拿 shop.json 探一下：401 说明 token 不对（或读权限没给），不存；
+      // 网络不通等其他错误只警告——token 本身可能没问题，下次调用再验。
+      try {
+        const fetchFn = input?.fetchFn ?? fetch;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30_000);
+        let probe: Response;
+        try {
+          probe = await fetchFn(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/shop.json`, {
+            method: "GET",
+            headers: { "X-Shopify-Access-Token": token },
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (probe.status === 401) {
+          process.stderr.write("token 验证失败（Shopify 返回 401）：请检查自定义应用的 Admin API access token 是否正确、读权限（read_products / read_orders / read_inventory）是否勾上。\n");
+          return 1;
+        }
+      } catch {
+        process.stdout.write("（验证请求没通，token 先存下，下次调用时再验。）\n");
+      }
+      vault.add(SHOPIFY_VAULT_CREDENTIALS_ENTRY, JSON.stringify({ shop, access_token: token }), true);
+      const cfg = loadConfig(home);
+      saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), shopify: { enabled: true } } });
+      const { markConnectorAuthorized, resolveConnectorUserId, tokenFingerprint } = await import("./connectors/registry.ts");
+      markConnectorAuthorized(home, "shopify", resolveConnectorUserId(home), {
+        tokenFingerprint: tokenFingerprint(token),
+        scopes: SHOPIFY_READ_SCOPES.join(","),
+      });
+      process.stdout.write(`已授权 Shopify（${shop}，只读）：之后同应用同用户不再重复问。\n`);
+      return 0;
+    }
+    if (cmd === "products") {
+      const { products, nextPageInfo } = await client().listProducts({
+        ...(parseLimit() !== undefined ? { limit: parseLimit() } : {}),
+        ...(flagValue("--page-info") ? { pageInfo: flagValue("--page-info")! } : {}),
+      });
+      process.stdout.write(formatShopifyProducts(products, nextPageInfo) + "\n");
+      return 0;
+    }
+    if (cmd === "product") {
+      const id = argv[1];
+      if (!id) {
+        process.stderr.write("用法：nyra shopify product <id>\n");
+        return 2;
+      }
+      const p = await client().getProduct(id);
+      process.stdout.write(`商品：${p.title || "（无标题）"}\n商品 id：${p.id}\n品牌：${p.vendor || "未知"}\n类型：${p.productType || "未知"}\n状态：${p.status || "未知"}\n规格数：${p.variantCount}\n库存总数：${p.totalInventory}\n`);
+      return 0;
+    }
+    if (cmd === "orders") {
+      const { orders, nextPageInfo } = await client().listOrders({
+        ...(parseLimit() !== undefined ? { limit: parseLimit() } : {}),
+        ...(flagValue("--status") ? { status: flagValue("--status")! } : {}),
+        ...(flagValue("--page-info") ? { pageInfo: flagValue("--page-info")! } : {}),
+      });
+      process.stdout.write(formatShopifyOrders(orders, nextPageInfo) + "\n");
+      return 0;
+    }
+    if (cmd === "order") {
+      const id = argv[1];
+      if (!id) {
+        process.stderr.write("用法：nyra shopify order <id>\n");
+        return 2;
+      }
+      const o = await client().getOrder(id);
+      process.stdout.write(`订单：${o.name || "（无编号）"}\n订单 id：${o.id}\n金额：${o.totalPrice || "?"} ${o.currency || ""}\n付款：${o.financialStatus || "未知"}\n发货：${o.fulfillmentStatus || "未知"}\n创建时间：${o.createdAt || "未知"}\n商品项数：${o.lineItemsCount}\n`);
+      return 0;
+    }
+    if (cmd === "inventory") {
+      const locationIds = flagValues("--location-id").map(Number).filter((n) => Number.isFinite(n));
+      const inventoryItemIds = flagValues("--inventory-item-id").map(Number).filter((n) => Number.isFinite(n));
+      const { levels, nextPageInfo } = await client().listInventoryLevels({
+        ...(locationIds.length ? { locationIds } : {}),
+        ...(inventoryItemIds.length ? { inventoryItemIds } : {}),
+        ...(parseLimit() !== undefined ? { limit: parseLimit() } : {}),
+        ...(flagValue("--page-info") ? { pageInfo: flagValue("--page-info")! } : {}),
+      });
+      process.stdout.write(formatShopifyInventoryLevels(levels, nextPageInfo) + "\n");
+      return 0;
+    }
+    process.stderr.write(`未知命令：${cmd}\n${SHOPIFY_USAGE}\n`);
     return 2;
   } catch (err: unknown) {
     process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
@@ -4456,6 +4680,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "gmail") return handleGmail(args.subArgs ?? [], home);
+  if (args.subcommand === "shopify") return handleShopify(args.subArgs ?? [], home);
   if (args.subcommand === "connector") return handleConnector(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "guard") {
