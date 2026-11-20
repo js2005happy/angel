@@ -1,3 +1,9 @@
+## 2026-11-21 — Node claim 文件身份复核（仅静态）
+
+- 读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal；对照 main Node Agent/Tools，查询 main 近期提交、开放 Issues/PR、前次提交 combined status 与关联 PR workflow（均无检查返回，不能推断通过）。
+- 静态核对 claim 文件 fsync 后新增 fstat/lstat 的 dev/ino、普通文件、单硬链接、UID、私有权限及字节长度一致性门禁；异常保留 unknown，不删除文件。
+- **未运行脚本、编译、测试或 CI**；未进行 Linux/macOS/Windows 实测。仍未实现 openat 相对创建、Windows reparse 防护、祖先路径原子绑定或真实工具派发集成，不保证 exactly-once。
+
 ## 2026-11-21 — Node claim 祖先目录权限检查（仅静态）
 
 - 核对 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal；开发分支无 main 的 `src/agent.ts` 和 `src/tools.ts`。检查近期 main 提交、开放 Issues/PR、前一提交状态与关联 PR 工作流（均无返回检查）。
