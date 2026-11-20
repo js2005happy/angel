@@ -231,6 +231,7 @@ bun run src/cli.ts ui --open                # 本地网页界面
 - **本地密码箱**：API Key 加密存在本机，不写进配置文件或聊天记录（[手册](GUIDE.md#审批模式)）。
 - **本地知识库**：把文本、文件、网页收进知识库再提问，只按库内内容回答并注明依据（[手册](GUIDE.md#审批模式)）。
 - **MCP 内置预置**：10 个常用 MCP 服务器开箱即用，不用手写配置（[手册](GUIDE.md#审批模式)）。
+- **MCP HTTP 传输 + 对外 MCP 服务**：客户端除 stdio 外可接 HTTP 的 MCP 服务器（`transport: "http"`，响应 JSON 或 SSE）；Nyra 也能当 MCP 服务器，别的 agent 经网关 `POST /mcp` 调记忆与任务（默认关闭、默认只读，写操作须显式开且过独立审查，详见 [docs/mcp.md](docs/mcp.md)）。
 
 ## 审批模式
 
