@@ -1,31 +1,34 @@
-// src/bot/index.ts — Bot 方向 Phase 1：消息处理主链路 + CLI 入口。
+// src/bot/index.ts — Bot 方向 Phase 2：router + approvalBridge + 用量硬顶。
 //
-// 主链路（按用户给的架构，Phase 1 的部分）：
-//   验签与解析（适配器）→ 幂等去重 → 确定性指令优先 → 群聊 @ 过滤 →
-//   配额 → 会话排队 → 占位“处理中…” → Agent 执行 → 分片回发。
+// 主链路（Phase 2）：
+//   验签与解析（适配器）→ 幂等去重 → 角色路由（router：owner/admin/member/
+//   guest）→ 确定性指令优先（/approve、/reject 本批接真逻辑）→ 群聊 @ 过滤 →
+//   配额（用户/天、群聊/分钟、当天预算）→ 月度硬顶预检 → 会话排队 →
+//   占位“处理中…” → Agent 执行（画像定 mode：guest/member 只读，owner/
+//   admin 的写操作逐次走 approvalBridge 聊天内审批）→ 分片回发。
 //
-// 取消与超时的诚实边界：Agent.run 本身不支持 AbortSignal（provider 的
-// chat 只在重试等待里认信号），所以 /stop 与超时只能做到：
-//   1. 排队中的任务直接出队；
-//   2. 在跑的任务：不再等它的结果、不回发；后台的模型调用会跑完，但结
-//      果丢弃、Agent 实例丢弃；
-//   3. 会话文件按下达取消前的快照恢复（取消瞬间恢复一次；后台调用结束
-//      后若没有更新的任务再恢复一次，免得半截对话污染历史）。
-//   彻底的中断要等 Agent 层接 AbortSignal（以后单独一批），不是本批
-//   假装能做到的事。
+// 取消与超时的诚实边界：与 Phase 1 相同（/stop 与超时不能真中断在跑的
+// 模型调用，只能不等结果、不回发、丢弃 Agent 实例、按取消前快照恢复会话
+// 文件）；本批多了一条：取消时同会话的挂起审批一并取消（bridge.
+// cancelSession），免得晚一步点的“批准”复活已经没了的任务。审批本身
+// 也有 TTL（默认 60 秒，可配），超时自动拒绝。
 //
-// 权限：Bot 的 Agent 强制 readonly（外部用户默认最小权限：只读/知识库/
-// 查询）；高危写操作本批不开放，/approve 与 /reject 只回“Phase 2 再做”
-// 的说明，不放行任何动作。模型兜底链不进 Bot（单 provider，绝不自动换
-// 模型）；月度硬顶与单次硬顶走 Agent 自带的 checkCost，与 CLI 同口径。
+// 权限：角色只认 config 的 bot.owner / bot.admins / bot.members（见
+// router.ts）；白名单两道门（Agent 的 disabledTools 不让工具进模型，
+// approveFn 里再查一次 isToolAllowed）；审批默认关闭——owner/admin
+// 都没配时谁也批不了，写操作一律拒绝。模型兜底链不进 Bot（单 provider，
+// 绝不自动换模型）；月度硬顶与单次硬顶走 Agent 自带的 checkCost，另加
+// 一道执行前预检（本月已花 ≥ 上限时直接回绝、不进模型）。
 //
 // 证据：每条处理过的消息写一行 `~/.nyra/bot-audit.jsonl`（只记 channel、
 // sessionKey、messageId、结论、字数、花费、错误原因，不记用户原文与
-// token；与 mcp-server-audit.jsonl 同款做法）。本批不发 RunStore 事件，
-// 所以不在 EVENT_FIELDS 里加新事件（没发出的事件不需要注册）。
+// token；与 mcp-server-audit.jsonl 同款做法）；审批结论另记运行事件
+// bot_approval_requested / bot_approval_decided（有运行目录时写它的
+// events.jsonl，没有时写 evidence/bot/ 下的证据文件，见 approvalBridge.ts
+// 的 recordBotEvent）。
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Agent } from "../agent.ts";
+import { Agent, type ApproveFn } from "../agent.ts";
 import { loadConfig, resolveHome, resolveProvider, resolveSandbox } from "../config.ts";
 import { resolveEnforced } from "../enforcedConfig.ts";
 import { getFileKey, maskKey } from "../keystore.ts";
@@ -37,8 +40,10 @@ import { buildProviderChain } from "../providers.ts";
 import { resolveReviewerModel } from "../reviewer.ts";
 import { monthKeyString, UsageLedger } from "../usageLedger.ts";
 import type { UsageSnapshot } from "../usage.ts";
+import { ApprovalBridge, approvalArgsHash } from "./approvalBridge.ts";
 import { DedupStore, QuotaStore } from "./dedupAndQuota.ts";
 import { splitMessage } from "./formatter.ts";
+import { agentOptionsForProfile, isToolAllowed, profileForRole, resolveRole, type BotProfile, type BotRole } from "./router.ts";
 import { SessionQueue } from "./sessionQueue.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
 import {
@@ -87,6 +92,8 @@ export interface BotStatus {
   dedupSize: number;
   monthlySpentUsd: number | null;
   monthlyLimitUsd: number | null;
+  /** 当前挂起的审批数（/status 里能看到有没有等着批的）。 */
+  pendingApprovals: number;
 }
 
 interface AuditRecord {
@@ -98,6 +105,11 @@ interface AuditRecord {
   chars?: number;
   spent_usd?: number | null;
   error?: string;
+  /** 审批审计：审批 id、工具名、决定人、事件落点（events / evidence / none）。 */
+  approval_id?: string;
+  tool?: string;
+  decided_by?: string;
+  event_channel?: string;
 }
 
 function appendAudit(home: string, rec: AuditRecord): void {
@@ -134,9 +146,11 @@ export class BotRunner {
   readonly queue = new SessionQueue();
   readonly dedup: DedupStore;
   readonly quota: QuotaStore;
+  readonly bridge: ApprovalBridge;
   readonly modelName: string | null;
   private readonly agentRunFn: AgentRunFn;
-  private agents = new Map<string, Agent>();
+  /** 每会话一个 Agent 实例；角色变了就重建（画像、mode、白名单都跟着角色走）。 */
+  private agents = new Map<string, { agent: Agent; role: BotRole }>();
   /** 每会话上次 flush 的用量快照（delta 制记账，与 CLI 的 makeUsageFlusher 同口径）。 */
   private lastSnap = new Map<string, UsageSnapshot>();
   private lastSpent = new Map<string, number | null>();
@@ -144,6 +158,10 @@ export class BotRunner {
   private ledger: UsageLedger;
   /** 取消过的会话（后台调用结束后的恢复守门：epoch 变了说明已有新任务，不恢复）。 */
   private abortEpochs = new Map<string, number>();
+  /** 本次排队任务的请求上下文（chatId/threadId/发信人/画像；approveFn 靠它找审批提示该发去哪）。 */
+  private sessionCtx = new Map<string, { chatId: string; threadId: string | null; senderId: string; profile: BotProfile }>();
+  /** 审批过期扫荡的定时器（startPolling 起、stopPolling 停）。 */
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private stopController: AbortController | null = null;
 
@@ -155,6 +173,26 @@ export class BotRunner {
     this.adapter = opts.adapter;
     this.dedup = new DedupStore(opts.home);
     this.quota = new QuotaStore(opts.home);
+    this.bridge = new ApprovalBridge({
+      home: opts.home,
+      policy: this.policy,
+      send: (chatId, threadId, text, buttons) =>
+        this.adapter.sendText({ chatId, threadId, text, inlineKeyboard: buttons }),
+      edit: (chatId, messageId, text) => this.adapter.editText(chatId, messageId, text),
+      audit: (outcome, extra) => {
+        appendAudit(this.home, {
+          ts: new Date().toISOString(),
+          channel: this.adapter.channel,
+          session_key: typeof extra.session_key === "string" ? extra.session_key : "",
+          message_id: typeof extra.approval_id === "string" ? extra.approval_id : "",
+          outcome,
+          approval_id: typeof extra.approval_id === "string" ? extra.approval_id : undefined,
+          tool: typeof extra.tool === "string" ? extra.tool : undefined,
+          decided_by: typeof extra.decided_by === "string" ? extra.decided_by : undefined,
+          event_channel: typeof extra.event_channel === "string" ? extra.event_channel : undefined,
+        });
+      },
+    });
     this.ledger = new UsageLedger(opts.home);
     let model: string | null = null;
     try {
@@ -167,7 +205,58 @@ export class BotRunner {
 
   // -- Agent 执行（复用 agent.ts / tools.ts 的执行路径，不另起执行器） ----
 
-  private buildAgent(sessionKey: string): Agent {
+  /** 本月已花（用量账本 LLM + MCP − 本进程已 flush 的，避免重复算；算不出返回 null，不挡人）。 */
+  private monthSpentBeforeUsd(): { spentUsd: number; incomplete: boolean } | null {
+    try {
+      const llm = this.ledger.monthTotal(monthKeyString());
+      const mcp = new McpCostTracker(this.home).monthTotalUsd(monthKeyString());
+      return { spentUsd: llm.spentUsd + mcp - this.flushedUsd, incomplete: llm.incomplete };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Agent 的审批回调（checkApproval 经 approveFn 调到这里）：
+   * 白名单外的工具直接拒绝、不建审批（第二道门）；白名单内的写操作建挂
+   * 起审批、等聊天里的决定。放行只决定这一次调用能不能跑——花费照常
+   * 进账本、月度/单次硬顶照常由 checkCost 在轮次里执行，审批绕不过配额。
+   */
+  private approveViaBridge(sessionKey: string, profile: BotProfile): ApproveFn {
+    return async (tool, summary, details) => {
+      if (!isToolAllowed(profile, tool)) {
+        return { approved: false, feedback: `工具 ${tool} 不在你的角色（${profile.role}）白名单里，不能执行。` };
+      }
+      if (!profile.canRequestApproval) {
+        return { approved: false, feedback: "你的角色不能发起审批。" };
+      }
+      const ctx = this.sessionCtx.get(sessionKey);
+      if (!ctx) {
+        return { approved: false, feedback: "会话上下文丢失，无法发起审批。" };
+      }
+      const argsHash = approvalArgsHash({
+        tool,
+        command: (details as Record<string, unknown> | undefined)?.command,
+        fileTarget: (details as Record<string, unknown> | undefined)?.fileTarget,
+        cwd: (details as Record<string, unknown> | undefined)?.cwd,
+      });
+      const approval = await this.bridge.requestApproval({
+        sessionKey,
+        chatId: ctx.chatId,
+        threadId: ctx.threadId,
+        tool,
+        summary,
+        argsHash,
+        requestedBy: ctx.senderId,
+        requestedByRole: profile.role,
+      });
+      const decision = await this.bridge.waitForDecision(approval.id);
+      if (decision.approved) return true;
+      return { approved: false, feedback: decision.reason || "审批未通过。" };
+    };
+  }
+
+  private buildAgent(sessionKey: string, profile: BotProfile): Agent {
     const sessionId = memorySessionIdFor(sessionKey);
     const primaryCfg = resolveProvider({ home: this.home, config: this.config });
     const provider = buildProviderChain(primaryCfg, [primaryCfg.name], null, {
@@ -179,22 +268,19 @@ export class BotRunner {
     }
     const sandbox = resolveSandbox(this.config);
     const monthlyLimit = resolveMonthlyLimit(this.config);
-    const monthlySpentBeforeUsd = monthlyLimit === null ? null : (): { spentUsd: number; incomplete: boolean } | null => {
-      try {
-        const llm = this.ledger.monthTotal(monthKeyString());
-        const mcp = new McpCostTracker(this.home).monthTotalUsd(monthKeyString());
-        return { spentUsd: llm.spentUsd + mcp - this.flushedUsd, incomplete: llm.incomplete };
-      } catch {
-        return null;
-      }
-    };
+    const monthlySpentBeforeUsd = monthlyLimit === null ? null : () => this.monthSpentBeforeUsd();
+    // 画像定 Agent：mode / interactive / 白名单 / 系统提示词 / 步数都跟着角色走
+    //（guest/member 只读；owner/admin 的写操作逐次走 approvalBridge）。
+    const ao = agentOptionsForProfile(profile);
     return new Agent(provider, {
       workdir: this.workdir,
-      // 外部用户强制只读：只读/知识库/查询，高危写操作本批不开放。
-      mode: "readonly",
-      maxTurns: this.policy.maxTurns,
+      mode: ao.mode,
+      maxTurns: ao.maxTurns,
       sessionId,
-      interactive: false,
+      interactive: ao.interactive,
+      approveFn: ao.interactive ? this.approveViaBridge(sessionKey, profile) : null,
+      disabledTools: ao.disabledTools,
+      systemInstructions: ao.systemInstructions,
       messages: loadSession(sessionId, this.home),
       channel: this.adapter.channel,
       home: this.home,
@@ -211,11 +297,11 @@ export class BotRunner {
     });
   }
 
-  private getAgent(sessionKey: string): Agent {
+  private getAgent(sessionKey: string, profile: BotProfile): Agent {
     const cached = this.agents.get(sessionKey);
-    if (cached) return cached;
-    const agent = this.buildAgent(sessionKey);
-    this.agents.set(sessionKey, agent);
+    if (cached && cached.role === profile.role) return cached.agent;
+    const agent = this.buildAgent(sessionKey, profile);
+    this.agents.set(sessionKey, { agent, role: profile.role });
     return agent;
   }
 
@@ -239,7 +325,8 @@ export class BotRunner {
     const snapshotBefore = loadSession(sessionId, this.home);
     const epoch = (this.abortEpochs.get(sessionKey) ?? 0) + 1;
     this.abortEpochs.set(sessionKey, epoch);
-    const agent = this.getAgent(sessionKey);
+    const profile = this.sessionCtx.get(sessionKey)?.profile ?? profileForRole("guest", this.policy);
+    const agent = this.getAgent(sessionKey, profile);
     const beforeSnap = agent.usage.snapshot();
     const beforeSpent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
     const runPromise = agent.run(text);
@@ -251,8 +338,11 @@ export class BotRunner {
     try {
       resultText = await Promise.race([runPromise, aborted]);
     } catch (err) {
-      // 取消后：丢弃 Agent 实例；后台调用结束后再恢复一次快照（epoch 没变才恢复）。
+      // 取消后：丢弃 Agent 实例；同会话的挂起审批一并取消（免得晚一步点的
+      // “批准”复活已经没了的任务）；后台调用结束后再恢复一次快照（epoch
+      // 没变才恢复）。
       this.agents.delete(sessionKey);
+      this.bridge.cancelSession(sessionKey, this.queue.abortReason(sessionKey) === "timeout" ? "处理超时，审批已取消。" : "任务已停止，审批已取消。");
       try { saveSession(sessionId, snapshotBefore ?? [], this.home); } catch { /* ignore */ }
       void runPromise.then(
         () => { if (this.abortEpochs.get(sessionKey) === epoch) { try { saveSession(sessionId, snapshotBefore ?? [], this.home); } catch { /* ignore */ } } },
@@ -284,16 +374,17 @@ export class BotRunner {
 
   // -- 确定性指令（不走模型、不扣 token、不计配额） ----
 
-  private helpText(): string {
+  private helpText(profile: BotProfile): string {
+    const roleDesc = { owner: "机主（全权）", admin: "管理员", member: "受信任用户", guest: "普通用户（只读）" }[profile.role];
     return [
-      "Nyra Bot（Phase 1）：外部用户默认只读，只能问答与查询，不能写文件、跑命令。",
+      `Nyra Bot（Phase 2）：你的角色是${roleDesc}。`,
       "命令：",
       "/help — 本帮助",
-      "/status — 运行状态、队列深度、今日花费",
+      "/status — 运行状态、队列深度、今日花费、挂起审批",
       "/new — 开新会话（清除当前会话历史）",
       "/stop — 停止当前正在处理的任务",
       "/model — 当前用的模型",
-      "/approve <id>、/reject <id> — 审批在 Phase 2 提供，本批暂未开放",
+      "/approve <id>、/reject <id> — 批准/拒绝一条挂起的审批（只有 owner/admin 能批；也可以点审批提示下的按钮）",
       "群聊里只有 @ 我时才回复；私聊直接发消息就行。",
     ].join("\n");
   }
@@ -306,12 +397,13 @@ export class BotRunner {
       `队列深度：共 ${st.queueDepth}（进行中会话：${st.activeSessions.length ? st.activeSessions.join("、") : "无"}）`,
       `今日 token 花费：${st.todaySpentUsd > 0 ? `$${st.todaySpentUsd.toFixed(4)}` : "无"}`,
       `本月已花：${st.monthlySpentUsd !== null ? `$${st.monthlySpentUsd.toFixed(4)}` : "未知（未计价）"}${st.monthlyLimitUsd !== null ? ` / 上限 $${st.monthlyLimitUsd.toFixed(2)}` : "（未设上限）"}`,
+      `挂起审批：${st.pendingApprovals} 条`,
       `去重记录：${st.dedupSize} 条`,
     ];
     return lines.join("\n");
   }
 
-  private async handleCommand(msg: InboundMessage, command: string, args: string): Promise<void> {
+  private async handleCommand(msg: InboundMessage, command: string, args: string, profile: BotProfile): Promise<void> {
     const key = sessionKeyFor(msg);
     const reply = async (text: string): Promise<void> => {
       await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text });
@@ -319,7 +411,7 @@ export class BotRunner {
     let outcome = `command:${command}`;
     switch (command) {
       case "help":
-        await reply(this.helpText());
+        await reply(this.helpText(profile));
         break;
       case "status":
         await reply(this.statusText());
@@ -343,9 +435,36 @@ export class BotRunner {
         await reply(`当前模型：${this.modelName ?? "未配置"}`);
         break;
       case "approve":
-      case "reject":
-        await reply(`审批功能在 Phase 2（approvalBridge）提供，本批暂未开放${args ? `（收到的 id：${args}）` : ""}。`);
+      case "reject": {
+        const id = args.split(/\s+/)[0] ?? "";
+        if (!id) {
+          await reply("用法：/approve <审批 id> 或 /reject <审批 id>（审批提示里有 id）。");
+          outcome = "approval:missing-id";
+          break;
+        }
+        const res = await this.bridge.decide(id, command === "approve", msg.senderId, msg.viaCallback ? "button" : "command");
+        if (!res.ok) {
+          if (res.reason === "not-approver") {
+            await reply("只有管理员（owner/admin）能审批这条请求。");
+            outcome = "approval:denied-not-approver";
+          } else if (res.reason === "not-found") {
+            await reply(`没找到审批 ${id}（可能已被清理）。`);
+            outcome = "approval:not-found";
+          } else {
+            await reply(`审批 ${id} 已处理过，不能再批。`);
+            outcome = "approval:not-pending";
+          }
+        } else {
+          await reply(res.decision?.approved ? `已批准 ${id}。` : `已拒绝 ${id}。`);
+          outcome = res.decision?.approved ? "approval:approved" : "approval:rejected";
+        }
+        if (msg.viaCallback && msg.callbackId) {
+          try {
+            await this.adapter.answerCallback?.(msg.callbackId, res.ok ? (res.decision?.approved ? "已批准" : "已拒绝") : "处理失败");
+          } catch { /* 回 ack 失败不改变审批结论 */ }
+        }
         break;
+      }
       default:
         // 未知指令不进模型、不报错刷屏：只回一句帮助入口。
         await reply("未知指令。发 /help 看能用的命令。");
@@ -371,6 +490,7 @@ export class BotRunner {
       dedupSize: this.dedup.size(),
       monthlySpentUsd: monthlySpent,
       monthlyLimitUsd: resolveMonthlyLimit(this.config),
+      pendingApprovals: this.bridge.pendingCount(),
     };
   }
 
@@ -384,10 +504,12 @@ export class BotRunner {
     const audit = (outcome: string, extra?: Partial<AuditRecord>): void => {
       appendAudit(this.home, { ts: new Date().toISOString(), channel: msg.channel, session_key: key, message_id: msg.messageId, outcome, ...extra });
     };
+    // 角色路由（Phase 2）：画像跟着发信人走，guest 默认只读。
+    const profile = profileForRole(resolveRole(msg, this.policy), this.policy, msg.chatId);
     // 确定性指令优先：不走模型、不扣 token、不计配额。
     const cmd = parseBotCommand(msg.text);
     if (cmd) {
-      await this.handleCommand(msg, cmd.command, cmd.args);
+      await this.handleCommand(msg, cmd.command, cmd.args, profile);
       return;
     }
     // 群聊 @ 过滤（mentionOnly 默认开；私聊不受影响）。
@@ -421,6 +543,16 @@ export class BotRunner {
       audit("blocked:quota-budget");
       return;
     }
+    // 月度硬顶预检：本月已花 ≥ 上限时直接回绝、不进模型（轮次里的 checkCost 是第二道门；审批放行绕不过这两道）。
+    const monthlyLimit = resolveMonthlyLimit(this.config);
+    if (monthlyLimit !== null) {
+      const spent = this.monthSpentBeforeUsd();
+      if (spent !== null && spent.spentUsd >= monthlyLimit) {
+        await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: `本月预算已用完（已花 $${spent.spentUsd.toFixed(4)} / 上限 $${monthlyLimit.toFixed(2)}），本月不再执行新任务。` });
+        audit("blocked:monthly-budget");
+        return;
+      }
+    }
     // 先发占位，再排队（排队久的用户也知道 Bot 收到了）。
     let placeholderId: string;
     try {
@@ -431,7 +563,11 @@ export class BotRunner {
     }
     this.quota.recordUser(senderKey);
     const replied = { done: false };
+    // 请求上下文只在本次任务跑的时候挂在会话上（approveFn 靠它发审批提示）；
+    // 同一会话的任务串行，任务开始时挂、结束时摘，不会被后一条消息提前覆盖。
+    const ctx = { chatId: msg.chatId, threadId: msg.threadId, senderId: msg.senderId, profile };
     const result = await this.queue.enqueue(key, async (signal) => {
+      this.sessionCtx.set(key, ctx);
       try {
         const res = await this.agentRunFn(key, msg.text, signal);
         if (signal.aborted) return;
@@ -456,8 +592,10 @@ export class BotRunner {
         try { await this.adapter.editText(msg.chatId, placeholderId, `处理失败：${message}`); } catch { /* ignore */ }
         replied.done = true;
         audit("error:agent", { error: message });
+      } finally {
+        if (this.sessionCtx.get(key) === ctx) this.sessionCtx.delete(key);
       }
-    }, { timeoutMs: this.policy.timeoutMs });
+    }, { timeoutMs: profile.timeoutMs });
     if (result === "cancelled" && !replied.done) {
       // 排队时被 /stop 取消：任务函数没跑过，占位还挂着，这里收尾。
       try { await this.adapter.editText(msg.chatId, placeholderId, "已取消。"); } catch { /* ignore */ }
@@ -471,6 +609,10 @@ export class BotRunner {
     if (this.running) return;
     this.running = true;
     this.stopController = new AbortController();
+    // 过期扫荡：把没人等、到期的挂起审批标 expired（等人的那个由 waitForDecision 自己的定时器处理）。
+    this.bridge.sweepExpired();
+    this.sweepTimer = setInterval(() => { this.bridge.sweepExpired(); }, 30000);
+    if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
     try {
       await this.adapter.getMe?.();
     } catch { /* username 拿不到不影响运行：@ 判定退化为看文本里的 @ */ }
@@ -495,6 +637,10 @@ export class BotRunner {
 
   stopPolling(): void {
     this.running = false;
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     this.stopController?.abort();
     this.stopController = null;
   }

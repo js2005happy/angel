@@ -25,7 +25,8 @@ export const DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
 /** 去重记录上限（超了先丢最旧的；文件本身很小，5000 条绰绰有余）。 */
 export const DEDUP_MAX_ENTRIES = 5000;
 
-function atomicWriteJson(home: string, filename: string, data: unknown): void {
+/** 原子写 JSON（0600；approvalBridge 的挂起审批账本共用同一写法）。 */
+export function atomicWriteJson(home: string, filename: string, data: unknown): void {
   const dir = resolveNyraHome(home);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const target = join(dir, filename);

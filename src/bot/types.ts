@@ -18,7 +18,18 @@ export type BotChannel = "telegram";
 
 export type BotChatType = "private" | "group" | "supergroup" | "channel";
 
+/** Bot 角色（router.ts 认的权限档位）：owner（机主）/ admin（管理员）/ member（受信任用户）/ guest（默认外部用户）。 */
+export type BotRole = "owner" | "admin" | "member" | "guest";
+
+/** 适配器上报的发信人角色（渠道侧的说法，不可信：Telegram 适配器现在所有人都报 member，不能当权限依据，见 router.ts）。 */
 export type BotSenderRole = "owner" | "admin" | "member" | "unknown";
+
+/** 每角色可配的三项（步数/超时/提示词）；能不能发起/批准审批是硬边界，配置改不了。 */
+export interface BotProfileOverride {
+  maxTurns?: number;
+  timeoutMs?: number;
+  systemPrompt?: string;
+}
 
 /** 渠道归一化后的入站消息（各平台原始 payload 由适配器转成这一个形状）。 */
 export interface InboundMessage {
@@ -40,6 +51,10 @@ export interface InboundMessage {
   chatType: BotChatType;
   /** 平台侧时间戳（毫秒）。 */
   timestamp: number;
+  /** 按钮回调来的消息（Phase 2）：正文是回调数据转成的指令（如 /approve <id>）。 */
+  viaCallback?: boolean;
+  /** 平台侧回调 id（回 ack 用，如 Telegram 的 answerCallbackQuery）。 */
+  callbackId?: string;
 }
 
 /** Bot 发出的消息（适配器按平台限制落地）。 */
@@ -48,6 +63,8 @@ export interface OutgoingMessage {
   threadId: string | null;
   text: string;
   replyToMessageId?: string;
+  /** 行内按钮（Phase 2 的审批提示用；平台不支持时忽略）。 */
+  inlineKeyboard?: { text: string; callbackData: string }[][];
 }
 
 /** 渠道适配器：收（轮询或回调归一化）与发（文本/编辑）两件事。 */
@@ -63,6 +80,8 @@ export interface ChannelAdapter {
   sendText(msg: OutgoingMessage): Promise<string>;
   /** 编辑一条已发消息（占位“处理中…”完成后更新）。 */
   editText(chatId: string, messageId: string, text: string): Promise<void>;
+  /** 回应一次按钮点击（消掉客户端的等待转圈；平台不支持时忽略）。 */
+  answerCallback?(callbackId: string, text: string): Promise<void>;
 }
 
 /** Bot 动作（Phase 2 的 approvalBridge 与 router 共用这一个动作表）。 */
@@ -88,6 +107,18 @@ export interface BotPolicy {
   dailyTokenBudgetUsd: number | null;
   /** 管理员的平台侧用户 id（/approve 等管理指令只认他们；Phase 1 先占位）。 */
   admins: string[];
+  /** 机主的平台侧用户 id（唯一全权角色；null = 没配，机主档位空着）。 */
+  owner: string | null;
+  /** 受信任用户（member 档位：只读，但步数/超时比 guest 宽松）。 */
+  members: string[];
+  /** 一条审批挂起多久没人批就自动拒绝（毫秒；默认 60000；须小于 bot.timeout_ms 才有意义）。 */
+  approvalTimeoutMs: number;
+  /** 审批提示改发到哪个会话（chatId；null = 发到发起审批的当前会话）。 */
+  approvalChatId: string | null;
+  /** 按 chatId 覆盖系统提示词（特定群聊可以有自己的 Bot 人设，优先于按角色的）。 */
+  chatSystemPrompts: Record<string, string>;
+  /** 每角色可配的三项（步数/超时/提示词）；白名单与审批权限不在里面。 */
+  profiles: Partial<Record<BotRole, BotProfileOverride>>;
   /** Telegram 渠道开关与用户名（用户名用于群聊 @ 判定）。 */
   telegram: { enabled: boolean; username: string | null };
 }
@@ -100,6 +131,12 @@ export const DEFAULT_BOT_POLICY: BotPolicy = {
   perChatPerMinuteLimit: 10,
   dailyTokenBudgetUsd: null,
   admins: [],
+  owner: null,
+  members: [],
+  approvalTimeoutMs: 60000,
+  approvalChatId: null,
+  chatSystemPrompts: {},
+  profiles: {},
   telegram: { enabled: false, username: null },
 };
 
@@ -118,6 +155,32 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
   const tg = b.telegram && typeof b.telegram === "object" && !Array.isArray(b.telegram)
     ? (b.telegram as Record<string, unknown>)
     : {};
+  const asIdList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : [];
+  const asId = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+  // 审批 TTL 夹在 5 秒到 10 分钟之间：太短人来不及批、太长挂起的写操作占着 Agent 的轮次超时（bot.timeout_ms）也没意义。
+  const approvalTimeoutMs = Math.min(600000, Math.max(5000, asPosInt(b.approval_timeout_ms, DEFAULT_BOT_POLICY.approvalTimeoutMs)));
+  const chatSystemPrompts: Record<string, string> = {};
+  const csp = b.chat_system_prompts;
+  if (csp && typeof csp === "object" && !Array.isArray(csp)) {
+    for (const [k, v] of Object.entries(csp as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim() && k.trim()) chatSystemPrompts[k.trim()] = v.slice(0, 4000);
+    }
+  }
+  const profiles: Partial<Record<BotRole, BotProfileOverride>> = {};
+  const rawProfiles = b.profiles;
+  if (rawProfiles && typeof rawProfiles === "object" && !Array.isArray(rawProfiles)) {
+    for (const role of ["owner", "admin", "member", "guest"] as const) {
+      const p = (rawProfiles as Record<string, unknown>)[role];
+      if (!p || typeof p !== "object" || Array.isArray(p)) continue;
+      const over: BotProfileOverride = {};
+      const po = p as Record<string, unknown>;
+      if (typeof po.max_turns === "number" && Number.isFinite(po.max_turns) && po.max_turns > 0) over.maxTurns = Math.floor(po.max_turns);
+      if (typeof po.timeout_ms === "number" && Number.isFinite(po.timeout_ms) && po.timeout_ms > 0) over.timeoutMs = Math.floor(po.timeout_ms);
+      if (typeof po.system_prompt === "string" && po.system_prompt.trim()) over.systemPrompt = po.system_prompt.slice(0, 4000);
+      if (over.maxTurns !== undefined || over.timeoutMs !== undefined || over.systemPrompt !== undefined) profiles[role] = over;
+    }
+  }
   return {
     mentionOnly: b.mention_only === false ? false : DEFAULT_BOT_POLICY.mentionOnly,
     maxTurns: asPosInt(b.max_turns, DEFAULT_BOT_POLICY.maxTurns),
@@ -128,7 +191,13 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
       typeof b.daily_token_budget_usd === "number" && Number.isFinite(b.daily_token_budget_usd) && b.daily_token_budget_usd >= 0
         ? b.daily_token_budget_usd
         : null,
-    admins: Array.isArray(b.admins) ? b.admins.filter((x): x is string => typeof x === "string") : [],
+    admins: asIdList(b.admins),
+    owner: asId(b.owner),
+    members: asIdList(b.members),
+    approvalTimeoutMs,
+    approvalChatId: asId(b.approval_chat_id),
+    chatSystemPrompts,
+    profiles,
     telegram: {
       enabled: tg.enabled === true,
       username: typeof tg.username === "string" && tg.username.trim() ? tg.username.trim().replace(/^@/, "") : null,
