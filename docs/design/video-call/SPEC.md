@@ -14,7 +14,7 @@
 
 1. **好友 = 一个人 + 他的 agent。** 加好友时同时加了对方本人和对方的 agent（每个 agent 都是一个 Nyra，可以有自己的名字，比如 Kite、Pilot）。界面上所有“人”的头像右下角都带一枚 agent 徽章（圆盘 + 光标标志），表示“这个人带着他的 agent”。
 2. **人的权限和 agent 的权限分开。** 人能看到的 = 你在通话里共享给他的。agent 能看到 / 能做什么单独设置（好友页“Kite 在我这里的权限”、首次协作弹窗），默认只读。你的 agent 在对方那边的权限由对方决定。
-3. **流量 vs token。** 视频 / 语音只走网络流量，不耗 token；agent 在协作里干活才耗 token，而且**谁的 agent 花谁的 token**（Kite 的工作记在林舟账上，不花你的）。这两件事在界面上始终分开显示：顶栏 / 用量弹层显示流量，agent 块和协作面板显示 token。
+3. **流量 vs token。** 视频 / 语音只走网络流量，不耗 token；agent 在协作里干活才耗 token，而且**谁的 agent 花谁的 token**（Kite 的工作记在林舟账上，不花你的）。**协作时各用各的 token，不混账**：token 归属按 agent 与主人分开算，对方 agent 改你的文件，token 也记在对方账上。这两件事在界面上始终分开：顶栏只说一句话「视频走流量，不耗 token」，不放跳动的数字；**token 的数只在用量弹层（点顶栏信号片打开的「这次通话的用量」）与设置里出现，不出现在通话主界面**（agent 块、协作面板、抽屉里都不放）；审批卡上写清这一下用谁的 token（见 §3.3），那是“这一下谁付钱”，不是跑着的总数。
 
 ## 2. 信息架构与流程
 
@@ -78,10 +78,10 @@
 
 **桌面（1440×900）布局**：
 
-- 顶栏（玻璃，浮在内容上，左右各 12、距顶 10、高 50、圆角 16）：窗口按钮 · 对方头像 26 + 名字 + 协作上下文 + 计时（等宽）· 右侧 4 个状态片：`🔒 端到端加密`、`● 未录制 / ● 录制中 · 全员已同意`（红）、`信号 ↑ 1.2 MB/s ↓ 2.4 MB/s · 已用 85 MB`（等宽）、`视频走流量，不耗 token`；再右是「布局」「收起协作面板」两个图标按钮。
+- 顶栏（玻璃，浮在内容上，左右各 12、距顶 10、高 50、圆角 16）：窗口按钮 · 对方头像 26 + 名字 + 协作上下文 + 计时（等宽）· 右侧 4 个状态片：`🔒 端到端加密`、`● 未录制 / ● 录制中 · 全员已同意`（红）、`信号良好`（静态信号指示，不跳数字；点它进用量弹层看实时速率与已用流量；弱网时显示「信号较弱」）、`视频走流量，不耗 token`；再右是「布局」「收起协作面板」两个图标按钮。
 - 舞台（左侧 984 宽）：**按主人成对排列**——左列「我的 Nyra」+「我」，右列「林舟的 Kite」+「林舟」。上排 agent 块（高 208），下排人的视频块（高 560，圆角 16）。成对排列让“谁的 agent”一眼可见，不用读字。
   - 人的视频块：左上名字牌（媒体玻璃，头像 18 + 名字）、右上麦克风状态；正在说话 = 2px `--fg` 描边、外偏移 2px。名字牌放在**上方**，因为控制条浮在下方。
-  - agent 块：实色面板（`--side` + 1px `--line`，不是玻璃——它不是浮层）。左上「标志 Nyra · 我的 agent」，右上「我的 token · 3.2k」；中间左侧是动画圆标（56），右侧是状态大字（15/600）+ 细节（等宽：文件名、最近两步）。
+  - agent 块：实色面板（`--side` + 1px `--line`，不是玻璃——它不是浮层）。左上「标志 Nyra · 我的 agent」，右上不再放 token 数；中间左侧是动画圆标（56），右侧是状态大字（15/600）+ 细节（等宽：文件名、最近两步）。token 的数只在用量弹层与设置里看，不在 agent 块上。
 - 控制条（玻璃，居中于舞台，距底 22，圆角 22，内边距 8）：静音 · 摄像头 · 共享屏幕 ｜ agent 按钮（标志 +「Nyra 在听」+「邀请 agent / 让它静音」+ ▾ 菜单）｜ 聊天（角标）· 更多 ｜ 挂断（红，64 宽）。按钮 52×52、圆角 16，图标 20 + 10.5px 标签。开启态 `--chip` 底；关闭态（如摄像头关）反色实心。
 - 共享协作面板（玻璃，右侧 432 宽，距顶 70、距底 12，圆角 16）：
   - 标题「共享协作 · app · fix/login-timeout」+ 成员头像（2 人 + 2 agent）
@@ -89,25 +89,24 @@
   - 「谁在改什么」：每行 = 谁（agent 标志 / 人头像）+ 在做什么（文件名等宽）+ 状态片（等你批准 · 琥珀 / 已完成 · 绿 / 时间）
   - **审批卡**：和现有审批卡同一结构与文案——图标 + 标题「Kite 想修改你的 auth/client.py +6 −2」+ 副标题「林舟的 agent · 改你的文件要你批准 · 用林舟的 token」+ diff 片段 + 「查看完整 diff」+ **拒绝 / 总是允许 / 允许一次**（允许一次为主按钮）。“总是允许”的作用域：只对本次通话里这个 agent、这一类操作（建议按路径前缀，如 `auth/`）——具体粒度 Muse 定，但界面上要在 hover / 次级说明里写清范围。
   - 共享线程消息（人 = 灰气泡；agent = 标志 + 名字 + “· 我的 / · 林舟的”）
-  - 底部「Agent 用量：各用各主人的 token」小卡：Nyra · 我的 token 3.2k / Kite · 林舟的 token 5.8k / 视频通话本身只走流量，不计 token
+  - 底部不放用量卡：token 的数只在用量弹层与设置里出现，协作面板里不放；「视频走流量，不耗 token」这句话顶栏已有，不再重复。
   - 输入框「在共享线程里说点什么，@Kite @Nyra」
 - 只有对方 agent 改**我的**文件才需要我批准；我的 Nyra 改我自己的文件沿用我现有的审批设置（不在本稿新增规则）。
 
 **手机（390×844）**：
 
 - 通话画面**两种主题都是深色媒体舞台**（视频看起来最好、玻璃在视频上最清楚）；浅色 / 深色的差别体现在弹层、抽屉和非通话页。
-- 全屏对方视频 + 上下渐变压暗；顶部媒体玻璃条：最小化 · 名字 + 计时 · 🔒 端到端加密 · 未录制 · 右侧速率片；右上自己的画中画 104×140。
+- 全屏对方视频 + 上下渐变压暗；顶部媒体玻璃条：最小化 · 名字 + 计时 · 🔒 端到端加密 · 未录制 · 右侧信号片（信号良好，不跳数字；点它进用量弹层）；右上自己的画中画 104×140。
 - 两张 agent 小片（媒体玻璃）：动画圆标 22 + 「Kite · 林舟的 / 正在编辑 client.py」「Nyra · 我的 / 在听」。
 - 协作提示条：左侧琥珀竖条 +「协作 · 1 个待你批准 / 上滑打开 · Kite 想改 auth/client.py」。
 - 底部媒体玻璃控制条：麦克风 · 摄像头 · 共享屏幕 · agent · 聊天 · 挂断（50 圆，挂断 62 宽红）。
-- **协作抽屉**：上滑后视频缩到顶部，强玻璃底部弹层：分段「视频 / 协作 · 1」、谁在改什么、审批卡（「允许 Kite 改这个文件？」+ diff + 拒绝 / 总是允许 / 允许一次 + 「先存检查点 · 可在电脑上 /undo」）、token 说明、线程输入框。分段可点也可上下滑。
+- **协作抽屉**：上滑后视频缩到顶部，强玻璃底部弹层：分段「视频 / 协作 · 1」、谁在改什么、审批卡（「允许 Kite 改这个文件？」+ diff + 拒绝 / 总是允许 / 允许一次 + 「先存检查点 · 可在电脑上 /undo」）、线程输入框。分段可点也可上下滑。
 - Android：同一布局，状态栏 38 高、打孔摄像头、控制条距底 20；系统返回手势 = 收起抽屉 / 最小化通话（不挂断）。
 
 ### 3.4 流量 vs token（d3 顶栏 / m4 第 3 屏）
 
-- 顶栏速率片：`↑ 上行/s ↓ 下行/s · 已用 N MB`，等宽数字，**每秒更新一次**即可（建议值），数值跳动时不改变宽度（tabular-nums）。紧挨着常驻文字「视频走流量，不耗 token」。
-- 手机点速率片 → 「这次通话的用量」弹层：实时速率、已用流量、网络类型、视频清晰度、两行 token（按 agent 与主人分列）、开关「蜂窝网络下省流量（最高 360p，弱网时先关视频）」。
-- token 永远和 agent 绑定显示，并写明是谁的 token：「Nyra · 我的 token」「Kite · 林舟的 token」。不要出现一个不分人的 token 总数。
+- 顶栏信号片：只显示信号图标 + 「信号良好」/「信号较弱」，不放实时速率与已用流量（不跳数字）。点它 → 「这次通话的用量」弹层（桌面与手机同款）：实时速率、已用流量、网络类型、视频清晰度、两行 token（按 agent 与主人分列）、开关「蜂窝网络下省流量（最高 360p，弱网时先关视频）」。弱网时顶栏信号片显示「信号较弱」，横幅里再写一句「网好了视频会自己回来」。
+- token 永远和 agent 绑定显示，并写明是谁的 token：「Nyra · 我的 token」「Kite · 林舟的 token」。不要出现一个不分人的 token 总数。token 的数只在用量弹层与设置里出现，不出现在通话主界面（agent 块、协作面板、抽屉里都不放）。
 - 实测流量 / token 从哪里来由 Muse 定；稿里的数字全部是示意。
 
 ### 3.5 权限与隐私（d4 / d5 / m4）
@@ -294,21 +293,18 @@
 | | 留个话，她上线时会收到 / 她上线时提醒我 / 关闭 | Leave a message for when she's back / Remind me when she's online / Close |
 | | {agent} 离线时也不能代她接听或协作 | {agent} can't answer or collaborate for her while offline |
 | 顶栏 | 端到端加密 / 未录制 / 录制中 · 全员已同意 | End-to-end encrypted / Not recording / Recording · everyone agreed |
-| | ↑ 1.2 MB/s ↓ 2.4 MB/s · 已用 85 MB | ↑ 1.2 MB/s ↓ 2.4 MB/s · 85 MB used |
+| | 信号良好（点进用量弹层看实时速率与已用流量） | Signal good (tap for live rate and data used) |
 | | 视频走流量，不耗 token | Video uses data, not tokens |
 | 控制条 | 静音 / 摄像头 / 共享屏幕 / 聊天 / 更多 / 挂断 | Mute / Camera / Share screen / Chat / More / Leave |
 | agent 按钮 | Nyra 在听 · 邀请 agent / 让它静音 | Nyra is listening · Invite agent / Mute it |
 | agent 状态 | 在听 / 思考中 / 正在编辑 {file} / 等你批准 / 已静音 / 离线 | Listening / Thinking / Editing {file} / Waiting for your approval / Muted / Offline |
-| agent 块 | {agent} · {owner}的 agent / 我的 token · 3.2k / 林舟的 token · 5.8k | {agent} · {owner}'s agent / My tokens · 3.2k / Lin's tokens · 5.8k |
+| agent 块 | {agent} · {owner}的 agent / 状态 + 在干什么（不放 token 数） | {agent} · {owner}'s agent / Status and what it's doing (no token count) |
 | 协作面板 | 共享协作 / 线程 · 计划 · Diff · 成员 / 谁在改什么 | Shared work / Thread · Plan · Diff · Members / Who's changing what |
 | | 等你批准 / 已完成 / 1 分钟前 | Needs your approval / Done / 1 min ago |
 | 审批卡 | {agent} 想修改你的 {file} | {agent} wants to edit your {file} |
 | | 林舟的 agent · 改你的文件要你批准 · 用林舟的 token | Lin's agent · Edits to your files need your approval · Uses Lin's tokens |
 | | 查看完整 diff · 拒绝 / 总是允许 / 允许一次 | View full diff · Deny / Always / Allow once |
 | 手机审批 | 允许 {agent} 改这个文件？ / 先存检查点 · 可在电脑上 /undo | Let {agent} edit this file? / Checkpoint first · /undo on your computer |
-| 用量卡 | Agent 用量：各用各主人的 token | Agent usage: each agent uses its owner's tokens |
-| | Nyra · 我的 token / Kite · 林舟的 token | Nyra · my tokens / Kite · Lin's tokens |
-| | 视频通话本身只走流量，不计 token | The call itself uses data, not tokens |
 | 输入框 | 在共享线程里说点什么，@Kite @Nyra | Say something in the shared thread, @Kite @Nyra |
 | 抽屉 | 视频 / 协作 · 1 / 协作 · 1 个待你批准 / 上滑打开 | Video / Shared · 1 / Shared · 1 needs your approval / Swipe up to open |
 | 用量弹层 | 这次通话的用量 / 实时 / 已用流量 / 网络 / 视频清晰度 | Usage for this call / Live / Data used / Network / Video quality |
@@ -357,8 +353,8 @@
 | 值 | 出现位置 |
 |----|----------|
 | `NYR-7K4Q-2M`、二维码内容 `nyra://add/NYR-7K4Q-2M`、24 小时有效期 | 好友码 |
-| ↑ 1.2 MB/s ↓ 2.4 MB/s · 已用 85 MB；弱网 ↑ 24 KB/s ↓ 48 KB/s · 91 MB | 顶栏、用量弹层 |
-| 我的 token 3.2k / 林舟的 token 5.8k；结束时 4.1k / 7.6k，共 11.7k | agent 块、协作面板、总结 |
+| ↑ 1.2 MB/s ↓ 2.4 MB/s · 已用 85 MB；弱网 ↑ 24 KB/s ↓ 48 KB/s · 91 MB | 只在用量弹层内（顶栏改静态信号，不再显示） |
+| 我的 token 3.2k / 林舟的 token 5.8k；结束时 4.1k / 7.6k，共 11.7k | 只在用量弹层与结束总结内（agent 块、协作面板、抽屉里不再出现） |
 | 12:48（通话计时）、32:14、14:02–14:34、14:21、响铃 12 秒、30 秒未接 | 顶栏、总结、呼叫 |
 | 412 MB（↑ 138 / ↓ 274） | 总结 |
 | `auth/client.py +6 −2`、`tests/test_auth.py +24`、测试 3/3、计划 3/5、Diff 2、成员 4、检查点 4 | 协作面板、总结 |
