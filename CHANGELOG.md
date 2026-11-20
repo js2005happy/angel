@@ -1,3 +1,8 @@
+## 2026-11-20 — 静态运行时边界审计（开发分支）
+
+- 新增 `scripts/audit_runtime_boundary.py`：标准库、只读、机器可读的 Python/Node 两工作树入口差异审计工具，防止把旧 Python ToolJournal 的安全语义误报为 Node 主运行时保护。
+- 不修改工具派发或权限策略，不自动恢复，不添加依赖；仅静态审查，未运行测试。
+
 ## 2026-11-20 — 运行时派发链静态核实（未发布）
 
 - 只读审查确认：当前 main Node 入口 `src/cli.ts` → `src/agent.ts` 引用 `src/tools.ts` 的工具执行函数；Python `ToolJournal` 属于独立开发分支，不应宣称保护 Node。记录主分支现有 JSON 契约测试与开放 PR #105，避免重复实现。
