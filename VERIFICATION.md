@@ -1,3 +1,9 @@
+## 2026-11-20 — Node claim 创建前后目录身份检查（仅静态）
+
+- 读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim，核对 main 最新提交、开放 Issues/PR；开发分支缺少 main 的 `src/agent.ts`、`src/tools.ts`，运行时仍未接入。
+- 静态检查新增创建前目录 fd 身份核验，以及创建后 dev/ino 与创建前核验值一致性检查；任何失败保留可能存在的 claim，拒绝报告成功。
+- **未运行编译、测试、脚本或 CI**。此实现并非 openat：路径仍可能在检查与 `openSync(path)` 之间被替换，不能证明防重复执行或 POSIX/Windows 全平台安全。此前提交 status 返回空列表，不等于 CI 通过。
+
 ## 2026-11-20 — Node claim 目录同步身份复核（仅静态）
 
 - 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal，以及 main Node Agent、Tools、package.json；查询近期提交与开放 Issues/PR。
