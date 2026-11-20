@@ -165,3 +165,35 @@ test("Status.test_cli_status_subcommand", () => {
   expect(r.stdout).toContain("损坏的技能文件");
   expect(r.status).toBe(1);
 });
+
+// ---- 权限规则体检：status 与 redlines 必须给出同一结论 ----
+// 缺陷（真踩到）：status 的 permissions 检查只抓"未知工具名"和"被 deny 覆盖"，
+// 却说"全部可解析、可命中"；而 redlines 用 lintRules 能查出 `domain:` 用错工具、
+// 裸域名用在路径工具等死规则。两个命令对同一份配置结论相反 = 用户不知道信谁。
+//
+// 修法：status 复用 lintRules（跳过 unknown-tool，那一类它自己有更具体的报错）。
+
+test("权限死规则：status 不得声称全部可命中，且要报出来", () => {
+  const cfg = { permissions: { deny: ["read_file(domain:evil.com)"] } };
+  const report = runStatusChecks({ home, workdir, config: cfg as never }) as never as { checks: { category: string; level: string; message: string }[] };
+  const perm = report.checks.filter((c) => c.category === "permissions");
+  // 不能出现"全部可解析、可命中"这种与事实相反的 ok
+  expect(perm.some((c) => c.level === "ok")).toBe(false);
+  // 必须有一条 warn 指出规则可疑
+  expect(perm.some((c) => c.level === "warn" && c.message.includes("domain-on-non-url-tool"))).toBe(true);
+});
+
+test("裸域名用在路径工具：status 也要报", () => {
+  const cfg = { permissions: { deny: ["read_file(example.com)"] } };
+  const report = runStatusChecks({ home, workdir, config: cfg as never }) as never as { checks: { category: string; level: string; message: string }[] };
+  const perm = report.checks.filter((c) => c.category === "permissions");
+  expect(perm.some((c) => c.level === "warn" && c.message.includes("bare-host-on-path-tool"))).toBe(true);
+});
+
+test("正确规则不误报：status 仍给 ok（体检不能把好配置说成坏）", () => {
+  const cfg = { permissions: { deny: ["Bash(rm -rf *)"], allow: ["read_file(src/**)"] } };
+  const report = runStatusChecks({ home, workdir, config: cfg as never }) as never as { checks: { category: string; level: string; message: string }[] };
+  const perm = report.checks.filter((c) => c.category === "permissions");
+  expect(perm.some((c) => c.level === "ok")).toBe(true);
+  expect(perm.some((c) => c.level === "warn")).toBe(false);
+});
