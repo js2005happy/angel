@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Node operation claim 原语，未集成）
+
+- 新增 `scripts/node_tool_claim.ts`：Node 内置 fs/crypto 的排他 claim 文件与失败关闭 unknown 语义；不自动回收或重放，尚未接入主运行时。静态审阅，未运行测试或 CI，不能宣称解决工具重复执行。
+
 ## 未发布（2026-11-20，静态审计 v6）
 
 - scripts/audit_runtime_boundary.py：每个路径读取一次有界快照，文件状态和源码行号使用同一份内容；新增 source_sha256 便于审计输入版本复核，JSON schema v6。未运行测试或 CI，不提供原子执行所有权。
