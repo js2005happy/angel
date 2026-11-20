@@ -1,3 +1,11 @@
+## 2026-11-20 — P0 前置：可复核的跨运行时静态清单
+
+- **本仓库事实**：开发分支包含 Python `angel/agent.py` 与 `angel/tool_journal.py`，缺少 Node `src/agent.ts`；主分支 Node `src/agent.ts` 静态引用 `executeTool`、`executeToolIdempotent`，并在 `src/tools.ts` 定义执行入口。开发分支的 Python 日志保护不能自动外推至 Node。
+- **已实现（价值高／难度低／风险低）**：新增标准库只读 `scripts/audit_runtime_boundary.py`，对两个本地工作树输出 JSON 入口存在性、源码文本引用、分叉标志；不执行目标代码，不修改文件，不能证明完整调用图。仅静态审查，未运行。
+- **外部用户反馈（2026-11-19）**：[Codex #62611](https://github.com/openai/codex/issues/62611) 请求长等待安全恢复；这是用户个案而非本仓库缺陷或行业频率统计。**工程推断**：安全恢复先依赖可信派发边界和原子所有权。
+- **后续排序（价值／难度／安全风险／依赖）**：P0 Node 全入口/结果落盘路径审计（高／中／低／静态源码）；P0 跨进程原子执行所有权与崩溃 unknown（高／高／高／全入口、跨平台锁）；P1 权限拒绝结构化（高／中／中／审批路径）；P1 独立副作用凭证（高／高／高／可信适配器）；P2 事件驱动等待和安全续跑（高／高／高／所有权与审批）；P2 成本硬停止（高／中／中／可信用量）。
+- **限制**：开发分支没有 Node 源码，无法在此分支直接、安全地为 main Node 执行器增加原子锁；不得宣称本轮已解决工具并发安全。未运行测试、安装、CI、合并或发布。
+
 ## 2026-11-20 — P0 运行时派发链定位（静态证据，尚未改动执行器）
 
 - **仓库事实（2026-11-20）**：`js2005happy/angel` 重定向至 `js2005happy/nyra`；开发分支仍是 Python `angel/agent.py` → `angel/tool_journal.py`（显式可选），而 main 的 `package.json` 以 `src/cli.ts` 为构建入口，`src/agent.ts` 导入 `executeTool`/`executeToolIdempotent`，`src/tools.ts` 定义工具执行及审批。main 的 `src/tools.ts` 注释明确“worker 桥与 Python 运行时已移除”。**这是源码路径归属证据，不是运行时动态调用验证**。
