@@ -132,16 +132,17 @@ def d_friends(mode):
 </div></div>'''
     return body
 
-def topbar_call(title="林舟", sub="app / Fix login timeout", t="12:48", rec=False, data="↑ 1.2 MB/s&nbsp; ↓ 2.4 MB/s · 已用 85 MB", weak=False):
+def topbar_call(title="林舟", sub="app / Fix login timeout", t="12:48", rec=False, weak=False):
     recchip = (f'<span class="chip" style="background:rgba(217,45,32,.14);color:var(--rectx);font-weight:600">{ic("rec",12)}录制中 · 全员已同意</span>' if rec
                else f'<span class="chip o">{ic("rec",12)}<span style="color:var(--fg)">未录制</span></span>')
     sig = ic("signal1" if weak else "signal",14)
+    sigtxt = "信号较弱" if weak else "信号良好"
     return f'''<div class="glass" style="position:absolute;left:12px;right:12px;top:10px;height:50px;border-radius:16px;display:flex;align-items:center;gap:10px;padding:0 10px 0 16px;z-index:5">
  <div class="lights"><i></i><i></i><i></i></div><span style="width:8px"></span>
  {avatar("lin",26,True)}<b style="font-weight:600">{title}</b><span class="muted">{sub}</span><span class="mono" style="font-size:12.5px;margin-left:4px">{t}</span>
  <span style="flex:1"></span>
  <span class="chip o">{ic("lock",12)}<span>端到端加密</span></span>{recchip}
- <span class="chip o" title="视频走流量，不耗 token">{sig}<span class="mono" style="font-size:11.5px">{data}</span></span>
+ <span class="chip o" title="点进用量弹层看实时速率与已用流量">{sig}<span>{sigtxt}</span></span>
  <span class="chip" style="font-weight:500">视频走流量，不耗 token</span>
  <span class="tbtn" style="border-color:var(--g-border)">{ic("grid",14)}</span><span class="tbtn" style="border-color:var(--g-border)">{ic("panel",14)}</span></div>'''
 
@@ -155,7 +156,7 @@ def ctrlbar(mic=True, cam=True, agent_label="Nyra 在听", chat=2, x=None, voice
  <div class="cb" style="position:relative">{ic("chat")}聊天<span class="bd">{chat}</span></div><div class="cb">{ic("more")}更多</div>
  <div class="cb hang">{ic("hang",22)}挂断</div></div>'''
 
-def agent_tile(owner, name, state, w, h, tok, log=None, orbsize=56):
+def agent_tile(owner, name, state, w, h, log=None, orbsize=56):
     st, sub = STATE[state]
     stc = 'style="color:var(--warntx)"' if state=="wait" else ""
     sub_html = f'<div class="sub mono">{sub}</div>' if sub and state in ("edit","wait") else (f'<div class="sub">{sub}</div>' if sub else "")
@@ -163,7 +164,6 @@ def agent_tile(owner, name, state, w, h, tok, log=None, orbsize=56):
     lg = f'<div class="log">{log}</div>' if log else ""
     return f'''<div class="agt" style="width:{w}px;height:{h}px">
  <div class="who">{mark(14)}<span>{name}</span><span class="muted" style="font-weight:400">· {owner}的 agent</span></div>
- <div class="tok">{tok}</div>
  <div style="display:flex;align-items:center;gap:34px;margin-top:22px;width:100%;padding:0 48px">
  {orb(state, orbsize)}
  <div style="flex:1;min-width:0"><div class="st" {stc}>{st}{caret}</div>{sub_html}{lg}</div></div></div>'''
@@ -207,11 +207,6 @@ def collab_panel(approval=True, extra_top=""):
    <div style="display:flex;gap:8px">{'<span class="agentbox" style="width:22px;height:22px">'+mark(14)+'</span>'}<div style="line-height:1.5"><b style="font-weight:600">Nyra</b> <span class="muted small">· 我的</span><div>好，我先补一条“套接字卡住”的回归测试，Kite 改实现。</div></div></div>
   </div>
   <div style="flex:1"></div>
-  <div style="border-radius:12px;padding:10px 12px;box-shadow:inset 0 0 0 1px var(--g-border);background:var(--chip)">
-   <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px">{ic("info",13)}Agent 用量：各用各主人的 token</div>
-   <div style="display:flex;align-items:center;gap:8px;margin-top:7px;font-size:12.5px">{mark(13)}<span>Nyra</span><span class="muted">· 我的 token</span><span style="flex:1"></span><span class="mono">3.2k</span></div>
-   <div style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12.5px">{mark(13)}<span>Kite</span><span class="muted">· 林舟的 token</span><span style="flex:1"></span><span class="mono">5.8k</span></div>
-   <div class="muted" style="font-size:11.5px;margin-top:6px">视频通话本身只走流量，不计 token</div></div>
   <div style="margin-top:10px;height:40px;border-radius:12px;box-shadow:inset 0 0 0 1px var(--g-border);display:flex;align-items:center;padding:0 6px 0 12px;color:var(--mu)">在共享线程里说点什么，@Kite @Nyra<span style="flex:1"></span><span style="width:28px;height:28px;border-radius:50%;background:var(--btn);color:var(--btnfg);display:flex;align-items:center;justify-content:center">↑</span></div>
  </div></div>'''
 
@@ -228,8 +223,8 @@ def call_stage(people_cam=True, weak=False, agents=("listen","edit")):
     logN = "✓ tests/test_auth.py +24<br>· 等 Kite 的实现再跑一次" if aN=="listen" else None
     logK = "· 读取 auth/client.py<br>· 改 login()：超时 10 s + 重试 1 次" if aK in ("edit","wait") else None
     return f'''<div style="position:absolute;left:{gx}px;top:{top}px;display:grid;grid-template-columns:{w}px {w}px;gap:{gap}px">
- {agent_tile("我","Nyra",aN,w,ah,"我的 token · 3.2k",logN)}
- {agent_tile("林舟","Kite",aK,w,ah,"林舟的 token · 5.8k",logK)}
+ {agent_tile("我","Nyra",aN,w,ah,logN)}
+ {agent_tile("林舟","Kite",aK,w,ah,logK)}
  {person_tile("me",w,ph,me_lab,True,False,people_cam)}
  {person_tile("lin",w,ph,lin_lab,True,True,people_cam)}
 </div>'''
@@ -320,7 +315,7 @@ def d_recording(mode):
 def d_weak(mode):
     return f'''<div class="win" style="background:var(--side)">
  {call_stage(people_cam=False, agents=("listen","think"))}
- {topbar_call(data="↑ 24 KB/s&nbsp; ↓ 48 KB/s · 已用 91 MB", weak=True, rec=True)}
+ {topbar_call(weak=True, rec=True)}
  {collab_panel(False)}
  <div class="gstrong" style="position:absolute;left:{STAGE_W//2}px;transform:translateX(-50%);top:340px;width:620px;border-radius:14px;padding:10px 10px 10px 14px;display:flex;align-items:center;gap:10px;z-index:6">
   <span style="color:var(--warn);display:flex">{ic("signal1",18)}</span><div style="flex:1"><div style="font-weight:600">网络较弱，已自动切到仅语音</div><div class="muted small">网好了视频会自己回来 · 协作和 agent 不受影响</div></div><span class="tbtn">仍要开视频</span><span class="tbtn" style="border-color:transparent">{ic("x",14)}</span></div>
@@ -464,12 +459,13 @@ def m_ctrl(cam=True, bottom=28):
     return f'''<div class="gmedia" style="position:absolute;left:12px;right:12px;bottom:{bottom}px;border-radius:32px;padding:9px;display:flex;justify-content:space-between;z-index:5">
  {btn(ic("mic",21))}{btn(ic("cam" if cam else "camoff",21), extra="" if cam else "background:#F5F5F7;color:#0B0B0C;")}{btn(ic("screen",21))}{btn(mark(22))}{btn(ic("chat",21))}<span style="width:62px;height:50px;border-radius:25px;display:flex;align-items:center;justify-content:center;background:var(--danger);color:#fff">{ic("hang",24)}</span></div>'''
 
-def m_topbar(data="↓2.4 ↑1.2 MB/s", weak=False, rec=False):
+def m_topbar(weak=False, rec=False):
     rect = '<span style="color:#FF9A92;font-weight:600">● 录制中</span>' if rec else '未录制'
+    sigtxt = "信号较弱" if weak else "信号良好"
     return f'''<div class="gmedia" style="position:absolute;left:12px;right:12px;top:54px;height:54px;border-radius:20px;display:flex;align-items:center;gap:8px;padding:0 8px 0 6px;z-index:5">
  <span style="width:38px;height:38px;display:flex;align-items:center;justify-content:center">{ic("min",20)}</span>
  <div style="flex:1;min-width:0;line-height:1.25"><b style="font-weight:600;font-size:15px">林舟 <span class="mono" style="font-weight:400;font-size:13px;color:#E5E5EA">12:48</span></b><div style="font-size:11.5px;color:#E0E0E4;display:flex;align-items:center;gap:4px">{ic("lock",11)}端到端加密 · {rect}</div></div>
- <span style="height:30px;padding:0 10px;border-radius:15px;background:rgba(255,255,255,.12);display:flex;align-items:center;gap:5px;font-size:11.5px">{ic("signal1" if weak else "signal",13)}<span class="mono">{data}</span></span></div>'''
+ <span title="点进用量弹层看实时速率与已用流量" style="height:30px;padding:0 10px;border-radius:15px;background:rgba(255,255,255,.12);display:flex;align-items:center;gap:5px;font-size:11.5px">{ic("signal1" if weak else "signal",13)}<span>{sigtxt}</span></span></div>'''
 
 def m_agentchip(name, owner, state, txt, mono=False):
     o = orb(state, 22)
@@ -508,7 +504,6 @@ def m_drawer(mode):
     <div class="ln a"><span class="n">44</span>+         timeout=10)</div></div>
    <div style="display:flex;gap:8px;margin-top:12px"><span class="bt">拒绝</span><span class="bt">总是允许</span><span class="bt p">允许一次</span></div>
    <div class="muted" style="font-size:12px;text-align:center;margin-top:8px">先存检查点 · 可在电脑上 /undo</div></div>
-  <div style="margin-top:10px;font-size:12.5px;display:flex;gap:8px;align-items:center" class="muted">{ic("info",13)}<span>Nyra 用我的 token 3.2k · Kite 用林舟的 5.8k</span></div>
   <div style="margin-top:10px;height:44px;border-radius:22px;box-shadow:inset 0 0 0 1px var(--line2);display:flex;align-items:center;padding:0 6px 0 16px;color:var(--mu);font-size:14px">在共享线程里说… @Kite @Nyra<span style="flex:1"></span><span style="width:32px;height:32px;border-radius:50%;background:var(--btn);color:var(--btnfg);display:flex;align-items:center;justify-content:center">↑</span></div>
  </div>'''
 
@@ -547,7 +542,7 @@ def m_recconsent(mode):
 
 def m_weak(mode):
     return f'''<div class="vid" style="background:#121214"></div>
- {m_topbar(data="↓48 ↑24 KB/s", weak=True, rec=True)}
+ {m_topbar(weak=True, rec=True)}
  <div class="gmedia s" style="position:absolute;left:12px;right:12px;top:118px;border-radius:18px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;z-index:5">
   <span style="color:#F2C46B;display:flex;margin-top:1px">{ic("signal1",18)}</span><div style="flex:1;line-height:1.35"><div style="font-weight:600;font-size:14.5px">网络较弱，已切到仅语音</div><div style="font-size:12.5px;color:#C9C9CE">网好了视频会自己回来，协作不受影响</div></div><span style="font-size:13px;font-weight:600;margin-top:1px">开视频</span></div>
  <div style="position:absolute;left:0;right:0;top:250px;display:flex;flex-direction:column;align-items:center;color:#F5F5F7">
