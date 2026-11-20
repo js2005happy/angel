@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 Linux claim 同一目录 fd 持久化（静态审阅）
+
+- **仓库事实**：原实现以已打开目录 fd 创建 claim 后立即关闭该 fd，再按路径重新打开目录进行 fsync；路径被替换时可能同步错误目录。本轮保持原 fd 直到 fsync 与最终名称核对结束；失败关闭且不自动删除或重放。组件仍未接入 Node 主运行时。
+- **外部反馈（2026-10-04）**：[Codex #50771](https://github.com/openai/codex/issues/50771) 报告 Agent 在工作尚未完成时结束并要求反复继续；[Codex #40646](https://github.com/openai/codex/issues/40646)（2026-08-25）报告执行声明与工具轨迹不符。均为用户报告，不是 Angel 复现或频率统计。**工程推断**：需要可靠的持久状态与独立验证，不能以声明替代效果证明。
+- **优先级（价值／难度／安全风险／依赖）**：本项 P0 高／低／中／Linux procfs（已提交，待测试）；P0 procfs 可信挂载与故障注入 高／中／高／Linux 环境；P0 Windows reparse 防护 高／高／高／原生句柄 API；P0 真实 Node 派发集成 高／高／高／可信 claim；P1 MCP 目录变化检测 中高／中／中／协议；P1 外部副作用回执 高／高／高／工具适配器。
+- **限制**：路径名称检查仍有竞态，未验证 procfs、持久化或文件系统行为；未运行测试、编译或 CI，不保证 exactly-once。
+
 ## 2026-11-21 — P0 Linux 目录 fd 绑定排他创建（仅静态审阅）
 
 - **仓库事实**：此前 Node claim 在检查目录 fd 后关闭句柄，再按原路径 O_EXCL 创建，存在路径替换竞态。本轮 Linux 上改用保持打开的目录 fd 与 `/proc/self/fd/<fd>/<hash>.claim` 路径执行 O_EXCL|O_NOFOLLOW；非 Linux 平台拒绝使用该实验性原语，避免不安全回退。该组件仍未接入真实 Node 工具派发。
