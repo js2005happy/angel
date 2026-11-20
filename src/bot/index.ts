@@ -1,11 +1,14 @@
-// src/bot/index.ts — Bot 方向 Phase 2：router + approvalBridge + 用量硬顶。
+// src/bot/index.ts — Bot 方向 Phase 3：notifier 主动推送 + 附件处理。
 //
-// 主链路（Phase 2）：
+// 主链路（Phase 3）：
 //   验签与解析（适配器）→ 幂等去重 → 角色路由（router：owner/admin/member/
-//   guest）→ 确定性指令优先（/approve、/reject 本批接真逻辑）→ 群聊 @ 过滤 →
-//   配额（用户/天、群聊/分钟、当天预算）→ 月度硬顶预检 → 会话排队 →
-//   占位“处理中…” → Agent 执行（画像定 mode：guest/member 只读，owner/
+//   guest）→ 确定性指令优先（/approve、/reject 接真逻辑）→ 群聊 @ 过滤 →
+//   配额（用户/天、群聊/分钟、当天预算）→ 月度硬顶预检 → 附件处理
+//   （文本文档提取进上下文，图片只记元信息）→ 会话排队 → 占位
+//   “处理中…” → Agent 执行（画像定 mode：guest/member 只读，owner/
 //   admin 的写操作逐次走 approvalBridge 聊天内审批）→ 分片回发。
+//   另有一条不进主链路的推送线：notifier（Heartbeat 静默巡查 + Watch
+//   文件变化 + 定时/队列任务结果），默认全关，见 notifier.ts。
 //
 // 取消与超时的诚实边界：与 Phase 1 相同（/stop 与超时不能真中断在跑的
 // 模型调用，只能不等结果、不回发、丢弃 Agent 实例、按取消前快照恢复会话
@@ -41,8 +44,13 @@ import { resolveReviewerModel } from "../reviewer.ts";
 import { monthKeyString, UsageLedger } from "../usageLedger.ts";
 import type { UsageSnapshot } from "../usage.ts";
 import { ApprovalBridge, approvalArgsHash } from "./approvalBridge.ts";
+import { processAttachments } from "./attachments.ts";
 import { DedupStore, QuotaStore } from "./dedupAndQuota.ts";
 import { splitMessage } from "./formatter.ts";
+import { BotNotifier } from "./notifier.ts";
+
+/** 给 schedule daemon / task worker 共用（buildNotifierFromConfig 的返回类型）。 */
+export { BotNotifier } from "./notifier.ts";
 import { agentOptionsForProfile, isToolAllowed, profileForRole, resolveRole, type BotProfile, type BotRole } from "./router.ts";
 import { SessionQueue } from "./sessionQueue.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
@@ -147,6 +155,8 @@ export class BotRunner {
   readonly dedup: DedupStore;
   readonly quota: QuotaStore;
   readonly bridge: ApprovalBridge;
+  /** 场景 B 主动推送（Phase 3）：Heartbeat + Watch + 任务结果推送。 */
+  readonly notifier: BotNotifier;
   readonly modelName: string | null;
   private readonly agentRunFn: AgentRunFn;
   /** 每会话一个 Agent 实例；角色变了就重建（画像、mode、白名单都跟着角色走）。 */
@@ -162,6 +172,8 @@ export class BotRunner {
   private sessionCtx = new Map<string, { chatId: string; threadId: string | null; senderId: string; profile: BotProfile }>();
   /** 审批过期扫荡的定时器（startPolling 起、stopPolling 停）。 */
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** 主动推送的巡查定时器（startPolling 起、stopPolling 停；notifier 没开时不建）。 */
+  private notifyTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private stopController: AbortController | null = null;
 
@@ -194,6 +206,35 @@ export class BotRunner {
       },
     });
     this.ledger = new UsageLedger(opts.home);
+    // Phase 3：主动推送（Heartbeat + Watch + 任务结果）。notifier 自己
+    // 认 enabled / owner / target_chat_id 三个开的条件，缺一个就不推。
+    this.notifier = new BotNotifier({
+      home: opts.home,
+      policy: this.policy.notifier,
+      owner: this.policy.owner,
+      send: (chatId, threadId, text) => this.adapter.sendText({ chatId, threadId, text }),
+      audit: (outcome, extra) => {
+        appendAudit(this.home, {
+          ts: new Date().toISOString(),
+          channel: this.adapter.channel,
+          session_key: typeof extra.session_key === "string" ? extra.session_key : "",
+          message_id: "",
+          outcome,
+        });
+      },
+      state: () => {
+        const monthly = this.monthSpentBeforeUsd();
+        return {
+          monthlySpentUsd: monthly !== null ? monthly.spentUsd : null,
+          monthlyLimitUsd: resolveMonthlyLimit(this.config),
+          dailySpentUsd: this.quota.dailySpentUsd(),
+          dailyBudgetUsd: this.policy.dailyTokenBudgetUsd,
+          pendingApprovals: this.bridge.pendingCount(),
+          oldestPendingApprovalMs: this.bridge.oldestPendingAgeMs(),
+          queueDepth: this.queue.totalDepth(),
+        };
+      },
+    });
     let model: string | null = null;
     try {
       const cfg = resolveProvider({ home: opts.home, config: opts.config });
@@ -377,7 +418,7 @@ export class BotRunner {
   private helpText(profile: BotProfile): string {
     const roleDesc = { owner: "机主（全权）", admin: "管理员", member: "受信任用户", guest: "普通用户（只读）" }[profile.role];
     return [
-      `Nyra Bot（Phase 2）：你的角色是${roleDesc}。`,
+      `Nyra Bot（Phase 3）：你的角色是${roleDesc}。`,
       "命令：",
       "/help — 本帮助",
       "/status — 运行状态、队列深度、今日花费、挂起审批",
@@ -386,6 +427,7 @@ export class BotRunner {
       "/model — 当前用的模型",
       "/approve <id>、/reject <id> — 批准/拒绝一条挂起的审批（只有 owner/admin 能批；也可以点审批提示下的按钮）",
       "群聊里只有 @ 我时才回复；私聊直接发消息就行。",
+      "附件：图片只记元信息（本批暂不支持看图），纯文本文档（.txt/.md 等）会提取内容一起处理。",
     ].join("\n");
   }
 
@@ -517,14 +559,9 @@ export class BotRunner {
       audit("ignored:not-mentioned");
       return;
     }
-    // 纯附件、没有正文：Phase 1 不解析附件，老实说。
-    if (!msg.text.trim()) {
-      if (msg.attachments.length > 0) {
-        await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: "收到附件了，但本批暂不支持解析图片/文件内容；请用文字描述你要做的事。" });
-        audit("notice:attachment");
-      } else {
-        audit("ignored:empty");
-      }
+    // 空消息（没正文也没附件）直接忽略。
+    if (!msg.text.trim() && msg.attachments.length === 0) {
+      audit("ignored:empty");
       return;
     }
     // 配额三档（用户/天、群聊/分钟、当天 token 预算）。
@@ -553,6 +590,28 @@ export class BotRunner {
         return;
       }
     }
+    // Phase 3：附件处理（配额与月度预检之后——附件下载也要受配额约束，
+    // 否则光发附件就能绕过限额刷下载）。文本文档提取进上下文，图片只
+    // 记元信息；没正文、又没提取出可用内容时只回说明，不进模型。
+    let effectiveText = msg.text;
+    let attachmentNotices: string[] = [];
+    if (msg.attachments.length > 0) {
+      const attRes = await processAttachments(this.adapter, msg.attachments, {
+        maxBytes: this.policy.attachmentMaxBytes,
+        textChars: this.policy.attachmentTextChars,
+      });
+      attachmentNotices = attRes.notices;
+      if (attRes.extractedText) {
+        effectiveText = effectiveText.trim()
+          ? `${effectiveText}\n\n${attRes.extractedText}`
+          : attRes.extractedText;
+      }
+      if (!effectiveText.trim()) {
+        await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: attachmentNotices.join("\n") });
+        audit("notice:attachment");
+        return;
+      }
+    }
     // 先发占位，再排队（排队久的用户也知道 Bot 收到了）。
     let placeholderId: string;
     try {
@@ -569,10 +628,15 @@ export class BotRunner {
     const result = await this.queue.enqueue(key, async (signal) => {
       this.sessionCtx.set(key, ctx);
       try {
-        const res = await this.agentRunFn(key, msg.text, signal);
+        const res = await this.agentRunFn(key, effectiveText, signal);
         if (signal.aborted) return;
         this.quota.recordSpent(res.spentUsd);
-        const chunks = splitMessage(res.text || "（没有返回内容）");
+        // 附件说明贴在回复前面（“已读取文档 X”“图片暂不支持看图”这类
+        // 提示用户要看到；没附件时 notices 为空，回复原样不变）。
+        const replyText = attachmentNotices.length
+          ? `${attachmentNotices.join("\n")}\n\n${res.text || "（没有返回内容）"}`
+          : (res.text || "（没有返回内容）");
+        const chunks = splitMessage(replyText);
         await this.adapter.editText(msg.chatId, placeholderId, chunks[0]);
         replied.done = true;
         for (const chunk of chunks.slice(1)) {
@@ -613,6 +677,16 @@ export class BotRunner {
     this.bridge.sweepExpired();
     this.sweepTimer = setInterval(() => { this.bridge.sweepExpired(); }, 30000);
     if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
+    // Phase 3：主动推送巡查（notifier 没开时不建定时器；tick 内部还会再
+    // 认一次 enabled / owner / target，缺一个就不推）。
+    if (this.policy.notifier.enabled) {
+      this.notifyTimer = setInterval(() => {
+        void this.notifier.tick().catch((err) => {
+          process.stderr.write(`Bot 推送巡查失败：${err instanceof Error ? err.message : String(err)}\n`);
+        });
+      }, this.policy.notifier.heartbeatIntervalMs);
+      if (typeof this.notifyTimer.unref === "function") this.notifyTimer.unref();
+    }
     try {
       await this.adapter.getMe?.();
     } catch { /* username 拿不到不影响运行：@ 判定退化为看文本里的 @ */ }
@@ -641,12 +715,40 @@ export class BotRunner {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
+    if (this.notifyTimer) {
+      clearInterval(this.notifyTimer);
+      this.notifyTimer = null;
+    }
     this.stopController?.abort();
     this.stopController = null;
   }
 }
 
 // -- Token 解析（环境变量 > 密码箱 > keys.json；绝不硬编码、不记日志） ----
+
+/**
+ * Phase 3：给定时任务守护进程（`nyra schedule daemon`）与任务 worker
+ * （`nyra task worker`）用的 notifier。notifier 开的条件（显式开 +
+ * 配了 owner + 配了目标会话 + token 能拿到）缺一个就返回 null，调用
+ * 方不推、不报错。daemon/worker 进程里没有 BotRunner 的活状态，tick
+ * 只跑 watch；任务结果推送走 notifyTaskResult。
+ */
+export function buildNotifierFromConfig(home: string, config: Record<string, unknown>): BotNotifier | null {
+  const policy = botPolicyFromConfig(config);
+  if (!policy.notifier.enabled || policy.owner === null || policy.notifier.targetChatId === null) return null;
+  const token = resolveTelegramToken(home);
+  if (!token.token) return null;
+  const adapter = new TelegramAdapter({ token: token.token });
+  return new BotNotifier({
+    home,
+    policy: policy.notifier,
+    owner: policy.owner,
+    send: (chatId, threadId, text) => adapter.sendText({ chatId, threadId, text }),
+    audit: (outcome) => {
+      appendAudit(home, { ts: new Date().toISOString(), channel: "telegram", session_key: "", message_id: "", outcome });
+    },
+  });
+}
 
 export function resolveTelegramToken(home: string): { token: string | null; source: "env" | "vault" | "file" | "missing" } {
   const env = process.env[TELEGRAM_TOKEN_ENV];

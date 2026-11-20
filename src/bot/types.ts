@@ -31,6 +31,39 @@ export interface BotProfileOverride {
   systemPrompt?: string;
 }
 
+/** 场景 B 主动推送配置（Phase 3；默认全关，只有配了 owner 才能开）。 */
+export interface BotNotifierPolicy {
+  enabled: boolean;
+  /** 推送目标会话（Telegram chatId；私聊填 owner 的用户 id，群聊填群 id）。 */
+  targetChatId: string | null;
+  /** Heartbeat 巡查间隔（毫秒；默认 300000，夹在 60 秒到 1 小时之间）。 */
+  heartbeatIntervalMs: number;
+  /** 同一条件重复推送的冷却（毫秒；默认 3600000，夹在 60 秒到 24 小时之间）。 */
+  notifyCooldownMs: number;
+  /** 定时/队列任务完成时推什么：failures（只推失败，默认）/ all（成功也推）/ none。 */
+  notifyTasks: "failures" | "all" | "none";
+  /** 月度花费达到上限的这个比例就告警一次（默认 0.8，夹在 0.1 到 1 之间）。 */
+  monthlySpendWarnRatio: number;
+  /** 会话队列深度超过这个数就告警（默认 5）。 */
+  queueDepthWarn: number;
+  /** 有挂起审批超过这么多分钟没人批就提醒一次（默认 10）。 */
+  pendingApprovalWarnMinutes: number;
+  /** 文件监控：文件内容变了（哈希变了）就推一次，只报“变了”，不含文件内容。 */
+  watches: { id: string; label: string; file: string }[];
+}
+
+export const DEFAULT_NOTIFIER_POLICY: BotNotifierPolicy = {
+  enabled: false,
+  targetChatId: null,
+  heartbeatIntervalMs: 300000,
+  notifyCooldownMs: 3600000,
+  notifyTasks: "failures",
+  monthlySpendWarnRatio: 0.8,
+  queueDepthWarn: 5,
+  pendingApprovalWarnMinutes: 10,
+  watches: [],
+};
+
 /** 渠道归一化后的入站消息（各平台原始 payload 由适配器转成这一个形状）。 */
 export interface InboundMessage {
   channel: BotChannel;
@@ -46,8 +79,8 @@ export interface InboundMessage {
   messageId: string;
   /** 正文（无正文时为空串；纯附件消息走 attachments）。 */
   text: string;
-  /** 附件：只记类型与平台侧 file_id，Phase 1 不下载、不解析内容。 */
-  attachments: { kind: string; fileId: string; name?: string }[];
+  /** 附件：类型与平台侧 file_id + 平台给的元信息（大小/类型/图片尺寸）；内容 Phase 3 才下载。 */
+  attachments: { kind: string; fileId: string; name?: string; sizeBytes?: number; mimeType?: string; width?: number; height?: number }[];
   chatType: BotChatType;
   /** 平台侧时间戳（毫秒）。 */
   timestamp: number;
@@ -82,6 +115,8 @@ export interface ChannelAdapter {
   editText(chatId: string, messageId: string, text: string): Promise<void>;
   /** 回应一次按钮点击（消掉客户端的等待转圈；平台不支持时忽略）。 */
   answerCallback?(callbackId: string, text: string): Promise<void>;
+  /** 按平台侧 file_id 下载附件（返回字节；平台不支持或拿不到时抛错；Phase 3）。 */
+  downloadFile?(fileId: string): Promise<{ bytes: Buffer; fileName?: string; mimeType?: string }>;
 }
 
 /** Bot 动作（Phase 2 的 approvalBridge 与 router 共用这一个动作表）。 */
@@ -119,6 +154,12 @@ export interface BotPolicy {
   chatSystemPrompts: Record<string, string>;
   /** 每角色可配的三项（步数/超时/提示词）；白名单与审批权限不在里面。 */
   profiles: Partial<Record<BotRole, BotProfileOverride>>;
+  /** 场景 B 主动推送（Phase 3）：默认全关；开的条件见 notifier.ts（须配 owner + 目标会话）。 */
+  notifier: BotNotifierPolicy;
+  /** 单个附件下载上限（字节；默认 10MB，夹在 1KB 到 50MB 之间）。 */
+  attachmentMaxBytes: number;
+  /** 单个文本文档提取进上下文的字符上限（默认 20000，夹在 1000 到 100000 之间）。 */
+  attachmentTextChars: number;
   /** Telegram 渠道开关与用户名（用户名用于群聊 @ 判定）。 */
   telegram: { enabled: boolean; username: string | null };
 }
@@ -137,6 +178,9 @@ export const DEFAULT_BOT_POLICY: BotPolicy = {
   approvalChatId: null,
   chatSystemPrompts: {},
   profiles: {},
+  notifier: { ...DEFAULT_NOTIFIER_POLICY },
+  attachmentMaxBytes: 10 * 1024 * 1024,
+  attachmentTextChars: 20000,
   telegram: { enabled: false, username: null },
 };
 
@@ -181,6 +225,34 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
       if (over.maxTurns !== undefined || over.timeoutMs !== undefined || over.systemPrompt !== undefined) profiles[role] = over;
     }
   }
+  // Phase 3：notifier 配置解析；缺失/非法值一律回默认值，不抛错。
+  const notifier: BotNotifierPolicy = { ...DEFAULT_NOTIFIER_POLICY, watches: [] };
+  const rawNotifier = b.notifier;
+  if (rawNotifier && typeof rawNotifier === "object" && !Array.isArray(rawNotifier)) {
+    const n = rawNotifier as Record<string, unknown>;
+    notifier.enabled = n.enabled === true;
+    notifier.targetChatId = asId(n.target_chat_id);
+    notifier.heartbeatIntervalMs = Math.min(3600000, Math.max(60000, asPosInt(n.heartbeat_interval_ms, DEFAULT_NOTIFIER_POLICY.heartbeatIntervalMs)));
+    notifier.notifyCooldownMs = Math.min(86400000, Math.max(60000, asPosInt(n.notify_cooldown_ms, DEFAULT_NOTIFIER_POLICY.notifyCooldownMs)));
+    if (n.notify_tasks === "all" || n.notify_tasks === "none") notifier.notifyTasks = n.notify_tasks;
+    if (typeof n.monthly_spend_warn_ratio === "number" && Number.isFinite(n.monthly_spend_warn_ratio)) {
+      notifier.monthlySpendWarnRatio = Math.min(1, Math.max(0.1, n.monthly_spend_warn_ratio));
+    }
+    notifier.queueDepthWarn = asNonNegInt(n.queue_depth_warn, DEFAULT_NOTIFIER_POLICY.queueDepthWarn);
+    notifier.pendingApprovalWarnMinutes = asNonNegInt(n.pending_approval_warn_minutes, DEFAULT_NOTIFIER_POLICY.pendingApprovalWarnMinutes);
+    if (Array.isArray(n.watches)) {
+      for (const w of n.watches as unknown[]) {
+        if (!w || typeof w !== "object" || Array.isArray(w)) continue;
+        const wo = w as Record<string, unknown>;
+        const id = typeof wo.id === "string" && wo.id.trim() ? wo.id.trim().slice(0, 64) : "";
+        const file = typeof wo.file === "string" && wo.file.trim() ? wo.file.trim() : "";
+        if (!id || !file) continue;
+        const label = typeof wo.label === "string" && wo.label.trim() ? wo.label.trim().slice(0, 120) : id;
+        if (notifier.watches.some((x) => x.id === id)) continue;
+        notifier.watches.push({ id, label, file });
+      }
+    }
+  }
   return {
     mentionOnly: b.mention_only === false ? false : DEFAULT_BOT_POLICY.mentionOnly,
     maxTurns: asPosInt(b.max_turns, DEFAULT_BOT_POLICY.maxTurns),
@@ -198,6 +270,9 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
     approvalChatId: asId(b.approval_chat_id),
     chatSystemPrompts,
     profiles,
+    notifier,
+    attachmentMaxBytes: Math.min(50 * 1024 * 1024, Math.max(1024, asPosInt(b.attachment_max_bytes, DEFAULT_BOT_POLICY.attachmentMaxBytes))),
+    attachmentTextChars: Math.min(100000, Math.max(1000, asPosInt(b.attachment_text_chars, DEFAULT_BOT_POLICY.attachmentTextChars))),
     telegram: {
       enabled: tg.enabled === true,
       username: typeof tg.username === "string" && tg.username.trim() ? tg.username.trim().replace(/^@/, "") : null,

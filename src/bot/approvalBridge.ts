@@ -96,7 +96,7 @@ export interface ApprovalBridgeOptions {
  * 有对应运行目录 → 该运行的 events.jsonl；没有 → evidence/bot/ 下的
  * 证据文件；两路都失败 → "none"（调用方把结果写进审计，不静默）。
  */
-export function recordBotEvent(home: string, runId: string | null, type: string, fields: Record<string, unknown>): BotEventChannel {
+export function recordBotEvent(home: string, runId: string | null, type: string, fields: Record<string, unknown>, evidenceKey?: string): BotEventChannel {
   const nyraHome = resolveNyraHome(home);
   if (runId) {
     for (const sub of ["runs", "tasks"]) {
@@ -112,7 +112,7 @@ export function recordBotEvent(home: string, runId: string | null, type: string,
     const id = String(fields.approval_id ?? "unknown");
     new EvidenceStore(join(nyraHome, "evidence"), "bot").save(
       type,
-      `bot-approval://${id}`,
+      evidenceKey ?? `bot-approval://${id}`,
       `${type} ${id} ${JSON.stringify(fields)}`,
     );
     return "evidence";
@@ -210,6 +210,16 @@ export class ApprovalBridge {
     let n = 0;
     for (const i of this.items.values()) if (i.status === "pending") n++;
     return n;
+  }
+
+  /** 最老挂起审批已等多久（毫秒；没有挂起时为 null；Phase 3 的 Heartbeat 提醒用）。 */
+  oldestPendingAgeMs(now: number = Date.now()): number | null {
+    let oldest: number | null = null;
+    for (const i of this.items.values()) {
+      if (i.status !== "pending") continue;
+      if (oldest === null || i.createdAt < oldest) oldest = i.createdAt;
+    }
+    return oldest === null ? null : Math.max(0, now - oldest);
   }
 
   private promptText(item: PendingApproval): string {
