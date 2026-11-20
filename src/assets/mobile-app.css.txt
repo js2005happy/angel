@@ -160,3 +160,37 @@ svg.i.f{fill:currentColor;stroke:none}
 #splash.out{opacity:0;pointer-events:none}
 #splash.reduce svg{animation:sp-fade .5s ease-out both}
 @keyframes sp-fade{from{opacity:0}to{opacity:1}}
+/* ---- 液态玻璃（Liquid Glass）：只给浮层——底部标签栏、顶部导航栏（滚动后）、审批弹层、新建按钮、菜单与提示。
+   黑白单色不变：半透明填充 + backdrop-filter 模糊/饱和 + 顶边 1px 高光 + 柔和内发光 + 一道很淡的镜面渐变（纯 CSS）。
+   手机上模糊半径适中（18–24px），列表行本身不加玻璃；减少透明度或不支持 backdrop-filter 时退回实色。 */
+:root{--g-fill:rgba(255,255,255,.74);--g-strong:rgba(255,255,255,.86);--g-solid:#FFFFFF;--g-border:rgba(0,0,0,.07);--g-hi:rgba(255,255,255,.95);
+--g-inner:inset 0 1px 0 var(--g-hi),inset 0 0 0 1px rgba(255,255,255,.35),inset 0 -10px 22px rgba(255,255,255,.22);
+--g-spec:linear-gradient(180deg,rgba(255,255,255,.5),rgba(255,255,255,0) 42%),linear-gradient(115deg,rgba(255,255,255,0) 38%,rgba(255,255,255,.22) 50%,rgba(255,255,255,0) 62%);
+--g-fab:rgba(13,13,13,.80);--g-fab-hi:rgba(255,255,255,.22);--g-blur:20px}
+@media (prefers-color-scheme:dark){:root{--g-fill:rgba(24,24,26,.70);--g-strong:rgba(22,22,24,.82);--g-solid:#141415;--g-border:rgba(255,255,255,.09);--g-hi:rgba(255,255,255,.16);
+--g-inner:inset 0 1px 0 var(--g-hi),inset 0 0 0 1px rgba(255,255,255,.035),inset 0 -12px 26px rgba(255,255,255,.025);
+--g-spec:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,0) 42%),linear-gradient(115deg,rgba(255,255,255,0) 38%,rgba(255,255,255,.05) 50%,rgba(255,255,255,0) 62%);
+--g-fab:rgba(237,237,237,.86);--g-fab-hi:rgba(255,255,255,.7)}}
+.nav,.sheet,.menu,.toast,.scrolled .lt,.hd.scrolled,.composer .pill{-webkit-backdrop-filter:blur(var(--g-blur)) saturate(180%);backdrop-filter:blur(var(--g-blur)) saturate(180%)}
+.nav{background:var(--g-spec),var(--g-fill);border-top:1px solid var(--g-border);box-shadow:var(--g-inner)}
+.sheet{background:var(--g-spec),var(--g-strong);--g-blur:24px;border:1px solid var(--g-border);border-bottom:0;box-shadow:var(--g-inner),0 -12px 40px var(--shadow)}
+.menu{background:var(--g-spec),var(--g-strong);border-color:var(--g-border);box-shadow:var(--g-inner),0 10px 30px var(--shadow)}
+.toast{background:var(--g-fab);color:var(--btnfg);-webkit-backdrop-filter:blur(16px) saturate(160%);backdrop-filter:blur(16px) saturate(160%);box-shadow:inset 0 1px 0 var(--g-fab-hi),0 6px 20px var(--shadow)}
+.fab{background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,0) 50%),var(--g-fab);-webkit-backdrop-filter:blur(16px) saturate(160%);backdrop-filter:blur(16px) saturate(160%);box-shadow:inset 0 1px 0 var(--g-fab-hi),inset 0 0 0 1px rgba(255,255,255,.08),0 8px 24px var(--shadow)}
+/* 弹层里的次要按钮 / 代码框：用半透明灰，叠在玻璃上依然看得出是按钮。 */
+.sheet .bt:not(.p):not(.danger):not(.ghost){background:rgba(0,0,0,.065)}
+.sheet .code{background:rgba(255,255,255,.55)}
+@media (prefers-color-scheme:dark){.sheet .bt:not(.p):not(.danger):not(.ghost){background:rgba(255,255,255,.09)}.sheet .code{background:rgba(0,0,0,.25)}}
+/* 顶部大标题栏：常驻顶部，滚动后才变成玻璃（静止时与页面同色，和设计稿一致）。 */
+.tabview>.lt{position:sticky;top:0;z-index:5;background:var(--bg);transition:background .2s,box-shadow .2s;padding-top:calc(10px + var(--sat));margin-top:calc(-1 * var(--sat))}
+.scrolled .tabview>.lt{background:var(--g-spec),var(--g-fill);box-shadow:var(--g-inner),0 1px 0 var(--g-border)}
+.hd{transition:background .2s,box-shadow .2s}
+.hd.scrolled{background:var(--g-spec),var(--g-fill);box-shadow:var(--g-inner),0 1px 0 var(--g-border)}
+/* 对话输入框也浮在消息上：消息从下面滚过去 */
+.composer{background:none}
+.composer .pill{background:var(--g-spec),var(--g-fill);border-color:var(--g-border);box-shadow:var(--g-inner),0 6px 20px rgba(0,0,0,.08)}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+.nav,.scrolled .tabview>.lt,.hd.scrolled,.composer .pill{background:var(--g-solid)}.sheet,.menu{background:var(--bg)}.fab,.toast{background:var(--btn)}}
+@media (prefers-reduced-transparency:reduce){
+.nav,.sheet,.menu,.toast,.fab,.scrolled .tabview>.lt,.hd.scrolled,.composer .pill{-webkit-backdrop-filter:none;backdrop-filter:none}
+.nav,.scrolled .tabview>.lt,.hd.scrolled,.composer .pill{background:var(--g-solid)}.sheet,.menu{background:var(--bg)}.fab,.toast{background:var(--btn)}}

@@ -684,3 +684,16 @@ window.addEventListener('load', async () => {
   if (!token()) { show('pair-view'); return; }
   try { await boot(); } catch (e) { if (!$('pair-view').classList.contains('hidden')) return; $('fatal').textContent = t('m.loadFailed', { msg: e.message }); }
 });
+
+// 液态玻璃：页面滚动后顶部栏才变成玻璃（静止时与页面同色）。被动监听，只切一个 class，不逐帧改样式。
+(function(){
+  let on = false;
+  const sync = () => {
+    const s = (window.scrollY || document.documentElement.scrollTop) > 4;
+    if (s === on) return; on = s;
+    document.documentElement.classList.toggle('scrolled', s);
+    const hd = document.querySelector('#chat-view .hd'); if (hd) hd.classList.toggle('scrolled', s);
+  };
+  window.addEventListener('scroll', sync, { passive: true });
+  sync();
+})();
