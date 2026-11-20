@@ -20,7 +20,7 @@ export const SUBCOMMANDS: readonly string[] = [
   // 后台与协作
   "ui", "gw", "schedule", "events", "task", "review", "mail-inbox", "responsibility", "bot",
   // 扩展与集成
-  "plugin", "creator", "kb", "hooks", "permissions", "eigenflux", "gmail", "shopify", "slack", "connector", "mcp", "peer", "voice", "export",
+  "plugin", "creator", "kb", "hooks", "permissions", "eigenflux", "gmail", "shopify", "slack", "connector", "mcp", "peer", "voice", "export", "media",
   // 自检与运维
   "doctor", "status", "setup", "vault",
 ] as const;
