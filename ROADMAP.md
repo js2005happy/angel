@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 claim 操作 ID 运行时类型校验（仅静态审阅）
+
+- **仓库事实**：Node 实验性 claim 的 `RegExp.test(operationId)` 会对非字符串输入做 JavaScript 隐式字符串转换，尽管 TypeScript 参数声明为 `string`；跨 JS/JSON 调用边界可传入数字、数组或对象，导致不同输入别名到同一字符串操作 ID。已增加 `typeof operationId === "string"` 的失败关闭门禁；没有改动持久格式、派发链或现有合法字符串行为。
+- **外部事实**：2026-11-07 [Codex #60104](https://github.com/openai/codex/issues/60104) 报告长任务重复返工；2026-10-07 [Codex #49743](https://github.com/openai/codex/issues/49743) 报告重复投递。这些是外部个案，不证明 Angel 故障率。**工程推断**：执行标识应在进入持久化前避免隐式类型转换，减少歧义。
+- **排序（价值／难度／安全风险／依赖）**：本项 P0（中／低／低／无，已提交，未测试）；P0 真正目录句柄相对原子创建（高／高／高／原生 openat）；P0 Windows reparse 句柄防护（高／高／高／原生 API）；P0 Node 派发集成（高／高／高／可信 claim）；P1 MCP 动态目录失效检测（中高／中／中／协议）；P1 可信副作用回执（高／高／高／适配器）。没有将重复用户反馈误称为统计高频。
+- **验证边界**：仅静态核对，未运行测试、编译或 CI；Windows 仍失败关闭，claim 未接入真实工具派发，不提供 exactly-once。
+
 ## 2026-11-21 — P0 claim 目录同步后文件名复核（静态审阅）
 
 - **仓库事实**：`scripts/node_tool_claim.ts` 原先只在文件 fsync 后核对 claim 名称，目录 fsync 后没有再次核对同一名称；仍未接入真实 Node 工具派发。main 最近检索提交 [e240b5e](https://github.com/js2005happy/nyra/commit/e240b5e33df5d9dbfb613fdb83cdca798e91fb4c)（2026-11-20 17:27 UTC）为 Office 导出，不重复本项；开放 Issues/PR 为空，CI 未返回状态或运行记录。
