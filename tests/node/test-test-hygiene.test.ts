@@ -20,6 +20,9 @@ function files(): string[] {
 
 /** 切出 `test(` 之后第一个字符串字面量，看它内部是否还有未转义的 ASCII 引号。 */
 function quotedTitleHasInnerQuote(line: string): boolean {
+  // 注释行不算：文档里举反例时会出现 `test("……"x"……")` 这种字样
+  const t = line.trimStart();
+  if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return false;
   const m = /\b(?:test|it|describe)\(\s*"([\s\S]*)$/.exec(line);
   if (!m) return false;
   const rest = m[1];
