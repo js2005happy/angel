@@ -1,3 +1,11 @@
+## 2026-11-20 — P0 Node 派发与持久化静态锚点（本轮）
+
+- **仓库事实（2026-11-20）**：main 的 `src/agent.ts` 在工具结果写入消息数组后调用 `saveSession(this.sessionId, messages.slice(1), this.home)`；`src/gateway.ts` 的会话消息入口调用 `run.agent!.run(text)`，调度任务调用 `agent.run(task.prompt)`；`src/tools.ts` 包含 `executeTool` 与 `executeToolIdempotent`。静态审阅不证明所有路径均经过相同审批或持久化边界。
+- **已实现（高价值／低难度／低风险）**：审计脚本 v3 增加 gateway、memory 文件状态与上述派发/结果落盘源码行号锚点；只读、不执行目标程序、不增加依赖。未运行脚本或测试。
+- **外部用户反馈（2026-11-19）**：[Codex #62611](https://github.com/openai/codex/issues/62611) 请求等待和安全恢复；**事实**为单例反馈，**推断**为恢复前必须能追踪派发及结果落盘，不能据此认定 Nyra 存在相同故障或行业发生率。
+- **后续排序（价值／难度／风险／依赖）**：P0 完整动态派发边界与跨进程原子所有权（高／高／高／gateway、CLI、调度及副作用核对）；P1 可信副作用回执（高／高／高／适配器）；P1 权限拒绝结构化（高／中／中／审批链）；P2 安全等待续跑（高／高／高／所有权与人工对账）；P2 预算硬停止（高／中／中／可信用量）。
+- **限制**：字符串锚点可能漏掉别名、动态调用、其他入口及竞态；不能宣称已实现锁或安全恢复。
+
 ## 2026-11-20 — P0 静态审计证据可追溯性（本轮）
 
 - **仓库事实（2026-11-20）**：main 的 `package.json` 通过 `src/cli.ts` 构建 Bun CLI；`src/agent.ts` 导入 `executeTool`/`executeToolIdempotent`，`src/tools.ts` 明确 Python worker 已移除。开发分支仍是独立 Python Angel；开放 Issue/PR 搜索为空。main 最新查阅提交 [5539340](https://github.com/js2005happy/nyra/commit/553934084a7775cf30cb5caac7c16ed16e06dbbf)（2026-11-20 04:38 UTC）修改桌面端 API，未与本轮静态审计重复。
