@@ -1,5 +1,6 @@
 // src/banner.ts — 交互终端外观 v2（品牌化）：
-//   1. 欢迎屏：左边是用半块字符拼的 Nyra 标志（圆盘 + 光标，14 列 × 7 行，见 termMark.ts），
+//   1. 欢迎屏：左边是 Nyra 标志（圆盘 + 光标，18 列 × 9 行，见 termMark.ts：能显示内联图片的终端
+//      画标志图片本身，其余用半块字符拼），
 //      右边 "Nyra 版本" + 一句话介绍；下面一张圆角信息卡（模型 / 模式徽章 / 目录 / git 分支），
 //      再一行 Tips；窄于 MARK_MIN_COLS 列退回单行 "✻ Nyra"。
 //   2. 工作区信任：简短的框式确认。
@@ -117,8 +118,11 @@ export function gitBranch(cwd: string): string | null {
 
 /** 宽度低于此值时欢迎屏退回单行 "✻ Nyra"（标志 + 右侧文字至少要这么宽）。 */
 export const MARK_MIN_COLS = 40;
-/** 标志右侧文字所在的行（7 行标志里，标题与介绍对齐圆心上下）。 */
-const MARK_TITLE_ROW = 2;
+/** 标志右侧文字所在的行（标题与介绍夹住圆心所在的行）。 */
+const MARK_TITLE_ROW = Math.floor(TERM_MARK_ROWS / 2) - 1;
+/** 欢迎屏里标志左上角所在的行（renderHeader 返回的行号，从 0 起）与列（从 0 起）。 */
+export const MARK_TOP_LINE = 1;
+export const MARK_LEFT_COL = 1;
 
 /** 模式徽章的底色：readonly 绿 / auto 蓝紫 / full 红 / creator 珊瑚。 */
 export function modeColor(mode: string): string {
@@ -173,11 +177,19 @@ export interface HeaderInfo {
 /** 默认一句话介绍（中文，兼容旧调用方）；欢迎屏实际按当前界面语言取 t("banner.tagline")。 */
 export const DEFAULT_TAGLINE = "跑在你电脑上的开源 AI Agent";
 
+/** 欢迎屏这次会不会画标志（否则是单行 "✻ Nyra"）。 */
+export function headerShowsMark(opts: { width: number; unicode?: boolean; compact?: boolean }): boolean {
+  return (opts.unicode ?? true) && !opts.compact && Math.max(1, opts.width) >= MARK_MIN_COLS;
+}
+
 /**
  * 欢迎屏：宽屏（≥ MARK_MIN_COLS 列且能画框线）是半块字符标志 + "Nyra 版本" + 介绍 + 信息卡；
  * 窄屏、ASCII 回退或 compact（非 TTY）是单行 "✻ Nyra <版本>" + 信息卡。
  */
-export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: string; compact?: boolean; light?: boolean }): string[] {
+export function renderHeader(
+  info: HeaderInfo,
+  opts: RenderOpts & { home?: string; compact?: boolean; light?: boolean; /** 标志位置留空，由调用方随后画内联图片。 */ markImage?: boolean },
+): string[] {
   const level = levelOf(opts);
   const unicode = opts.unicode ?? true;
   const g = glyphsFor(unicode);
@@ -186,10 +198,12 @@ export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: strin
   const tagline = info.tagline ?? t("banner.tagline");
   const version = `v${info.version}`;
   out.push(""); // 与上方（信任确认或命令行）隔开一行
-  if (unicode && !opts.compact && cols >= MARK_MIN_COLS) {
+  if (headerShowsMark({ width: cols, unicode, compact: opts.compact })) {
     // 标志在左，"Nyra 版本" 与一句话介绍在右侧、对齐圆心；介绍放不下时截断。
-    const mark = renderTermMark({ level, light: opts.light });
-    const textCol = 1 + TERM_MARK_COLS + 3;
+    const mark = opts.markImage
+      ? Array.from({ length: TERM_MARK_ROWS }, () => " ".repeat(TERM_MARK_COLS))
+      : renderTermMark({ level, light: opts.light });
+    const textCol = MARK_LEFT_COL + TERM_MARK_COLS + 3;
     const room = Math.max(1, cols - textCol - 1);
     const title = truncateWidth(`Nyra ${version}`, room, g.ellipsis);
     // 浅色终端上 BRAND.text（近白）看不见：标题用终端默认前景色加粗。
@@ -202,7 +216,7 @@ export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: strin
       [MARK_TITLE_ROW + 1]: paintRaw(truncateWidth(tagline, room, g.ellipsis), level, { fg: BRAND.muted }),
     };
     for (let i = 0; i < TERM_MARK_ROWS; i++) {
-      const row = " " + mark[i];
+      const row = " ".repeat(MARK_LEFT_COL) + mark[i];
       out.push(side[i] ? row + "   " + side[i] : row.replace(/ +$/, ""));
     }
     out.push("");
