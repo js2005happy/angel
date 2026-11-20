@@ -12,9 +12,9 @@
 |---|---|---|
 | Gmail | 已接入 | 读信、按 thread 回复、代发草稿（缺口 6 已落地） |
 | Shopify | 已接入（只读） | 用户自己的 Hollow & Scale 店铺：查商品、订单、库存（缺口 44 第一批，只读起步） |
-| Slack | 试点 | 团队消息与审批卡的落点（下一批做深） |
+| Slack | 已接入 | 团队消息与审批卡的落点：读频道/消息、发消息（须显式批准）、发审批卡（缺口 44 第二批） |
 
-试点连接器在目录里看得见、用不了，不假装已接通。
+试点连接器在目录里看得见、用不了，不假装已接通。本批之后目录里暂无试点连接器。
 
 ## 权限声明格式
 
@@ -83,7 +83,9 @@ nyra connector revoke <连接器> [--yes]           撤销授权（立即失效�
 ```
 
 `nyra gmail status` 也会多一行授权状态；`nyra gmail auth` 成功后自动在
-状态机里记“已授权”，`nyra gmail revoke` 后自动记“已撤销”。
+状态机里记“已授权”，`nyra gmail revoke` 后自动记“已撤销”。`nyra slack
+status` 同款（多一行授权状态）；`nyra slack auth` 成功后自动在状态机里
+记“已授权”，`nyra connector revoke slack` 后自动记“已撤销”并删本地凭证。
 
 ## 接线点
 
@@ -136,11 +138,83 @@ API 之前就拒绝（`shopifyWriteRefusal`，CLI 上撞见 `set-price` /
 （撤销时会明确提示这一点）。401（token 被删/被轮换/权限被收回）时自动标
 “已过期”，下次调用直接报“请重新授权”。
 
+## Slack（读 + 发消息须批 + 审批卡，缺口 44 第二批）
+
+### 凭证：Bot token，不走 OAuth
+
+Slack 的 OAuth 授权码流程要一个公网回调地址，Nyra 跑在本机 localhost
+上没有，所以本批用 **app 的 Bot token**：
+
+1. Slack 后台建一个 app（或打开已有 app）→ OAuth & Permissions；
+2. 勾三个 scope：`channels:read`、`channels:history`、`chat:write`（多了不要）；
+3. Install to Workspace，复制 **Bot User OAuth Token**（`xoxb_…` 开头）；
+4. 运行 `nyra slack auth`，粘贴 workspace 名（可选）与 token（只存密码箱，不进配置文件）。
+
+授权时会先拿 `auth.test` 探一下：`invalid_auth` 说明 token 不对，不存；
+网络不通时先存下、下次调用再验。授权成功自动启用连接器，并在状态机里记
+“已授权”（之后同应用同用户不再重复问）。
+
+### 读工具
+
+| 命令 | 作用 |
+|---|---|
+| `nyra slack channels [--limit N] [--cursor X]` | 列出频道（默认 50 条一页，上限 250；翻页走 `response_metadata.next_cursor`） |
+| `nyra slack history --channel <id> [--limit N] [--cursor X]` | 读某频道的消息历史（默认 50 条一页，上限 250） |
+| `nyra slack status` | 查看状态（是否启用、是否已授权、workspace） |
+
+每次调用记一行审计（`connector-audit.jsonl`，`action: "call"`），只记操作名、
+记录数、耗时，不记 token、不记消息内容。
+
+### 发消息：本批唯一的写操作，须显式批准
+
+```
+nyra slack send --channel <id> --text <内容> [--yes]
+```
+
+没给 `--yes` 时会交互问一句“确认发送到频道 …？”，答 y 才发；不答、答 n
+或在非交互环境下没给 `--yes`，一律拒绝、不发。声明里“发消息”列在“永远须
+人批”，调用层（`postMessage`）本身不管批——批的动作在 CLI 这一层，审计里
+以 `reason: "explicit-approval"` 留痕。注意：独立审查层（缺口 10 的模型复核）
+本批没有接进 `nyra slack send`，批的动作就是人这一下确认（--yes 或交互
+确认），不是模型复核；接审查层是以后的一批。
+
+### 审批卡：把挂起审批发到频道
+
+```
+nyra slack card --channel <id> --approval <id>
+```
+
+从 Bot Phase 2 的挂起审批账本（`bot-approvals.json`）里读一条挂起审批，
+拼成 Block Kit 消息发到指定频道：一段说明（工具、说明、参数指纹、申请人、
+有效期）+ 两个按钮（批准 / 拒绝，value 只带审批 id 与结论，不带 token、
+不带参数原文）。账本没有、损坏、找不到这条、已处理、已过期都直接报错、
+不发卡。
+
+**按钮回调本批只记审计，不回写审批桥**：Slack 把按钮点击以交互请求发回
+来时，`handleApprovalCallback` 只解析出结论（批准/拒绝 + 审批 id）并记
+一行审计（`operation: "approval_callback"`），审批本身仍是挂起状态——
+点了按钮也不会自动放行。回写进 ApprovalBridge（点了按钮就真的批/拒）
+是下一批；这点写在这里，不假装接通。
+
+### 写操作管控
+
+删消息、改频道、管理成员一律拒绝（`refuseSlackWrite`，CLI 上撞见
+`delete-message` / `update-channel` / `invite` 等词也直接回一句明确拒
+绝，本批连写入口都不提供）。
+
+### 撤销的诚实说明
+
+`nyra connector revoke slack` 只删本地凭证：Bot token **没有 CLI 可调的
+远端吊销接口**，想彻底作废 token 必须去 Slack 后台撤销该 app 的 Bot token
+（撤销时会明确提示这一点）。`invalid_auth`（token 被撤销/被轮换）时自动标
+“已过期”，下次调用直接报“请重新授权”。
+
 ## 已知局限（诚实边界）
 
 - 真实 Gmail OAuth 授权未在真应用上跑通，只在假 vault / 假 OAuth 上验过。
 - 真实 Shopify 店铺未接通，只在假 API 上验过；自定义应用 token 的授权流程未在真店上跑通。
-- Slack 的深连接器是下一批；Shopify 只读已接，写操作是以后的一批。
+- 真实 Slack workspace 未接通，只在假 API 上验过；Bot token 的授权流程未在真 workspace 上跑通；审批卡按钮回调本批只记审计，不回写审批桥。
+- Gmail 深化是下一批；Shopify 写操作是以后的一批。
 - 过期只在 refresh 失败时标记：access token 正常过期不标（它会被自动刷新）。
 - 授权状态按本机当前会话的 account_id 隔离；网关多用户权限模型是缺口 41
   的下一批，本批不碰。
