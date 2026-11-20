@@ -196,6 +196,17 @@ export function ruleMatches(rule: PermissionRule, ctx: PermissionContext): boole
   const target = normalizeTarget(ctx);
   if (!target) return false;
 
+  // URL 类工具：裸主机名（web_fetch(example.com)）也当域名规则处理。
+  // 以前这种写法**静默不命中**——与 shell 规则那次同一个病：写了规则以为挡住了。
+  if (URL_TOOLS.has(normalizeToolName(ctx.tool)) && !/[/*?]/.test(rule.specifier)) {
+    const want = rule.specifier.trim().toLowerCase();
+    let host = target.toLowerCase();
+    try {
+      host = new URL(target).hostname.toLowerCase();
+    } catch { /* 不是 URL 就按原字符串比 */ }
+    if (host === want || host.endsWith("." + want)) return true;
+  }
+
   // WebFetch(domain:example.com)：域名后缀匹配。
   if (rule.specifier.startsWith("domain:")) {
     const want = rule.specifier.slice("domain:".length).trim().toLowerCase();
@@ -217,6 +228,9 @@ export function ruleMatches(rule: PermissionRule, ctx: PermissionContext): boole
 
 /** 把工具名归到"命令类"——只有命令类需要做复合命令拆分。 */
 const SHELL_TOOLS = new Set(["Bash", "shell", "sh", "zsh", "powershell"]);
+
+/** 目标是一个 URL 的工具：裸主机名按域名规则匹配。 */
+const URL_TOOLS = new Set(["web_fetch", "http_post", "browser_navigate"]);
 
 /**
  * 拆分复合命令：`a && b`、`a || b`、`a ; b`、`a | b`、换行。
