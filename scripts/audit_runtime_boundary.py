@@ -1,7 +1,7 @@
 """Read-only, dependency-free audit of Angel/Nyra runtime boundaries.
 
-This tool inspects source text only. It never executes the target project and
-cannot prove that all runtime dispatch paths are covered.
+This tool inspects source text only; matching tokens do not prove a dynamic
+call graph, lock coverage, or successful tool execution. No target code runs.
 """
 from __future__ import annotations
 
@@ -9,35 +9,66 @@ import argparse
 import json
 from pathlib import Path
 
+MAX_SOURCE_BYTES = 2 * 1024 * 1024
+PATHS = {
+    "python_entry": "angel/__main__.py",
+    "python_agent": "angel/agent.py",
+    "python_journal": "angel/tool_journal.py",
+    "node_manifest": "package.json",
+    "node_cli": "src/cli.ts",
+    "node_agent": "src/agent.ts",
+    "node_tools": "src/tools.ts",
+}
+PROBES = {
+    "python_journal_reference": ("angel/agent.py", "tool_journal"),
+    "node_execute_tool_reference": ("src/agent.ts", "executeTool"),
+    "node_idempotent_reference": ("src/agent.ts", "executeToolIdempotent"),
+    "node_execute_tool_definition": ("src/tools.ts", "function executeTool"),
+    "node_cli_agent_reference": ("src/cli.ts", "from \"./agent.ts\""),
+}
+
+
+def _source(root: Path, relative: str) -> tuple[str | None, str]:
+    """Read a bounded ordinary file, never following a symlink in its path."""
+    path = root
+    try:
+        for part in Path(relative).parts:
+            path = path / part
+            if path.is_symlink():
+                return None, "symlink"
+        if not path.is_file():
+            return None, "missing"
+        if path.stat().st_size > MAX_SOURCE_BYTES:
+            return None, "oversize"
+        # Static audit only; avoid reading arbitrarily large or special files.
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_SOURCE_BYTES + 1)
+        if len(raw) > MAX_SOURCE_BYTES:
+            return None, "oversize"
+        return raw.decode("utf-8"), "ok"
+    except (OSError, UnicodeError):
+        return None, "unreadable"
+
 
 def inspect_tree(root: Path) -> dict[str, object]:
-    """Report entrypoints and static dispatch references without importing code."""
-    paths = {
-        "python_entry": "angel/__main__.py",
-        "python_agent": "angel/agent.py",
-        "python_journal": "angel/tool_journal.py",
-        "node_manifest": "package.json",
-        "node_cli": "src/cli.ts",
-        "node_agent": "src/agent.ts",
-        "node_tools": "src/tools.ts",
+    """Report file status and line-numbered textual references."""
+    statuses = {key: _source(root, name)[1] for key, name in PATHS.items()}
+    references = {}
+    for key, (filename, token) in PROBES.items():
+        source, status = _source(root, filename)
+        references[key] = {
+            "status": status,
+            "lines": ([number for number, line in enumerate(source.splitlines(), 1)
+                       if token in line][:30] if source is not None else []),
+            "truncated": (sum(token in line for line in source.splitlines()) > 30
+                          if source is not None else False),
+        }
+    return {
+        "root": str(root),
+        "present": {key: status == "ok" for key, status in statuses.items()},
+        "file_status": statuses,
+        "text_references": references,
     }
-    present = {key: (root / name).is_file() for key, name in paths.items()}
-    evidence: dict[str, bool] = {}
-    for key, filename, token in (
-        ("python_journal_reference", "angel/agent.py", "tool_journal"),
-        ("node_execute_tool_reference", "src/agent.ts", "executeTool"),
-        ("node_idempotent_reference", "src/agent.ts", "executeToolIdempotent"),
-        ("node_execute_tool_definition", "src/tools.ts", "function executeTool"),
-    ):
-        path = root / filename
-        if not path.is_file() or path.is_symlink():
-            evidence[key] = False
-            continue
-        try:
-            evidence[key] = token in path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            evidence[key] = False
-    return {"root": str(root), "present": present, "text_references": evidence}
 
 
 def main() -> int:
@@ -47,18 +78,23 @@ def main() -> int:
     args = parser.parse_args()
     development = inspect_tree(args.development_tree)
     main = inspect_tree(args.main_tree)
-    dev_python = bool(development["present"]["python_agent"])
-    main_node = bool(main["present"]["node_agent"])
-    split = dev_python and main_node and not bool(development["present"]["node_agent"])
+    split = (development["file_status"]["python_agent"] == "ok"
+             and development["file_status"]["node_agent"] == "missing"
+             and main["file_status"]["node_agent"] == "ok")
+    # A failed inspection must not be mistaken for a missing runtime.
+    errors = any(status not in ("ok", "missing")
+                 for tree in (development, main)
+                 for status in tree["file_status"].values())
     print(json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "development": development,
         "main": main,
-        "runtime_split_detected": split,
+        "runtime_split_detected": split if not errors else None,
+        "audit_incomplete": errors,
         "node_protected_by_python_journal": "not_established",
         "static_only": True,
     }, ensure_ascii=False, indent=2))
-    return 0 if split else 2
+    return 2 if errors or not split else 0
 
 
 if __name__ == "__main__":
