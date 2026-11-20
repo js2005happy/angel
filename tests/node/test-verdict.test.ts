@@ -370,3 +370,56 @@ test("H5 未记录命令 → 提示补文档而不是修引用", () => {
   const v = buildVerdict({ redlines: redlines(), savings: savings(), docs: { ok: false, findings: [{ code: "undocumented-command", command: "recall", doc: "(none)" }], mentioned: [] } as never });
   expect(v.nextSteps.some((s) => s.includes("补文档"))).toBe(true);
 });
+
+// ---- 状态分桶的完整性（修的真缺陷：incomplete 曾落进 other）----
+// 缺陷：`summarizeTrend` 只认 verified / failed / verify_failed / completed_unverified，
+// 其余全落 `other`。于是 `incomplete`（运行没跑完就出错，`classifyRunStatus` 明确判
+// runtime_error）**既不算失败也不算未验证**，通过率被系统性高估。
+//
+// 这组测试锁的是：`RUN_STATUSES` 里的每个状态都必须有明确归属，**只有进行中的状态**
+// 才允许落 other。新增状态时如果没想清楚，这里会红。
+
+const oneRun = (status: string) => ({
+  run_id: "r", status, verify_result: null, spent_usd: null, delegate_spent_usd: null, error: null,
+});
+
+test("B1 incomplete 计为失败（classifyRunStatus 已判 runtime_error，不能再当 other）", () => {
+  const t = summarizeTrend({ runs: [oneRun("incomplete")] as never });
+  expect(t.failed).toBe(1);
+  expect(t.other).toBe(0);
+});
+
+test("B2 interrupted 计为未验证（该单列，但不能消失——否则通过率虚高）", () => {
+  const t = summarizeTrend({ runs: [oneRun("interrupted")] as never });
+  expect(t.unverified).toBe(1);
+  expect(t.other).toBe(0);
+});
+
+test("B3 只有进行中的状态才落 other（queued / running / awaiting_approval）", () => {
+  for (const st of ["queued", "running", "awaiting_approval"]) {
+    const t = summarizeTrend({ runs: [oneRun(st)] as never });
+    expect(t.other).toBe(1);
+    expect(t.verified + t.failed + t.unverified).toBe(0);
+  }
+});
+
+test("B4 状态分桶完备性：RUN_STATUSES 每个状态都归入某一桶，且总和不丢", () => {
+  const IN_FLIGHT = new Set(["queued", "running", "awaiting_approval"]);
+  for (const st of [...RUN_STATUSES]) {
+    const t = summarizeTrend({ runs: [oneRun(st)] as never });
+    expect(t.total).toBe(1);
+    expect(t.verified + t.failed + t.unverified + t.other).toBe(1);
+    if (!IN_FLIGHT.has(st)) expect(t.other).toBe(0);
+  }
+});
+
+test("B5 通过率不被未完成/中断的运行灌水", () => {
+  const runs = [
+    oneRun("verified"), oneRun("incomplete"), oneRun("interrupted"),
+  ] as never[];
+  const t = summarizeTrend({ runs });
+  expect(t.verified).toBe(1);
+  expect(t.failed).toBe(1);
+  expect(t.unverified).toBe(1);
+  expect(t.verifiedRate).toBeCloseTo(1 / 3, 10);
+});
