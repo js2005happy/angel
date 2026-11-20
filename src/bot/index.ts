@@ -55,6 +55,7 @@ export { BotNotifier } from "./notifier.ts";
 import { agentOptionsForProfile, isToolAllowed, profileForRole, resolveRole, type BotProfile, type BotRole } from "./router.ts";
 import { SessionQueue } from "./sessionQueue.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
+import { DiscordAdapter } from "./channels/discord.ts";
 import {
   botPolicyFromConfig,
   memorySessionIdFor,
@@ -66,13 +67,16 @@ import {
 
 export const BOT_AUDIT_FILE = "bot-audit.jsonl";
 export const BOT_TELEGRAM_PID_FILE = "bot-telegram.pid";
+export const BOT_DISCORD_PID_FILE = "bot-discord.pid";
 export const TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN";
+export const DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN";
 /**
  * 密码箱/keys.json 里的条目名就是环境变量名（与 keystore 的口径一致：
  * `telegram-bot-token` 这种小写连字符名过不了 validEnvName，进不了
  * keys.json；webhook-secret 这类例外只走密码箱，不走 keys.json）。
  */
 export const TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN";
+export const DISCORD_TOKEN_KEY = "DISCORD_BOT_TOKEN";
 
 export interface AgentRunResult {
   text: string;
@@ -767,13 +771,25 @@ export function resolveTelegramToken(home: string): { token: string | null; sour
   return { token: null, source: "missing" };
 }
 
-function pidPath(home: string): string {
-  return join(resolveNyraHome(home), BOT_TELEGRAM_PID_FILE);
+/** Discord Bot token 解析（与 Telegram 同款三来源：环境变量 → 密码箱 → 文件）。 */
+export function resolveDiscordToken(home: string): { token: string | null; source: "env" | "vault" | "file" | "missing" } {
+  const env = process.env[DISCORD_TOKEN_ENV];
+  if (env && env.trim()) return { token: env.trim(), source: "env" };
+  const vaultToken = getCredential(DISCORD_TOKEN_KEY, home);
+  if (vaultToken) return { token: vaultToken, source: "vault" };
+  const file = getFileKey(DISCORD_TOKEN_KEY, home);
+  if (file) return { token: file, source: "file" };
+  return { token: null, source: "missing" };
 }
 
-function readPid(home: string): number | null {
+function pidPath(home: string, channel: "telegram" | "discord"): string {
+  const file = channel === "telegram" ? BOT_TELEGRAM_PID_FILE : BOT_DISCORD_PID_FILE;
+  return join(resolveNyraHome(home), file);
+}
+
+function readPid(home: string, channel: "telegram" | "discord"): number | null {
   try {
-    const raw = readFileSync(pidPath(home), "utf-8").trim();
+    const raw = readFileSync(pidPath(home, channel), "utf-8").trim();
     const pid = Number(raw);
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch {
@@ -790,14 +806,14 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-function writePid(home: string): void {
+function writePid(home: string, channel: "telegram" | "discord"): void {
   const dir = resolveNyraHome(home);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(pidPath(home), `${process.pid}\n`, { encoding: "utf-8", mode: 0o600 });
+  writeFileSync(pidPath(home, channel), `${process.pid}\n`, { encoding: "utf-8", mode: 0o600 });
 }
 
-function removePid(home: string): void {
-  try { rmSync(pidPath(home), { force: true }); } catch { /* ignore */ }
+function removePid(home: string, channel: "telegram" | "discord"): void {
+  try { rmSync(pidPath(home, channel), { force: true }); } catch { /* ignore */ }
 }
 
 // -- CLI：nyra bot telegram <start|stop|status> ----
@@ -811,15 +827,23 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     return handleBusinessRedlines(argv.slice(1), resolvedHome);
   }
   const action = argv[1];
-  if (channel !== "telegram" || !action) {
-    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
+  if (channel !== "telegram" && channel !== "discord") {
+    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
     return 2;
   }
+  if (!action) {
+    process.stdout.write(`用法：nyra bot ${channel} <start|stop|status>\n`);
+    return 2;
+  }
+  const label = channel === "telegram" ? "Telegram" : "Discord";
+  const resolveToken = channel === "telegram" ? resolveTelegramToken : resolveDiscordToken;
+  const tokenEnv = channel === "telegram" ? TELEGRAM_TOKEN_ENV : DISCORD_TOKEN_ENV;
+
   if (action === "stop") {
-    const pid = readPid(resolvedHome);
+    const pid = readPid(resolvedHome, channel);
     if (pid === null || !pidAlive(pid)) {
-      if (pid !== null) removePid(resolvedHome);
-      process.stdout.write("Telegram Bot 未在运行。\n");
+      if (pid !== null) removePid(resolvedHome, channel);
+      process.stdout.write(`${label} Bot 未在运行。\n`);
       return 0;
     }
     try {
@@ -828,14 +852,14 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
       process.stderr.write(`停止失败：${err instanceof Error ? err.message : String(err)}\n`);
       return 1;
     }
-    removePid(resolvedHome);
-    process.stdout.write(`已停止 Telegram Bot（pid ${pid}）。\n`);
+    removePid(resolvedHome, channel);
+    process.stdout.write(`已停止 ${label} Bot（pid ${pid}）。\n`);
     return 0;
   }
   if (action === "status") {
-    const pid = readPid(resolvedHome);
+    const pid = readPid(resolvedHome, channel);
     const alive = pid !== null && pidAlive(pid);
-    const token = resolveTelegramToken(resolvedHome);
+    const token = resolveToken(resolvedHome);
     const config = loadConfig(resolvedHome);
     const quota = new QuotaStore(resolvedHome);
     const dedup = new DedupStore(resolvedHome);
@@ -843,8 +867,8 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     try {
       monthlySpent = new UsageLedger(resolvedHome).monthTotal(monthKeyString()).spentUsd;
     } catch { /* ignore */ }
-    process.stdout.write(`Telegram Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}\n`);
-    process.stdout.write(`Token：${token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : "未配置（环境变量 TELEGRAM_BOT_TOKEN，或 nyra vault add TELEGRAM_BOT_TOKEN）"}\n`);
+    process.stdout.write(`${label} Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}\n`);
+    process.stdout.write(`Token：${token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : `未配置（环境变量 ${tokenEnv}，或 nyra vault add ${tokenEnv}）`}\n`);
     process.stdout.write(`今日 token 花费：${quota.dailySpentUsd() > 0 ? `$${quota.dailySpentUsd().toFixed(4)}` : "无"}\n`);
     process.stdout.write(`本月已花：${monthlySpent !== null ? `$${monthlySpent.toFixed(4)}` : "未知（未计价）"}\n`);
     process.stdout.write(`去重记录：${dedup.size()} 条\n`);
@@ -852,33 +876,38 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     return 0;
   }
   if (action === "start") {
-    const pid = readPid(resolvedHome);
+    const pid = readPid(resolvedHome, channel);
     if (pid !== null && pidAlive(pid)) {
-      process.stderr.write(`Telegram Bot 已在运行（pid ${pid}），先 nyra bot telegram stop 再启动。\n`);
+      process.stderr.write(`${label} Bot 已在运行（pid ${pid}），先 nyra bot ${channel} stop 再启动。\n`);
       return 1;
     }
-    if (pid !== null) removePid(resolvedHome);
-    const token = resolveTelegramToken(resolvedHome);
+    if (pid !== null) removePid(resolvedHome, channel);
+    const token = resolveToken(resolvedHome);
     if (!token.token) {
-      process.stderr.write("未找到 Telegram Bot token：先在 @BotFather 建机器人，再用环境变量 TELEGRAM_BOT_TOKEN 或 nyra vault add TELEGRAM_BOT_TOKEN 存 token（详见 docs/bot.md）。\n");
+      const hint = channel === "telegram"
+        ? "先在 @BotFather 建机器人"
+        : "先在 Discord 开发者门户（discord.com/developers）建应用 + Bot，并开启 Message Content Intent";
+      process.stderr.write(`未找到 ${label} Bot token：${hint}，再用环境变量 ${tokenEnv} 或 nyra vault add ${tokenEnv} 存 token（详见 docs/bot.md）。\n`);
       return 1;
     }
     const config = loadConfig(resolvedHome);
-    const adapter = new TelegramAdapter({ token: token.token });
+    const adapter = channel === "telegram"
+      ? new TelegramAdapter({ token: token.token })
+      : new DiscordAdapter({ token: token.token });
     const runner = new BotRunner({ home: resolvedHome, workdir: process.cwd(), config, adapter });
-    writePid(resolvedHome);
-    process.stdout.write(`Telegram Bot 已启动（pid ${process.pid}，模型：${runner.modelName ?? "未配置"}）。Ctrl+C 停止，或 nyra bot telegram stop。\n`);
+    writePid(resolvedHome, channel);
+    process.stdout.write(`${label} Bot 已启动（pid ${process.pid}，模型：${runner.modelName ?? "未配置"}）。Ctrl+C 停止，或 nyra bot ${channel} stop。\n`);
     const shutdown = (): void => {
       runner.stopPolling();
-      removePid(resolvedHome);
+      removePid(resolvedHome, channel);
       process.exit(0);
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
     await runner.startPolling();
-    removePid(resolvedHome);
+    removePid(resolvedHome, channel);
     return 0;
   }
-  process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
+  process.stdout.write(`用法：nyra bot ${channel} <start|stop|status>\n`);
   return 2;
 }

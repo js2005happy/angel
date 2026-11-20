@@ -1,4 +1,4 @@
-# Bot 方向：Telegram 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
+# Bot 方向：Telegram + Discord 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
 
 用户 2026-11-20 给的双场景架构：场景 A（外部社群/客服/办公 IM Bot）
 与场景 B（个人/业务自动化监控与任务 Bot）复用同一套 Bot Core（会话
@@ -6,9 +6,12 @@
 了核心骨架 + Telegram 渠道；Phase 2 做了 router（角色与工具白名单）
 与 approvalBridge（聊天内审批）+ 用量硬顶；Phase 3 做了场景 B 的主
 动推送（notifier：Heartbeat 静默巡查 + Watch 文件变化 + 任务结果推
-送）与附件处理（文本文档提取、图片只记元信息）。
+送）与附件处理（文本文档提取、图片只记元信息）。2026-11-21 新增
+Discord 渠道（Gateway 收消息 + REST 发消息）。
 
 ## 快速开始
+
+### Telegram
 
 1. 在 Telegram 里找 @BotFather，发 `/newbot`，按提示起名字，拿到 token。
 2. 把 token 存好（二选一，绝不写进配置文件）：
@@ -17,6 +20,16 @@
      进 `~/.nyra/keys.json`，0600）。
 3. 启动轮询：`nyra bot telegram start`（前台跑；Ctrl+C 或
    `nyra bot telegram stop` 停止）。查看状态：`nyra bot telegram status`。
+
+### Discord
+
+1. 到 Discord 开发者门户（discord.com/developers）新建 Application → Bot，拿到 token。
+2. **开启 Message Content Intent**（Bot 页面 → Privileged Gateway Intents），否则
+   读不到消息正文（Discord 2022-08 起这是 privileged intent）。
+3. 用 OAuth2 → URL Generator 把 bot 邀请进你的服务器（scope `bot`，权限至少
+   `Send Messages` + `Read Message History` + `View Channels`）。
+4. 存 token（同 Telegram）：环境变量 `DISCORD_BOT_TOKEN` 或 `nyra vault add DISCORD_BOT_TOKEN`。
+5. 启动：`nyra bot discord start`；状态 `nyra bot discord status`。
 
 ## 消息处理主链路
 

@@ -162,3 +162,49 @@ test("真 CLI 子进程：nyra bot 用法错误退出 2", async () => {
     rmSync(workdir, { recursive: true, force: true });
   }
 });
+
+test("handleBot：discord 无 token 时 start 报错退出 1", async () => {
+  const home = tempHome("nyra-bot-cli9-");
+  try {
+    const prev = process.env.DISCORD_BOT_TOKEN;
+    delete process.env.DISCORD_BOT_TOKEN;
+    const logs: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const code = await handleBot(["discord", "start"], home);
+      expect(code).toBe(1);
+      expect(logs.join("")).toContain("token");
+    } finally {
+      process.stderr.write = origErr;
+      if (prev === undefined) delete process.env.DISCORD_BOT_TOKEN;
+      else process.env.DISCORD_BOT_TOKEN = prev;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("handleBot：discord status 未运行时正常退出 0", async () => {
+  const home = tempHome("nyra-bot-cli10-");
+  try {
+    const prev = process.env.DISCORD_BOT_TOKEN;
+    delete process.env.DISCORD_BOT_TOKEN;
+    const logs: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const code = await handleBot(["discord", "status"], home);
+      expect(code).toBe(0);
+      const out = logs.join("");
+      expect(out).toContain("未运行");
+      expect(out).toContain("未配置");
+    } finally {
+      process.stdout.write = origOut;
+      if (prev === undefined) delete process.env.DISCORD_BOT_TOKEN;
+      else process.env.DISCORD_BOT_TOKEN = prev;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
