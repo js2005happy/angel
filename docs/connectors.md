@@ -11,7 +11,7 @@
 | 连接器 | 状态 | 说明 |
 |---|---|---|
 | Gmail | 已接入 | 读信、按 thread 回复、代发草稿（缺口 6 已落地） |
-| Shopify | 试点 | 用户自己的 Hollow & Scale 店铺：订单、库存、客户、折扣码（下一批做深） |
+| Shopify | 已接入（只读） | 用户自己的 Hollow & Scale 店铺：查商品、订单、库存（缺口 44 第一批，只读起步） |
 | Slack | 试点 | 团队消息与审批卡的落点（下一批做深） |
 
 试点连接器在目录里看得见、用不了，不假装已接通。
@@ -91,10 +91,56 @@ nyra connector revoke <连接器> [--yes]           撤销授权（立即失效�
 工具、CLI、事件触发轮询）都走它，检查一处就全拦住了；假 transport 注入
 （测试用）不走状态检查。Gmail 功能本身一字不改：读仍只读、发仍走审批。
 
+## Shopify（只读起步，缺口 44 第一批）
+
+### 凭证：自定义应用 token，不走 OAuth
+
+Shopify 的 OAuth 授权码流程要一个公网回调地址，Nyra 跑在本机 localhost
+上没有，所以本批用**自定义应用的 Admin API access token**：
+
+1. Shopify 后台 → 设置 → 应用 → 开发自定义应用 → 建一个应用；
+2. 只勾三个读权限：`read_products`、`read_orders`、`read_inventory`（多了不要）；
+3. 安装应用，复制 **Admin API access token**（`shpat_…` 开头）；
+4. 运行 `nyra shopify auth`，粘贴店铺域名与 token（只存密码箱，不进配置文件）。
+
+授权时会先拿 `shop.json` 探一下：401 说明 token 不对或读权限没给，不存；
+网络不通时先存下、下次调用再验。授权成功自动启用连接器，并在状态机里记
+“已授权”（之后同应用同用户不再重复问）。
+
+### 只读工具
+
+| 命令 | 作用 |
+|---|---|
+| `nyra shopify products [--limit N] [--page-info X]` | 列出商品（默认 50 条一页，上限 250） |
+| `nyra shopify product <id>` | 查一个商品 |
+| `nyra shopify orders [--limit N] [--status any\|open\|closed\|cancelled\|archived] [--page-info X]` | 列出订单（默认全部状态） |
+| `nyra shopify order <id>` | 查一个订单 |
+| `nyra shopify inventory [--location-id N] [--inventory-item-id N] [--limit N] [--page-info X]` | 查库存水平（按地点 / 商品过滤） |
+| `nyra shopify status` | 查看状态（是否启用、是否已授权、店铺域名） |
+
+订单输出**不含客户邮箱与地址**（`customer` 对象整个不解析）；每次调用
+记一行审计（`connector-audit.jsonl`，`action: "call"`），只记操作名、
+记录数、耗时，不记 token、不记响应内容、不记客户信息。
+
+### 写操作一律拒绝
+
+本批不提供任何写入口：改价、改库存、下单、退款、发折扣码、删单一律在调
+API 之前就拒绝（`shopifyWriteRefusal`，CLI 上撞见 `set-price` /
+`update-inventory` / `refund` 等词也直接回一句明确拒绝）。写操作是以后
+的一批，到时也要先过审批与红线表（缺口 51）。
+
+### 撤销的诚实说明
+
+`nyra connector revoke shopify` 只删本地凭证：自定义应用的 token **没有
+远端吊销接口**，想彻底作废 token 必须去 Shopify 后台删除该自定义应用
+（撤销时会明确提示这一点）。401（token 被删/被轮换/权限被收回）时自动标
+“已过期”，下次调用直接报“请重新授权”。
+
 ## 已知局限（诚实边界）
 
-- 真实 OAuth 授权未在真应用上跑通，只在假 vault / 假 OAuth 上验过。
-- Shopify / Slack 的深连接器是下一批，不在本批：目录里只有试点声明。
+- 真实 Gmail OAuth 授权未在真应用上跑通，只在假 vault / 假 OAuth 上验过。
+- 真实 Shopify 店铺未接通，只在假 API 上验过；自定义应用 token 的授权流程未在真店上跑通。
+- Slack 的深连接器是下一批；Shopify 只读已接，写操作是以后的一批。
 - 过期只在 refresh 失败时标记：access token 正常过期不标（它会被自动刷新）。
 - 授权状态按本机当前会话的 account_id 隔离；网关多用户权限模型是缺口 41
   的下一批，本批不碰。
