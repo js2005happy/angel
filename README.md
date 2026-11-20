@@ -157,7 +157,7 @@ nyra setup       # 首次启动向导（中文，三步到第一个任务）
 | --- | --- | --- |
 | Node 二进制（推荐，命令行） | 到 [Releases](https://github.com/js2005happy/nyra/releases) 下最新版，下载 `nyra-windows-x64.exe`，放到固定文件夹（如 `C:\Tools\nyra\`）并把文件夹加进 PATH | 只用命令行 |
 | 一键脚本 | PowerShell 里跑 `irm https://raw.githubusercontent.com/js2005happy/nyra/main/scripts/install-node.ps1 \| iex`（装到 `~\nyra`、加 PATH、建桌面快捷方式） | 想一步到位 |
-| 桌面端（带窗口） | 在 Release 里下载 `Nyra_0.5.2_x64-setup.exe` 或 `Nyra_0.5.2_x64_en-US.msi` | 想要窗口界面 |
+| 桌面端（带窗口） | 在 Release 里下载 `Nyra_0.5.2_x64-setup.exe` 或 `Nyra_0.5.2_x64_en-US.msi`（0.5.3 起发版时自动挂进 Release，不用再手动传） | 想要窗口界面 |
 
 验证：`nyra --version` 应输出 `nyra 0.5.2 (node runtime)`。常见问题：exe 双击后窗口一闪而过是正常的（它是控制台程序，在 PowerShell 里跑）；SmartScreen 警告见上文。详见 [docs/windows-install.md](docs/windows-install.md)，桌面端见 [docs/desktop.md](docs/desktop.md)。
 
@@ -169,7 +169,7 @@ nyra setup       # 首次启动向导（中文，三步到第一个任务）
 | --- | --- | --- |
 | Node 二进制（推荐，命令行） | `bash scripts/install-node-macos.sh`（从 Releases 下载对应架构：arm64 用 `nyra-macos-arm64`，Intel 用 `nyra-macos-x64`；装到 `~/.local/share/nyra`，链接在 `~/.local/bin/nyra`） | 只用命令行 |
 | 手动下载 | 到 [Releases](https://github.com/js2005happy/nyra/releases) 下最新版，按架构下载 `nyra-macos-arm64` 或 `nyra-macos-x64`，`chmod +x` 后直接跑 | 不想跑脚本 |
-| 桌面端（带窗口，`.dmg`） | 只在 GitHub Actions 产物里：仓库 **Actions → Build desktop app** → 选 `v0.5.2` 那次运行 → 底部 Artifacts 下载 `Nyra-macos-universal`（需要登录 GitHub） | 想要窗口界面 |
+| 桌面端（带窗口，`.dmg`） | 在 Release 里下载 `Nyra_<版本>_universal.dmg`（0.5.3 起发版时自动挂进 Release；0.5.2 的 `.dmg` 仍只在 Actions 产物里：仓库 **Actions → Build desktop app** → 选 `v0.5.2` 那次运行 → 底部 Artifacts 下载 `Nyra-macos-universal`，需要登录 GitHub） | 想要窗口界面 |
 
 验证：`nyra --version` 应输出 `nyra 0.5.2 (node runtime)`。常见问题：Gatekeeper 首次运行会拦，右键点二进制选“打开”放行一次；`~/.local/bin` 不在 PATH 里时按脚本提示加到 `~/.zshrc`。`.pkg` 安装器没有。详见 [docs/macos-install.md](docs/macos-install.md)，桌面端见 [docs/desktop.md](docs/desktop.md)。
 
@@ -186,11 +186,15 @@ nyra setup       # 首次启动向导（中文，三步到第一个任务）
 
 验证：`nyra --version` 应输出 `nyra 0.5.2 (node runtime)`。常见问题：`nyra: command not found` 是 `~/.local/bin` 不在 PATH 里，加 `export PATH="$HOME/.local/bin:$PATH"` 到 `~/.bashrc`；没用户 systemd 总线的机器（容器、WSL 默认配置）用 `nyra schedule daemon` 在终端里跑。详见 [docs/linux-install.md](docs/linux-install.md)、[docs/linux-packaging.md](docs/linux-packaging.md)、[docs/linux-systemd.md](docs/linux-systemd.md)。
 
-### 手机 PWA（不用应用商店）
+### 手机 PWA（不用应用商店）与安卓 APK
 
 手机版是电脑上 `nyra ui` 顺带提供的手机页面（`/m`），装到主屏幕就能当 App 用：电脑上跑 `nyra ui --pair`，手机和电脑连同一个 Wi-Fi，扫终端里的二维码配对，再在浏览器里点“添加到主屏幕”（安卓 Chrome 右上角 ⋮，iPhone Safari 点分享）。没有 APK / IPA，手机直接连你电脑上的 Nyra，工具仍在电脑上执行。详见 [docs/mobile-pwa.md](docs/mobile-pwa.md)。
 
 > 如实说明：没有在真手机上验证过（只在电脑上用 Playwright 模拟 iPhone 14 与 Pixel 7 跑过）；真机上的“添加到主屏幕”菜单、系统启动屏、iOS 独立窗口的存储行为都还没亲手试过。
+
+**安卓 APK（0.5.3 起）**：想装真 App 而不是浏览器书签时，到 [Releases](https://github.com/js2005happy/nyra/releases) 下最新版下载 `nyra-android-debug.apk`，装到手机上，打开后填电脑的局域网地址与配对码连接（配对方法与上面 PWA 相同）。iPhone 仍用上面的 PWA（没有 IPA，要 Apple Developer 账号与证书，见 [docs/installers.md](docs/installers.md)）。
+
+> 如实说明：APK 是 debug 签名（不是正式签名），且只在 CI 里编出来、没在真机上装过；第一次装时如有出入以手机上实际出现的为准。
 
 ### 从源码构建
 
@@ -272,7 +276,7 @@ nyra ui --open
 
 ### 桌面 App（预览，macOS / Windows）
 
-`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Nyra 二进制时显示安装引导。Windows 安装包（`.msi` / NSIS `.exe`）在 Release v0.5.2 里直接下载；macOS `.dmg` 只在 Actions 的 “Build desktop app” 工作流产物里（需要登录 GitHub）。两个包都**未签名**。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
+`desktop/` 里是用 Tauri 2（Rust + 系统 WebView）做的原生外壳：打开后在后台启动本机的 `nyra ui`（只绑 127.0.0.1、随机端口与 token），窗口直接显示它，退出时一并关闭；找不到 Nyra 二进制时显示安装引导。Windows 安装包（`.msi` / NSIS `.exe`）与 macOS `.dmg` 在 Release 里直接下载（0.5.3 起发版时自动挂进 Release；0.5.2 的 `.dmg` 仍只在 Actions 产物里）；两个包都**未签名**。安装与打开未签名 App 的步骤见 [docs/desktop.md](docs/desktop.md)。
 
 ## 安全边界
 
