@@ -119,6 +119,12 @@ export type ApproveFn = (tool: string, summary: string, details?: Record<string,
 export interface AgentOptions {
   workdir?: string;
   mode?: string;
+  /**
+   * 缺口 8：无人值守巡查——为 true 时 Agent 锁定只读：写操作在工具层直接
+   * 拒绝（见 ToolContext.unattended），setMode 不得离开 readonly。
+   * 只由守护进程的巡查设置，队列任务与人工运行不设。
+   */
+  unattended?: boolean;
   maxTurns?: number;
   sessionId?: string | null;
   interactive?: boolean;
@@ -313,6 +319,8 @@ export class Agent {
   onFinal: ((text: string, messages: Record<string, unknown>[]) => Promise<Record<string, unknown>[] | null> | Record<string, unknown>[] | null) | null = null;
   workdir: string;
   mode: string;
+  /** 缺口 8：无人值守巡查（锁定只读）；false = 有人值守或队列任务。 */
+  unattended: boolean;
   maxTurns: number;
   interactive: boolean;
   sessionId: string;
@@ -357,6 +365,10 @@ export class Agent {
     this.onEvent = opts.onEvent ?? null;
     this.workdir = opts.workdir ?? ".";
     this.mode = opts.mode ?? "auto";
+    // 缺口 8：无人值守巡查锁定只读——即使调用方误传了 auto，模式也按只读
+    // 走（工具层的 unattended 拒绝是第二道防线，两道都得过才写得了）。
+    this.unattended = opts.unattended ?? false;
+    if (this.unattended) this.mode = "readonly";
     this.maxTurns = opts.maxTurns ?? 20;
     this.interactive = opts.interactive ?? true;
     this.sessionId = opts.sessionId ?? newSessionId();
@@ -386,6 +398,8 @@ export class Agent {
       workdir: this.workdir,
       mode: this.mode,
       interactive: this.interactive,
+      // 缺口 8：无人值守标志透传给工具层（checkApproval 的硬拒绝）。
+      unattended: this.unattended,
       home: this.home,
       memoryPath: this.memoryPath,
       sessionId: this.sessionId,
@@ -508,6 +522,9 @@ export class Agent {
 
   /** 切换模式（网关 /api/mode、终端 /mode 与 REPL /creator 共用）：同步模式、工具上下文与创造模式技能。 */
   setMode(mode: string): void {
+    // 缺口 8：无人值守巡查锁定只读——任何切换都不得离开 readonly（纵深防御；
+    // 巡查运行里本来就没有切换入口，这道是防调用方误操作）。
+    if (this.unattended && mode !== "readonly") return;
     this.mode = mode;
     this.ctx.mode = mode;
     this.syncCreatorSkill();
@@ -1283,6 +1300,9 @@ export class Agent {
     const child = new Agent(provider, {
       workdir: childWorkdir,
       mode: this.mode,
+      // 缺口 8：无人值守向下继承——巡查派出的子 agent 同样只读（纵深防御：
+      // 即使子级模式被改，unattended 拒绝仍在；且拦截事件记在同一口径下）。
+      unattended: this.unattended,
       maxTurns,
       sessionId: null,
       interactive: this.interactive,

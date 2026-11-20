@@ -118,6 +118,12 @@ export interface ToolContext {
   workdir: string;
   mode: string;
   interactive: boolean;
+  /**
+   * 缺口 8：无人值守巡查——为 true 时，写操作在 checkApproval 里直接拒绝
+   *（连权限规则 allow 都打不开），与 readonly 同级硬约束；读工具不受影响。
+   * 只由守护进程的巡查设置，队列任务与人工运行不设。
+   */
+  unattended?: boolean;
   memoryPath: string;
   skillsDir: string;
   // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用的技能集合。
@@ -563,6 +569,13 @@ export async function checkApproval(
   opts?: { command?: string; cwd?: string; fileTarget?: string; timeout?: number },
 ): Promise<void> {
   if (!MUTATING_TOOLS.has(toolName)) return;
+  // 缺口 8：无人值守巡查为只读——在权限规则之前就拒绝，规则 allow 打不开它
+  //（与 readonly 同级硬约束）。被拦的写操作记 `patrol_write_blocked` 事件
+  //（RunRecorder 白名单已登记），只记拦截、不记放行。
+  if (ctx.unattended === true) {
+    try { ctx.onEvent?.("patrol_write_blocked", { tool: toolName, reason: "unattended-readonly" }); } catch { /* ignore */ }
+    throw new ToolError(`无人值守巡查为只读：不允许执行 ${toolName}（写操作须有人在场审批）`);
+  }
   if (ctx.mode === "readonly") {
     throw new ToolError(`只读模式下不允许执行 ${toolName}，请用 --mode auto 或 --mode full`);
   }

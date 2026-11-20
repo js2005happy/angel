@@ -69,6 +69,7 @@ import {
   listEventTriggers, matchEventTrigger, buildTriggerPrompt, pollGmailTriggers, EventTriggerError,
 } from "./eventTriggers.ts";
 import { MailInboxError } from "./mailInbox.ts";
+import { ResponsibilityError } from "./responsibilities.ts";
 import { knowledgeMain } from "./knowledge.ts";
 import { PermissionLedger, PermissionConflict } from "./poppy.ts";
 import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
@@ -134,6 +135,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra review <list|show|approve|reject|apply|verify|enqueue>   审阅队列：并行线程与定时任务结果逐项批（详见 docs/review-queue.md）
   nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
   nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
+  nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -190,6 +192,7 @@ Usage:
   nyra review <list|show|approve|reject|apply|verify|enqueue>   review queue: approve parallel threads and scheduled-task results one by one (see docs/review-queue.md)
   nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
   nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
+  nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
   nyra kb <create|list|add|search|ask|remove>  local knowledge base
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -955,6 +958,16 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           });
         }
       } catch { /* 轮询器建不起来就不轮询，不破坏定时任务 */ }
+      // 缺口 8：常驻责任巡查（只读、无人值守）。每轮跑一次到期的责任；巡查
+      // 经任务队列落盘（run 记录 + 证据链），只读硬约束见 responsibilities.ts；
+      // 汇报条件只控制收件箱通知，证据链里每轮都留报告事件。
+      pollers.push(async () => {
+        const { loadResponsibilities, saveResponsibilities, responsibilitiesPath, runDueResponsibilities } = await import("./responsibilities.ts");
+        const data = loadResponsibilities(responsibilitiesPath(home));
+        const results = await runDueResponsibilities(data, { home, workdir });
+        saveResponsibilities(data, responsibilitiesPath(home));
+        for (const r of results) process.stdout.write(`[巡查] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
+      });
       const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds, pollers });
       void done;
       return 0;
@@ -1171,6 +1184,81 @@ async function handleMailInbox(argv: string[], workdir: string): Promise<number>
     return 2;
   } catch (err: unknown) {
     if (err instanceof MailInboxError) process.stderr.write(`错误：${err.message}\n`);
+    else process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+// ---- 子命令：responsibility（缺口 8：常驻责任制 + 无人值守强制只读） ----
+async function handleResponsibility(argv: string[], workdir: string): Promise<number> {
+  const action = argv[0];
+  const home = resolveHome();
+  if (!action) {
+    process.stdout.write("用法：nyra responsibility <list|add|remove|enable|disable|check> [选项]\n");
+    return 2;
+  }
+  const get = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  try {
+    const { loadResponsibilities, saveResponsibilities, addResponsibility, removeResponsibility, setResponsibilityEnabled, responsibilitiesPath, runPatrol } = await import("./responsibilities.ts");
+    const data = loadResponsibilities(responsibilitiesPath(home));
+    if (action === "list") {
+      for (const r of data.responsibilities) {
+        process.stdout.write(`${r.name}\t${r.enabled === false ? "禁用" : "启用"}\t每 ${r.every_seconds} 秒\t${r.report === "always" ? "每次汇报" : "有发现汇报"}\t${r.last_status ?? ""}\t${r.goal.slice(0, 60)}\n`);
+      }
+      return 0;
+    }
+    if (action === "add") {
+      const name = get("--name");
+      const goal = get("--goal");
+      const every = get("--every") ? parseInt(get("--every")!, 10) : NaN;
+      const report = get("--report") ?? "on-finding";
+      if (!name || !goal || !Number.isInteger(every)) {
+        process.stderr.write("错误：responsibility add 需要 --name、--goal 与 --every <秒数>（--report on-finding|always，默认 on-finding）\n");
+        return 2;
+      }
+      const maxTurns = get("--max-turns") ? parseInt(get("--max-turns")!, 10) : 20;
+      const added = addResponsibility(data, {
+        name, goal, every_seconds: every, report,
+        enabled: !argv.includes("--disable"),
+        workdir: get("--workdir") ?? workdir, max_turns: maxTurns,
+      });
+      saveResponsibilities(data, responsibilitiesPath(home));
+      process.stdout.write(`已添加常驻责任：${added.name}（每 ${added.every_seconds} 秒巡查一次，只读，${added.report === "always" ? "每次汇报" : "有发现才汇报"}）\n`);
+      return 0;
+    }
+    if (action === "remove") {
+      const name = get("--name") ?? argv[1];
+      if (!name) { process.stderr.write("错误：responsibility remove 需要 --name\n"); return 2; }
+      if (!removeResponsibility(data, name)) { process.stderr.write(`错误：没有名为 ${name} 的责任\n`); return 2; }
+      saveResponsibilities(data, responsibilitiesPath(home));
+      process.stdout.write(`已删除常驻责任：${name}\n`);
+      return 0;
+    }
+    if (action === "enable" || action === "disable") {
+      const name = get("--name") ?? argv[1];
+      if (!name) { process.stderr.write(`错误：responsibility ${action} 需要 --name\n`); return 2; }
+      if (!setResponsibilityEnabled(data, name, action === "enable")) { process.stderr.write(`错误：没有名为 ${name} 的责任\n`); return 2; }
+      saveResponsibilities(data, responsibilitiesPath(home));
+      process.stdout.write(`已${action === "enable" ? "启用" : "禁用"}常驻责任：${name}\n`);
+      return 0;
+    }
+    if (action === "check") {
+      const name = get("--name") ?? argv[1];
+      if (!name) { process.stderr.write("错误：responsibility check 需要 --name\n"); return 2; }
+      const resp = data.responsibilities.find((r) => r.name === name);
+      if (!resp) { process.stderr.write(`错误：没有名为 ${name} 的责任\n`); return 2; }
+      const result = await runPatrol(resp, { home, workdir });
+      saveResponsibilities(data, responsibilitiesPath(home));
+      process.stdout.write(`巡查「${resp.name}」：${result.hasFindings ? "有发现" : "无发现"} - ${result.summary.slice(0, 200)}${result.reported ? "" : "（未汇报：无发现）"}\n`);
+      return 0;
+    }
+    process.stderr.write(`错误：未知子命令 responsibility ${action}\n`);
+    return 2;
+  } catch (err: unknown) {
+    if (err instanceof ResponsibilityError) process.stderr.write(`错误：${err.message}\n`);
     else process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
@@ -3226,6 +3314,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "events") return handleEvents(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "mail-inbox") return handleMailInbox(args.subArgs ?? [], resolve(args.workdir));
+  if (args.subcommand === "responsibility") return handleResponsibility(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);

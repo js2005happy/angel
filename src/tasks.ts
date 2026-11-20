@@ -83,10 +83,17 @@ export function addTask(
     workdir?: string; mode?: string; verifyCmd?: string | null; maxTurns?: number;
     store?: RunStore; config?: Record<string, unknown> | null; trustAgentsVerify?: boolean;
     home?: string;
+    /**
+     * 缺口 8：无人值守巡查——为 true 时模式强制 readonly（调用方传 auto 也
+     * 按 readonly 落盘），并在运行记录里记 unattended: true。队列任务与
+     * 人工运行不设：它们走“写操作挂起等审批”，不是无人值守。
+     */
+    unattended?: boolean;
   },
 ): RunState {
   const workdir = opts?.workdir ?? process.cwd();
-  const mode = opts?.mode ?? "auto";
+  const unattended = opts?.unattended === true;
+  const mode = unattended ? "readonly" : (opts?.mode ?? "auto");
   if (!task || typeof task !== "string" || task.trim() === "") throw new TaskError("任务内容不能为空");
   if (task.length > MAX_TASK_CHARS) throw new TaskError("任务过长（超过 8000 字符）");
   if (!["readonly", "auto"].includes(mode)) throw new TaskError("队列任务只允许 readonly 或 auto");
@@ -105,7 +112,7 @@ export function addTask(
     skipReason = reason;
   }
   const store = opts?.store ?? taskStore(opts?.home);
-  const state = store.create(task, newSessionIdForTask(), workdir, mode, maxTurns, "queued", verifyCmd);
+  const state = store.create(task, newSessionIdForTask(), workdir, mode, maxTurns, "queued", verifyCmd, { unattended });
   if (skipReason) store.update(state.run_id, { verify_result: { skip_reason: skipReason } });
   return state;
 }
@@ -223,7 +230,7 @@ export function buildProvider(config?: Record<string, unknown> | null, home?: st
 
 export async function runOne(
   state: RunState,
-  opts: { store: RunStore; provider: Provider; config?: Record<string, unknown> | null; resume?: boolean; interactive?: boolean; approveFn?: ((tool: string, summary: string, details?: Record<string, unknown>) => Promise<boolean | "always"> | boolean | "always") | null; home?: string },
+  opts: { store: RunStore; provider: Provider; config?: Record<string, unknown> | null; resume?: boolean; interactive?: boolean; approveFn?: ((tool: string, summary: string, details?: Record<string, unknown>) => Promise<boolean | "always"> | boolean | "always") | null; home?: string; quietInbox?: boolean },
 ): Promise<[RunState, string]> {
   const [timeout, retries] = resolveVerifySettings(null, null, opts.config ?? null);
   const messages = loadSession(state.session_id, opts.home) ?? [];
@@ -231,6 +238,9 @@ export async function runOne(
   const { RunRecorder } = await import("./runs.ts");
   const agent = new Agent(opts.provider, {
     workdir: state.workdir, mode: state.mode, maxTurns: state.max_turns,
+    // 缺口 8：运行记录里记了 unattended 的任务，Agent 同样以无人值守跑
+    //（只读锁定 + 写操作工具层直接拒绝）；队列任务与人工运行不设。
+    unattended: state.unattended === true,
     sessionId: state.session_id, messages,
     interactive: defer !== null ? true : (opts.interactive ?? false),
     approveFn: defer ?? undefined, skillsDirs: [], home: opts.home,
@@ -241,7 +251,9 @@ export async function runOne(
   try {
     const output = await recorder.run(state.task);
     const final = opts.store.load(recorder.runId);
-    appendInbox(final.run_id, final.status, output, opts.home);
+    // 缺口 8：巡查自己管汇报（按汇报条件写收件箱），runOne 的默认收件箱
+    // 入口会打扰人（没发现也记一条），quietInbox 时跳过。
+    if (!opts.quietInbox) appendInbox(final.run_id, final.status, output, opts.home);
     // 缺口 22：邮件任务跑完回信（只回白名单发件人、只回原线程、一次一封；
     // 回信失败不破坏任务结果，只记 stderr）。
     try {
@@ -256,7 +268,7 @@ export async function runOne(
       const final = opts.store.load(recorder.runId);
       const pending = (final.pending_approval ?? {}) as Record<string, unknown>;
       const note = `等待审批：${pending.tool ?? ""}`;
-      appendInbox(final.run_id, "awaiting_approval", note, opts.home);
+      if (!opts.quietInbox) appendInbox(final.run_id, "awaiting_approval", note, opts.home);
       return [final, note];
     }
     throw err;

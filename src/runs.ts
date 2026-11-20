@@ -60,6 +60,11 @@ event_triggered: ["trigger_id", "trigger_name", "source", "event_id", "event_typ
 // 缺口 22：邮件入口进证据链——哪封邮件、哪个线程、谁发的、进了哪个任务、
 // 什么模式。回信只记在账本里（mail-inbox-runs.json），事件是审计副本。
 mail_task_enqueued: ["message_id", "thread_id", "from", "subject", "run_id", "mode"],
+// 缺口 8：常驻责任巡查进证据链——巡查报告（哪个责任、哪次运行、有没有发现、
+// 有没有汇报）与巡查中被拦下的写操作（哪个工具、为什么拦）。汇报条件只控制
+// 收件箱通知，不控制证据：没发现的巡查同样留一条报告事件。
+patrol_report: ["responsibility_id", "responsibility_name", "run_id", "findings", "reported"],
+patrol_write_blocked: ["tool", "reason"],
 final: [],
 max_turns: [],
 error: ["error_type"],
@@ -309,6 +314,8 @@ session_id: string;
 task: string;
 workdir: string;
 mode: string;
+/** 缺口 8：无人值守巡查（daemon 巡查）；为 true 时写操作在工具层直接拒绝。 */
+unattended?: boolean;
 status: string;
 turn: number;
 max_turns: number;
@@ -377,7 +384,7 @@ if (typeof state.status!== "string" ||!RUN_STATUSES.has(state.status)) {
 throw new Error("运行状态无效");
 }
 const required = new Set(["session_id", "task", "workdir", "mode", "turn", "max_turns", "created_at", "updated_at", "verify_cmd", "verify_result", "changed_files", "error", "pid", "host"]);
-const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes", "usage_summary"]);
+const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes", "usage_summary", "unattended"]);
 const keys = Object.keys(state);
 if (keys.some((k) =>!allowed.has(k)) || ![...required].every((k) => keys.includes(k)) ||!Array.isArray(state.changed_files)) {
 throw new Error("运行记录字段无效");
@@ -398,7 +405,8 @@ if (!strKeys.every((k) => typeof state[k] === "string") ||
 !["prompt_tokens", "completion_tokens", "total_tokens", "spent_usd", "delegate_spent_usd"].every((k) =>
   (state.usage_summary as Record<string, unknown>)[k] === null || typeof (state.usage_summary as Record<string, unknown>)[k] === "number") ||
 typeof (state.usage_summary as Record<string, unknown>).cost_status !== "string" && (state.usage_summary as Record<string, unknown>).cost_status !== null)) ||
-(state.pending_approval!== undefined && state.pending_approval!== null && (typeof state.pending_approval!== "object" || Array.isArray(state.pending_approval)))) {
+(state.pending_approval!== undefined && state.pending_approval!== null && (typeof state.pending_approval!== "object" || Array.isArray(state.pending_approval))) ||
+(state.unattended!== undefined && typeof state.unattended!== "boolean")) {
 throw new Error("运行记录字段类型无效");
 }
 return state as unknown as RunState;
@@ -426,7 +434,7 @@ try { rmSync(tmp, { force: true});} catch { /* ignore */}
 }
 }
 
-create(task: string, sessionId: string, workdir: string, mode: string, maxTurns: number, status = "running", verifyCmd?: string | null): RunState {
+create(task: string, sessionId: string, workdir: string, mode: string, maxTurns: number, status = "running", verifyCmd?: string | null, extra?: { unattended?: boolean }): RunState {
 if (!RUN_STATUSES.has(status)) throw new Error("运行状态无效");
 if (existsSync(this.baseDir) && lstatSync(this.baseDir).isSymbolicLink()) throw new Error("运行目录不安全");
 mkdirSync(this.baseDir, { recursive: true, mode: 0o700});
@@ -450,6 +458,7 @@ privateChmod(directory!, 0o700);
 const state: RunState = {
 schema_version: 1, run_id: runId!, session_id: sessionId,
 task: redact(task)?? "", workdir: String(workdir), mode, status,
+unattended: extra?.unattended ?? false,
 turn: 0, max_turns: maxTurns, created_at: nowIso(), updated_at: nowIso(),
 verify_cmd: verifyCmd?? null, verify_result: null, changed_files: [], file_hashes: {}, usage_summary: null, error: null,
 pid: process.pid, host: hostname(),
@@ -710,7 +719,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "patrol_write_blocked"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

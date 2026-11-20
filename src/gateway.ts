@@ -31,6 +31,7 @@ import {
   EventTriggerError, WebhookError, WEBHOOK_SOURCES, type WebhookSource,
 } from "./eventTriggers.ts";
 import { listMailInboxPublic } from "./mailInbox.ts";
+import { listResponsibilitiesPublic } from "./responsibilities.ts";
   // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
@@ -1493,6 +1494,12 @@ export class Gateway {
     if (method === "GET" && path === "/api/mail-inbox") {
       try { this.sendJson(res, 200, listMailInboxPublic(this.home)); }
       catch (err) { this.sendError(res, 400, `邮件入口读取失败：${err instanceof Error ? err.message : String(err)}`); }
+      return;
+    }
+    // 缺口 8：常驻责任清单（供桌面端/手机 PWA 消费；只给元数据，不含责任目标）。
+    if (method === "GET" && path === "/api/responsibilities") {
+      try { this.sendJson(res, 200, { responsibilities: listResponsibilitiesPublic(this.home) }); }
+      catch (err) { this.sendError(res, 400, `常驻责任读取失败：${err instanceof Error ? err.message : String(err)}`); }
       return;
     }
     if (method === "GET" && path === "/api/memory/scopes") {
