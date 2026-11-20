@@ -1,3 +1,8 @@
+## 2026-11-21 — Linux claim 同一目录 fd 同步（仅静态审阅）
+
+- 读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python Agent/Tools；核对 main 最新提交、开放 Issues/PR。原代码创建 claim 后关闭 directoryFd，随后按路径重新打开目录 fsync；现改为保留原目录 fd 直到目录同步和最终名称核对结束，失败关闭。
+- **仅静态检查**：未运行 TypeScript、编译、测试、脚本、CI 或跨平台实机验证；GitHub status 为空不代表通过。仍有 procfs 挂载信任、文件系统持久化、名称检查竞态；没有真实工具派发集成或 exactly-once 保证。
+
 ## 2026-11-21 — Node claim Linux fd-relative create 静态核查
 
 - **检查范围**：开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python Agent/Tools、Node claim、main Node Agent/Tools、近期提交、开放 Issues/PR、提交状态。
