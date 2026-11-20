@@ -328,7 +328,7 @@ function recordPeerEvent(store: RunStore, runId: string, type: string, fields: R
 
 function finishPeerRun(store: RunStore, runId: string, ok: boolean): void {
   try {
-    store.setStatus(runId, ok? "completed": "failed");
+    store.setStatus(runId, ok ? "completed_unverified" : "failed");
   } catch { /* ignore */}
 }
 
