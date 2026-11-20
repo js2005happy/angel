@@ -1,3 +1,9 @@
+## 2026-11-20 — 跨运行时静态审计脚本（未执行）
+
+- 静态核对开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python ToolJournal，主分支 README 与 `src/agent.ts`、`src/tools.ts`；查询开放 Issues/PR、近期提交和开发分支 CI 状态。
+- 新增 `scripts/audit_runtime_boundary.py`：只读两个显式指定的工作树，不 import/execute 目标项目；以 JSON 记录文件存在性与字符串引用，无法验证动态调用、锁生命周期或结果落盘。该脚本本身也**未运行**，输出未经过实机验证。
+- 当前开发分支提交的状态检查和工作流查询为空，不等于通过。未运行测试、解析器、CI、安装、合并或发布。P0 Node 跨进程所有权仍未完成。
+
 ## 2026-11-20 — P0 Node 派发入口定位（仅静态）
 
 - 读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、`angel/agent.py`、`angel/tool_journal.py`、回归测试源码；读取 main README、`package.json`、`src/agent.ts`、`src/tools.ts`；查询最新提交、开放 Issue/PR 和提交状态。
