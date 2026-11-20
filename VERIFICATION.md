@@ -1,3 +1,9 @@
+## 2026-11-20 — 静态审计必需文件完整性 v5（未执行）
+
+- 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Python Agent/ToolJournal、审计脚本；查询 main 近期提交及开放 Issues/PR。
+- 源码静态审阅：v5 增加 `missing_required_files`，开发分支 Python 入口/Agent/Journal 与主分支 Node manifest/CLI/Agent/Tools/Gateway/Memory 必须可读；`audit_incomplete` 与退出码 2 使用相同判定，避免状态自相矛盾。
+- **未执行脚本、解释器、测试、类型检查或 CI**；无跨平台实机验证。源码锚点仍不能证明动态派发、跨进程锁、外部副作用或安全续跑。
+
 ## 2026-11-20 — 静态审计锚点失效保护 v4（未执行）
 
 - 读取开发分支五份文档、Python Agent/ToolJournal 与审计脚本，读取主分支五份文档及 `src/agent.ts`、`src/tools.ts`、`src/gateway.ts`、`src/memory.ts`，查询近期提交、开放 Issues/PR 和上一提交 CI 状态。
