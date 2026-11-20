@@ -139,7 +139,7 @@ test("MemoryExchangeTest.test_read_local_dir", () => {
 test("MemoryExchangeTest.test_import_chat_zip_minimal", () => {
   // 最小 ZIP：stored 方式存一个 conversations.json。
   const h = home();
-  const payload = JSON.stringify([{ title: "t", messages: [{ role: "user", content: "hi" }] }]);
+  const payload = JSON.stringify([{ title: "t", messages: [{ role: "user", content: "hello-memx-probe-9f27" }] }]);
   const name = "conversations.json";
   const data = Buffer.from(payload, "utf-8");
   const crc = crc32(data);
@@ -191,7 +191,9 @@ test("MemoryExchangeTest.test_import_chat_zip_minimal", () => {
   const memory = readFileSync(join(h, "MEMORY.md"), "utf-8");
   expect(memory).toContain("从聊天导出导入 1 条对话");
   expect(memory).toContain("memory-imports");
-  expect(memory).not.toContain("hi");
+  // 探针用长 token：导入记录里嵌了随机临时目录名（nyra-memx-<6 位随机串>），
+  // 短串（如 "hi"）可能恰好撞上随机串而误报，macOS CI #266 已实证。
+  expect(memory).not.toContain("hello-memx-probe-9f27");
 });
 
 test("MemoryExchangeTest.test_import_chat_zip_invalid_throws", () => {
