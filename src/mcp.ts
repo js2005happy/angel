@@ -15,7 +15,7 @@ import { buildReviewerRunner, reviewToolCall, reviewerEnabled, resolveReviewerMo
 import { RunStore } from "./runs.ts";
 import { buildBwrapArgv, resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { buildSeatbeltProfile } from "./seatbelt.ts";
-import { addTask } from "./tasks.ts";
+import { addTask, buildProvider, runOne } from "./tasks.ts";
 
 export const LATEST_PROTOCOL_VERSION = "2026-07-28";
 export const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"];
@@ -1171,6 +1171,12 @@ export const MCP_SERVER_TOOLS: McpServerToolDef[] = [
     write: false, action: null,
   },
   {
+    name: "answer_question",
+    description: "问 Nyra 一个问题并等回答（只读：只读模式跑一小段 agent，最多 4 轮；回答截到 4000 字）。参数：question（必填，最多 2000 字）。",
+    inputSchema: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
+    write: false, action: null,
+  },
+  {
     name: "add_memory",
     description: "往 Nyra 的长期记忆追加一条（写操作：须开启 allow_writes 且过独立审查）。参数：text（必填，最多 2000 字）。",
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
@@ -1266,6 +1272,9 @@ export interface McpServerContext {
   reviewerRunner?: () => ReviewerLike | null;
   /** 进行中会话 id 集合（forget_session 的 session_running 保护用）。 */
   activeSessionIds?: () => Iterable<string>;
+  /** 缺口 12：answer_question 的回答器（测试注入假回答；不传时走默认
+   * 的只读 agent 短跑：buildProvider + runOne，最多 4 轮，不记收件箱）。 */
+  answerRunner?: (question: string, opts: { home: string; config: Record<string, unknown>; workdir: string }) => Promise<{ text: string; runId: string }>;
 }
 
 /**
@@ -1273,6 +1282,17 @@ export interface McpServerContext {
  * 一个实例对应一个网关进程：所有调用记进同一个“对外服务”运行（懒创建），
  * 这样每次调用都有运行记录可查，又不会每次调用都新建一个运行目录。
  */
+/** 缺口 12：answer_question 的默认回答器——只读 agent 短跑（最多 4 轮，
+ * 不记收件箱、不回邮件）。没有可用模型凭证时 buildProvider 直接抛错，
+ * 调用方按工具执行失败（isError）回给对端。 */
+export async function defaultAnswerRunner(question: string, opts: { home: string; config: Record<string, unknown>; workdir: string }): Promise<{ text: string; runId: string }> {
+  const store = new RunStore(join(resolveNyraHome(opts.home), "runs"));
+  const state = store.create(`对端提问：${question.slice(0, 200)}`, "peer-ask", opts.workdir, "readonly", 4, "running");
+  const [provider] = buildProvider(opts.config, opts.home);
+  const [, output] = await runOne(state, { store, provider, config: opts.config, home: opts.home, quietInbox: true });
+  return { text: output, runId: state.run_id };
+}
+
 export class NyraMcpServer {
   private ctx: McpServerContext;
   private runId: string | null = null;
@@ -1447,6 +1467,23 @@ export class NyraMcpServer {
   }
 
   /**
+   * 缺口 12：answer_question——问本机 Nyra 一个问题并等回答（只读）。
+   * 只读 agent 短跑（最多 4 轮），回答截到 4000 字；本次回答另建一条运行
+   * 记录（run_id 回给调用方，调用方可再用 query_evidence 查它的事件）。
+   * 注意：回答花的是本机的 token（对端问、本机付），网关只在服务开启时
+   * 才接这类调用；没有可用模型凭证时回 isError，不走 JSON-RPC 错误。
+   */
+  private async doAnswerQuestion(args: Record<string, unknown>): Promise<{ text: string; runId: string }> {
+    const question = args.question;
+    if (typeof question !== "string" || !question.trim()) throw new McpProtocolError(-32602, "answer_question 须给 question（非空字符串）");
+    if (question.length > 2000) throw new McpProtocolError(-32602, "answer_question 的 question 最多 2000 字");
+    const workdir = this.ctx.workdir ?? process.cwd();
+    const runner = this.ctx.answerRunner ?? defaultAnswerRunner;
+    const { text, runId } = await runner(question.trim(), { home: this.ctx.home, config: this.ctx.config, workdir });
+    return { text: text.slice(0, 4000), runId };
+  }
+
+  /**
    * 处理一次 JSON-RPC 请求。返回 HTTP 状态与响应体（body 为 null 时回 202 空体，
    * 用于通知）。协议层错误（未知方法、参数无效）回 JSON-RPC 错误码；工具执
    * 行层失败（审查拦截、删除冲突等）回 isError 结果，不走 JSON-RPC 错误。
@@ -1504,6 +1541,10 @@ export class NyraMcpServer {
             text = this.doSearchMemory(argsObj);
           } else if (name === "query_evidence") {
             text = this.doQueryEvidence(argsObj);
+          } else if (name === "answer_question") {
+            const out = await this.doAnswerQuestion(argsObj);
+            text = out.text;
+            if (out.runId) runId = out.runId;
           } else if (name === "add_memory") {
             const out = await this.doAddMemory(argsObj);
             text = out.text; isError = out.reviewerDecision === "BLOCK"; reviewerDecision = out.reviewerDecision;

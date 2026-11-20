@@ -166,6 +166,20 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `看了 ${count} 张图（${model}）`, kinds ? `来源：${kinds}` : null, null, null);
         break;
       }
+      case "peer_asked": {
+        const peer = str(ev.peer) ?? "未知对端";
+        const ok = bool(ev.ok);
+        const hash = str(ev.question_hash);
+        push(at, "event", `问对端 ${peer}${ok === false ? "（失败）" : "（已答复）"}`, hash ? `问题指纹 ${hash.slice(0, 12)}…` : null, ok, null);
+        break;
+      }
+      case "peer_handoff": {
+        const peer = str(ev.peer) ?? "未知对端";
+        const status = str(ev.status) ?? "?";
+        const peerRun = str(ev.peer_run_id) ?? "";
+        push(at, "event", `交接给对端 ${peer}（${status}）`, peerRun ? `对端运行 ${peerRun}` : null, status === "accepted", null);
+        break;
+      }
       case "tool_start": {
         const id = str(ev.id) ?? "";
         const name = str(ev.name) ?? "未知工具";

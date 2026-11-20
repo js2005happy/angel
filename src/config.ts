@@ -56,6 +56,11 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 写操作（add_memory / forget_session / dispatch_task）须显式开 allow_writes，
   // 且每次写操作都要过独立审查层（reviewer 未开启时写操作直接拒绝，fail-closed）。
   mcp_server: { enabled: false, allow_writes: false },
+  // 缺口 12：对端协作（Agent 间直接协作：互问、交接、共享上下文）。
+  // 默认关闭；list 里每项 { name, url }（名字只认字母数字、下划线与连字符，
+  // 地址只认 http/https 的网关 /mcp 端点）；对端网关 token 不放这里，
+  // 用 `nyra peer auth <名字>` 存密码箱，或 NYRA_PEER_TOKEN_<名字> 环境变量。
+  peers: { enabled: false, list: [] },
   // Bot 方向 Phase 3：双场景 Bot 内核（场景 A 外部 IM + 场景 B 自动化监控）。
   // 默认全关；telegram.enabled 开了才轮询。角色只认 owner / admins /
   // members 三张白名单，默认 guest 只读；owner/admin 的写操作逐次走聊天内

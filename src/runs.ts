@@ -124,6 +124,11 @@ connector_revoked: ["connector", "user_id"],
 // SHA-256 前 12 位逗号分隔）、哪个模型、什么来源（kinds：image/video-frame）。
 // 图片内容绝不进事件（字节进不来：字段只接受 string/boolean/number）。
 vision_input: ["count", "hashes", "model", "kinds"],
+// 缺口 12：对端协作进证据链——互问（哪个对端、问题指纹、拿到答复没有）与
+// 交接（哪个对端、源运行、对端运行、对方接没接）。只记指纹与结论，不记
+// 问题原文、答复原文与交接包内容。
+peer_asked: ["peer", "question_hash", "ok"],
+peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
 delegate_start: ["task_id", "model", "max_turns"],
 delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
 llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
