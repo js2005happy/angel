@@ -10,7 +10,7 @@ import { getFileKey } from "./keystore.ts";
 
 import { effectiveValue } from "./enforcedConfig.ts";
 
-export const VERSION = "0.5.2";
+export const VERSION = "0.5.3";
 
 export interface ProviderPreset {
   baseUrl: string | null;
