@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Windows claim 门禁修复）
+
+- 修复 `scripts/node_tool_claim.ts` 的字面量 `\\n` 注释错误，使 Windows 失败关闭与绝对路径检查成为真正执行的代码；此前文档所述 Windows 拒绝行为在源码中并未生效。仅静态审阅，未运行测试/CI；模块仍未接入运行时。
+
 ## 未发布（2026-11-20，Windows Node claim 失败关闭）
 
 - `scripts/node_tool_claim.ts`：在 Windows 上拒绝创建 claim，避免路径预检无法可靠识别 junction/reparse 时错误承诺可信执行所有权。POSIX 行为未变；仍未接入运行时。仅静态审阅，未运行测试或 CI。
