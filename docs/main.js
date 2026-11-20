@@ -1,4 +1,4 @@
-// Nyra website: language switch, copy buttons, install tabs + drawer, terminal language toggle,
+// Nyra website: language switch, copy buttons, install + download tabs, terminal language toggle,
 // localized screenshots and scroll reveal. Vanilla JS, no network, no cookies.
 (function () {
   "use strict";
@@ -142,6 +142,25 @@
   });
   var os0 = guessOS();
   groups.forEach(function (g) { pick(g, g.getAttribute("data-tabs") === "hero" && os0 === "phone" ? "mac" : os0); });
+
+  /* ---------- Download section: links pick the platform, then scroll ---------- */
+  var dlGroup = document.querySelector('[data-tabs="dl"]');
+  var dlSec = document.getElementById("download");
+  function goDownload(os) {
+    if (!dlSec) return;
+    if (dlGroup && os) pick(dlGroup, os);
+    dlSec.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    if (history.replaceState) history.replaceState(null, "", "#download");
+  }
+  $$("[data-dl]").forEach(function (a) {
+    a.addEventListener("click", function (e) { if (!dlSec) return; e.preventDefault(); goDownload(a.getAttribute("data-dl")); });
+  });
+  // Old links (#install, #platforms) land on the download section.
+  if (dlSec && /^#(install|platforms)\b/.test(location.hash)) {
+    if (history.replaceState) history.replaceState(null, "", "#download");
+    var jump = function () { root.style.scrollBehavior = "auto"; dlSec.scrollIntoView({ block: "start" }); root.style.scrollBehavior = ""; };
+    if (document.readyState === "complete") jump(); else window.addEventListener("load", jump);
+  }
 
   /* ---------- Install drawer ---------- */
   var drawer = document.getElementById("install-drawer");

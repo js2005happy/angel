@@ -644,3 +644,41 @@ html[data-lang="zh"] .rf-txt h3{letter-spacing:-.01em}
 }
 .hero{padding-bottom:130px}
 #showcase{padding-top:40px}
+
+/* ---------- Download section ---------- */
+.anchor{display:block;position:relative;top:-80px;visibility:hidden}
+
+.dltabs{display:flex;justify-content:center;margin:0 0 28px}
+.dltabs .seg-b{height:36px;padding:0 18px;font-size:14px}
+.dlgrid{display:grid;grid-template-columns:1fr;gap:20px;align-items:start}
+@media (min-width:960px){.dlgrid{grid-template-columns:1fr 1.15fr}}
+.dlcard{border-radius:22px;padding:26px;min-width:0}
+@media (max-width:600px){.dlcard{padding:18px;border-radius:18px}}
+.dl-h{font-size:19px;font-weight:600;letter-spacing:-.01em;margin-bottom:16px}
+.dlbtns{display:flex;flex-direction:column;gap:10px;margin-bottom:16px}
+.dlb{white-space:normal;max-width:100%;height:auto;min-height:60px;justify-content:flex-start;gap:14px;padding:10px 20px;border-radius:16px;text-align:left}
+.dlb .ic{width:20px;height:20px;flex:none}
+.dlt{display:flex;flex-direction:column;min-width:0}
+.dlt b{font-weight:600;font-size:15.5px}
+.dlt small{font-family:var(--mono);font-size:12px;opacity:.82;overflow-wrap:anywhere}
+.btn.dlb:not(.solid){background:var(--bg)}
+.btn.dlb:not(.solid) small{color:var(--mu);opacity:1}
+.dl-note{font-size:14px;line-height:1.6;color:var(--mu);margin:10px 0}
+.dl-note .tlink{font-size:13.5px;overflow-wrap:anywhere}
+.dl-warn{font-size:13.5px;line-height:1.6;color:var(--fg2);margin-top:14px;padding:12px 14px;border-radius:12px;border:1px dashed var(--line2);background:var(--bg)}
+.dl-steps{display:flex;flex-direction:column;gap:18px;counter-reset:none}
+.dl-steps>li{display:grid;grid-template-columns:28px minmax(0,1fr);gap:12px;align-items:start}
+.dl-n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--btn);color:var(--btnfg);font-size:13px;font-weight:600}
+.dl-st{font-weight:600;font-size:14.5px;margin:3px 0 10px}
+.dl-steps .dl-note{margin:8px 0 0;font-size:13.5px}
+.dl-maint{margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
+.dl-maint .dl-st{margin-top:14px}
+.dl-maint .dl-st:first-child{margin-top:0}
+.dl-maint .dl-note{margin:8px 0 0;font-size:13.5px}
+.dl-phone{display:grid;grid-template-columns:1fr;gap:24px;align-items:center}
+@media (min-width:900px){.dl-phone{grid-template-columns:1.3fr .7fr}}
+.dl-phone-fig{display:flex;flex-direction:column;align-items:center;gap:30px;margin:0}
+.dl-phone-fig .iph{width:min(260px,70vw)}
+.dl-phone-fig figcaption{font-size:13px;color:var(--fg2);text-align:center;max-width:24em;line-height:1.5}
+.dl-foot{margin-top:28px}
+.sec.alt .dlcard{background:color-mix(in srgb,var(--bg) 70%,transparent)}
