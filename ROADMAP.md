@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 Node claim 祖先目录可写性门禁（仅静态）
+
+- **仓库事实**：开发分支的 `scripts/node_tool_claim.ts` 先前只要求叶目录私有，祖先目录仅检查类型和 symlink；可被其他用户写入的祖先可能在路径创建期间被替换。该组件尚未接入 main 的 Node 工具派发。
+- **外部反馈（事实）**：[Codex #62480](https://github.com/openai/codex/issues/62480)（2026-11，Windows attach/restart 后在途进程状态不明、重试风险；用户报告，非 Angel 故障复现）。**工程推断**：应优先建立可信操作身份及 unknown 语义，再考虑安全恢复。
+- **本轮增量**：POSIX 拒绝 group/other 可写祖先（含 sticky 目录），要求祖先归当前 UID 或 root 所有，叶目录必须当前 UID 所有且 0700 级私有。价值高／难度低／风险低／依赖 POSIX 文件系统元数据；对共享 /tmp 路径采取失败关闭，可能影响既有使用方式。
+- **后续排序**：P0 真正的目录句柄相对原子创建（价值高／难度高／风险高／依赖原生 API）；P0 Windows reparse 句柄防护（高／高／高／原生 API）；P0 Node 工具派发集成（高／高／高／可信 claim）；P1 MCP 工具目录失效检测（中高／中／中／MCP）；P1 副作用回执（高／高／高／工具适配器）。仍有祖先 TOCTOU，未运行测试或 CI。
+
 ## 2026-11-20 — P0 claim 创建前后目录身份一致性（静态审阅）
 
 - **仓库事实**：此前 claim 在文件创建后才用目录 fd 核验身份；本轮增加创建前 `O_DIRECTORY|O_NOFOLLOW` 打开、`fstat/lstat` 身份校验，并在创建后核验相同 dev/ino。主分支 [f35de0d](https://github.com/js2005happy/nyra/commit/f35de0dc53e9a3aeb071406803cc0695f5b806ae)（2026-11-20 15:28 UTC）涉及 repo-map 缓存与 LSP hover，不重复此项；开放 Issues/PR 检索为空。
