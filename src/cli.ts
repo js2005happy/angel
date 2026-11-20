@@ -260,7 +260,7 @@ nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|rem
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
 nyra bughunt <install|status|scope|template|check>   authorized bug-hunting skill pack: scope card + falsification + pre-submit seven questions + evidence hygiene, pre-submit gate (see docs/bughunt.md)
 nyra market <list|show|source|install|uninstall|installed|publish|template>   built-in bot marketplace: browse, install and publish skill packs and bot configs (phase 1: static curated repo + local client, see docs/marketplace.md)
-nyra account <status|login|logout|list|revoke|link>   user account login: Google / GitHub / email (email lands with the gateway exchange endpoint next batch), account identity + sessions (see docs/accounts.md)
+nyra account <status|login|logout|list|revoke|link>   user account login: Google / GitHub / email, account identity + sessions (see docs/accounts.md)
 nyra kb <create|list|add|search|ask|remove>  local knowledge base
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
 nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -1788,11 +1788,11 @@ const ACCOUNT_USAGE =
   "  nyra account status              当前登录状态\n" +
   "  nyra account login google        Google 登录（回环回调；首次要 OAuth 客户端）\n" +
   "  nyra account login github        GitHub 登录（设备流：终端给码，浏览器里输码）\n" +
+  "  nyra account login email <邮箱>  邮箱登录（发 magic link 邮件，点链接完成；先跑 nyra gmail auth）\n" +
   "  nyra account link google|github  给当前账号再绑一个登录方式\n" +
   "  nyra account list                列出本机账号\n" +
   "  nyra account revoke <会话 id>|--all  撤销会话\n" +
   "  nyra account logout              登出（撤销当前会话 + 清掉本机 token）\n" +
-  "  （邮箱登录随网关兑换端点在下一批，详见 docs/accounts.md）\n" +
   "  数据库：设 NYRA_DATABASE_URL 后账号数据存 Postgres（Neon），否则存本机文件。";
 
 async function handleAccount(argv: string[], home: string): Promise<number> {
@@ -1956,10 +1956,63 @@ async function handleAccount(argv: string[], home: string): Promise<number> {
         return 0;
       }
       if (provider === "email") {
-        process.stderr.write("邮箱登录随网关兑换端点在下一批（见 docs/accounts.md）；本批先用 Google 或 GitHub 登录\n");
-        return 2;
+        // 缺口 41 下一批：邮箱 magic link 登录完整链。
+        // 发 magic link（走已授权的 Gmail 连接器发信）→ 用户点邮件里的链接 →
+        // 网关 /api/account/magic-link 兑换并写本机 session cookie → 这里轮询
+        // 到登录成功。网关地址默认 http://127.0.0.1:8765（nyra ui 默认端口）。
+        const email = (argv[2] ?? "").trim();
+        const gatewayUrl = (argv.indexOf("--gateway") >= 0 ? argv[argv.indexOf("--gateway") + 1] : undefined) ?? "http://127.0.0.1:8765";
+        if (!email) {
+          process.stderr.write("用法：nyra account login email <邮箱> [--gateway <网关地址>]\n");
+          return 2;
+        }
+        if (!mod.normalizeEmail(email)) {
+          process.stderr.write("邮箱格式无效\n");
+          return 1;
+        }
+        let sender: ReturnType<typeof mod.gmailMailSender>;
+        try {
+          const gmail = await import("./connectors/gmail.ts");
+          const transport = gmail.createGmailTransport(home, loadConfig(home));
+          sender = mod.gmailMailSender(async (opts) => { await transport.send({ to: [opts.to], subject: opts.subject, body: opts.body }); });
+        } catch (err) {
+          process.stderr.write(`未配置发信方式：${err instanceof Error ? err.message : String(err)}\n`);
+          process.stderr.write("请先运行 nyra gmail auth 完成 Gmail 授权，再用邮箱登录\n");
+          return 1;
+        }
+        try {
+          await mod.requestMagicLink({ home, email, sender, gatewayUrl, stores });
+        } catch (err) {
+          process.stderr.write(`发送失败：${err instanceof Error ? err.message : String(err)}\n`);
+          return 1;
+        }
+        process.stdout.write(`登录邮件已发送到 ${email}，15 分钟内有效、只能用一次。\n`);
+        process.stdout.write("请点开邮件里的链接完成登录（本机会自动检测，也可以点完稍等几秒再回车跳过等待）…\n");
+        // 轮询本机 session cookie：链接兑换成功会写 account-session.json。
+        // 最多等 5 分钟（覆盖 15 分钟有效期内的合理等待），每 2 秒查一次。
+        const started = Date.now();
+        const deadline = started + 5 * 60 * 1000;
+        let loggedIn = false;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2000));
+          const cur = mod.readCurrentSession(home);
+          if (cur) {
+            const acct = await mod.getCurrentAccount(home, { stores });
+            if (acct) {
+              process.stdout.write(`\n登录成功：${acct.email}（${acct.role === "owner" ? "机主" : "普通用户"}）\n`);
+              loggedIn = true;
+              break;
+            }
+          }
+        }
+        if (!loggedIn) {
+          process.stdout.write("\n还没检测到登录（链接可能还没点，或网关没在运行）。\n");
+          process.stdout.write(`稍后可以再点邮件里的链接，然后用 nyra account status 查看登录状态。\n`);
+          return 0;
+        }
+        return 0;
       }
-      process.stderr.write("用法：nyra account login <google|github>\n");
+      process.stderr.write("用法：nyra account login <google|github|email>\n");
       return 2;
     }
     if (cmd === "link") {

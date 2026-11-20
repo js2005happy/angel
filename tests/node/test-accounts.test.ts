@@ -462,7 +462,7 @@ test("AccountsTest.test_cli_status_list_logout_no_account", () => {
   expect(help.stdout).toContain("nyra account login google");
   const badLogin = runCli(home, ["account", "login", "email"]);
   expect(badLogin.status).toBe(2);
-  expect(badLogin.stderr).toContain("下一批");
+  expect(badLogin.stderr).toContain("login email");
   const badCmd = runCli(home, ["account", "nonsense"]);
   expect(badCmd.status).toBe(2);
 });

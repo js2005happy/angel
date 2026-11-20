@@ -1,7 +1,8 @@
 # 用户账号登录（缺口 41）
 
 > 用户 2026-11-20 拍板：每个用户需要用谷歌、GitHub 或邮箱登录。
-> 本批（缺口 41 第一批）做：账号身份 + 会话模块 + Google OAuth 与 GitHub 设备流两条完整登录链 + 邮箱 magic link 令牌核心；网关接线与邮箱投递端点在下一批。
+> 第一批做：账号身份 + 会话模块 + Google OAuth 与 GitHub 设备流两条完整登录链 + 邮箱 magic link 令牌核心。
+> 下一批（已完成，2026-11-20 续）做：网关三路鉴权接线 + `GET /api/account` + `POST /api/account/magic-link` 兑换路由 + `nyra account login email` 完整链。详见文末「§12 下一批（已完成）」。
 
 ## 1. 现状：登录之前 Nyra 只有三种“身份”，没有“用户”
 
@@ -207,4 +208,34 @@ nyra account logout                  登出（撤销当前会话 + 清掉本机 
 
 本批做完：设计（本文档）+ `src/oauth.ts` + `src/accounts.ts`（账号、会话、magic link 核心、审计）+ Google 与 GitHub 两条完整登录链 + CLI + 测试（`tests/node/test-accounts.test.ts`）。第二批（同属缺口 41）：Postgres 后端 `src/accountsDb.ts`（表结构 v1、连接串三来源、CLI 自动切换、机主抢位重试、magic link 原子认领）+ 测试（`tests/node/test-accounts-db.test.ts`，SQL 走替身、失败路径连本机已关闭端口）。
 
-下一批：网关接线（`apiAuth` 三路并存 + `GET /api/account` + `POST /api/account/magic-link` 兑换路由）+ `nyra account login email` 完整链 + 邮箱投递端点的真实地址（网关实际端口）+ 多用户权限模型（`user` 角色到底能干什么）。
+## 12. 网关接线（下一批，已完成 2026-11-20 续）
+
+本批做：网关三路鉴权 + 账号端点 + magic link 兑换路由 + `nyra account login email` 完整链。改动都在 `src/gateway.ts` 与 `src/cli.ts`。
+
+### 12.1 三路鉴权（`apiAuth` 改异步）
+
+`Gateway.apiAuth(req)` 从「owner token / 设备 token」二路，扩展为「owner token / 设备 token / 账号会话 token」三路。账号会话 token 走 `AccountSessionStore.verify`（SHA-256 比对、过期/失活裁剪），验过后按账号角色返回：
+
+- owner 角色账号 → 返回 `"owner"`（等同 owner token，能访问 owner-only 端点）；
+- user 角色账号 → 返回 `"account"`（`isOwner` 为 false，先只读）。
+
+账号文件损坏等 fail-closed：当未登录处理（返回 null），不拖垮网关。网关用文件版 `AccountStore` / `AccountSessionStore` / `MagicLinkStore`（与 CLI 同口径）；Postgres 后端的网关接线仍是已知局限（见下）。
+
+### 12.2 `GET /api/account`
+
+返回当前账号（邮箱、名字、角色、已绑登录方式、创建时间）与会话列表（不含 token 哈希）。owner/设备 token 访问时返回 `{ account: null }`（不泄露账号目录）。账号会话 token 访问时返回完整账号信息。
+
+### 12.3 `POST /api/account/magic-link`（兑换路由，无鉴权）
+
+用户点邮件里的链接（`?token=…`）或 CLI 轮询（body 里的 `token`）兑换。复用 `loginWithMagicLink`：redeem 一次性校验 → upsert 账号 → 签发会话 token（只此一次返回原文）→ 写本机 session cookie → 审计。无效/过期/重放 token 回 401，缺 token 回 400。
+
+### 12.4 `nyra account login email <邮箱> [--gateway <url>]`
+
+发 magic link（走已授权的 Gmail 连接器发信，没授权提示先 `nyra gmail auth`）→ 提示用户点邮件链接 → 轮询本机 session cookie（最多 5 分钟）检测登录成功。网关地址默认 `http://127.0.0.1:8765`（`nyra ui` 默认端口）。
+
+### 12.5 已知局限
+
+- **Postgres 后端网关接线未做**：网关账号鉴权用文件版 store；设了 `NYRA_DATABASE_URL` 后 CLI 走 Postgres，但网关仍读文件，两者会看到不同的账号目录（同一台机器同跑 CLI 与网关时需注意）。网关常驻进程的 Postgres 连接生命周期（启动建表、退出关连接）留待后续。
+- **多用户权限模型未细化**：`user` 角色先只读（owner-only 端点 403），"user 到底能干什么"仍是占位，未定义细粒度能力。
+- `nyra account login email` 依赖网关在跑（链接指向网关兑换端点）；网关没起时用户点了链接会失败，CLI 会提示稍后查看状态。
+

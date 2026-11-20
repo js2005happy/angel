@@ -71,6 +71,10 @@ import { loadMcpServers } from "./mcp.ts";
 import { saveConfig, configPath } from "./config.ts";
 import { listMarketplacePublic } from "./marketplace.ts";
 import { listDrafts } from "./skillDrafts.ts";
+import {
+  AccountStore, AccountSessionStore, MagicLinkStore,
+  loginWithMagicLink, AccountError, type Account,
+} from "./accounts.ts";
 
 export const GATEWAY_DEFAULT_HOST = "127.0.0.1";
 export const GATEWAY_DEFAULT_PORT = 8765;
@@ -185,6 +189,10 @@ export class Gateway {
   runs: Map<string, SessionRun> = new Map();
   approvals: Map<string, { run: SessionRun; pending: PendingApproval }> = new Map();
   devices: DeviceRegistry;
+  /** 缺口 41 下一批：账号目录 / 会话 / magic link 存储（文件版；Postgres 网关接线见已知局限）。 */
+  accountsDirectory: AccountStore;
+  accountSessions: AccountSessionStore;
+  magicLinks: MagicLinkStore;
   private _store: ConversationStore | null = null;
   groups: GroupStore;
   mcpManager: MCPToolManager | null = null;
@@ -233,6 +241,10 @@ export class Gateway {
     this.reviewerFactory = opts.reviewerFactory;
     this.shell = opts.shell === "desktop" ? "desktop" : null;
     this.devices = new DeviceRegistry(defaultDevicesPath(this.home));
+    // 缺口 41 下一批：账号鉴权的存储（文件版，与 CLI 同口径；Postgres 网关接线留待后续）。
+    this.accountsDirectory = new AccountStore(this.home);
+    this.accountSessions = new AccountSessionStore(this.home);
+    this.magicLinks = new MagicLinkStore(this.home);
     // 群聊机器人走网关同一沙箱配置：这里只做配置解析（resolveSandbox 不查
     // 后端二进制是否存在），后端不可用时不拦网关启动，留给机器人跑 shell 时
     // toolShell 逐次 fail-closed——网关只聊天不用 shell 的部署不受影响。
@@ -1451,11 +1463,30 @@ export class Gateway {
     return this.devices.authenticate(supplied) as Record<string, unknown> | null;
   }
 
-  /** 返回 "owner" | device | null；null 表示未通过鉴权。 */
-  private apiAuth(req: IncomingMessage): "owner" | Record<string, unknown> | null {
+  /** 返回 "owner" | device | account | null；null 表示未通过鉴权。 */
+  private async apiAuth(req: IncomingMessage): Promise<"owner" | "account" | Record<string, unknown> | null> {
     if (this.tokenOk(req)) return "owner";
     const d = this.device(req);
-    return d ?? null;
+    if (d) return d;
+    // 缺口 41 下一批：账号会话 token（登录后发的 token，代表"人"）。owner 角色
+    // 的账号等同 owner（返回 "owner"）；user 角色只读（返回 "account"）。
+    const acct = await this.accountFromSession(req);
+    if (!acct) return null;
+    return acct.role === "owner" ? "owner" : "account";
+  }
+
+  /** 用账号会话 token 认身份：验 token → 取账号 → 返回账号；验不过返回 null。 */
+  private async accountFromSession(req: IncomingMessage): Promise<Account | null> {
+    const supplied = req.headers["x-nyra-token"];
+    if (typeof supplied !== "string" || !supplied) return null;
+    try {
+      const verified = await this.accountSessions.verify(supplied);
+      if (!verified) return null;
+      return await this.accountsDirectory.findById(verified.account_id);
+    } catch {
+      // 账号文件损坏等 fail-closed：当未登录处理，不拖垮网关。
+      return null;
+    }
   }
 
   private sendJson(res: ServerResponse, status: number, data: unknown): void {
@@ -1625,7 +1656,7 @@ export class Gateway {
     if (path === "/mcp") {
       if (method !== "POST") { this.sendError(res, 405, "对外 MCP 服务只接受 POST"); return; }
       if (!mcpServerConfig(this.config).enabled) { this.sendError(res, 404, "未找到"); return; }
-      const who = this.apiAuth(req);
+      const who = await this.apiAuth(req);
       if (who === null) {
         try { appendMcpServerAudit(this.home, { tool: "(auth)", caller: "unknown", ok: false, error: "token 无效" }); } catch { /* 审计写失败不破坏响应 */ }
         this.sendError(res, 403, "token 无效"); return;
@@ -1654,6 +1685,31 @@ export class Gateway {
       return;
     }
 
+    // 缺口 41 下一批：magic link 兑换端点（无鉴权：用户点邮件链接时还没有会话 token）。
+    // token 从 query 或 body 里拿（邮件链接用 query，CLI 轮询用 body）；redeem 一次性、
+    // 15 分钟有效、重放必失败。成功返回账号 + 会话 token（只此一次返回原文）。
+    if (method === "POST" && path === "/api/account/magic-link") {
+      let token = query.get("token") ?? "";
+      if (!token) {
+        try {
+          const body = await this.readBody(req);
+          token = String(body.token ?? "");
+        } catch { /* body 不是 JSON 时按无 token 处理 */ }
+      }
+      if (!token) { this.sendError(res, 400, "缺少 token"); return; }
+      try {
+        const { account, session } = await loginWithMagicLink({ home: this.home, token });
+        this.sendJson(res, 200, {
+          account: { id: account.id, email: account.email, name: account.name, role: account.role },
+          session: { id: session.id, token: session.token, expires_at: session.expires_at },
+        });
+      } catch (err) {
+        if (err instanceof AccountError) this.sendError(res, 401, err.message);
+        else this.sendError(res, 500, `兑换失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      return;
+    }
+
     // 缺口 7：webhook 入口（事件触发任务）。放在通用 token 鉴权之前：generic 用
     // 网关 token（x-nyra-token），github/slack 用各自的 HMAC 签名（密钥只存密码箱）。
     // 鉴权失败直接 4xx，不进队列；验签通过才解析 body、归一化、派发进任务队列。
@@ -1673,7 +1729,7 @@ export class Gateway {
       let auth = "gateway-token";
       try {
         if (source === "generic") {
-          if (this.apiAuth(req) === null) { this.sendError(res, 403, "token 无效"); return; }
+          if (await this.apiAuth(req) === null) { this.sendError(res, 403, "token 无效"); return; }
         } else {
           auth = verifyWebhookSignature(source, raw, headers, this.home).auth;
         }
@@ -1693,7 +1749,7 @@ export class Gateway {
       return;
     }
 
-    const who = this.apiAuth(req);
+    const who = await this.apiAuth(req);
     if (who === null) { this.sendError(res, 403, "token 无效"); return; }
     const isOwner = who === "owner";
 
@@ -1780,6 +1836,25 @@ export class Gateway {
       return;
     }
     if (method === "GET" && path === "/api/info") { this.sendJson(res, 200, this.info()); return; }
+    // 缺口 41 下一批：当前账号信息（供登录后的客户端显示"我是谁"）。账号会话
+    // token 鉴权；owner/设备 token 访问时返回"未用账号登录"（不泄露账号目录）。
+    if (method === "GET" && path === "/api/account") {
+      const acct = await this.accountFromSession(req);
+      if (!acct) {
+        this.sendJson(res, 200, { account: null });
+        return;
+      }
+      const sessions = await this.accountSessions.listSessions(acct.id);
+      this.sendJson(res, 200, {
+        account: {
+          id: acct.id, email: acct.email, name: acct.name, role: acct.role,
+          providers: acct.providers.map((p) => p.provider),
+          created_at: acct.created_at,
+        },
+        sessions: sessions.map((s) => ({ id: s.id, created_at: s.created_at, last_seen: s.last_seen, expires_at: s.expires_at })),
+      });
+      return;
+    }
     if (method === "GET" && path === "/api/rules") {
       const sid = query.get("session");
       this.sendJson(res, 200, this.rulesView(sid && SESSION_ID_RE.test(sid) ? sid : null));
