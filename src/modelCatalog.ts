@@ -32,6 +32,12 @@ export interface ModelCapability {
   updated: string;
   /** 需要向用户说明的 caveat（如 Ollama 实际窗口受 num_ctx 影响）。 */
   note?: string;
+  /**
+   * 缺口 16：是否支持看图（视觉输入）。true = 确认支持（如 gpt-4o-mini、
+   * gemini-2.5、grok-4.3/4.5）；false = 确认不支持（纯文本模型）；
+   * 不填/null = 未核实，判定回退到 vision.ts 的模型名启发式（宁可拒，不假装能看）。
+   */
+  supportsVision?: boolean | null;
 }
 
 /** 内置表版本（整理日期）：每次人工更新数值时改这一处与各条的 updated。 */
@@ -46,49 +52,49 @@ export const MODEL_CATALOG_UPDATED = "2026-11-20";
  */
 export const MODEL_CATALOG: ModelCapability[] = [
   // DeepSeek（api-docs.deepseek.com/quick_start/pricing）：两模型均为 1M 窗口、384K 输出。
-  { model: "deepseek-flash", provider: "deepseek", contextWindow: 1_000_000, maxOutputTokens: 393_216, inputPricePer1M: 0.30, outputPricePer1M: 1.20, source: "https://api-docs.deepseek.com/quick_start/pricing", updated: "2026-11-20" },
-  { model: "deepseek-v4-pro", provider: "deepseek", contextWindow: 1_000_000, maxOutputTokens: 393_216, inputPricePer1M: 1.32, outputPricePer1M: 3.96, source: "https://api-docs.deepseek.com/quick_start/pricing", updated: "2026-11-20" },
+  { model: "deepseek-flash", provider: "deepseek", supportsVision: false, contextWindow: 1_000_000, maxOutputTokens: 393_216, inputPricePer1M: 0.30, outputPricePer1M: 1.20, source: "https://api-docs.deepseek.com/quick_start/pricing", updated: "2026-11-20" },
+  { model: "deepseek-v4-pro", provider: "deepseek", supportsVision: false, contextWindow: 1_000_000, maxOutputTokens: 393_216, inputPricePer1M: 1.32, outputPricePer1M: 3.96, source: "https://api-docs.deepseek.com/quick_start/pricing", updated: "2026-11-20" },
   // xAI（docs.x.ai/docs/models）：grok-4.3 为 1M，grok-4.5 为 500K；200K 以上按长上下文价计费。
-  { model: "grok-4.3", provider: "xai", contextWindow: 1_000_000, maxOutputTokens: null, inputPricePer1M: 1.25, outputPricePer1M: 2.50, source: "https://docs.x.ai/docs/models", updated: "2026-11-20" },
-  { model: "grok-4.5", provider: "xai", contextWindow: 500_000, maxOutputTokens: null, inputPricePer1M: 2.00, outputPricePer1M: 6.00, source: "https://docs.x.ai/docs/models", updated: "2026-11-20" },
+  { model: "grok-4.3", provider: "xai", supportsVision: true, contextWindow: 1_000_000, maxOutputTokens: null, inputPricePer1M: 1.25, outputPricePer1M: 2.50, source: "https://docs.x.ai/docs/models", updated: "2026-11-20" },
+  { model: "grok-4.5", provider: "xai", supportsVision: true, contextWindow: 500_000, maxOutputTokens: null, inputPricePer1M: 2.00, outputPricePer1M: 6.00, source: "https://docs.x.ai/docs/models", updated: "2026-11-20" },
   // OpenRouter / Nous Hermes（模型卡见 Hugging Face）：70B 为 Llama 3.1 底座 131,072；
   // 14B 为 Qwen3-14B 底座，按原生 32,768 记。
-  { model: "nousresearch/hermes-4-14b", provider: "openrouter", contextWindow: 32_768, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://huggingface.co/NousResearch/Hermes-4-14B", updated: "2026-11-20" },
-  { model: "nousresearch/hermes-4-70b", provider: "openrouter", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: 0.13, outputPricePer1M: 0.40, source: "https://huggingface.co/NousResearch/Hermes-4-70B", updated: "2026-11-20" },
+  { model: "nousresearch/hermes-4-14b", provider: "openrouter", supportsVision: false, contextWindow: 32_768, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://huggingface.co/NousResearch/Hermes-4-14B", updated: "2026-11-20" },
+  { model: "nousresearch/hermes-4-70b", provider: "openrouter", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: 0.13, outputPricePer1M: 0.40, source: "https://huggingface.co/NousResearch/Hermes-4-70B", updated: "2026-11-20" },
   // Ollama 本地模型（ollama.com/library/qwen2.5:7b）：32,768 是模型原生窗口；
   // Ollama 默认 num_ctx 为 4096，实际窗口以 Ollama 配置为准，见 note。
-  { model: "qwen2.5:7b", provider: "ollama", contextWindow: 32_768, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://ollama.com/library/qwen2.5:7b", updated: "2026-11-20", note: "Ollama 默认 num_ctx 为 4096，实际窗口以 Ollama 配置为准" },
+  { model: "qwen2.5:7b", provider: "ollama", supportsVision: false, contextWindow: 32_768, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://ollama.com/library/qwen2.5:7b", updated: "2026-11-20", note: "Ollama 默认 num_ctx 为 4096，实际窗口以 Ollama 配置为准" },
   // OpenAI（developers.openai.com/api/docs/pricing）：128K 窗口、16,384 输出。
-  { model: "gpt-4o-mini", provider: "openai", contextWindow: 128_000, maxOutputTokens: 16_384, inputPricePer1M: 0.15, outputPricePer1M: 0.60, source: "https://developers.openai.com/api/docs/pricing", updated: "2026-11-20" },
+  { model: "gpt-4o-mini", provider: "openai", supportsVision: true, contextWindow: 128_000, maxOutputTokens: 16_384, inputPricePer1M: 0.15, outputPricePer1M: 0.60, source: "https://developers.openai.com/api/docs/pricing", updated: "2026-11-20" },
   // 阿里云百炼 Model Studio / DashScope（help.aliyun.com/zh/model-studio/models）。
-  { model: "qwen-plus", provider: "qwen", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: 0.40, outputPricePer1M: 1.20, source: "https://help.aliyun.com/zh/model-studio/models", updated: "2026-11-20" },
-  { model: "qwen-turbo", provider: "qwen", contextWindow: 1_000_000, maxOutputTokens: null, inputPricePer1M: 0.05, outputPricePer1M: 0.20, source: "https://help.aliyun.com/zh/model-studio/models", updated: "2026-11-20" },
-  { model: "qwen3-max", provider: "qwen", contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: 1.20, outputPricePer1M: 6.00, source: "https://help.aliyun.com/zh/model-studio/models", updated: "2026-11-20" },
+  { model: "qwen-plus", provider: "qwen", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: 0.40, outputPricePer1M: 1.20, source: "https://help.aliyun.com/zh/model-studio/models", updated: "2026-11-20" },
+  { model: "qwen-turbo", provider: "qwen", supportsVision: false, contextWindow: 1_000_000, maxOutputTokens: null, inputPricePer1M: 0.05, outputPricePer1M: 0.20, source: "https://help.aliyun.com/zh/model-studio/models", updated: "2026-11-20" },
+  { model: "qwen3-max", provider: "qwen", supportsVision: false, contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: 1.20, outputPricePer1M: 6.00, source: "https://help.aliyun.com/zh/model-studio/models", updated: "2026-11-20" },
   // Moonshot Kimi（platform.kimi.ai/docs/pricing/chat）。
   { model: "kimi-k3", provider: "kimi", contextWindow: 1_048_576, maxOutputTokens: null, inputPricePer1M: 3.00, outputPricePer1M: 15.00, source: "https://platform.kimi.ai/docs/pricing/chat", updated: "2026-11-20" },
-  { model: "kimi-k2.6", provider: "kimi", contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: 0.95, outputPricePer1M: 4.00, source: "https://platform.kimi.ai/docs/pricing/chat", updated: "2026-11-20" },
-  { model: "kimi-k2.5", provider: "kimi", contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: 0.50, outputPricePer1M: 2.50, source: "https://platform.kimi.ai/docs/pricing/chat", updated: "2026-11-20", note: "Moonshot 已于 2026-08-31 在自家 API 下线该模型，第三方仍可跑" },
+  { model: "kimi-k2.6", provider: "kimi", supportsVision: false, contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: 0.95, outputPricePer1M: 4.00, source: "https://platform.kimi.ai/docs/pricing/chat", updated: "2026-11-20" },
+  { model: "kimi-k2.5", provider: "kimi", supportsVision: false, contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: 0.50, outputPricePer1M: 2.50, source: "https://platform.kimi.ai/docs/pricing/chat", updated: "2026-11-20", note: "Moonshot 已于 2026-08-31 在自家 API 下线该模型，第三方仍可跑" },
   // 智谱 GLM（docs.z.ai/guides/overview/quick-start）。
   { model: "glm-5.3", provider: "glm", contextWindow: 1_048_576, maxOutputTokens: 131_072, inputPricePer1M: null, outputPricePer1M: null, source: "https://docs.z.ai/guides/overview/quick-start", updated: "2026-11-20" },
   { model: "glm-5.2", provider: "glm", contextWindow: 202_752, maxOutputTokens: 131_072, inputPricePer1M: null, outputPricePer1M: null, source: "https://docs.z.ai/guides/overview/quick-start", updated: "2026-11-20", note: "与 GLM-5 同系列，窗口按 200K 档记" },
-  { model: "glm-4.7-flash", provider: "glm", contextWindow: 202_752, maxOutputTokens: null, inputPricePer1M: 0, outputPricePer1M: 0, source: "https://docs.z.ai/guides/overview/quick-start", updated: "2026-11-20", note: "API 上免费（限流）" },
-  { model: "glm-4.5-flash", provider: "glm", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: 0, outputPricePer1M: 0, source: "https://docs.z.ai/guides/overview/quick-start", updated: "2026-11-20", note: "API 上免费（限流）" },
+  { model: "glm-4.7-flash", provider: "glm", supportsVision: false, contextWindow: 202_752, maxOutputTokens: null, inputPricePer1M: 0, outputPricePer1M: 0, source: "https://docs.z.ai/guides/overview/quick-start", updated: "2026-11-20", note: "API 上免费（限流）" },
+  { model: "glm-4.5-flash", provider: "glm", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: 0, outputPricePer1M: 0, source: "https://docs.z.ai/guides/overview/quick-start", updated: "2026-11-20", note: "API 上免费（限流）" },
   // Google Gemini（ai.google.dev/gemini-api/docs/pricing）：两模型均为 1,048,576 窗口、65,536 输出。
-  { model: "gemini-2.5-flash", provider: "gemini", contextWindow: 1_048_576, maxOutputTokens: 65_536, inputPricePer1M: 0.30, outputPricePer1M: 2.50, source: "https://ai.google.dev/gemini-api/docs/pricing", updated: "2026-11-20" },
-  { model: "gemini-2.5-pro", provider: "gemini", contextWindow: 1_048_576, maxOutputTokens: 65_536, inputPricePer1M: 1.25, outputPricePer1M: 10.00, source: "https://ai.google.dev/gemini-api/docs/pricing", updated: "2026-11-20" },
+  { model: "gemini-2.5-flash", provider: "gemini", supportsVision: true, contextWindow: 1_048_576, maxOutputTokens: 65_536, inputPricePer1M: 0.30, outputPricePer1M: 2.50, source: "https://ai.google.dev/gemini-api/docs/pricing", updated: "2026-11-20" },
+  { model: "gemini-2.5-pro", provider: "gemini", supportsVision: true, contextWindow: 1_048_576, maxOutputTokens: 65_536, inputPricePer1M: 1.25, outputPricePer1M: 10.00, source: "https://ai.google.dev/gemini-api/docs/pricing", updated: "2026-11-20" },
   // Mistral（mistral.ai/pricing）：Small/Medium/Large 均为 128K，Codestral 为 256K；计价未核实，留空。
   { model: "mistral-small-latest", provider: "mistral", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://mistral.ai/pricing", updated: "2026-11-20" },
   { model: "mistral-medium-latest", provider: "mistral", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://mistral.ai/pricing", updated: "2026-11-20" },
   { model: "mistral-large-latest", provider: "mistral", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://mistral.ai/pricing", updated: "2026-11-20" },
-  { model: "codestral-latest", provider: "mistral", contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://mistral.ai/pricing", updated: "2026-11-20" },
+  { model: "codestral-latest", provider: "mistral", supportsVision: false, contextWindow: 262_144, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://mistral.ai/pricing", updated: "2026-11-20" },
   // Groq（groq.com/pricing）：三模型均为 128K；计价未核实，留空。
-  { model: "llama-3.3-70b-versatile", provider: "groq", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://groq.com/pricing", updated: "2026-11-20" },
-  { model: "llama-3.1-8b-instant", provider: "groq", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://groq.com/pricing", updated: "2026-11-20" },
-  { model: "openai/gpt-oss-120b", provider: "groq", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://groq.com/pricing", updated: "2026-11-20" },
+  { model: "llama-3.3-70b-versatile", provider: "groq", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://groq.com/pricing", updated: "2026-11-20" },
+  { model: "llama-3.1-8b-instant", provider: "groq", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://groq.com/pricing", updated: "2026-11-20" },
+  { model: "openai/gpt-oss-120b", provider: "groq", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://groq.com/pricing", updated: "2026-11-20" },
   // Together（together.ai/pricing）：Llama 系 128K，Qwen2.5-72B 为 32,768；计价未核实，留空。
-  { model: "meta-llama/Llama-3.3-70B-Instruct-Turbo", provider: "together", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://www.together.ai/pricing", updated: "2026-11-20" },
-  { model: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", provider: "together", contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://www.together.ai/pricing", updated: "2026-11-20" },
-  { model: "Qwen/Qwen2.5-72B-Instruct-Turbo", provider: "together", contextWindow: 32_768, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://www.together.ai/pricing", updated: "2026-11-20" },
+  { model: "meta-llama/Llama-3.3-70B-Instruct-Turbo", provider: "together", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://www.together.ai/pricing", updated: "2026-11-20" },
+  { model: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", provider: "together", supportsVision: false, contextWindow: 131_072, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://www.together.ai/pricing", updated: "2026-11-20" },
+  { model: "Qwen/Qwen2.5-72B-Instruct-Turbo", provider: "together", supportsVision: false, contextWindow: 32_768, maxOutputTokens: null, inputPricePer1M: null, outputPricePer1M: null, source: "https://www.together.ai/pricing", updated: "2026-11-20" },
 ];
 
 /** 刷新缓存的来源：OpenRouter 公开模型列表（无需 Key），含 context_length 与计价。 */
