@@ -73,7 +73,7 @@
 | `nyra hooks list` | 列出已安装的钩子 |
 | `nyra permissions` | Poppy 站点授权意向（本地账本，只记录不授权） |
 | `nyra eigenflux` | EigenFlux 接入检测与本地网络限制 |
-| `nyra gmail <status\|auth\|search\|read\|send\|revoke>` | Gmail 连接器：读邮件、按 thread 回复、代发草稿（发信走审批，详见 `docs/connectors-gmail.md`） |
+| `nyra gmail <status\|auth\|search\|read\|send\|labels\|label\|unlabel\|mark-read\|mark-unread\|trash\|attachment\|revoke>` | Gmail 连接器：读邮件、按 thread 回复、代发草稿（发信走审批）；附件只读下载、标签、标已读、进回收站（写操作须显式确认；永久删除不提供，详见 `docs/connectors-gmail.md`） |
 | `nyra connector <status\|list\|approve\|revoke>` | 连接器授权状态机：每应用一次批准、过期与撤销（详见 `docs/connectors.md`） |
 | `nyra shopify <auth\|status\|products\|product\|orders\|order\|inventory>` | Shopify 连接器（只读）：查商品、订单、库存；写操作一律拒绝（详见 `docs/connectors.md`） |
 | `nyra slack <auth\|status\|channels\|history\|send\|card>` | Slack 连接器：读频道/消息、发消息（须显式批准）、发审批卡；删消息/改频道/管理成员一律拒绝（详见 `docs/connectors.md`） |

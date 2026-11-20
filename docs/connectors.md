@@ -10,7 +10,7 @@
 
 | 连接器 | 状态 | 说明 |
 |---|---|---|
-| Gmail | 已接入 | 读信、按 thread 回复、代发草稿（缺口 6 已落地） |
+| Gmail | 已接入 | 读信、按 thread 回复、代发草稿（缺口 6 已落地）；附件下载、标签、标已读、进回收站（缺口 44 第三批） |
 | Shopify | 已接入（只读） | 用户自己的 Hollow & Scale 店铺：查商品、订单、库存（缺口 44 第一批，只读起步） |
 | Slack | 已接入 | 团队消息与审批卡的落点：读频道/消息、发消息（须显式批准）、发审批卡（缺口 44 第二批） |
 
@@ -209,12 +209,75 @@ nyra slack card --channel <id> --approval <id>
 （撤销时会明确提示这一点）。`invalid_auth`（token 被撤销/被轮换）时自动标
 “已过期”，下次调用直接报“请重新授权”。
 
+## Gmail 深化（附件 + 标签 + 已读 + 回收站，缺口 44 第三批）
+
+缺口 6 只做了最小闭环（读信、按 thread 回复、代发草稿），明确不处理附件、
+标签、删除、已读；本批把这四件补上。OAuth 接线同时收尾：`gmail.ts` 里
+自写的授权码流程与 `oauth.ts` 的通用流程合并，只合 Gmail 这一路——
+`nyra gmail auth` 与 `nyra connector approve gmail` 走同一条路，行为不变
+（授权 URL 参数顺序、回环回调文案、超时提示一字不差；网关接线与多用户
+权限模型仍是以后的一批）。
+
+### 附件只读下载
+
+```
+nyra gmail attachment <messageId> <attachmentId> [--out <路径>]
+```
+
+先读邮件全文找到附件所在的 part（文件名与 mime 类型都在 part 上），再调
+`attachments.get` 取原始字节；下载先落临时目录（`mkdtemp`、0600）校验，
+处理完即删、不落盘。口径与 Bot Phase 3 的 `src/bot/attachments.ts` 是
+同一套（复用其白名单与截断口径，不另起一套）：
+
+- 单个附件超 **10MB** 直接拒绝并明说上限；
+- 图片只记元信息（类型、大小），本批不看图（Agent.run 只接受字符串，
+  视觉模型没接）；
+- 文本文档（`.txt/.md/.json` 等与 `text/*`）提取内容，超 8000 字截断并注明；
+- 其他类型（PDF、Office、可执行文件等）拒绝解析，可执行文件一律不碰；
+  `--out <路径>` 可把原始字节原样保存（0600），默认不保存、只打印说明与
+  提取文本。
+
+### 标签与已读：写操作，须显式确认
+
+```
+nyra gmail labels                        # 只读：列出标签
+nyra gmail label <id> <标签id> [--yes]   # 加标签
+nyra gmail unlabel <id> <标签id> [--yes] # 去标签
+nyra gmail mark-read <id> [--yes]        # 标已读（去掉 UNREAD 标签）
+nyra gmail mark-unread <id> [--yes]      # 标未读（加上 UNREAD 标签）
+```
+
+没给 `--yes` 时交互问一句“确认给邮件 …？”（`[y/N]`，默认不改）；答非 y
+一律取消、不改。注意：`nyra gmail read <id>` 仍是读一封邮件全文，已读/
+未读改用 `mark-read` / `mark-unread`（`read` 这个词已被占用）。
+
+### 删除：只进回收站，永久删除不提供
+
+```
+nyra gmail trash <id> [--yes]            # 移进回收站（可恢复）
+```
+
+确认口径与上面一样（`--yes` 或交互 y）。`nyra gmail delete` / `purge`
+在 CLI 上撞见直接回一句明确拒绝——永久删除是硬红线（缺口 51），本批
+连入口都不提供；想彻底删除请去 Gmail 网页端操作。撤销的诚实说明与之前
+一样：`nyra gmail revoke` 只删本地凭证，彻底作废须去 Google 账号页。
+
+### 权限声明与审计
+
+Registry 里 Gmail 的声明已补全：读 scope（`gmail.readonly`）与写 scope
+（`gmail.send`、`gmail.compose`、`gmail.modify`）分开列；新增四个能力
+（读附件、改标签、改已读、进回收站）；永远须人批：改标签、改已读、
+进回收站；永远禁做：永久删除、转发给外部、改他人标签。
+
+每次调用记一行审计（`connector-audit.jsonl`，`action: "call"`），只记
+操作名、记录数、耗时，不记 token、不记邮件内容、不记附件内容。
+
 ## 已知局限（诚实边界）
 
 - 真实 Gmail OAuth 授权未在真应用上跑通，只在假 vault / 假 OAuth 上验过。
 - 真实 Shopify 店铺未接通，只在假 API 上验过；自定义应用 token 的授权流程未在真店上跑通。
 - 真实 Slack workspace 未接通，只在假 API 上验过；Bot token 的授权流程未在真 workspace 上跑通；审批卡按钮回调本批只记审计，不回写审批桥。
-- Gmail 深化是下一批；Shopify 写操作是以后的一批。
+- Gmail 深化已落地（附件只读下载、标签、标已读、进回收站）；Shopify 写操作是以后的一批。
 - 过期只在 refresh 失败时标记：access token 正常过期不标（它会被自动刷新）。
 - 授权状态按本机当前会话的 account_id 隔离；网关多用户权限模型是缺口 41
   的下一批，本批不碰。

@@ -29,8 +29,8 @@ token、关闭连接器）。
 
 ## 申请的 scope
 
-- `gmail.readonly`（读邮件）、`gmail.send`（发邮件）、`gmail.compose`（建草稿）。
-- 只读用户授权的范围；不申请 `gmail.modify`（不改标签、不删邮件）。
+- `gmail.readonly`（读邮件）、`gmail.send`（发邮件）、`gmail.compose`（建草稿）、`gmail.modify`（改标签、标已读、进回收站；缺口 44 第三批新增）。
+- 只读用户授权的范围；不申请整邮箱权限（`mail.google.com` 全量 scope 不用）。
 
 ## 凭证放在哪
 
@@ -57,11 +57,26 @@ nyra gmail read <id>                           读一封邮件全文
 nyra gmail send --to <邮箱> --subject <主题> --body <正文>
                 [--cc <邮箱>] [--bcc <邮箱>] [--thread <id>] [--draft] [--yes]
                                                发一封（默认先展示确认；--draft 只存草稿）
+nyra gmail labels                              列出标签（只读）
+nyra gmail label <id> <标签id> [--yes]         给邮件加标签（写操作，须显式确认）
+nyra gmail unlabel <id> <标签id> [--yes]       给邮件去标签（写操作，须显式确认）
+nyra gmail mark-read <id> [--yes]              标已读（写操作，须显式确认；read 仍是读全文）
+nyra gmail mark-unread <id> [--yes]            标未读（写操作，须显式确认）
+nyra gmail trash <id> [--yes]                  移进回收站（写操作，须显式确认；永久删除不提供）
+nyra gmail attachment <messageId> <attachmentId> [--out <路径>]
+                                               下载附件并校验（图片只记元信息、文本文档提取内容）
 nyra gmail revoke [--yes]                      吊销授权并删除本地 token
 ```
 
 搜索用 Gmail 原生语法，如 `from:boss@example.com is:unread`、
 `subject:发票 after:2026/1/1`。
+
+附件只读下载（缺口 44 第三批）：先读邮件全文找附件 part，再取原始字节；
+下载落临时目录（0600）校验、处理完即删。单个附件超 10MB 拒绝；图片只记
+元信息不看图；文本文档提取内容（超 8000 字截断）；PDF/Office/可执行文件
+不解析；`--out` 可原样保存（0600）。改标签、标已读、进回收站都是写操作，
+没给 `--yes` 时交互问一句 `[y/N]`，答非 y 一律取消。永久删除本批不提供：
+`nyra gmail delete` / `purge` 直接拒绝，想彻底删除去 Gmail 网页端。
 
 ## 工具（给模型用）
 
@@ -103,7 +118,7 @@ nyra gmail revoke [--yes]                      吊销授权并删除本地 token
 ## 已知局限（本批不做，下一批再说）
 
 - 只做 Gmail：Slack / WhatsApp 等后续按同一模式扩展，不在本批。
-- 不处理附件（不下载、不发送附件）；不改标签、不删邮件、不标已读（没申请 `gmail.modify`）。
+- 附件只读下载（缺口 44 第三批已落地）；不发送附件；不永久删除邮件（只进回收站）；不转发给外部、不改他人标签。
 - 没有应用事件源（缺口 7：新邮件触发任务）与邮件即任务入口（缺口 22：读到邮件直接建任务），那是下一批。
 - Web UI 连接管理页在 `desktop/`，归 Hark；本批只给了网关 `GET /api/connectors` 状态接口。
 - 发信不做收件人格式校验：地址写错时 Gmail API 会直接报错，错误原样返回。
