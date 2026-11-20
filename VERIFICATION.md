@@ -1,3 +1,10 @@
+## 2026-11-21 — Node claim 运行时 ID 类型校验（仅静态）
+
+- 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal，并对照 main 的 Node Agent 与 Tools。main 近期检索提交 [297039e](https://github.com/js2005happy/nyra/commit/297039e5ae63d6f6d789ce3550cacb60e724dff9)（2026-11-20 19:34 UTC）为 media setup CI mock 修复，不重复本增量；开放 Issues/PR 搜索为空。
+- 静态核对 `claimOperation` 在 `RegExp.test` 前使用 `typeof operationId !== "string"` 拒绝非字符串；此检查避免 JS 的隐式转换别名。原先类型声明不能保证 JS 调用者输入。
+- 前次提交 `b088ddb21f798607825a24c3adffc9f792ca5873` 的 combined statuses 和 PR 触发 workflow runs 均为空；不能据此判断 CI 通过或失败。
+- **未运行测试、编译、脚本、CI 或跨平台实机验证**。尚有路径 TOCTOU、原生 openat、Windows reparse、真实派发集成等未解决问题。
+
 ## 2026-11-21 — Node claim 目录同步后名称复核
 
 静态检查：在 `scripts/node_tool_claim.ts` 中缓存已核验文件身份，目录 `fsync` 后重新 `lstat` 对照 dev/ino、类型、链接数、UID、私有权限和长度；任何异常失败关闭且不自动清理 claim。**未运行** TypeScript 编译、测试、脚本或 CI；没有运行时证明。该复核不能消除最后一次检查后的路径替换，也不提供 openat 或 exactly-once。Windows 仍拒绝 claim，组件未接入主执行器。
