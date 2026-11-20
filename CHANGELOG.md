@@ -1,3 +1,7 @@
+## 2026-11-21 — Node claim 操作 ID 类型安全（未发布）
+
+- 修复 `scripts/node_tool_claim.ts` 对 `operationId` 使用正则前未检查运行时类型的问题，拒绝数字、数组和对象隐式转字符串造成的 ID 别名；合法字符串的命名规则不变。仅静态审阅，未运行测试/CI；claim 仍未接入运行时，Windows 仍拒绝，不能保证 exactly-once。
+
 ## 2026-11-21
 
 - 安全：Node/Bun 实验性 claim 在目录 fsync 后再次核对 claim 文件名与已写入 inode 的身份及私有性；失败保留 unknown。仅静态审阅，未运行测试/CI；仍未接入工具派发，不能保证 exactly-once。
