@@ -44,7 +44,8 @@ export interface AttachmentProcessOptions {
   textChars: number;
 }
 
-function formatBytes(n: number): string {
+/** 字节数格式化（Gmail 附件下载复用同一口径）。 */
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `约 ${(n / 1024).toFixed(0)} KB`;
   return `约 ${(n / (1024 * 1024)).toFixed(1)} MB`;
