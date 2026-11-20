@@ -40,8 +40,8 @@ interface TelegramMessage {
   caption?: string;
   entities?: { type: string; offset: number; length: number; user?: { id: number } }[];
   caption_entities?: { type: string; offset: number; length: number; user?: { id: number } }[];
-  photo?: { file_id: string }[];
-  document?: { file_id: string; file_name?: string };
+  photo?: { file_id: string; width?: number; height?: number; file_size?: number }[];
+  document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
 }
 
 export interface TelegramAdapterOptions {
@@ -171,8 +171,25 @@ export class TelegramAdapter implements ChannelAdapter {
     const entities = message.entities ?? message.caption_entities ?? [];
     const isMentioned = this.checkMentioned(text, entities);
     const attachments: InboundMessage["attachments"] = [];
-    if (message.photo?.length) attachments.push({ kind: "photo", fileId: message.photo[message.photo.length - 1].file_id });
-    if (message.document) attachments.push({ kind: "document", fileId: message.document.file_id, name: message.document.file_name });
+    if (message.photo?.length) {
+      const biggest = message.photo[message.photo.length - 1];
+      attachments.push({
+        kind: "photo",
+        fileId: biggest.file_id,
+        sizeBytes: typeof biggest.file_size === "number" ? biggest.file_size : undefined,
+        width: typeof biggest.width === "number" ? biggest.width : undefined,
+        height: typeof biggest.height === "number" ? biggest.height : undefined,
+      });
+    }
+    if (message.document) {
+      attachments.push({
+        kind: "document",
+        fileId: message.document.file_id,
+        name: message.document.file_name,
+        sizeBytes: typeof message.document.file_size === "number" ? message.document.file_size : undefined,
+        mimeType: message.document.mime_type,
+      });
+    }
     const chatType = (message.chat.type === "private" || message.chat.type === "group" || message.chat.type === "supergroup" || message.chat.type === "channel")
       ? (message.chat.type as BotChatType)
       : "group";
@@ -229,5 +246,28 @@ export class TelegramAdapter implements ChannelAdapter {
   /** 回应按钮点击（消掉客户端的等待转圈；文案只写结论，不带敏感信息）。 */
   async answerCallback(callbackId: string, text: string): Promise<void> {
     await this.callApi("answerCallbackQuery", { callback_query_id: callbackId, text });
+  }
+
+  /**
+   * 按 file_id 下载附件：先 getFile 拿 file_path，再从文件服务下载。
+   * 只报方法名与状态码，不把含 token 的 URL 写进错误文案；下载本身不
+   * 经过 callApi（文件服务返回的是二进制，不是 JSON 信封）。
+   */
+  async downloadFile(fileId: string): Promise<{ bytes: Buffer; fileName?: string; mimeType?: string }> {
+    const info = await this.callApi<{ file_id: string; file_path?: string }>("getFile", { file_id: fileId });
+    if (!info.file_path) throw new Error("Telegram 未返回附件下载地址");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await this.fetchImpl(`${this.apiBase}/file/bot${this.token}/${info.file_path}`, { signal: controller.signal });
+      if (!res.ok) throw new Error(`Telegram 文件下载失败（HTTP ${res.status}）`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      return { bytes: buf };
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw new Error("Telegram 文件下载超时");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
