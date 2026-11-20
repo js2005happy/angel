@@ -9,7 +9,7 @@
  * proving an external side effect. Never use on an untrusted/shared filesystem.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, statfsSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 export class ClaimUnavailable extends Error {
@@ -65,6 +65,13 @@ export function claimOperation(directory: string, operationId: string): Operatio
   // fd open through O_EXCL creation so a renamed ancestor cannot redirect it.
   // This is Linux-only; do not silently fall back to a racy pathname on other OSes.
   if (process.platform !== "linux") throw new ClaimUnavailable();
+  // /proc/self/fd must be backed by the kernel procfs, not a bind-mounted or
+  // user-controlled lookalike. Linux PROC_SUPER_MAGIC is 0x9fa0.
+  // A mount-namespace adversary can still alter mounts after this preflight;
+  // callers must not treat this as a sandbox or hostile-namespace defense.
+  try {
+    if (statfsSync("/proc/self/fd").type !== 0x9fa0) throw new ClaimUnavailable();
+  } catch { throw new ClaimUnavailable(); }
   let before;
   let fd: number;
   let directoryFd: number;
