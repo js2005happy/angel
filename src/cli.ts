@@ -24,6 +24,7 @@ import { handleCost } from "./costCli.ts";
 import { handleStats, formatMonthLine } from "./statsCli.ts";
 import { handleModels } from "./modelsCli.ts";
 import { loadModelCache, manualWindowFromConfig, resolveContextWindow } from "./modelCatalog.ts";
+import { modelSupportsVision, prepareVisionInputs, resolveVisionConfig, visionGateMessage } from "./vision.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
 import { checkRedlines, formatRedlines, toRedlinesJson } from "./redlines.ts";
@@ -110,6 +111,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
 
 用法：
 nyra "任务" [--provider 名字] [--mode readonly|auto|full|creator]   一次性执行任务
+nyra "任务" --image <图片路径> [--image ...] [--video <视频路径或链接>]   带图/视频做任务（图片 PNG/JPEG/WebP/GIF，视频先抽帧；模型须支持看图，详见 docs/vision.md）
 --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
 nyra                                                        进入交互模式（REPL）
 nyra --help                    显示帮助（不用 Key、不联网）
@@ -187,6 +189,7 @@ export const USAGE_EN = `Nyra ${VERSION} (Node runtime)
 
 Usage:
 nyra "task" [--provider name] [--mode readonly|auto|full|creator]   run one task
+nyra "task" --image <image path> [--image ...] [--video <video path or URL>]   run with images/video (PNG/JPEG/WebP/GIF; video is sampled into frames; model must support vision, see docs/vision.md)
 --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
 nyra                                                        interactive mode (REPL)
 nyra --help                    show help (no key, no network)
@@ -305,6 +308,9 @@ export interface CliArgs {
   mode?: string; maxTurns: number | null; contextWindow: number | null;
   /** 缺口 4：本次运行的代笔渠道（--channel gmail）；null = 不注入文风画像。 */
   channel?: string | null;
+  /** 缺口 16：本次运行附带的图片（--image，可重复）与视频（--video，可重复）。 */
+  images: string[];
+  videos: string[];
   workdir: string; trust: boolean;
   sandbox?: string | null; sandboxId?: string | null; sandboxTemplate?: string | null; sandboxTimeout: number | null;
   doctor: boolean; setup: boolean; example: boolean; exampleFile?: string;
@@ -325,7 +331,7 @@ export function parseArgs(argv: string[]): CliArgs {
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
-    maxTurns: null, contextWindow: null, channel: null,
+    maxTurns: null, contextWindow: null, channel: null, images: [], videos: [],
     workdir: ".", trust: false, sandboxTimeout: null,
     doctor: false, setup: false, example: false,
   };
@@ -335,7 +341,7 @@ export function parseArgs(argv: string[]): CliArgs {
       "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
       "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
       "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
-      "--lang", "--channel",
+      "--lang", "--channel", "--image", "--video",
     ]);
   const subcommands = subcommandSet();
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
@@ -406,9 +412,15 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--sandbox-timeout": args.sandboxTimeout = parseInt(value, 10); break;
         case "--lang": args.lang = value; break;
         case "--channel": args.channel = value; break;
+        case "--image": args.images.push(value); break;
+        case "--video": args.videos.push(value); break;
       }
     } else if (a.startsWith("--") && a.includes("=")) {
       const [flag, value] = a.split("=", 2);
+      // 缺口 16：可重复 flag 的 --flag=value 形式直接追加——走 parseArgs 递归 +
+      // Object.assign 会把已攒的数组整个换掉（--image a --image=b 会丢 a）。
+      if (flag === "--image") { args.images.push(value); continue; }
+      if (flag === "--video") { args.videos.push(value); continue; }
       if (valueFlags.has(flag)) {
         const fake = parseArgs([flag, value]);
         Object.assign(args, fake);
@@ -670,6 +682,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
           tokenBudget: typeof o.token_budget === "number" ? o.token_budget : undefined,
         };
       })(),
+      // 缺口 16：视觉输入的配置（上限等，describe_image 工具共用同一份）。
+      visionConfig: resolveVisionConfig(config),
       // 缺口 24：子 agent 独立推理档位（delegate_reasoning_effort）。
       delegateReasoningEffort: typeof config.delegate_reasoning_effort === "string" ? config.delegate_reasoning_effort : null,
       // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
@@ -3999,12 +4013,17 @@ async function runJson(args: CliArgs): Promise<number> {
       return invalidArguments(process.stdout, "--json 与 --plan/--execute-plan 不能组合使用");
     }
     if (!args.task) return invalidArguments(process.stdout, "--json 需要任务文本");
+    // 缺口 16：图片只跟单次正向运行走，组合不对直接报错。
+    const visionComboError = validateVisionArgs(args);
+    if (visionComboError) return invalidArguments(process.stdout, visionComboError);
     const built = await buildAgent(args, {
         interactive: false,
         // 缺口 20：429 冷却以 JSON 事件报出（delay_ms 是本次计划等待的毫秒数）。
         onRetry: (r) => lines.emit("rate_limit_cooldown", { provider: r.provider, attempt: r.attempt, delay_ms: r.delayMs, kind: r.kind }),
       });
     const { agent, config, home } = built;
+    // 缺口 16：--image/--video 先过模型门禁再读图/抽帧（失败走 lines.failed）。
+    await attachVisionInputs(args, agent, config);
     const workdir = resolve(args.workdir);
     const { command, skipReason } = verifySetup(args, config, workdir);
     const [timeout, retries] = resolveVerifySettings(args.verifyTimeout, args.verifyRetries, config);
@@ -4051,11 +4070,48 @@ async function runJson(args: CliArgs): Promise<number> {
   }
 }
 
+// ---- 缺口 16：图像 / 视频输入 ----
+/**
+ * --image/--video 与其他一次性模式的组合校验：图片只跟单次正向运行走。
+ * 返回错误文案（null = 组合合法）。
+ */
+export function validateVisionArgs(args: CliArgs): string | null {
+  if (!args.images.length && !args.videos.length) return null;
+  if (args.resumeRun) return "--image/--video 不能与 --resume-run 组合使用（续跑沿用原运行的会话，图片已在其中）";
+  if (args.resume) return "--image/--video 不能与 --resume 组合使用（续会话沿用原会话，图片已在其中）";
+  if (args.planMode || args.executePlan || args.approvePlan) return "--image/--video 不能与 --plan/--execute-plan 组合使用";
+  return null;
+}
+
+/**
+ * --image/--video 的准备与挂接（runOneShot / runJson 共用）：先过模型门禁
+ * （看不了图直接报错，不烧 token、不抽帧），再读图/抽帧，挂到 agent 上。
+ * 任一步失败抛错，调用方按各自的错误通道回报。
+ */
+async function attachVisionInputs(args: CliArgs, agent: Agent, config: Record<string, unknown>): Promise<void> {
+  if (!args.images.length && !args.videos.length) return;
+  const model = typeof (agent.provider as { model?: unknown }).model === "string"
+    ? (agent.provider as { model: string }).model
+    : "";
+  const gate = modelSupportsVision(model, agent.provider.name);
+  if (!gate.supported) throw new AgentError(visionGateMessage(model, agent.provider.name));
+  agent.visionInputs = await prepareVisionInputs({
+    images: args.images, videos: args.videos,
+    workdir: resolve(args.workdir), config,
+  });
+}
+
+/** 缺口 16：测试用——attachVisionInputs 的同款入口（runOneShot / runJson 共用）。 */
+export { attachVisionInputs };
+
 // ---- 一次性任务 ----
 async function runOneShot(args: CliArgs): Promise<number> {
   const home = resolveHome();
   const config = loadConfig(home);
   const workdir = resolve(args.workdir);
+  // 缺口 16：图片只跟单次正向运行走，组合不对直接报错（不建 agent、不烧 token）。
+  const visionComboError = validateVisionArgs(args);
+  if (visionComboError) { process.stderr.write(`错误：${visionComboError}\n`); return 2; }
   if (!existsSync(workdir) || !statSync(workdir).isDirectory()) {
     process.stderr.write(`错误：工作目录不存在：${workdir}\n`);
     return 1;
@@ -4156,6 +4212,13 @@ async function runOneShot(args: CliArgs): Promise<number> {
         onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
       });
     const { agent } = built;
+    // 缺口 16：--image/--video 先过模型门禁再读图/抽帧，失败直接报错退出。
+    try {
+      await attachVisionInputs(args, agent, config);
+    } catch (err: unknown) {
+      process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+      return 1;
+    }
     const flusher = makeUsageFlusher(built);
     if (args.resume) {
       const messages = loadSession(args.resume, home);
@@ -5597,6 +5660,12 @@ export async function main(argv: string[]): Promise<number> {
   if (args.contextWindow !== null && (typeof args.contextWindow !== "number" || !Number.isInteger(args.contextWindow) || args.contextWindow < 1)) {
     process.stderr.write(t("err.contextWindow") + "\n");
     return 1;
+  }
+
+  // 缺口 16：--image/--video 只支持一次性任务，交互模式暂不支持。
+  if ((args.images.length || args.videos.length) && args.task === undefined) {
+    process.stderr.write("错误：--image/--video 只支持一次性任务（nyra --image <图片> \"任务\"），交互模式暂不支持\n");
+    return 2;
   }
 
   if (args.task !== undefined) return withOneShotSession(args, () => runOneShot(args));
