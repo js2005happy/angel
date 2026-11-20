@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 Linux 目录 fd 绑定排他创建（仅静态审阅）
+
+- **仓库事实**：此前 Node claim 在检查目录 fd 后关闭句柄，再按原路径 O_EXCL 创建，存在路径替换竞态。本轮 Linux 上改用保持打开的目录 fd 与 `/proc/self/fd/<fd>/<hash>.claim` 路径执行 O_EXCL|O_NOFOLLOW；非 Linux 平台拒绝使用该实验性原语，避免不安全回退。该组件仍未接入真实 Node 工具派发。
+- **外部用户反馈（2026-11-07）**：[Codex #60104](https://github.com/openai/codex/issues/60104) 报告长任务重复返工及用量浪费。这是个案而非频率统计，也不是 Angel 故障证据。**工程推断**：可靠操作所有权应优先于自动恢复和重复执行。
+- **候选排序（价值／难度／安全风险／依赖）**：本项 P0（高／中／中／Linux procfs，已提交待验证）；P0 Linux procfs 身份/挂载边界及故障注入审查（高／中／高／可信运行环境）；P0 Windows 原生 reparse 句柄保护（高／高／高／原生 API）；P0 接入真实 Node 工具派发（高／高／高／安全存储与审批）；P1 MCP 工具目录失效检测（中高／中／中／MCP）；P1 可信副作用回执（高／高／高／适配器）。
+- **限制**：procfs 路径不是跨平台 openat API；未验证挂载真实性、跨命名空间及网络文件系统语义。未运行编译、测试、脚本或 CI，不能宣称 exactly-once 或生产可用。
+
 ## 2026-11-21 — P0 claim 操作 ID 运行时类型校验（仅静态审阅）
 
 - **仓库事实**：Node 实验性 claim 的 `RegExp.test(operationId)` 会对非字符串输入做 JavaScript 隐式字符串转换，尽管 TypeScript 参数声明为 `string`；跨 JS/JSON 调用边界可传入数字、数组或对象，导致不同输入别名到同一字符串操作 ID。已增加 `typeof operationId === "string"` 的失败关闭门禁；没有改动持久格式、派发链或现有合法字符串行为。
