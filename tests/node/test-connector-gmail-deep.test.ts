@@ -493,8 +493,10 @@ test("GmailDeepTest.test_cli_attachment_end_to_end", async () => {
     expect(code2).toBe(0);
     expect(out2).toContain("已保存到");
     expect(readFileSync(outPath, "utf-8")).toBe("这是附件里的文字。");
-    // --out 落盘的附件文件是 0600。
-    expect(statSync(outPath).mode & 0o777).toBe(0o600);
+    // --out 落盘的附件文件是 0600（Windows 不认 POSIX mode，跳过断言）。
+    if (process.platform !== "win32") {
+      expect(statSync(outPath).mode & 0o777).toBe(0o600);
+    }
     // 附件临时目录处理完即删：tmp 里不留 nyra-gmail-attachment-*。
     expect(readdirSync(tmpdir()).filter((n) => n.startsWith("nyra-gmail-attachment-"))).toEqual([]);
   } finally {
