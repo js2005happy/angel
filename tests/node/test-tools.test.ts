@@ -17,7 +17,7 @@ const TOOL_NAMES = ["read_file", "write_file", "edit_file", "apply_patch", "list
   "web_fetch", "web_search", "browser_navigate", "browser_click", "browser_screenshot",
   "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_windows",
   "multi_model_research", "memory_append", "memory_search", "memory_forget", "memory_delete", "gmail_search", "gmail_read", "gmail_send", "save_skill", "read_skill", "delegate", "delegate_parallel", "plan",
-  "grep_search", "git_status", "http_post"];
+  "grep_search", "git_status", "http_post", "lsp_diagnostics", "lsp_symbols"];
 
 function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext {
   return newToolContext({ workdir, mode: "full", interactive: false, ...extra });
@@ -26,7 +26,7 @@ function fullCtx(workdir: string, extra: Partial<ToolContext> = {}): ToolContext
 test("ToolsTest.test_schema_names_match_python_24_plus_read_skill", () => {
   const names = TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string);
   expect(names).toEqual(TOOL_NAMES);
-  expect(TOOL_SCHEMAS.length).toBe(32); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete；缺口 3a：新增 delegate_parallel；缺口 6：新增 gmail_search / gmail_read / gmail_send。
+  expect(TOOL_SCHEMAS.length).toBe(34); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete；缺口 3a：新增 delegate_parallel；缺口 6：新增 gmail_search / gmail_read / gmail_send；缺口 24：新增 lsp_diagnostics / lsp_symbols。
   const poppy = [POPPY_TOOL_SCHEMA, POPPY_IDENTITY_SCHEMA, POPPY_PERMISSION_SCHEMA]
     .map((s) => (s.function as Record<string, unknown>).name as string);
   expect(poppy).toEqual(["poppy_discover", "poppy_identity_check", "poppy_permission_check"]);

@@ -15,7 +15,7 @@ import {
   loadConfig, resolveHome, resolveProvider, resolveProfile, resolveFallbackChain, resolveSwitchAllowlist,
   listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets, saveConfig,
 } from "./config.ts";
-import { Provider, FallbackProvider, buildProviderChain, ProviderError, switchTriggerFor, type RetryRecord, type SwitchRecord } from "./providers.ts";
+import { Provider, FallbackProvider, buildProviderChain, makeModelFactory, ProviderError, switchTriggerFor, type RetryRecord, type SwitchRecord } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport, computeRunStats } from "./runs.ts";
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
@@ -41,7 +41,7 @@ import { resolveExtraDirs } from "./extraDirs.ts";
 import { resolveReviewerModel } from "./reviewer.ts";
 import { resolveEnforced, applyEnforced, formatEnforced, effectiveValue, effectiveStringList } from "./enforcedConfig.ts";
 import { buildRecallNote, selectRecalledRuns } from "./runRecall.ts";
-import { resolveAuxRouting } from "./modelRouting.ts";
+import { resolveAuxRouting, resolvePlanActRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions, toRequestBody } from "./reasoning.ts";
 import { loadSession, listSessions, saveSession, newSessionId } from "./memory.ts";
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
@@ -608,6 +608,9 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       return null;
     }
   };
+  // 缺口 24：多模型工厂——Plan/Act 分模型与 compact/delegate/reviewer/verifier
+  // 便宜模型的共同前提。此前没接，这些模型切换都静默回退到了主模型。
+  const multiModelFactory = makeModelFactory({ home, config, primaryName: primaryCfg.name });
   const agent = new Agent(provider, {
       workdir: resolve(args.workdir),
       mode,
@@ -643,6 +646,23 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       monthlySpentBeforeUsd,
       // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
       auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
+      // 缺口 24：多模型工厂（Plan/Act 分模型 + compact/delegate/reviewer/verifier
+      // 便宜模型的共同前提；此前没接，这些切换都静默回退到了主模型）。
+      multiModelFactory,
+      // 缺口 24：Plan/Act 分模型路由（规划用强推理模型、执行用便宜模型）。
+      planActModels: (() => { const r = resolvePlanActRouting(config, provider.model); return { plan: r.plan, act: r.act }; })(),
+      // 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图；默认关）。
+      repoMap: (() => {
+        const rm = (config as Record<string, unknown>).repo_map;
+        if (!rm || typeof rm !== "object") return { enabled: false };
+        const o = rm as Record<string, unknown>;
+        return {
+          enabled: o.enabled === true,
+          tokenBudget: typeof o.token_budget === "number" ? o.token_budget : undefined,
+        };
+      })(),
+      // 缺口 24：子 agent 独立推理档位（delegate_reasoning_effort）。
+      delegateReasoningEffort: typeof config.delegate_reasoning_effort === "string" ? config.delegate_reasoning_effort : null,
       // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
       // reviewer_model / 默认 deepseek-flash，见 reviewer.ts）。
       reviewerModel: resolveReviewerModel(config).model,
@@ -3508,7 +3528,9 @@ async function runOneShot(args: CliArgs): Promise<number> {
     if (args.planMode) {
       try {
         const { agent } = await buildAgent(args, { interactive: false });
-        const details = await buildPlan(agent.provider, args.task!, workdir, TOOL_SCHEMAS);
+        // 缺口 24：Plan 阶段用强推理模型（配了 plan_model 时）；没配沿用主模型。
+        const planModel = agent.planProvider() ?? agent.provider;
+        const details = await buildPlan(planModel, args.task!, workdir, TOOL_SCHEMAS);
         const digest = savePlan(workdir, renderPlan(args.task!, details));
         process.stdout.write(`已生成只读计划：${join(workdir, "plan.md")}\n`);
         process.stdout.write(`SHA-256：${digest}\n`);

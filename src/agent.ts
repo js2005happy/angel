@@ -45,6 +45,7 @@ import { buildDashboardSnapshot } from "./dashboard.ts";
 import { runHooks, type RunHooksContext } from "./hooks.ts";
 import type { ReviewerLike } from "./reviewer.ts";
 import { loadConfig } from "./config.ts";
+import { buildRepoMap } from "./repoMap.ts";
 import {
   verifyOutput,
   verifierConfig,
@@ -197,6 +198,12 @@ export interface AgentOptions {
   extraDirs?: string[] | null;
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
   auxModels?: { compact?: string; delegate?: string };
+  /** 缺口 24：Plan/Act 分模型路由（规划用强推理模型、执行用便宜模型）。 */
+  planActModels?: { plan?: string; act?: string };
+  /** 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图）。enabled 默认关。 */
+  repoMap?: { enabled?: boolean; tokenBudget?: number } | null;
+  /** 缺口 24：子 agent（delegate）独立的推理档位；不填沿用主 provider 的档位。 */
+  delegateReasoningEffort?: string | null;
   /**
    * 缺口 10：独立审查层用的模型名（仅模型名，如 "deepseek-flash"；provider
    * 由 multiModelFactory 按模型名解析）。不传时用 delegate 便宜模型，
@@ -335,6 +342,12 @@ export class Agent {
   private monthlySpentBeforeUsd: AgentOptions["monthlySpentBeforeUsd"];
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
+  /** 缺口 24：Plan/Act 分模型（规划 / 执行）；缺省则沿用主模型。 */
+  private planActModels: { plan?: string; act?: string };
+  /** 缺口 24：Repo Map 配置（enabled + token 预算）；默认关。 */
+  private repoMap: { enabled: boolean; tokenBudget: number };
+  /** 缺口 24：子 agent 独立推理档位；null = 沿用主 provider。 */
+  private delegateReasoningEffort: string | null;
   /**
    * 缺口 10：独立审查层用的模型名（仅模型名）与注入的运行实例。
    * reviewerRunnerInstance 为 undefined = 还没建过（懒建一次后缓存；
@@ -417,6 +430,14 @@ export class Agent {
     this.monthlyCostLimitUsd = typeof opts.monthlyCostLimitUsd === "number" ? opts.monthlyCostLimitUsd : null;
     this.monthlySpentBeforeUsd = opts.monthlySpentBeforeUsd ?? null;
     this.auxModels = opts.auxModels ?? {};
+    this.planActModels = opts.planActModels ?? {};
+    this.repoMap = {
+      enabled: opts.repoMap?.enabled === true,
+      tokenBudget: typeof opts.repoMap?.tokenBudget === "number" && opts.repoMap.tokenBudget > 0
+        ? opts.repoMap.tokenBudget : 1000,
+    };
+    this.delegateReasoningEffort = typeof opts.delegateReasoningEffort === "string" && opts.delegateReasoningEffort.trim()
+      ? opts.delegateReasoningEffort.trim() : null;
     this.reviewerModelName = opts.reviewerModel ?? null;
     this.reviewerRunnerOpt = opts.reviewerRunner ?? null;
     this.verifierModelName = opts.verifierModel ?? null;
@@ -1066,6 +1087,23 @@ export class Agent {
     }
   }
 
+  /** 缺口 24：Repo Map 段——开启且能抽出签名时返回 Markdown，否则 null。 */
+  private buildRepoMapSection(): string | null {
+    if (!this.repoMap.enabled) return null;
+    try {
+      const map = buildRepoMap({
+        workdir: this.workdir,
+        tokenBudget: this.repoMap.tokenBudget,
+      });
+      if (!map.text || map.sigCount === 0) return null;
+      return map.text +
+        (map.truncated ? "\n（Repo Map 已按 token 预算截断；需要看某个文件的完整签名时用 grep_search 或 read_file。）" : "");
+    } catch {
+      // repo map 失败绝不拦运行：只是少一份结构地图，不注入即可。
+      return null;
+    }
+  }
+
   buildSystemPrompt(task: string, touchedPaths: string[] = [], deferredNote = ""): string {
     const sections = [SYSTEM_PROMPT_BASE, MODE_NOTES[this.mode] ?? ""];
     if (this.poppyEnabled) {
@@ -1094,6 +1132,10 @@ export class Agent {
     }
     const agentsMd = loadAgentsMd(this.workdir, this.home);
     if (agentsMd) sections.push(agentsMd);
+    // 缺口 24：轻量 Repo Map（函数/类签名地图）。只在开启且能抽出签名时注入，
+    // 预算内省 token；让模型一眼看清项目结构、定位要改的文件，而不是整仓扫描。
+    const repoMapSection = this.buildRepoMapSection();
+    if (repoMapSection) sections.push(repoMapSection);
     // 调研报告第 2 项：技能渐进披露——两段式。常驻段只放技能索引（每技能约
     // 100 字描述，skillIndexText 有缓存、集合不变不重算）；全文段只放命中的
     // 技能（关键词前 2 + 路径触发命中）。未命中的技能全文绝不进提示词——
@@ -1169,6 +1211,9 @@ export class Agent {
     const injectedPathSkills = new Set(matchSkills(task, this.skills, 2).map((s) => s.name));
     // 缺口 11：关键词命中的技能已注入 system prompt，记一次使用（sweep 靠它判断多久没人用）。
     for (const name of injectedPathSkills) this.noteSkillUsed(name);
+    // 缺口 24：Act 阶段用便宜模型（配了 act_model 时）；首轮也是执行的一部分，
+    // 意图理解由 system prompt + 任务文本承载，不单独再开一个主模型轮。
+    const actModel = this.actProvider();
     for (let i = 0; i < this.maxTurns; i++) {
       let current = messages;
       if (this.autoCompactEnabled && !attemptedAutoCompact &&
@@ -1180,7 +1225,7 @@ export class Agent {
       }
       let resp: Record<string, unknown>;
       try {
-        resp = await this.provider.chat(current as never, schemas as never);
+        resp = await actModel.chat(current as never, schemas as never);
       } catch (err: unknown) {
         if (err instanceof ProviderError) throw new AgentError(String(err));
         throw err;
@@ -1353,6 +1398,41 @@ export class Agent {
       return null;
     }
   }
+
+  /**
+   * 缺口 24：Plan/Act 分模型——规划阶段（--plan / buildPlan）用的强推理模型。
+   *
+   * 配了 planActModels.plan 且装了 multiModelFactory 时造一个独立 provider；
+   * 否则返回 null（调用方沿用主模型）。与 auxProvider 同款"不假装切换成功"：
+   * 工厂抛错就回退，由调用方决定。
+   */
+  planProvider(): ProviderLike | null {
+    const model = this.planActModels.plan;
+    if (!model) return null;
+    const factory = this.ctx.multiModelFactory;
+    if (!factory) return null;
+    try {
+      return factory("plan", model);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 缺口 24：Act（执行）阶段的 provider。配了 planActModels.act 且工厂可用时
+   * 造一个便宜模型 provider；否则沿用主 provider。
+   */
+  actProvider(): ProviderLike {
+    const model = this.planActModels.act;
+    if (!model) return this.provider;
+    const factory = this.ctx.multiModelFactory;
+    if (!factory) return this.provider;
+    try {
+      return factory("act", model);
+    } catch {
+      return this.provider;
+    }
+  }
   /**
    * P2-2：每次上报 usage 后检查成本上限。超限直接抛错中止运行——这是"硬顶"，
    * 不是警告。金额算不出来时（未配单价 / provider 未报 usage）不抛错、不假装封顶，
@@ -1467,6 +1547,17 @@ export class Agent {
         } catch (err: unknown) {
           notes.push(`切换模型 ${effectiveModel} 失败，沿用父级模型：${err instanceof Error ? err.message : String(err)}`);
         }
+      }
+    }
+    // 缺口 24：子 agent 独立推理档位——配了 delegate_reasoning_effort 时，给子
+    // 任务的 provider 单独设推理档位（不影响主 agent 的档位）。便宜模型 + 低档位
+    // 是"执行类子任务"省 token 的组合；不配则沿用 provider 默认。
+    if (this.delegateReasoningEffort) {
+      const effort = this.delegateReasoningEffort;
+      if (["minimal", "low", "medium", "high", "xhigh"].includes(effort)) {
+        const p = provider as { extraBody?: Record<string, unknown> };
+        p.extraBody = { ...(p.extraBody ?? {}), reasoning_effort: effort };
+        notes.push(`子任务推理档位：${effort}`);
       }
     }
 

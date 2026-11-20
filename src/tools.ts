@@ -40,6 +40,7 @@ import { assertPublicUrl } from "./net.ts";
 import { isToolErrorResult } from "./repeatGuard.ts";
 import { t as tr } from "./i18n.ts";
 import { loadConfig, resolveHome } from "./config.ts";
+import { LspClient, resolveLspServers, formatDiagnostics, formatSymbols, formatLocations, type LspDiagnostic, type LspSymbol, type LspLocation } from "./lsp.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -334,6 +335,19 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("http_post", "向 URL 发送 HTTP POST 请求（会对外发数据，需审批）",
     { url: { type: "string" }, body: { type: "string", default: "" }, content_type: { type: "string", default: "application/json" } },
     ["url"]),
+  // 缺口 24：LSP 只读查询——诊断与符号查询（定义/引用/文档符号）。
+  // 重命名不接（走 apply_patch）；服务器未配置时如实报错，不 spawn、零开销。
+  schema("lsp_diagnostics", "用语言服务器（LSP）查看某个文件的诊断信息（错误/警告）。只读，不修改文件；语言服务器须已在 config.lsp.servers 里配置（未配置会返回说明）",
+    { path: { type: "string", description: "要诊断的文件路径（相对或绝对）" } },
+    ["path"]),
+  schema("lsp_symbols", "用语言服务器（LSP）查询代码符号：定义（definition）、引用（references）或文档符号（documentSymbols）。只读，不修改文件；重命名请用 apply_patch，不要用 LSP 改名",
+    {
+      path: { type: "string", description: "文件路径（相对或绝对）" },
+      query: { type: "string", enum: ["symbols", "definition", "references"], description: "查询类型：symbols=文档符号列表；definition=某位置符号的定义；references=某位置符号的引用" },
+      line: { type: "integer", description: "行号（1 基；definition/references 需要，symbols 忽略）" },
+      column: { type: "integer", description: "列号（1 基；definition/references 需要，symbols 忽略）" },
+    },
+    ["path", "query"]),
 ];
 
 // ---- 路径解析 ----
@@ -2030,6 +2044,79 @@ export function disconnectBrowser(ctx: ToolContext): void {
   ctx.browser = null;
 }
 
+// ---- 缺口 24：LSP 只读查询（诊断 / 符号） ----
+
+// LSP 客户端按 home 缓存（一个 home 一份客户端池，按扩展名选服务器）。
+// 不缓存会每次查询都 spawn 一个语言服务器，慢且浪费；缓存后同一 home 复用。
+const lspClientCache = new Map<string, LspClient[]>();
+
+/** 清空 LSP 客户端缓存（测试用）。 */
+export function resetLspClientCache(): void {
+  for (const clients of lspClientCache.values()) for (const c of clients) c.close();
+  lspClientCache.clear();
+}
+
+/** 取（或懒建）某 home 下负责某扩展名的 LSP 客户端；未配置返回 null。 */
+function lspClientFor(home: string | undefined, absPath: string): LspClient | null {
+  if (!home) return null;
+  const dot = absPath.lastIndexOf(".");
+  const ext = dot >= 0 ? absPath.slice(dot).toLowerCase() : "";
+  const servers = resolveLspServers(loadConfig(home));
+  if (!servers.length) return null;
+  const target = servers.find((s) => s.extensions.length === 0 || s.extensions.includes(ext));
+  if (!target) return null;
+  let clients = lspClientCache.get(home);
+  if (!clients) { clients = []; lspClientCache.set(home, clients); }
+  let client = clients.find((c) => c.config.command === target.command);
+  if (!client) {
+    client = new LspClient(target);
+    clients.push(client);
+  }
+  return client;
+}
+
+/** 未配置 LSP 服务器时的统一说明（告诉模型为什么查不了、怎么配）。 */
+function lspNotConfigured(absPath: string): string {
+  return `未配置 LSP 语言服务器，无法诊断/查询 ${absPath}。` +
+    `请在 config.json 里配置 lsp.servers（如 {"lsp":{"servers":[{"command":"typescript-language-server","args":["--stdio"],"extensions":[".ts",".tsx"]}]}}）。` +
+    `重命名请用 apply_patch，不要依赖 LSP。`;
+}
+
+async function toolLspDiagnostics(ctx: ToolContext, path: string): Promise<string> {
+  const abs = resolvePath(ctx, path);
+  const client = lspClientFor(ctx.home, abs);
+  if (!client) return lspNotConfigured(abs);
+  try {
+    await client.openDocument(abs);
+    // 等待一小段让服务器有时间推送诊断（publishDiagnostics 是异步推送）。
+    await new Promise((r) => setTimeout(r, 150));
+    const diags = client.getDiagnostics(abs);
+    return formatDiagnostics(diags);
+  } catch (err: unknown) {
+    return `错误：LSP 诊断失败：${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function toolLspSymbols(ctx: ToolContext, path: string, query: string, line?: number, column?: number): Promise<string> {
+  const abs = resolvePath(ctx, path);
+  const client = lspClientFor(ctx.home, abs);
+  if (!client) return lspNotConfigured(abs);
+  try {
+    if (query === "symbols") {
+      const symbols = await client.documentSymbols(abs);
+      return formatSymbols(symbols);
+    }
+    const l = typeof line === "number" && line >= 1 ? line - 1 : 0;
+    const c = typeof column === "number" && column >= 1 ? column - 1 : 0;
+    const locs: LspLocation[] = query === "references"
+      ? await client.references(abs, l, c)
+      : await client.definition(abs, l, c);
+    return formatLocations(locs);
+  } catch (err: unknown) {
+    return `错误：LSP 查询失败：${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
 // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
 // 跑 PreToolUse 的四类工具：写文件 / 改文件 / 打补丁 / 跑命令。其余工具不跑钩子。
 export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send"]);
@@ -2226,6 +2313,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case "grep_search": return await toolGrepSearch(ctx, String(args.pattern), args.path === undefined ? "." : String(args.path), args.regex === true, args.case_sensitive === true, args.max_results === undefined ? 50 : Number(args.max_results));
       case "git_status": return await toolGitStatus(ctx, args.path === undefined ? "." : String(args.path));
       case "http_post": return await toolHttpPost(ctx, String(args.url), args.body === undefined ? "" : String(args.body), args.content_type === undefined ? "application/json" : String(args.content_type));
+      case "lsp_diagnostics": return await toolLspDiagnostics(ctx, String(args.path));
+      case "lsp_symbols": return await toolLspSymbols(ctx, String(args.path), String(args.query), args.line === undefined ? undefined : Number(args.line), args.column === undefined ? undefined : Number(args.column));
       case "poppy_discover": case "poppy_identity_check": case "poppy_permission_check":
         return await toolPoppy(ctx, name, args);
       default:
@@ -2259,6 +2348,7 @@ export const READONLY_TOOLS = new Set([
   "read_file", "list_dir", "grep_search", "git_status",
   "web_fetch", "web_search", "read_skill", "memory_search",
   "poppy_discover", "poppy_identity_check", "poppy_permission_check",
+  "lsp_diagnostics", "lsp_symbols",
 ]);
 
 /** 工具失败后的重试次数上限（不含首次调用）。只读与可核查写操作共用。 */

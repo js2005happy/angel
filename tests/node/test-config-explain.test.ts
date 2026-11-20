@@ -5,6 +5,7 @@ import { explainAll, explainOne, formatExplain } from "../../src/configExplain.t
 
 const CAPABILITIES = [
   "tool_search", "run_recall", "cost_cap", "aux_model_routing",
+  "plan_act_model_routing",
   "reasoning_effort", "extra_writable_dirs", "deny_read_globs", "sandbox",
 ];
 
@@ -47,6 +48,11 @@ test("cost_cap：CLI 覆盖 config，来源标 cli", () => {
 test("aux_model_routing：展示实际路由目标，与主模型相同则视为未配", () => {
   expect(explainOne({ config: { compact_model: "cheap", model: "main" } }, "aux_model_routing")?.effective).toContain("压缩→cheap");
   expect(explainOne({ config: { compact_model: "main", model: "main" } }, "aux_model_routing")?.effective).toBe("off");
+});
+
+test("plan_act_model_routing：展示规划/执行分模型，与主模型相同则视为未配", () => {
+  expect(explainOne({ config: { plan_model: "reasoner", act_model: "cheap", model: "main" } }, "plan_act_model_routing")?.effective).toContain("规划→reasoner");
+  expect(explainOne({ config: { plan_model: "main", model: "main" } }, "plan_act_model_routing")?.effective).toBe("off");
 });
 
 test("extra_writable_dirs：不存在的目录会被拒绝并说明（不撒谎说可写）", () => {

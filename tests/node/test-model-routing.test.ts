@@ -3,6 +3,7 @@
 import { test, expect } from "bun:test";
 import {
   resolveAuxRouting, modelForTask, describeRouting, estimateCompactSaving,
+  resolvePlanActRouting, describePlanActRouting,
 } from "../../src/modelRouting.ts";
 
 test("两个都配：各走各的", () => {
@@ -76,3 +77,54 @@ test("estimateCompactSaving：同价位时节省为 0（不虚报）", () => {
   expect(r.savingUsd).toBeCloseTo(0, 10);
   expect(r.savingRatio).toBe(0);
 });
+
+// ---- 缺口 24：Plan/Act 分模型 ----
+
+test("Plan/Act 都配：规划用强模型、执行用便宜模型", () => {
+  const r = resolvePlanActRouting({ plan_model: "deepseek-reasoner", act_model: "deepseek-flash" }, "main");
+  expect(r.plan).toBe("deepseek-reasoner");
+  expect(r.act).toBe("deepseek-flash");
+  expect(r.ignored).toEqual([]);
+});
+
+test("Plan 与主模型相同 → 忽略（等于没配）", () => {
+  const r = resolvePlanActRouting({ plan_model: "main", act_model: "cheap" }, "main");
+  expect(r.plan).toBeUndefined();
+  expect(r.act).toBe("cheap");
+  expect(r.ignored.map((i) => i.key)).toContain("plan_model");
+});
+
+test("Act 与主模型相同 → 忽略（执行本来就用主模型）", () => {
+  const r = resolvePlanActRouting({ plan_model: "reasoner", act_model: "main" }, "main");
+  expect(r.plan).toBe("reasoner");
+  expect(r.act).toBeUndefined();
+  expect(r.ignored.map((i) => i.key)).toContain("act_model");
+});
+
+test("Plan 与 Act 配成相同 → 等于没分，忽略 act", () => {
+  const r = resolvePlanActRouting({ plan_model: "same", act_model: "same" }, "main");
+  expect(r.plan).toBe("same");
+  expect(r.act).toBeUndefined();
+  expect(r.ignored.map((i) => i.key)).toContain("act_model");
+});
+
+test("未配置 → 全空（共用主模型）", () => {
+  const r = resolvePlanActRouting({}, "main");
+  expect(r.plan).toBeUndefined();
+  expect(r.act).toBeUndefined();
+  expect(describePlanActRouting(r)).toContain("共用主模型");
+});
+
+test("只配 plan：规划用强模型、执行沿用主模型", () => {
+  const r = resolvePlanActRouting({ plan_model: "reasoner" }, "main");
+  expect(r.plan).toBe("reasoner");
+  expect(r.act).toBeUndefined();
+});
+
+test("describePlanActRouting 说人话", () => {
+  expect(describePlanActRouting(resolvePlanActRouting({ plan_model: "r", act_model: "a" }, "m")))
+    .toContain("规划 → r");
+  expect(describePlanActRouting(resolvePlanActRouting({ plan_model: "r", act_model: "a" }, "m")))
+    .toContain("执行 → a");
+});
+

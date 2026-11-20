@@ -72,6 +72,64 @@ export function modelForTask(routing: AuxRouting, task: AuxTask): string | null 
 }
 
 /**
+ * 缺口 24：Plan/Act 分模型路由（与辅助任务路由分离——这是主流程分阶段，
+ * 不是压缩/子任务这类"低智力辅助工作"）。
+ *
+ *   - plan = 规划阶段（--plan / buildPlan）：只读、拆解任务、产出计划，需要强推理。
+ *   - act  = 执行阶段（Act）：照计划写代码，智力需求相对低，可换便宜模型。
+ *
+ * 与主模型相同的配置会被忽略（等于没配，不假装优化）；plan 与 act 配成相同
+ * 也等于没分（忽略 act，plan 优先）。纯函数，便于单测。
+ */
+export interface PlanActRouting {
+  plan?: string;
+  act?: string;
+  ignored: { key: string; value: string; reason: string }[];
+}
+
+export function resolvePlanActRouting(
+  config: Record<string, unknown> | null | undefined,
+  mainModel?: string | null,
+): PlanActRouting {
+  const cfg = config ?? {};
+  const main = clean(mainModel ?? undefined);
+  const out: PlanActRouting = { ignored: [] };
+
+  let plan = clean(cfg.plan_model);
+  let act = clean(cfg.act_model);
+
+  // plan 与主模型相同：等于没配。
+  if (plan && main && plan === main) {
+    out.ignored.push({ key: "plan_model", value: plan, reason: "与主模型相同，等于没配，已忽略" });
+    plan = undefined;
+  }
+  // act 与主模型相同：等于没配（执行阶段本来就用主模型）。
+  if (act && main && act === main) {
+    out.ignored.push({ key: "act_model", value: act, reason: "与主模型相同，等于没配，已忽略" });
+    act = undefined;
+  }
+  // plan 与 act 配成相同：等于没分，忽略 act。
+  if (plan && act && plan === act) {
+    out.ignored.push({ key: "act_model", value: act, reason: "与 plan_model 相同，等于没分，已忽略" });
+    act = undefined;
+  }
+
+  out.plan = plan;
+  out.act = act;
+  return out;
+}
+
+/** doctor / redlines 用的一行摘要。 */
+export function describePlanActRouting(routing: PlanActRouting): string {
+  const parts: string[] = [];
+  if (routing.plan) parts.push(`规划 → ${routing.plan}`);
+  if (routing.act) parts.push(`执行 → ${routing.act}`);
+  const head = parts.length ? parts.join("，") : "未配置：规划与执行共用主模型";
+  const ignored = routing.ignored.length ? `；已忽略：${routing.ignored.map((i) => i.key).join("、")}` : "";
+  return head + ignored;
+}
+
+/**
  * 估算"压缩走便宜模型"能省多少：给压缩前后的 token 与两个模型的单价，算差额。
  * 只做演示性估算，不参与运行时决策——实际以 usage 为准。
  */

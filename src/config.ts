@@ -106,6 +106,18 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 与主模型相同时会被忽略（等于没配）。
   compact_model: null,
   delegate_model: null,
+  // 缺口 24：Plan/Act 分模型。plan_model = 规划阶段（--plan / buildPlan）用的强推理模型；
+  // act_model = 执行阶段（Act）用的便宜模型（不填沿用主模型）。与主模型相同会被忽略。
+  plan_model: null,
+  act_model: null,
+  // 缺口 24：子 agent（delegate）独立的推理档位；不填沿用全局 reasoning_effort。
+  delegate_reasoning_effort: null,
+  // 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图）。enabled 默认关（显式 opt-in）；
+  // token_budget 是预算（默认 1000）；只 map 常见代码文件，跳过 node_modules 等。
+  repo_map: { enabled: false, token_budget: 1000 },
+  // 缺口 24：LSP 语言服务器（诊断 + 符号查询，只读）。默认空 = 不启用、零开销。
+  // 例：{"servers":[{"command":"typescript-language-server","args":["--stdio"],"extensions":[".ts",".tsx"]}]}
+  lsp: { servers: [] },
   // 推理档位与输出冗长度（对齐 Codex）：minimal/low/medium/high/xhigh；null = 用 provider 默认。
   reasoning_effort: null,
   verbosity: null,

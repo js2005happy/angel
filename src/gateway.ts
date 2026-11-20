@@ -19,7 +19,7 @@ import {
   loadConfig, resolveProfile, resolveProvider, resolveFallbackChain, validateMode,
   getProviderPresets, VERSION, VALID_MODES, resolveSandbox, type ResolvedProvider,
 } from "./config.ts";
-import { Provider, buildProviderChain, switchTriggerFor, switchTriggerLabel, type ProviderLike, type SwitchRecord } from "./providers.ts";
+import { Provider, buildProviderChain, makeModelFactory, switchTriggerFor, switchTriggerLabel, type ProviderLike, type SwitchRecord } from "./providers.ts";
 import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS, type ApproveResult } from "./tools.ts";
 import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, type RuleScope, type RuleSuggestion } from "./approvalRules.ts";
 import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
@@ -48,6 +48,7 @@ import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTas
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadModelCache, manualWindowFromConfig, resolveContextWindow, type WindowSource } from "./modelCatalog.ts";
+import { resolveAuxRouting, resolvePlanActRouting } from "./modelRouting.ts";
 import { MCPToolManager, NyraMcpServer, appendMcpServerAudit, buildMcpManager, mcpServerConfig } from "./mcp.ts";
 import { McpCostTracker, estimateToolCost, costLimitUsd } from "./mcpCost.ts";
 import { DeviceRegistry, defaultDevicesPath, startDiscoveryResponder, PairingError } from "./pairing.ts";
@@ -284,6 +285,25 @@ export class Gateway {
       throw new Error("定时任务不得使用 CLI provider（Codex），请在配置里改用 HTTP provider");
     }
     return new Provider(cfg);
+  }
+
+  /** 缺口 24：多模型工厂（Plan/Act 分模型 + compact/delegate/reviewer/verifier）。 */
+  private modelFactory(): (name: string, model: string | null) => ProviderLike {
+    const profile = resolveProfile(this.profile, this.config);
+    const primaryName = this.providerName ?? profile.provider;
+    return makeModelFactory({ home: this.home, config: this.config, primaryName: primaryName as string });
+  }
+
+  /** 缺口 24：Plan/Act 分模型路由（与 CLI 同口径）。 */
+  private planActModels(): { plan?: string; act?: string } {
+    const r = resolvePlanActRouting(this.config, this.provider().model);
+    return { plan: r.plan, act: r.act };
+  }
+
+  /** 缺口 24：辅助任务路由（压缩/子任务便宜模型，与 CLI 同口径）。 */
+  private auxModels(): { compact?: string; delegate?: string } {
+    const r = resolveAuxRouting(this.config, this.provider().model);
+    return { compact: r.compact, delegate: r.delegate };
   }
 
   private reviewer(): { chat(messages: unknown[], tools?: unknown, timeout?: number): Promise<Record<string, unknown>> } | null {
@@ -860,6 +880,18 @@ export class Gateway {
           // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
           // reviewer_model / 默认 deepseek-flash）。
           reviewerModel: resolveReviewerModel(this.config).model,
+          // 缺口 24：多模型工厂 + Plan/Act 分模型 + 辅助任务便宜模型。
+          multiModelFactory: this.modelFactory(),
+          planActModels: this.planActModels(),
+          auxModels: this.auxModels(),
+          // 缺口 24：Repo Map + 子 agent 独立推理档位。
+          repoMap: (() => {
+            const rm = (this.config as Record<string, unknown>).repo_map;
+            if (!rm || typeof rm !== "object") return { enabled: false };
+            const o = rm as Record<string, unknown>;
+            return { enabled: o.enabled === true, tokenBudget: typeof o.token_budget === "number" ? o.token_budget : undefined };
+          })(),
+          delegateReasoningEffort: typeof this.config.delegate_reasoning_effort === "string" ? this.config.delegate_reasoning_effort : null,
           home: this.home,
           // 单技能启停：网关起的 agent 与 CLI 同口径（config.skills.disabled）。
           skillsDisabled: (() => {
@@ -923,11 +955,15 @@ export class Gateway {
     void (async () => {
       try {
         const provider = this.provider();
-        const has = (provider as unknown as { hasCredentials?: () => boolean }).hasCredentials;
-        if (typeof has === "function" && !has.call(provider)) {
+        // 缺口 24：Plan 阶段用强推理模型（配了 plan_model 时）；没配沿用主模型。
+        const planModel = this.planActModels().plan
+          ? (() => { try { return this.modelFactory()("plan", this.planActModels().plan!); } catch { return provider; } })()
+          : provider;
+        const has = (planModel as unknown as { hasCredentials?: () => boolean }).hasCredentials;
+        if (typeof has === "function" && !has.call(planModel)) {
           throw new PlanError("未找到可用的 API 凭据：请设置对应 provider 的环境变量 Key 后重启 ui");
         }
-        const details = await buildPlan(provider, text, this.workdir, TOOL_SCHEMAS as Record<string, unknown>[]);
+        const details = await buildPlan(planModel, text, this.workdir, TOOL_SCHEMAS as Record<string, unknown>[]);
         const body = renderPlan(text, details);
         const digest = savePlan(this.workdir, body);
         this.rememberProject(sessionId);

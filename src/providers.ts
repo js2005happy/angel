@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plaintextHttpError, type ResolvedProvider } from "./config.ts";
+import { plaintextHttpError, resolveProvider, type ResolvedProvider } from "./config.ts";
 
 export const RECOVERABLE_KINDS = ["quota", "rate_limit", "server", "timeout", "network"] as const;
 export type ProviderErrorKind =
@@ -1070,3 +1070,49 @@ export function buildProviderChain(
   if (providers.length === 1) return providers[0];
   return new FallbackProvider(providers, onSwitch ?? null, { onRetry: opts?.onRetry ?? null });
 }
+
+/**
+ * 缺口 24：按模型名造 provider 的工厂（multiModelFactory 的标准实现）。
+ *
+ * 语义统一（这是 Plan/Act 分模型与 aux 便宜模型真正生效的前提——此前 CLI/
+ * 网关都没接 multiModelFactory，compact/delegate/reviewer 的模型切换实际都
+ * 静默回退到了主模型）：
+ *   - model 形如 "provider:model" → 用指定 provider 造（如 "xai:grok-4"）
+ *   - model 是纯模型名 → 用主 provider（primaryName）造（如 "deepseek-flash"）
+ *   - model 为空 → 返回 null（调用方沿用主模型）
+ *
+ * 不假装成功：resolveProvider 抛错 / 造不出凭证时抛 ProviderError，由调用方
+ * 决定回退还是 fail-closed。
+ */
+export function makeModelFactory(opts: {
+  home: string;
+  config: Record<string, unknown>;
+  primaryName: string;
+}): (name: string, model: string | null) => ProviderLike {
+  const { home, config, primaryName } = opts;
+  return (name: string, model: string | null) => {
+    if (!model || !model.trim()) throw new ProviderError(`多模型工厂未指定模型（用途 ${name}）`);
+    const spec = model.trim();
+    let providerName: string;
+    let modelName: string;
+    const colon = spec.indexOf(":");
+    if (colon > 0 && colon < spec.length - 1) {
+      providerName = spec.slice(0, colon).trim();
+      modelName = spec.slice(colon + 1).trim();
+    } else if (colon >= 0) {
+      // 冒号在开头或结尾（或只有一个冒号）：写法非法。
+      throw new ProviderError(`模型写法不对：${JSON.stringify(spec)}（应为 provider:model 或 model）`);
+    } else {
+      providerName = primaryName;
+      modelName = spec;
+    }
+    if (!providerName || !modelName) throw new ProviderError(`模型写法不对：${JSON.stringify(spec)}（应为 provider:model 或 model）`);
+    const resolved = resolveProvider({ home, config, providerName, model: modelName });
+    const p = new Provider(resolved);
+    if (!p.hasCredentials()) {
+      throw new ProviderError(`provider ${providerName} 未配置可用凭证`);
+    }
+    return p;
+  };
+}
+

@@ -9,7 +9,7 @@
 //   - 每个能力列出**所有入口**，即使只有一个被使用——让人看到"还有别的地方能改它"
 //   - 有冲突时明确指出（例如 features 关但 config 开），不装作没冲突
 import { featureOn, resolveFeatures, type FeatureResolution } from "./features.ts";
-import { resolveAuxRouting } from "./modelRouting.ts";
+import { resolveAuxRouting, resolvePlanActRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions } from "./reasoning.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
 
@@ -122,6 +122,19 @@ export function explainAll(input: ExplainInput): CapabilityExplain[] {
       source: parts.length ? "config" : "default",
       keys: ["compact_model", "delegate_model"],
       note: parts.length ? "低智力需求的工作走便宜模型" : "未配置：压缩与子任务都用主模型（成本更高）",
+    });
+  }
+
+  // 4b) 缺口 24：Plan/Act 分模型
+  {
+    const routing = resolvePlanActRouting(cfg, typeof cfg.model === "string" ? cfg.model : null);
+    const parts = [routing.plan ? `规划→${routing.plan}` : "", routing.act ? `执行→${routing.act}` : ""].filter(Boolean);
+    out.push({
+      capability: "plan_act_model_routing",
+      effective: parts.length ? parts.join("，") : "off",
+      source: parts.length ? "config" : "default",
+      keys: ["plan_model", "act_model"],
+      note: parts.length ? "规划用强推理模型、执行换便宜模型" : "未配置：规划与执行共用主模型",
     });
   }
 

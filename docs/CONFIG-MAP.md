@@ -11,6 +11,7 @@
 | `run_recall` | `features.run_recall`<br>`--disable-feature run_recall`<br>`redlines.thresholds.recallMaxAgeDays` | on | 已开启；过期天数由 redlines.thresholds.recallMaxAgeDays 决定（默认 30） |
 | `cost_cap` | `max_cost_usd`<br>`--max-cost` | off | 未设上限：长任务可能无限烧钱 |
 | `aux_model_routing` | `compact_model`<br>`delegate_model` | off | 未配置：压缩与子任务都用主模型（成本更高） |
+| `plan_act_model_routing` | `plan_model`<br>`act_model` | off | 未配置：规划与执行共用主模型 |
 | `reasoning_effort` | `reasoning_effort`<br>`verbosity` | provider 默认 | 未配置：不发这两个字段（payload 与默认一致） |
 | `extra_writable_dirs` | `extra_writable_dirs`<br>`--add-dir` | none | 只有工作目录可写 |
 | `deny_read_globs` | `deny_read_globs` | off | 未配置：敏感文件（.env / secrets）可被读取并发给模型 |
