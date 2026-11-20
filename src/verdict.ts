@@ -357,8 +357,8 @@ export function summarizeTrend(input: TrendVerdictInput): TrendSummary {
   for (const r of runs) {
     const st = String(r.status ?? "");
     if (st === "verified") verified += 1;
-    else if (st === "failed" || st === "verify_failed") failed += 1;
-    else if (st === "completed_unverified") unverified += 1;
+    else if (st === "failed" || st === "verify_failed" || st === "incomplete") failed += 1;
+    else if (st === "completed_unverified" || st === "interrupted") unverified += 1;
     else other += 1;
     const total = runTotal(r);
     if (total !== null) { spendAll += total; spendKnown = true; }

@@ -155,3 +155,20 @@ nyra verdict --recent 10 --json         # 趋势
 
 子命令清单的**单一事实源**是 `src/subcommands.ts`：`cli` 判断参数、`docCheck` 校验文档、
 `docs/COMMANDS.md` 索引、测试——四处读同一份数组，加命令时不可能漏改。
+
+## 状态分桶：什么算通过、什么算失败
+
+趋势结论依赖分桶，分错就会**系统性高估通过率**。当前规则（`summarizeTrend`）：
+
+| 状态 | 归入 | 为什么 |
+|---|---|---|
+| `verified` | 通过 | 校验命令退出码 0 |
+| `failed` / `verify_failed` | 失败 | 明确失败 |
+| **`incomplete`** | **失败** | 运行没跑完就出错，`classifyRunStatus` 已判 `runtime_error` |
+| `completed_unverified` | 未验证 | 跑完了但没验证结论 |
+| **`interrupted`** | **未验证** | 被中断：没有结论，但不能从统计里消失 |
+| `queued` / `running` / `awaiting_approval` | 其它（进行中） | 还没结果，不该进通过率分母 |
+
+> 曾经的缺陷：除 `verified`/`failed`/`verify_failed`/`completed_unverified` 外**全部落"其它"**，
+> 于是 `incomplete`（真实失败）和 `interrupted` 被静默丢弃，通过率被高估。
+> 现在有测试锁住"只有进行中状态才允许落其它"——新增状态若没想清楚归属，测试会红。
