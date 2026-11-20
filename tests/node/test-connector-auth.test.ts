@@ -91,8 +91,8 @@ test("ConnectorAuthTest.test_declarations", () => {
   expect(gmail?.alwaysForbidden.length).toBeGreaterThan(0);
   expect(gmail?.dataAccessed.length).toBeGreaterThan(0);
 
-  // 试点连接器在目录里看得见、用不了。
-  expect(getDeclaration("shopify")?.status).toBe("pilot");
+  // 试点连接器在目录里看得见、用不了；Shopify 在缺口 44 第一批改为已接入（只读）。
+  expect(getDeclaration("shopify")?.status).toBe("available");
   expect(getDeclaration("slack")?.status).toBe("pilot");
   expect(listDeclarations().map((d) => d.id).sort()).toEqual(["gmail", "shopify", "slack"]);
 
