@@ -278,7 +278,7 @@ export async function runOne(
   }
 }
 
-export async function workerOnce(opts?: { store?: RunStore; provider?: Provider; config?: Record<string, unknown> | null; home?: string }): Promise<[RunState, string][]> {
+export async function workerOnce(opts?: { store?: RunStore; provider?: Provider; config?: Record<string, unknown> | null; home?: string; onTaskResult?: (result: { name: string; status: string; summary: string }) => Promise<void> | void }): Promise<[RunState, string][]> {
   const store = opts?.store ?? taskStore(opts?.home);
   const provider = opts?.provider ?? buildProvider(opts?.config, opts?.home)[0];
   const processed: [RunState, string][] = [];
@@ -286,8 +286,14 @@ export async function workerOnce(opts?: { store?: RunStore; provider?: Provider;
     const queued = listTasks(store).filter((s) => s.status === "queued").reverse();
     if (!queued.length) break;
     const state = store.claim(queued[0].run_id);
-    const final = await runOne(state, { store, provider, config: opts?.config, interactive: false, home: opts?.home });
-    processed.push(final);
+    const [final, output] = await runOne(state, { store, provider, config: opts?.config, interactive: false, home: opts?.home });
+    processed.push([final, output]);
+    if (opts?.onTaskResult) {
+      try {
+        // 队列任务没有人名，用 run_id 当标识，摘要放任务正文前 120 字。
+        await opts.onTaskResult({ name: final.run_id, status: final.status, summary: final.task.replace(/\n/g, " ").slice(0, 120) });
+      } catch { /* 推送失败不破坏任务结果 */ }
+    }
   }
   return processed;
 }
@@ -393,7 +399,13 @@ export async function handleTask(argv: string[], workdir: string): Promise<numbe
       for (;;) {
         try {
           const [provider, config] = buildProvider();
-          const processed = await workerOnce({ store, provider, config });
+          // Phase 3：队列任务结果推送（Bot notifier；没开时返回 null，不推）。
+          let taskNotifier: import("./bot/index.ts").BotNotifier | null = null;
+          try {
+            const { buildNotifierFromConfig } = await import("./bot/index.ts");
+            taskNotifier = buildNotifierFromConfig(resolveHome(), config ?? loadConfig());
+          } catch { /* notifier 建不起来就不推，不破坏 worker */ }
+          const processed = await workerOnce({ store, provider, config, onTaskResult: taskNotifier ? (r) => { void taskNotifier!.notifyTaskResult(r); } : undefined });
           for (const [final, output] of processed) {
             process.stdout.write(`${final.run_id}  ${final.status}  ${String(output).split("\n")[0].slice(0, 80)}\n`);
           }

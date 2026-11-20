@@ -98,7 +98,7 @@ import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from ".
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
 import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { listPresets } from "./mcpPresets.ts";
-import { handleBot } from "./bot/index.ts";
+import { buildNotifierFromConfig, handleBot, type BotNotifier } from "./bot/index.ts";
 import {
   PluginError, installPlugin, uninstallPlugin, listPlugins, verifyPlugin,
   setPluginStatus, setPluginPinned, pluginSkillDirs, auditPlugins, searchRegistry,
@@ -1019,7 +1019,14 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           saveResponsibilities(data, responsibilitiesPath(home));
           for (const r of results) process.stdout.write(`[巡查] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
         });
-      const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds, pollers });
+      // Phase 3：定时任务结果推送（Bot notifier）。notifier 没开/没配
+      // owner/目标会话/token 时 buildNotifierFromConfig 返回 null，不推、
+      // 不报错；推送失败不破坏定时任务（回调内部已兜底）。
+      let taskNotifier: BotNotifier | null = null;
+      try {
+        taskNotifier = buildNotifierFromConfig(home, loadConfig(home));
+      } catch { /* notifier 建不起来就不推，不破坏定时任务 */ }
+      const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds, pollers, onTaskResult: taskNotifier ? (r) => { void taskNotifier!.notifyTaskResult(r); } : undefined });
       void done;
       return 0;
     }

@@ -166,10 +166,16 @@ export function dueTasks(data: ScheduleData, now: Date = new Date()): ScheduleTa
   return data.tasks.filter((t) => isDue(t, now));
 }
 
+export interface TaskRunResult { name: string; status: string; summary: string; }
+
+/** 任务完成回调（Phase 3：Bot notifier 推送用；回调抛错不破坏守护进程）。 */
+export type TaskResultCallback = (result: TaskRunResult) => Promise<void> | void;
+
 export async function runDueTasks(
   data: ScheduleData,
   agentFactory: (task: ScheduleTask) => Promise<string>,
   now: Date = new Date(),
+  onTaskResult?: TaskResultCallback,
 ): Promise<{ name: string; status: string; summary: string }[]> {
   const results: { name: string; status: string; summary: string }[] = [];
   for (const task of dueTasks(data, now)) {
@@ -184,14 +190,18 @@ export async function runDueTasks(
     task.last_run = now.toISOString();
     task.last_status = status;
     task.last_summary = summary;
-    results.push({ name: task.name, status, summary });
+    const result = { name: task.name, status, summary };
+    results.push(result);
+    if (onTaskResult) {
+      try { await onTaskResult(result); } catch { /* 推送失败不破坏任务结果 */ }
+    }
   }
   return results;
 }
 
 export async function runDaemon(
   agentFactory: (task: ScheduleTask) => Promise<string>,
-  opts?: { interval?: number; path?: string; stopAfter?: number | null; pollers?: Array<() => Promise<void>> },
+  opts?: { interval?: number; path?: string; stopAfter?: number | null; pollers?: Array<() => Promise<void>>; onTaskResult?: TaskResultCallback },
 ): Promise<number> {
   const interval = opts?.interval ?? 60.0;
   let rounds = 0;
@@ -204,7 +214,7 @@ export async function runDaemon(
         process.stderr.write(`加载定时任务失败：${err instanceof Error ? err.message : String(err)}\n`);
         data = { tasks: [] };
       }
-      const results = await runDueTasks(data, agentFactory);
+      const results = await runDueTasks(data, agentFactory, new Date(), opts?.onTaskResult);
       saveSchedule(data, opts?.path);
       // 缺口 3b：跑成功的定时任务结果进审阅队列（Automations → review queue），
       // 人在队列里逐项批；失败的任务没有可审结果，inbox 已记。入队失败不破坏

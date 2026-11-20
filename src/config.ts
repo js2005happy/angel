@@ -56,10 +56,12 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 写操作（add_memory / forget_session / dispatch_task）须显式开 allow_writes，
   // 且每次写操作都要过独立审查层（reviewer 未开启时写操作直接拒绝，fail-closed）。
   mcp_server: { enabled: false, allow_writes: false },
-  // Bot 方向 Phase 2：双场景 Bot 内核（场景 A 外部 IM + 场景 B 自动化监控）。
+  // Bot 方向 Phase 3：双场景 Bot 内核（场景 A 外部 IM + 场景 B 自动化监控）。
   // 默认全关；telegram.enabled 开了才轮询。角色只认 owner / admins /
   // members 三张白名单，默认 guest 只读；owner/admin 的写操作逐次走聊天内
-  // 审批（approvalBridge），审批 TTL 默认 60 秒、超时自动拒绝。
+  // 审批（approvalBridge），审批 TTL 默认 60 秒、超时自动拒绝。notifier
+  // （主动推送：Heartbeat 巡查 + Watch 文件变化 + 任务结果）默认全关，
+  // 须显式开 + 配 owner + 配目标会话才推；任务结果默认只推失败。
   bot: {
     enabled: false,
     mention_only: true,
@@ -75,6 +77,19 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
     approval_chat_id: null,
     chat_system_prompts: {},
     profiles: {},
+    notifier: {
+      enabled: false,
+      target_chat_id: null,
+      heartbeat_interval_ms: 300000,
+      notify_cooldown_ms: 3600000,
+      notify_tasks: "failures",
+      monthly_spend_warn_ratio: 0.8,
+      queue_depth_warn: 5,
+      pending_approval_warn_minutes: 10,
+      watches: [],
+    },
+    attachment_max_bytes: 10 * 1024 * 1024,
+    attachment_text_chars: 20000,
     telegram: { enabled: false, username: null },
   },
   // P0-5：权限规则语言（学 Claude Code 的 Tool(specifier)）。空 = 走默认交互式审批。

@@ -104,6 +104,11 @@ mcp_server_call: ["tool", "caller", "args_hash", "ok", "reviewer_decision", "run
 // 队列批复）是三条不同的审批线，不要混用。
 bot_approval_requested: ["approval_id", "tool", "args_hash", "session_key", "requested_by", "role"],
 bot_approval_decided: ["approval_id", "decision", "decided_by", "via", "reason"],
+// Bot 方向 Phase 3：主动推送进证据链——推送（哪类、推给谁、摘要）与
+// Watch 变化（哪个监控、标签、前后哈希，只记哈希不记文件内容）。与
+// bot_approval_*（审批线）是不同的事件，不要混用。
+bot_notify_sent: ["kind", "target_chat_id", "summary"],
+bot_watch_changed: ["watch_id", "label", "from_hash", "to_hash"],
 final: [],
 max_turns: [],
 error: ["error_type"],
