@@ -1,3 +1,10 @@
+## 2026-11-20 — Node 原子 claim 前置增量（未接入运行时）
+
+- **仓库事实**：2026-11-20 10:31 UTC main 最近提交 [b345eb5](https://github.com/js2005happy/nyra/commit/b345eb5ded215048e6f281dd0bc4af94e6d7ea48) 涉及 Telegram Bot 会话队列、去重和只读执行；这不是工具执行副作用的跨进程事务保证。开放 Issues/PR 查询为空。开发分支仍为 Python Angel，main 为 Bun/TypeScript Nyra。
+- **本轮实现（P0 前置；价值高／难度中／风险中／依赖可信本地目录）**：新增独立 `scripts/node_tool_claim.ts`，使用 Node 内置 fs/crypto、O_EXCL 文件占用、文件 fsync 和目录 fsync；同一 operationId 的重复 claim 拒绝，崩溃或不完整写入不得自动清除、重试。未接入 main 的 src/agent.ts / src/tools.ts，**不能宣称运行时已获得互斥**。Windows/网络文件系统目录 fsync 可能不可用，必须失败关闭，需进一步评估安全目录句柄和祖先路径竞态。
+- **公开需求证据**：[Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19）用户请求安全等待/恢复；[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07）用户报告重复投递。**推断**：安全续跑需要可持久化 operationId 和人工对账；外部个案不能证明本仓库存在同一故障或统计高频。
+- **排序（价值／难度／安全风险／依赖）**：P0 可信目录及跨平台原子 claim 集成（高／高／高／真实派发链、锁目录和崩溃对账）；P1 MCP 目录失效检测（中高／中／中／工具版本）；P1 独立副作用回执（高／高／高／工具适配器）；P1 结构化拒绝原因（高／中／中／审批链）；P2 人工审批安全续跑（高／高／高／P0）。未运行测试、解释器或 CI。
+
 ## 2026-11-20 — 静态审计 v6：单次源码快照与指纹
 
 - **仓库事实**：v5 对同一文件分别读取状态和锚点，存在审计期间源码改变而混用版本的可能。主分支最新检索提交 [9021f99](https://github.com/js2005happy/nyra/commit/9021f9986d349b9e4723e44a942ac934248334b1)（2026-11-20 08:36 UTC）涉及安装包；开放 Issues/PR 检索为空。
