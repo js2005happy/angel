@@ -52,7 +52,9 @@ function checkPrivateDirectory(directory: string): void {
 
 /** Fail closed. No automatic stale-claim recovery or re-execution. */
 export function claimOperation(directory: string, operationId: string): OperationClaim {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) throw new ClaimUnavailable();
+  // Validate the runtime type before RegExp.test: JavaScript coerces numbers,
+  // arrays and objects to strings, which could alias another operation ID.
+  if (typeof operationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) throw new ClaimUnavailable();
   // Caller must provision a private, stable parent. Do not create ancestors.
   checkPrivateDirectory(directory);
   const filename = createHash("sha256").update(operationId).digest("hex") + ".claim";
