@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 Linux claim procfs 类型门禁
+
+- 实验性 Node/Bun claim 在通过 `/proc/self/fd` 创建文件前，使用 Node 标准库 `statfsSync` 核对文件系统类型为 Linux procfs（`0x9fa0`）；异常或不匹配失败关闭，不新增依赖。
+- 仅静态审阅，未运行测试/CI；不防挂载竞态，未接入真实工具派发，不提供 exactly-once。
+
 ## Unreleased — 2026-11-21 Linux claim 名称复核目录 fd 绑定
 
 - 实验性 Node/Bun claim：写入后与目录 fsync 后的 claim 名称复核，改为相对于仍打开的 Linux 目录 fd 的 procfs 路径，避免重新解析可能被替换的原目录路径。无新增依赖；不自动删除 claim 或重放工具。
