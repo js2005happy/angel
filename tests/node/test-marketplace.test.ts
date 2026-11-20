@@ -11,7 +11,7 @@ import { join } from "node:path";
 import {
   MarketplaceError, MARKET_WARNING,
   addMarketSource, removeMarketSource, loadMarketSources,
-  loadMarketIndex, resolveMarketEntry, listMarketEntries,
+  loadMarketIndex, isPathWithin, resolveMarketEntry, listMarketEntries,
   parseBotManifest, parseRoutines, verifyMarketplaceEntry,
   scanMarketplaceText, scanMarketplaceEntry,
   computeBotReady, computeBotReadyForDir,
@@ -187,6 +187,19 @@ test("MarketplaceTest.test_load_index_validates", () => {
   });
 
 // ---- 清单校验（第一道门） ----
+
+test("MarketplaceTest.test_is_path_within_windows_separators", () => {
+  // Node CI #315 只红 Windows：resolve 出来是反斜杠，startsWith(base + "/") 恒假。
+  // 归一化后 Windows 风格与 POSIX 风格路径都要判对，且前缀陷阱（src vs src2）不能误判。
+  expect(isPathWithin("D:\\a\\src", "D:\\a\\src\\skills\\x.md")).toBe(true);
+  expect(isPathWithin("D:\\a\\src", "D:\\a\\src")).toBe(true);
+  expect(isPathWithin("D:/a/src", "D:\\a\\src\\skills\\x.md")).toBe(true);
+  expect(isPathWithin("D:\\a\\src", "D:\\a\\src2\\x.md")).toBe(false);
+  expect(isPathWithin("D:\\a\\src", "D:\\a\\other\\x.md")).toBe(false);
+  expect(isPathWithin("/a/src", "/a/src/skills/x.md")).toBe(true);
+  expect(isPathWithin("/a/src", "/a/src2/x.md")).toBe(false);
+  expect(isPathWithin("/a/src/", "/a/src/x.md")).toBe(true);
+});
 
 test("MarketplaceTest.test_verify_skill_and_bot_ok", () => {
     const home = tmpHome("nyra-market-home-");
