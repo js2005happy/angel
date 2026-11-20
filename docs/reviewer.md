@@ -61,7 +61,7 @@ Nyra 的 Hooks 与权限规则在同一进程内；smart approvals 的评审模�
 |---|---|
 | `enabled` | 总开关。`true` 才审查 |
 | `provider` / `model` | 审查模型。不填时沿用 `smart_approvals.reviewer_provider` / `reviewer_model`，再没有用 `deepseek` / `deepseek-flash` |
-| `tools` | 被审工具集。不填时用默认集：`write_file`、`edit_file`、`apply_patch`、`shell`、`memory_forget`、`memory_delete`、`gmail_send`、`http_post`（删改关键文件、跑命令、删记忆、对外发送全覆盖；支付工具将来加上时也进默认集） |
+| `tools` | 被审工具集。不填时用默认集：`write_file`、`edit_file`、`apply_patch`、`shell`、`memory_forget`、`memory_delete`、`gmail_send`、`http_post`、`submit_bughunt_report`（删改关键文件、跑命令、删记忆、对外发送全覆盖；`submit_bughunt_report` 是虚拟敏感动作，候选提案 1 的提交前核对用；支付工具将来加上时也进默认集） |
 | `rules` | 用户用自然语言写的额外审查规则，审查提示里原样交给审查模型 |
 
 ## CLI
