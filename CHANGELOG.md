@@ -1,3 +1,8 @@
+## 2026-11-20 — 运行时派发链静态核实（未发布）
+
+- 只读审查确认：当前 main Node 入口 `src/cli.ts` → `src/agent.ts` 引用 `src/tools.ts` 的工具执行函数；Python `ToolJournal` 属于独立开发分支，不应宣称保护 Node。记录主分支现有 JSON 契约测试与开放 PR #105，避免重复实现。
+- 更新 ROADMAP/VERIFICATION 的事实、推断、依赖和安全阻塞。**无运行时代码变更、未运行测试或 CI**；不宣称跨进程锁、恢复或外部副作用安全保证。
+
 ## 未发布（2026-11-20，Node/Python 执行入口归属核实；无运行时代码变更）
 
 - 静态确认开发分支 Python Angel 与默认主分支 Node Nyra 为不同运行时，暂停向 Python ToolJournal 添加不能保护主分支的伪原子检查。ROADMAP 更新运行时审查前置任务及 2026-11-19 新用户反馈；VERIFICATION 记录静态限制。未运行测试或 CI。
