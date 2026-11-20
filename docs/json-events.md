@@ -15,6 +15,7 @@
 | `model_switch` | 模型切换时（缺口 5：触顶自动换或 REPL `/model` 手动换） | `from`, `to`, `reason`, `trigger`（`quota` / `rate_limit` / `server` / `timeout` / `network` / `other` / `manual`）, `spent_usd`（未计价时为 `null`） |
 | `parallel_delegate` | 并行委派结束时（缺口 3a） | `succeeded`, `failed`, `total_spent_usd`（已计价部分合计；超时线程事后花的钱不进合计，未计价时为 `null`）, `max_concurrency` |
 | `hook_blocked` | 钩子拦截时（缺口 19：fail-closed 的拦截要留痕） | `event`, `tool`, `hook`, `reason`（原因截断 120 字） |
+| `reviewer_verdict` | 独立审查结论时（缺口 10：放行与拦截都记） | `tool`, `decision`, `reason`（原因截断 120 字）, `reviewer_model` |
 | `verify_started` / `verify_result` | 验证命令执行 | `command` / `exit_code`, `passed`, `attempt` |
 | `run_completed` | 运行结束 | `run_id`, `status` |
 | `completion_downgraded` | 未验证却宣称完成（P1-1） | `status`, `claim` |
