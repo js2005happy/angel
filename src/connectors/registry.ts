@@ -61,8 +61,9 @@ export interface ConnectorPermissionDeclaration {
   alwaysForbidden: string[];
 }
 
-/** 连接器目录：先接 3 个做深（缺口 44 定义），本批只落地 Gmail，Shopify 与
- * Slack 以试点声明进目录、未接入——目录里看得见、用不了，不假装已接通。 */
+/** 连接器目录：先接 3 个做深（缺口 44 定义）。Gmail（缺口 6）与 Shopify
+ * 只读（缺口 44 第一批）已接入；Slack 在缺口 44 第二批改为已接入（读 +
+ * 发消息须批 + 审批卡）。试点连接器在目录里看得见、用不了，不假装已接通。 */
 export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
   {
     id: "gmail",
@@ -107,19 +108,20 @@ export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
   {
     id: "slack",
     displayName: "Slack",
-    description: "团队消息与审批卡的落点（试点，下一批做深）。",
-    status: "pilot",
+    description: "团队消息与审批卡的落点：读频道/消息、发消息（须显式批准）、发审批卡（缺口 44 第二批）。",
+    status: "available",
     scopes: {
-      read: ["channels:read", "chat:read"],
+      read: ["channels:read", "channels:history"],
       write: ["chat:write"],
     },
     toolGroups: [
-      { name: "消息", tools: ["slack_read", "slack_post"], access: "write" },
+      { name: "频道", tools: ["slack_channels", "slack_history"], access: "read" },
+      { name: "发消息", tools: ["slack_send"], access: "write" },
       { name: "审批卡", tools: ["slack_approval_card"], access: "write" },
     ],
-    dataAccessed: ["频道消息", "用户信息"],
-    alwaysRequireApproval: ["对外发消息", "发审批卡"],
-    alwaysForbidden: ["删他人消息", "改 workspace 设置"],
+    dataAccessed: ["频道列表（频道名、成员数）", "频道消息（消息文本、发送者 id、时间）", "workspace 名称"],
+    alwaysRequireApproval: ["发消息", "发审批卡"],
+    alwaysForbidden: ["删消息", "改频道", "管理成员", "删 workspace 数据"],
   },
 ];
 
@@ -202,6 +204,7 @@ export function resolveConnectorUserId(home: string): string {
 /** 重新授权的入口提示（按连接器给不同的命令）。 */
 export function reauthHint(connectorId: string): string {
   if (connectorId === "gmail") return "nyra gmail auth";
+  if (connectorId === "slack") return "nyra slack auth";
   return `nyra connector approve ${connectorId}`;
 }
 
