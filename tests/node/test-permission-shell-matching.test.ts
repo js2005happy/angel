@@ -60,3 +60,44 @@ test("S3 URL 目标不被当路径：域名规则照常命中", () => {
   expect(evaluate(rules, { tool: "web_fetch", target: "https://api.evil.com/x", workdir: "/work" })?.action).toBe("deny");
   expect(evaluate(rules, { tool: "web_fetch", target: "https://good.com/x", workdir: "/work" })).toBeNull();
 });
+
+// ---- URL 类工具的「裸主机名」规则 ----
+// 修的另一处静默失效：`web_fetch(example.com)` 以前**永不命中**（只有 `domain:example.com` 才算域名）。
+// 与 shell 规则那次同一个病——写了规则以为挡住了。
+
+test("U1 裸主机名命中（web_fetch / browser_navigate / http_post 三个 URL 工具）", () => {
+  for (const tool of ["web_fetch", "browser_navigate", "http_post"]) {
+    const rules = parseRules({ deny: [`${tool}(example.com)`] });
+    expect(evaluate(rules, { tool, target: "https://example.com/a", workdir: "/w" })?.action).toBe("deny");
+  }
+});
+
+test("U2 裸主机名按域名后缀匹配：子域也命中", () => {
+  const rules = parseRules({ deny: ["web_fetch(example.com)"] });
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://www.example.com/a", workdir: "/w" })?.action).toBe("deny");
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://api.deep.example.com/a", workdir: "/w" })?.action).toBe("deny");
+});
+
+test("U3 不误伤别的域名（含相似后缀）", () => {
+  const rules = parseRules({ deny: ["web_fetch(example.com)"] });
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://good.com/a", workdir: "/w" })).toBeNull();
+  // 相似但不同的域名不能被后缀匹配吃掉
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://notexample.com/a", workdir: "/w" })).toBeNull();
+});
+
+test("U4 带路径的 specifier 仍走 glob，不被当域名", () => {
+  const rules = parseRules({ deny: ["web_fetch(https://example.com/admin/*)"] });
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://example.com/admin/x", workdir: "/w" })?.action).toBe("deny");
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://example.com/public/x", workdir: "/w" })).toBeNull();
+});
+
+test("U5 非 URL 工具不受这条影响（路径工具按路径走）", () => {
+  const rules = parseRules({ deny: ["read_file(example.com)"] });
+  expect(evaluate(rules, { tool: "read_file", target: "/w/example.com", workdir: "/w" })?.action).toBe("deny");
+});
+
+test("U6 domain: 老写法仍工作（向后兼容）", () => {
+  const rules = parseRules({ deny: ["web_fetch(domain:evil.com)"] });
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://evil.com/a", workdir: "/w" })?.action).toBe("deny");
+  expect(evaluate(rules, { tool: "web_fetch", target: "https://api.evil.com/a", workdir: "/w" })?.action).toBe("deny");
+});
