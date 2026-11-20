@@ -16,7 +16,7 @@ import { buildTimeline, formatTimelineText } from "../../src/timeline.ts";
 import {
   probeMedia, extractAudio, ingestMedia, formatMediaTranscript,
   installYtDlp, resolveMediaConfig, parseVtt, findSha256, handleMedia,
-  ytDlpAssetName,
+  ytDlpAssetName, mediaBinaryPath,
   type MediaConfig,
 } from "../../src/mediaIngest.ts";
 import {
@@ -360,7 +360,7 @@ test("MediaIngestTest.test_setup_sha256_mismatch_refuses", async () => {
   const fetchFn = setupFetch(bin, "0".repeat(64), false);
   const { run } = makeFakeRunner();
   await expect(installYtDlp(home, { fetchFn, runCommand: run })).rejects.toThrow(/SHA256 校验失败/);
-  expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(false);
+  expect(existsSync(mediaBinaryPath(home))).toBe(false);
 });
 
 test("MediaIngestTest.test_setup_gpg_verified_when_key_present", async () => {
@@ -381,7 +381,7 @@ test("MediaIngestTest.test_setup_gpg_bad_signature_refuses", async () => {
   const fetchFn = setupFetch(bin, sha);
   const { run } = makeFakeRunner({ gpgVerifyStatus: 1, gpgVerifyStderr: "gpg: BAD signature" });
   await expect(installYtDlp(home, { fetchFn, runCommand: run })).rejects.toThrow(/GPG 签名校验失败/);
-  expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(false);
+  expect(existsSync(mediaBinaryPath(home))).toBe(false);
 });
 
 test("MediaIngestTest.test_setup_asset_name_per_platform", () => {
@@ -402,7 +402,7 @@ test("MediaIngestTest.test_setup_win32_and_darwin_assets", async () => {
     expect(existsSync(result.path)).toBe(true);
   }
   expect(existsSync(join(home, "bin", "yt-dlp.exe"))).toBe(true);
-  expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(true);
+  expect(existsSync(mediaBinaryPath(home))).toBe(true);
 });
 
 test("MediaIngestTest.test_find_sha256_parses_sums", () => {
@@ -574,5 +574,5 @@ test("MediaIngestTest.test_cli_setup_end_to_end", async () => {
   const fetchFn = setupFetch(bin, sha);
   const { run } = makeFakeRunner({ gpgMissing: true });
   expect(await handleMedia(["setup"], home, workdir, { fetchFn, runCommand: run })).toBe(0);
-  expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(true);
+  expect(existsSync(mediaBinaryPath(home))).toBe(true);
 });
