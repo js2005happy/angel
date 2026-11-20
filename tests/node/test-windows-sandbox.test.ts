@@ -1,4 +1,4 @@
-﻿// tests/node/test-windows-sandbox.test.ts — P0-6：Windows Job Object 沙箱。
+// tests/node/test-windows-sandbox.test.ts — P0-6：Windows Job Object 沙箱。
 // 脚本生成与探测是纯函数，任何平台可单测；真执行只在 Windows 上跑（CI 的
 // windows-latest 任务覆盖），Linux/macOS 上跳过（与 test-sandbox.test.ts 同款写法）。
 import { test, expect } from "bun:test";

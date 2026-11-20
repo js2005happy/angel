@@ -1,4 +1,4 @@
-﻿// tests/node/test-style.test.ts — 缺口 4（分应用文风学习）。
+// tests/node/test-style.test.ts — 缺口 4（分应用文风学习）。
 import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
