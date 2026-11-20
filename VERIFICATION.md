@@ -1,3 +1,9 @@
+## 2026-11-20 — P0 Node 派发入口定位（仅静态）
+
+- 读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、`angel/agent.py`、`angel/tool_journal.py`、回归测试源码；读取 main README、`package.json`、`src/agent.ts`、`src/tools.ts`；查询最新提交、开放 Issue/PR 和提交状态。
+- 证据：main `package.json` 构建 `src/cli.ts`，`src/agent.ts` 引入 `executeTool` 与 `executeToolIdempotent`，定义在 `src/tools.ts`；Python `ToolJournal` 仅在独立开发分支。尚未检查 Node 全部入口及所有调用路径，不能证明不存在绕行路径。
+- 本轮仅文档记录，未改运行时代码；未执行 Python/Bun/TypeScript、测试、安装、CI、合并或发布。GitHub 状态检查为空不等于通过。跨进程所有权与崩溃人工对账仍未验证。
+
 ## 2026-11-20 — 运行时分叉静态核验
 
 - 已读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、`angel/agent.py`、`angel/tool_journal.py`，对照主分支 README 与最新提交，查询 Issues/PR；开发分支 Python CLI 与主分支 Node CLI 明确不同。尚未定位 Node 具体派发源码，不能宣称 Python ToolJournal 保护 Node。
