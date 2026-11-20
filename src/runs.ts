@@ -98,6 +98,12 @@ marketplace_published: ["item_name", "item_version", "kind", "license", "bot_rea
 // （写操作才有）、派发出的任务 run_id、失败原因。每次对外调用都记一条，
 // 与 reviewer_verdict（写操作的审查结论）是两条事件，不要混用。
 mcp_server_call: ["tool", "caller", "args_hash", "ok", "reviewer_decision", "run_id", "error"],
+// Bot 方向 Phase 2：聊天内审批进证据链——发起（哪个工具、参数指纹、谁
+// 发起的、哪个会话）与结论（批准/拒绝/超时/取消、谁批的、怎么批的、为
+// 什么）。与 reviewer_verdict（工具调用审查）与 review_decision（审阅
+// 队列批复）是三条不同的审批线，不要混用。
+bot_approval_requested: ["approval_id", "tool", "args_hash", "session_key", "requested_by", "role"],
+bot_approval_decided: ["approval_id", "decision", "decided_by", "via", "reason"],
 final: [],
 max_turns: [],
 error: ["error_type"],

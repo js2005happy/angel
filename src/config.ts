@@ -56,9 +56,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 写操作（add_memory / forget_session / dispatch_task）须显式开 allow_writes，
   // 且每次写操作都要过独立审查层（reviewer 未开启时写操作直接拒绝，fail-closed）。
   mcp_server: { enabled: false, allow_writes: false },
-  // Bot 方向 Phase 1：双场景 Bot 内核（场景 A 外部 IM + 场景 B 自动化监控）。
-  // 默认全关；telegram.enabled 开了才轮询。外部用户强制只读（Agent 的
-  // mode 写死 readonly），高危写操作与审批在 Phase 2 才有。
+  // Bot 方向 Phase 2：双场景 Bot 内核（场景 A 外部 IM + 场景 B 自动化监控）。
+  // 默认全关；telegram.enabled 开了才轮询。角色只认 owner / admins /
+  // members 三张白名单，默认 guest 只读；owner/admin 的写操作逐次走聊天内
+  // 审批（approvalBridge），审批 TTL 默认 60 秒、超时自动拒绝。
   bot: {
     enabled: false,
     mention_only: true,
@@ -68,6 +69,12 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
     per_chat_per_minute_limit: 10,
     daily_token_budget_usd: null,
     admins: [],
+    owner: null,
+    members: [],
+    approval_timeout_ms: 60000,
+    approval_chat_id: null,
+    chat_system_prompts: {},
+    profiles: {},
     telegram: { enabled: false, username: null },
   },
   // P0-5：权限规则语言（学 Claude Code 的 Tool(specifier)）。空 = 走默认交互式审批。

@@ -2409,10 +2409,35 @@ export interface IdempotentRetryOptions {
 }
 
 /**
+ * 审批拒绝的错误文案（checkApproval 里拒绝时用的原话）。
+ * 为什么要在这里认文案：checkApproval 的 idempotentRetry 短路在只读/
+ * 权限 deny 之后、approveFn/终端/非交互之前——首次调用在 approveFn（用
+ * 户说不、桥拒绝、超时）、终端“否”、非交互处被拒时，重试会置
+ * ctx.idempotentRetry，checkApproval 直接跳过审批、把拒绝过的写操作执行
+ * 了。只读/deny/无人值守三处在短路之前，本身不怕重试，这里一并认下是
+ * 为了防将来有人挪动 checkApproval 的顺序。文案改了要同步改这里（回归
+ * 测试 IdempotentRetry.test_approval_refusal_never_retries 盯着）。
+ */
+const APPROVAL_REFUSAL_MARKERS = [
+  "用户拒绝执行",
+  "非交互模式下 auto 模式不执行写入操作",
+  "只读模式下不允许执行",
+  "已被权限规则拒绝",
+  "无人值守巡查为只读",
+];
+
+/** 该工具结果是不是一次审批拒绝（是就绝不重试，见 executeToolIdempotent）。 */
+export function isApprovalRefusalResult(result: string): boolean {
+  return APPROVAL_REFUSAL_MARKERS.some((m) => result.includes(m));
+}
+
+/**
  * 幂等执行一次工具调用：成功直接返回；失败时按工具性质决定是否重试。
  * 只读工具直接重试；写操作先核查状态（已生效 → 报告已生效、不再执行；
- * 未生效 → 重试；无法核查 → 返回原错误）。审批拒绝（ApprovalRequired）
- * 直接冒泡，绝不重试。
+ * 未生效 → 重试；无法核查 → 返回原错误）。审批拒绝直接返回、绝不重试
+ * （重试会置 ctx.idempotentRetry，checkApproval 的短路跳过 approveFn，
+ * 拒绝过的写操作会被执行；deferApproval 抛的 ApprovalRequired 本来就不
+ * 经过这里——executeTool 直接重抛它）。
  * 重试不重走审批与钩子：重试调用前把 ctx.idempotentRetry 置 true，
  * executeTool 与 checkApproval 据此跳过 Pre/PostToolUse 钩子与人工审批
  * （首次调用已批过、钩子已跑过；钩子的入参改写是原地改 args，重试时仍在），
@@ -2443,6 +2468,8 @@ export async function executeToolIdempotent(
   };
   let result = await exec(name, args, ctx);
   if (!isToolErrorResult(result)) return result;
+  // 审批拒绝绝不重试（见 isApprovalRefusalResult 的注释）：重试会绕过审批。
+  if (isApprovalRefusalResult(result)) return result;
   if (READONLY_TOOLS.has(name)) {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       await sleep(delays[Math.min(attempt, delays.length - 1)] ?? 0);
