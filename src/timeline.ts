@@ -228,6 +228,33 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `红线拦截：${connector} 的 ${action}（${tier}）`, tool ? `工具 ${tool}` : null, false, null);
         break;
       }
+      case "soul_tenet_added": {
+        const agent = str(ev.agent) ?? "未知 Soul";
+        const kind = str(ev.kind) ?? "?";
+        push(at, "event", `Soul ${agent} 加了一条${kind === "invariant" ? "不变量" : "偏好"}`, str(ev.tenet_id) ? `Tenet ${str(ev.tenet_id)}` : null, null, null);
+        break;
+      }
+      case "soul_tenet_removed": {
+        const agent = str(ev.agent) ?? "未知 Soul";
+        const remaining = num(ev.remaining);
+        push(at, "event", `Soul ${agent} 删了一条 Tenet`, remaining !== null ? `删后剩 ${remaining} 条` : null, null, null);
+        break;
+      }
+      case "soul_tenet_changed": {
+        const agent = str(ev.agent) ?? "未知 Soul";
+        const change = str(ev.change) ?? "?";
+        const changeLabel = change === "enabled" ? "开启" : change === "disabled" ? "关闭" : change === "edited" ? "修改" : change;
+        push(at, "event", `Soul ${agent} 的 Tenet ${changeLabel}`, str(ev.tenet_id) ? `Tenet ${str(ev.tenet_id)}` : null, null, null);
+        break;
+      }
+      case "soul_invariant_blocked": {
+        const agent = str(ev.agent) ?? "未知 Soul";
+        const tool = str(ev.tool);
+        const rule = str(ev.rule);
+        // 规则放标题里：默认摘要模式不展开 detail，拦住的原因必须一眼看到。
+        push(at, "event", `Soul invariant 拦截：${agent} 的不变量拦住了${tool ? `工具 ${tool}` : "一次调用"}${rule ? `（规则 ${rule}）` : ""}`, null, false, null);
+        break;
+      }
       case "tool_start": {
         const id = str(ev.id) ?? "";
         const name = str(ev.name) ?? "未知工具";

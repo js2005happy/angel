@@ -35,6 +35,7 @@
 // providers）。事件落盘由调用方经 ctx.onEvent / RunStore 做。
 import { loadConfig, resolveProvider, resolveHome } from "./config.ts";
 import { businessActionForTool, resolveRedlineTier } from "./businessRedlines.ts";
+import { resolveSoulAgentId, reviewSoulInvariant } from "./soul.ts";
 import { Provider } from "./providers.ts";
 
 /** 与 smartApprovals.ReviewerLike 同形（结构化类型，用哪边都一样）。 */
@@ -418,6 +419,8 @@ const DETERMINISTIC_RULES: DeterministicRule[] = [
       runner?: ReviewerLike | null;
       /** 读红线账本的 home（不传时只用默认表）；runReviewGate 会传 ctx.home。 */
       home?: string | null;
+      /** 缺口 28：当前运行用的 Soul；不传时按 config.soul.agent 解析，默认 "default"。 */
+      soulAgent?: string | null;
     }): Promise<ReviewVerdict> {
     const cfg = reviewerConfig(opts.config);
     if (!cfg.enabled) {
@@ -454,6 +457,23 @@ const DETERMINISTIC_RULES: DeterministicRule[] = [
         };
       }
     }
+    // 缺口 28：Soul invariant——与红线同款确定性拦截，在模型审查与 Custom
+    // Rules 之前：Soul 是硬边界，模型与自定义规则都改不了它；Soul 文件损坏
+    // 时同样拦截（fail-closed）。target 取 args 里的命令/文件路径（与
+    // checkApproval 同口径：command > fileTarget > cwd）。
+    const soulVerdict = reviewSoulInvariant({
+      home: opts.home ?? null,
+      agentId: opts.soulAgent ?? resolveSoulAgentId(opts.config),
+      tool: opts.tool,
+      target: typeof opts.args.command === "string"
+        ? opts.args.command
+        : typeof opts.args.fileTarget === "string"
+          ? opts.args.fileTarget
+          : typeof opts.args.cwd === "string"
+            ? opts.args.cwd
+            : undefined,
+    });
+    if (soulVerdict.decision === "BLOCK") return soulVerdict;
     const hit = evaluateDeterministicRules(opts.tool, opts.args);
     if (hit) {
       return { decision: "BLOCK", reason: hit.reason, reviewerModel: null, source: "deterministic", rule: hit.rule };

@@ -61,6 +61,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 地址只认 http/https 的网关 /mcp 端点）；对端网关 token 不放这里，
   // 用 `nyra peer auth <名字>` 存密码箱，或 NYRA_PEER_TOKEN_<名字> 环境变量。
   peers: { enabled: false, list: [] },
+  // 缺口 28：Soul 身份层——这里只有“当前运行用哪个 Soul 文件”的指针
+  // （~/.nyra/souls/<agent>.json），身份（名字/人格/目标）与 Tenets 全在
+  // Soul 文件里，不在 config 里；换模型只改 provider/model，不动 Soul。
+  soul: { agent: "default" },
   // Bot 方向 Phase 3：双场景 Bot 内核（场景 A 外部 IM + 场景 B 自动化监控）。
   // 默认全关；telegram.enabled 开了才轮询。角色只认 owner / admins /
   // members 三张白名单，默认 guest 只读；owner/admin 的写操作逐次走聊天内

@@ -45,6 +45,7 @@ import { buildDashboardSnapshot } from "./dashboard.ts";
 import { runHooks, type RunHooksContext } from "./hooks.ts";
 import type { ReviewerLike } from "./reviewer.ts";
 import { loadConfig } from "./config.ts";
+import { buildSoulSection, loadSoul } from "./soul.ts";
 import { buildRepoMap, isCodeRelatedTask, listRepoMapFiles, computeFingerprint, type RepoMapCache } from "./repoMap.ts";
 import {
   buildVisionUserMessage, DEFAULT_VISION_CONFIG, modelSupportsVision, visionGateMessage,
@@ -157,6 +158,8 @@ export interface AgentOptions {
   delegateDepth?: number;
   delegateBudget?: DelegationBudget | null;
   systemInstructions?: string;
+  /** 缺口 28：当前运行用的 Soul（~/.nyra/souls/<soulAgent>.json）；不传默认 "default"。 */
+  soulAgent?: string;
   memoryPath?: string | null;
   /** 缺口 4：分应用文风学习——当前代笔渠道（如 gmail）；null = 不注入文风画像。 */
   channel?: string | null;
@@ -360,6 +363,8 @@ export class Agent {
   // /context 无参数时按它算技能注入（与下一轮相同的注入口径）。
   lastTask = "";
   systemInstructions: string;
+  /** 缺口 28：当前运行用的 Soul；不传默认 "default"。 */
+  soulAgent: string;
   memoryPath: string;
   /** 缺口 4：当前代笔渠道；null = 不注入文风画像。 */
   channel: string | null;
@@ -467,6 +472,8 @@ export class Agent {
     this.autoCompactEnabled = Boolean(opts.autoCompactEnabled);
     this.autoCompactThreshold = validateAutoCompactThreshold(opts.autoCompactThreshold ?? DEFAULT_AUTO_COMPACT_THRESHOLD);
     this.systemInstructions = opts.systemInstructions ?? "";
+    // 缺口 28：Soul 身份层——换模型不换魂：身份与规则从 Soul 文件来，模型从配置来。
+    this.soulAgent = opts.soulAgent ?? "default";
     this.home = opts.home ?? process.env.NYRA_HOME ?? join(process.env.HOME ?? "", ".nyra");
     this.memoryPath = opts.memoryPath ?? join(this.home, "MEMORY.md");
     this.channel = opts.channel ?? null;
@@ -545,6 +552,8 @@ export class Agent {
       unattended: this.unattended,
       home: this.home,
       memoryPath: this.memoryPath,
+      // 缺口 28：Soul invariant 拦截要知道当前用哪个 Soul（checkApproval 里按它读规则）。
+      soulAgent: this.soulAgent,
       sessionId: this.sessionId,
       skillsDir: join(this.home, "skills"),
       // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用 Agent 当前
@@ -1208,6 +1217,13 @@ export class Agent {
     if (this.systemInstructions) {
       sections.push("## 当前机器人的独立身份与目标\n" + this.systemInstructions);
     }
+    // 缺口 28：Soul 身份层——Identity + Priors 进提示词；Invariant 只列
+    // “硬约束”（执行靠代码拦截，不靠模型自觉）。没有 Soul 文件时零影响；
+    // Soul 文件损坏时不拦运行（写操作由 checkApproval 的 fail-closed 兜底）。
+    try {
+      const soulSection = buildSoulSection(loadSoul(this.home, this.soulAgent));
+      if (soulSection) sections.push(soulSection);
+    } catch { /* ignore */ }
     if (this.backend !== null && this.backend !== undefined) {
       sections.push(
         `当前执行后端是 ${this.backend.name ?? "沙盒"} 沙盒：` +

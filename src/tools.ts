@@ -28,6 +28,7 @@ import { ComputerControl, computerErrorMessage } from "./computer.ts";
 import { runHooks } from "./hooks.ts";
 import { reviewToolCall, reviewerConfig, type ReviewerLike } from "./reviewer.ts";
 import { redlineNeverBlock, appendBusinessRedlineAudit } from "./businessRedlines.ts";
+import { appendSoulAudit, resolveSoulAgentId, soulInvariantBlock } from "./soul.ts";
 import { effectiveStringList, effectiveValue } from "./enforcedConfig.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 的两处执行点统一走这里解析后端。
 // 审批仍在 checkApproval，钩子仍在宿主机跑（hooks.ts 不动），沙箱内只跑命令本身。
@@ -144,6 +145,8 @@ export interface ToolContext {
   extraWriteDirs?: string[] | null;
   /** Nyra 家目录（~/.nyra）：钩子从这里读 <home>/hooks/ 与 config.json；未传时钩子直接跳过。 */
   home?: string;
+  /** 缺口 28：当前运行用的 Soul（~/.nyra/souls/<soulAgent>.json）；不传默认 "default"。 */
+  soulAgent?: string;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
   /** 缺口 3a：并行委派入口（Agent.delegateParallel 的格式化版，返回汇总文本）。 */
   delegateParallelFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number }) => Promise<string>) | null;
@@ -664,6 +667,24 @@ export async function checkApproval(
       } catch { /* 审计落盘失败不破坏拦截 */ }
     }
     throw new ToolError(`业务动作红线拦截了 ${toolName}：${redlineBlock.reason}`);
+  }
+
+  // 缺口 28：Soul invariant——编译进规则层的硬约束，在权限规则之前拦：
+  // 用户自定义的 allow 规则打不开它（deny > ask > allow 的次序保证），
+  // 幂等重试也不能绕过它（放得比 idempotentRetry 短路更前）；即使已批准
+  // 也不放行。Soul 文件损坏时同样拦截（fail-closed）。拦截记事件与审计。
+  const soulBlock = soulInvariantBlock(ctx.home ?? null, ctx.soulAgent ?? "default", toolName, opts?.command ?? opts?.fileTarget ?? opts?.cwd ?? "", ctx.workdir);
+  if (soulBlock) {
+    observeApproval(ctx, toolName, false);
+    try {
+      ctx.onEvent?.("soul_invariant_blocked", { agent: ctx.soulAgent ?? "default", tenet_id: soulBlock.tenetId, tool: toolName, rule: soulBlock.rule });
+    } catch { /* 观察器故障不破坏拦截 */ }
+    if (ctx.home) {
+      try {
+        appendSoulAudit(ctx.home, { kind: "blocked", agent: ctx.soulAgent ?? "default", tenet_id: soulBlock.tenetId, tool: toolName, rule: soulBlock.rule });
+      } catch { /* 审计落盘失败不破坏拦截 */ }
+    }
+    throw new ToolError(`Soul 的 invariant 拦截了 ${toolName}：${soulBlock.reason}`);
   }
 
   // P0-5：权限规则语言。deny > ask > allow，空规则集时行为与之前完全一致。
@@ -2354,6 +2375,7 @@ async function runReviewGate(ctx: ToolContext, tool: string, args: Record<string
     recentMessages: ctx.reviewRecentMessages ?? [],
     runner: ctx.reviewerRunner ?? null,
     home: ctx.home ?? null,
+    soulAgent: ctx.soulAgent ?? resolveSoulAgentId(config),
   });
   if (verdict.source === "skipped") return;
   try {

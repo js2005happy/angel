@@ -134,6 +134,14 @@ peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
 // 元数据与 SHA-256 前 12 位指纹，不记原因原文、不记业务内容。
 redline_changed: ["connector", "action", "from", "to", "reason_hash"],
 redline_blocked: ["connector", "action", "tier", "tool"],
+// 缺口 28：Soul 身份层进证据链——Tenet 增删改（哪个 Soul、哪条 Tenet、
+// 改了什么、删后剩几条）与 invariant 拦截（哪个 Soul、哪条 Tenet、
+// 哪个工具、命中哪条规则）。只记元数据与 Tenet id，不记 Tenet 正文
+// 以外的敏感内容、不记绝对路径。
+soul_tenet_added: ["agent", "tenet_id", "kind"],
+soul_tenet_removed: ["agent", "tenet_id", "remaining"],
+soul_tenet_changed: ["agent", "tenet_id", "change"],
+soul_invariant_blocked: ["agent", "tenet_id", "tool", "rule"],
 // 缺口 15：语音指挥进证据链——转写（多长、多少字、哪个引擎、花了多少、
 // 转写文本的指纹）与回读（多少字、哪个引擎、花了多少）。只记元数据与
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。
@@ -817,7 +825,7 @@ if (kind === "voice_input" || kind === "voice_speak") {
     this.voiceSpent = (this.voiceSpent ?? 0) + data.cost_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported", "media_ingested", "redline_changed", "redline_blocked"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported", "media_ingested", "redline_changed", "redline_blocked", "soul_tenet_added", "soul_tenet_removed", "soul_tenet_changed", "soul_invariant_blocked"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);
