@@ -91,12 +91,12 @@ test("McpServerTest.test_initialize_and_tools_list", async () => {
   expect((initResult.serverInfo as Record<string, unknown>).name).toBe("Nyra");
   const list = await call(server, 2, "tools/list");
   const tools = (list.result as Record<string, unknown>).tools as { name: string }[];
-  expect(tools.map((t) => t.name)).toEqual(["search_memory", "query_evidence", "add_memory", "forget_session", "dispatch_task"]);
+  expect(tools.map((t) => t.name)).toEqual(["search_memory", "query_evidence", "answer_question", "add_memory", "forget_session", "dispatch_task"]);
   // 只读模式下写工具不出现。
   const ro = makeServer(home, serverConfig({ mcp_server: { enabled: true, allow_writes: false } }));
   const roList = await call(ro, 1, "tools/list");
   const roTools = (roList.result as Record<string, unknown>).tools as { name: string }[];
-  expect(roTools.map((t) => t.name)).toEqual(["search_memory", "query_evidence"]);
+  expect(roTools.map((t) => t.name)).toEqual(["search_memory", "query_evidence", "answer_question"]);
 });
 
 test("McpServerTest.test_search_memory_add_memory_forget_session", async () => {
@@ -330,7 +330,7 @@ test("McpServerTest.test_http_client_talks_to_own_server", async () => {
     });
     const client = new MCPHttpClient(cfg, 10);
     const tools = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["search_memory", "query_evidence", "add_memory", "forget_session", "dispatch_task"]);
+    expect(tools.map((t) => t.name)).toEqual(["search_memory", "query_evidence", "answer_question", "add_memory", "forget_session", "dispatch_task"]);
     const found = await client.callTool("search_memory", { query: "对外 MCP 服务" });
     expect(found).toContain("测试记忆甲");
     const added = await client.callTool("add_memory", { text: "客户端直连写进来的条目" });

@@ -102,7 +102,7 @@ test("ReviewerTest.test_resolve_model_fallback_chain", () => {
 
 test("ReviewerTest.test_reviewed_tools_default_and_override", () => {
     expect([...DEFAULT_REVIEWED_TOOLS]).toEqual(
-      ["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "http_post", "submit_bughunt_report", "marketplace_install", "marketplace_publish", "mcp_server_add_memory", "mcp_server_forget_session", "mcp_server_dispatch_task"],
+      ["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "http_post", "submit_bughunt_report", "marketplace_install", "marketplace_publish", "mcp_server_add_memory", "mcp_server_forget_session", "mcp_server_dispatch_task", "peer_ask", "peer_handoff"],
     );
     const defaults = reviewedTools({});
     expect(defaults).toContain("shell");
