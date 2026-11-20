@@ -1,3 +1,7 @@
+## 2026-11-21
+
+- 安全：Node/Bun 实验性 claim 在目录 fsync 后再次核对 claim 文件名与已写入 inode 的身份及私有性；失败保留 unknown。仅静态审阅，未运行测试/CI；仍未接入工具派发，不能保证 exactly-once。
+
 ## 未发布（2026-11-21，Node claim 文件身份复核）
 
 - `scripts/node_tool_claim.ts`：写入并 fsync 后检查已打开文件与路径名称的设备/inode 一致、普通文件、单硬链接、当前用户所有、私有权限及预期长度；不一致时失败关闭并保留 unknown。仅静态审阅，未运行测试或 CI；仍存在路径 TOCTOU，未接入 Node 主运行时。
