@@ -153,10 +153,7 @@ nyra stats heatmap [--weeks N]   # 默认 8 周；N 为 1–52
 ```bash
 nyra savings --json
 ```
-
-```json
-{
-  "schema_version": 1,
+```
   "tokens_per_turn_total": 391,
   "unknown_count": 4,
   "lines": [
@@ -176,3 +173,19 @@ nyra savings --json
 - **只加字段、不改名、不删字段**，客户端按 `schema_version` 判断兼容
 - `tokens_per_turn_saved` 为 `null` 表示**算不出**，不是 0——把"不知道"写成 0 会让看板画出假的下降曲线
 - 没传实测节省时 `model_savings` 为 `null`，不编造 0
+
+## 机器可读：`nyra cost --show --json`
+
+```json
+  "model": "…",
+  "pricing": [{ "model": "…", "input_per_1m": 1, "output_per_1m": 2 }],
+  "invalid_pricing": ["配置无效的模型名"],
+  "max_cost_usd": 5,
+  "monthly": { "limit_usd": 50, "spent_usd": 1.2, "mcp_usd": 0.2, "month": "2026-11", "reset_at": "2026-12-01" }
+}
+```
+
+两条要紧的语义：
+
+- **`max_cost_usd` 没配是 `null`，不是 0**——写成 0 会让 CI 把「没设上限」读成「上限为 0 美元」，报警逻辑直接反转
+- **`invalid_pricing` 会点名**：配置里写了但解析失败的模型不再是"静默忽略"，CI 能直接报警

@@ -10,12 +10,13 @@ import { McpCostTracker } from "./mcpCost.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { t } from "./i18n.ts";
 
-function parseFlags(argv: string[]): { estimate?: string; show: boolean; turns: number; systemChars: number; model?: string } {
-  const out = { estimate: undefined as string | undefined, show: false, turns: 20, systemChars: 2000, model: undefined as string | undefined };
+function parseFlags(argv: string[]): { estimate?: string; show: boolean; json: boolean; turns: number; systemChars: number; model?: string } {
+  const out = { estimate: undefined as string | undefined, show: false, json: false, turns: 20, systemChars: 2000, model: undefined as string | undefined };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
-    if (a === "--show") out.show = true;
+      if (a === "--show") out.show = true;
+      else if (a === "--json") out.json = true;
     else if (a === "--estimate") out.estimate = next();
     else if (a === "--turns") out.turns = parseInt(next() ?? "20", 10);
     else if (a === "--system-chars") out.systemChars = parseInt(next() ?? "2000", 10);
@@ -65,8 +66,23 @@ function printPricingTable(config: Record<string, unknown>, home?: string): void
 export function handleCost(argv: string[], config: Record<string, unknown>, model: string | null, opts?: { recalledCount?: number; home?: string }): number {
   const flags = parseFlags(argv);
   if (flags.show || (!flags.estimate && !flags.show)) {
-    printPricingTable(config, opts?.home);
-    if (!flags.estimate) return 0;
+    // --json：给 CI / 看板用（人看表格，机器拿结构）；契约同 savings/verdict。
+    if (flags.json) {
+      const monthly = opts?.home
+        ? (() => {
+          const month = monthKeyString();
+          const llm = new UsageLedger(opts.home!).monthTotal(month);
+          const mcp = new McpCostTracker(opts.home!).monthTotalUsd(month);
+          const limit = resolveMonthlyLimit(config);
+          return { limitUsd: limit, spentUsd: llm.spentUsd + mcp, mcpUsd: mcp, month, resetAt: nextMonthlyResetDate() };
+        })()
+        : null;
+      process.stdout.write(JSON.stringify(buildCostJson({ model: flags.model ?? model, config, monthly })) + "\n");
+      if (!flags.estimate) return 0;
+    } else {
+      printPricingTable(config, opts?.home);
+      if (!flags.estimate) return 0;
+    }
   }
 
   const task = flags.estimate ?? "";
@@ -117,4 +133,61 @@ export function handleCost(argv: string[], config: Record<string, unknown>, mode
 /** 供 doctor/自检复用：把一次已结束运行的成本摘要成一行。 */
 export function summarizeRunCost(snapshot: UsageSnapshot, config: Record<string, unknown>, model: string | null, limit: number | null): string {
   return formatCost(estimateCost(snapshot, resolvePricing(config.pricing, model), limit));
+}
+
+// ---- 机器可读（nyra cost --show --json）----
+// 与 `savings --json` / `verdict --json` 同一套契约纪律：只加字段、不改名、不删字段。
+// 数字型字段用 null 表示"没配/算不出"，不用 0 冒充——CI 里 `cap === null` 才该报警，
+// 写成 0 会变成"上限是 0 美元"，含义完全相反。
+
+export const COST_JSON_SCHEMA = 1;
+
+export interface CostJson {
+  schema_version: number;
+  /** 当前模型名（没配置时为 null）。 */
+  model: string | null;
+  pricing: { model: string; input_per_1m: number; output_per_1m: number }[];
+  /** 配置里存在但解析失败的模型名（能被静默忽略才是真问题）。 */
+  invalid_pricing: string[];
+  max_cost_usd: number | null;
+  monthly: {
+    limit_usd: number | null;
+    spent_usd: number;
+    mcp_usd: number;
+    month: string;
+    reset_at: string | null;
+  } | null;
+}
+
+/** 把 `--show` 要显示的东西整理成结构。纯函数之外的部分（账本）由调用方算好传入。 */
+export function buildCostJson(input: {
+  model: string | null;
+  config: Record<string, unknown>;
+  monthly: { limitUsd: number | null; spentUsd: number; mcpUsd: number; month: string; resetAt: string | null } | null;
+}): CostJson {
+  const table = input.config.pricing;
+  const entries = table && typeof table === "object" ? Object.entries(table as Record<string, unknown>) : [];
+  const pricing: CostJson["pricing"] = [];
+  const invalid: string[] = [];
+  for (const [name, raw] of entries) {
+    const p = resolvePricing({ [name]: raw }, name);
+    if (!p) { invalid.push(name); continue; }
+    pricing.push({ model: name, input_per_1m: p.inputPer1M, output_per_1m: p.outputPer1M });
+  }
+  return {
+    schema_version: COST_JSON_SCHEMA,
+    model: input.model,
+    pricing,
+    invalid_pricing: invalid,
+    max_cost_usd: typeof input.config.max_cost_usd === "number" ? input.config.max_cost_usd : null,
+    monthly: input.monthly
+      ? {
+        limit_usd: input.monthly.limitUsd,
+        spent_usd: input.monthly.spentUsd,
+        mcp_usd: input.monthly.mcpUsd,
+        month: input.monthly.month,
+        reset_at: input.monthly.resetAt,
+      }
+      : null,
+  };
 }
