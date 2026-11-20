@@ -22,6 +22,10 @@
 （`.dmg`、`.msi`、`-setup.exe`）+ 1 个安卓 APK + `SHA256SUMS` + `.sig` +
 `.pem` + `.bundle`（SLSA 的 `*.intoto.jsonl` 只做来源证明，不挂附件）。
 
+移动构建前提：`mobile/package.json` 的 devDependencies 必须有 `typescript`
+（与根目录同版本），因为 `capacitor.config.ts` 是 TS 文件——`bun x cap add android`
+读它时找不到 TypeScript 会直接失败、构建走不到 Gradle（0.5.3 曾因此连挂 3 次）。
+
 ## 版本号：六处（升版时一处都不能漏）
 
 发版前把版本号升到新版，六处一致：
