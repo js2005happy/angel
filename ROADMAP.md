@@ -1,3 +1,9 @@
+## 2026-11-20 — P0 Windows claim 门禁源码修复（单项增量）
+
+- **仓库事实**：前次 Windows fail-closed 改动把换行写成字面量 `\\n`，导致 `if (process.platform === "win32")` 与绝对路径校验落在 `//` 注释同一源码行，未实际生效；本轮修复为真实换行。此为静态源码缺陷，不是运行时复现。
+- **外部反馈**：[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07，重复投递个案）及 [Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19，安全恢复请求）。**事实**为外部报告；**推断**为本地 claim 必须先具备可执行的失败关闭门禁才能作为安全续跑的前置组件，不能推断 Angel 已发生相同事故。
+- **优先级（价值／难度／风险／依赖）**：本轮 P0 修复失效门禁（高／低／低／现有 claim）；后续 P0 POSIX 稳定目录句柄（高／高／高／OS API）；P0 Windows 句柄级 reparse 防护（高／高／高／Windows API）；P0 真实 Node 派发集成（高／高／高／上述可信存储）；P1 MCP 目录变化检测（中高／中／中／MCP）；P1 副作用凭证（高／高／高／适配器）。仅静态审阅，未运行测试。
+
 ## 2026-11-20 — P0 Windows claim reparse 安全边界（单项增量）
 
 - **仓库事实**：`scripts/node_tool_claim.ts` 原先在 Windows 上使用 `lstatSync` 路径预检，但未建立稳定目录句柄，无法可靠排除 junction/reparse 重定向。2026-11-20 主分支近期 [0b79890](https://github.com/js2005happy/nyra/commit/0b79890c72030517a18c64f8ed5bcf2860055f17) 增加 Shopify 只读连接器，不涉及 claim 安全；本轮 GitHub 搜索开放 Issues/PR 均为空。
