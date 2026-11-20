@@ -1,3 +1,10 @@
+## 2026-11-20 — P0 静态审计必需文件完整性 v5
+
+- **仓库事实（静态审阅）**：v4 只要求 Node 文本锚点命中；开发分支 `angel/__main__.py` 或 `angel/tool_journal.py` 缺失时仍可能输出 `audit_incomplete=false`，而分支差异不成立时也可能出现退出码 2 与 JSON 完整性标志矛盾。此处是审计工具自身缺口，不是 Node 运行时漏洞证明。
+- **本轮增量（价值中高／难度低／安全风险低／依赖 v4）**：v5 明确开发分支 Python 入口、Agent、Journal 与 main Node manifest、CLI、Agent、Tools、Gateway、Memory 均为必需文件；`missing_required_files` 列出缺失或不可读项，`audit_incomplete` 与非零退出条件统一。仅静态修改，未运行脚本或测试。
+- **外部用户需求证据（2026-11-19）**：[Codex #62611](https://github.com/openai/codex/issues/62611) 请求等待和安全恢复；这是外部单例反馈。**工程推断**：可靠恢复需要完整入口清单和真实执行所有权，不能由静态审计推导安全恢复能力。
+- **候选排序（价值／难度／安全风险／依赖）**：P0 Node 跨进程原子所有权（高／高／高／真实派发、持久化、崩溃对账）；P1 MCP 目录失效检测（中高／中／中／协议版本）；P1 可信副作用凭证（高／高／高／适配器）；P1 结构化权限拒绝（高／中／中／审批路径）；P2 安全续跑（高／高／高／P0 与审批）。main 最新检索提交 [dbc3254](https://github.com/js2005happy/nyra/commit/dbc32547aa8abd39c6e22a7c898d504411bb685e)（2026-11-20 07:24 UTC）为 0.5.2 版本更新，未重复实现；开放 Issues/PR 查询为空。
+
 ## 2026-11-20 — P0 静态审计缺失锚点失败关闭（v4）
 
 - **事实（仓库静态审阅）**：主分支 `src/agent.ts` 存在 `executeTool`、`executeToolIdempotent` 调用及工具结果追加与 `saveSession`；`src/gateway.ts` 具有交互和调度调用入口。主分支最新检索提交 [39084ea](https://github.com/js2005happy/nyra/commit/39084ea7311aed1aabad0feb57997a393d0bb386)（2026-11-20 06:12 UTC）主要修改 TUI，未直接解决跨进程执行所有权。开放 Issue/PR 检索为空。
