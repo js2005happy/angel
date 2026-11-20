@@ -129,6 +129,11 @@ vision_input: ["count", "hashes", "model", "kinds"],
 // 问题原文、答复原文与交接包内容。
 peer_asked: ["peer", "question_hash", "ok"],
 peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
+// 缺口 51：业务动作硬红线进证据链——改表（哪个连接器、哪个动作、从哪档到
+// 哪档、原因指纹）与拦截（哪个连接器、哪个动作、哪档、哪个工具）。只记
+// 元数据与 SHA-256 前 12 位指纹，不记原因原文、不记业务内容。
+redline_changed: ["connector", "action", "from", "to", "reason_hash"],
+redline_blocked: ["connector", "action", "tier", "tool"],
 // 缺口 15：语音指挥进证据链——转写（多长、多少字、哪个引擎、花了多少、
 // 转写文本的指纹）与回读（多少字、哪个引擎、花了多少）。只记元数据与
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。
@@ -812,7 +817,7 @@ if (kind === "voice_input" || kind === "voice_speak") {
     this.voiceSpent = (this.voiceSpent ?? 0) + data.cost_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported", "media_ingested"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported", "media_ingested", "redline_changed", "redline_blocked"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

@@ -27,6 +27,7 @@ import { CDPBrowser } from "./cdpBrowser.ts";
 import { ComputerControl, computerErrorMessage } from "./computer.ts";
 import { runHooks } from "./hooks.ts";
 import { reviewToolCall, reviewerConfig, type ReviewerLike } from "./reviewer.ts";
+import { redlineNeverBlock, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { effectiveStringList, effectiveValue } from "./enforcedConfig.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 的两处执行点统一走这里解析后端。
 // 审批仍在 checkApproval，钩子仍在宿主机跑（hooks.ts 不动），沙箱内只跑命令本身。
@@ -645,6 +646,24 @@ export async function checkApproval(
   }
   if (ctx.mode === "readonly") {
     throw new ToolError(`只读模式下不允许执行 ${toolName}，请用 --mode auto 或 --mode full`);
+  }
+
+  // 缺口 51：业务动作硬红线——永远禁做档在权限规则之前拦：红线是硬边界，
+  // 权限规则（用户的自定义规则）不能放开它，幂等重试也不能绕过它（放得比
+  // idempotentRetry 短路更前）；即使已批准也不放行。approve 档不在这里拦，
+  // 由下面的审批链（人工弹窗 / approveFn）满足。
+  const redlineBlock = redlineNeverBlock(ctx.home ?? null, toolName);
+  if (redlineBlock) {
+    observeApproval(ctx, toolName, false);
+    try {
+      ctx.onEvent?.("redline_blocked", { connector: redlineBlock.connector, action: redlineBlock.action, tier: "never", tool: toolName });
+    } catch { /* 观察器故障不破坏拦截 */ }
+    if (ctx.home) {
+      try {
+        appendBusinessRedlineAudit(ctx.home, { kind: "blocked", connector: redlineBlock.connector, action: redlineBlock.action, tier: "never", tool: toolName });
+      } catch { /* 审计落盘失败不破坏拦截 */ }
+    }
+    throw new ToolError(`业务动作红线拦截了 ${toolName}：${redlineBlock.reason}`);
   }
 
   // P0-5：权限规则语言。deny > ask > allow，空规则集时行为与之前完全一致。
@@ -2334,6 +2353,7 @@ async function runReviewGate(ctx: ToolContext, tool: string, args: Record<string
     task: ctx.reviewTask ?? "",
     recentMessages: ctx.reviewRecentMessages ?? [],
     runner: ctx.reviewerRunner ?? null,
+    home: ctx.home ?? null,
   });
   if (verdict.source === "skipped") return;
   try {

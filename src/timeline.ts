@@ -212,6 +212,22 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `交接给对端 ${peer}（${status}）`, peerRun ? `对端运行 ${peerRun}` : null, status === "accepted", null);
         break;
       }
+      case "redline_changed": {
+        const connector = str(ev.connector) ?? "未知连接器";
+        const action = str(ev.action) ?? "未知动作";
+        const from = str(ev.from) ?? "?";
+        const to = str(ev.to) ?? "?";
+        push(at, "event", `红线表改动：${connector} 的 ${action}（${from} → ${to}）`, null, null, null);
+        break;
+      }
+      case "redline_blocked": {
+        const connector = str(ev.connector) ?? "未知连接器";
+        const action = str(ev.action) ?? "未知动作";
+        const tier = str(ev.tier) ?? "?";
+        const tool = str(ev.tool);
+        push(at, "event", `红线拦截：${connector} 的 ${action}（${tier}）`, tool ? `工具 ${tool}` : null, false, null);
+        break;
+      }
       case "tool_start": {
         const id = str(ev.id) ?? "";
         const name = str(ev.name) ?? "未知工具";

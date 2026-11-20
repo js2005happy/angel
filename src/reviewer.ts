@@ -34,6 +34,7 @@
 // 靠类型擦除也走得通，但这里刻意保持单向依赖：reviewer 只依赖 config 与
 // providers）。事件落盘由调用方经 ctx.onEvent / RunStore 做。
 import { loadConfig, resolveProvider, resolveHome } from "./config.ts";
+import { businessActionForTool, resolveRedlineTier } from "./businessRedlines.ts";
 import { Provider } from "./providers.ts";
 
 /** 与 smartApprovals.ReviewerLike 同形（结构化类型，用哪边都一样）。 */
@@ -415,6 +416,8 @@ const DETERMINISTIC_RULES: DeterministicRule[] = [
       task?: string;
       recentMessages?: string[];
       runner?: ReviewerLike | null;
+      /** 读红线账本的 home（不传时只用默认表）；runReviewGate 会传 ctx.home。 */
+      home?: string | null;
     }): Promise<ReviewVerdict> {
     const cfg = reviewerConfig(opts.config);
     if (!cfg.enabled) {
@@ -423,6 +426,33 @@ const DETERMINISTIC_RULES: DeterministicRule[] = [
     const tools = reviewedTools(opts.config);
     if (!tools.includes(opts.tool)) {
       return { decision: "ALLOW", reason: "该工具不在被审集内", reviewerModel: null, source: "skipped" };
+    }
+    // 缺口 51：业务动作硬红线——确定性拦截在模型审查与 Custom Rules 之前：
+    // 红线是硬边界，模型与自定义规则（reviewer.rules）都改不了它；账本损坏
+    // 时同样拦截（fail-closed），不让一次坏账本把红线拦腰截断。
+    const mapped = businessActionForTool(opts.tool);
+    if (mapped) {
+      let tier: "free" | "approve" | "never";
+      try {
+        tier = resolveRedlineTier(opts.home ?? null, mapped.connector, mapped.action);
+      } catch (err: unknown) {
+        return {
+          decision: "BLOCK",
+          reason: `业务红线账本读失败，按“永远禁做”拦截（fail-closed）：${err instanceof Error ? err.message : String(err)}`,
+          reviewerModel: null,
+          source: "deterministic",
+          rule: "redline-never",
+        };
+      }
+      if (tier === "never") {
+        return {
+          decision: "BLOCK",
+          reason: `业务动作红线：${mapped.connector} 的 ${mapped.action} 档位是永远禁做，即使已批准也不放行`,
+          reviewerModel: null,
+          source: "deterministic",
+          rule: "redline-never",
+        };
+      }
     }
     const hit = evaluateDeterministicRules(opts.tool, opts.args);
     if (hit) {

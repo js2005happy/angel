@@ -100,6 +100,7 @@ import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from ".
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
 import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
+import { reviewBusinessAction, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
 import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
@@ -172,6 +173,7 @@ nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：we
 nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
 nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
 nyra bot telegram <start|stop|status>   Bot 方向 Phase 1：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；外部用户强制只读，详见 docs/bot.md）
+nyra bot redlines <status|list|show|tighten|loosen|set>   Bot 缺口 51：业务动作硬红线表——发消息/付款/删除永远须人批，转钱/交易证券永远禁做（详见 docs/business-redlines.md）
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   验收者：并行产出合入前先过验收门（确定性检查 + 便宜模型复核），未通过打回重做（详见 docs/verifier.md）
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
@@ -261,6 +263,7 @@ nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: 
 nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
 nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
 nyra bot telegram <start|stop|status>   bot direction phase 1: Telegram channel (long polling, per-session serial queue, dedup + quotas, deterministic commands; external users forced read-only, see docs/bot.md)
+nyra bot redlines <status|list|show|tighten|loosen|set>   bot gap 51: business-action hard redlines — sending messages / payments / deletions always need approval, moving money / trading securities are always forbidden (see docs/business-redlines.md)
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   verifier: parallel output passes an acceptance gate before merging (deterministic checks + cheap-model review); failures are sent back for rework (see docs/verifier.md)
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
@@ -3385,6 +3388,16 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
           return 1;
         }
       }
+      // 缺口 51：业务动作红线——发消息是永远须人批档（--yes/交互确认已满足），
+      // 但用户若把 send_message 收紧到永远禁做，即使已批准也拒绝；草稿是自由做档。
+      const gmailRedline = reviewBusinessAction({ home, connector: "gmail", action: draft ? "draft" : "send_message", approved: true });
+      if (gmailRedline.decision === "BLOCK") {
+        try {
+          appendBusinessRedlineAudit(home, { kind: "blocked", connector: "gmail", action: draft ? "draft" : "send_message", tier: "never", via: "cli-gmail-send" });
+        } catch { /* 审计落盘失败不破坏拦截 */ }
+        process.stderr.write(`红线拦截：${gmailRedline.reason}\n`);
+        return 1;
+      }
       const result = draft
       ? await transport.createDraft({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) })
       : await transport.send({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) });
@@ -4004,6 +4017,15 @@ export async function handleSlack(argv: string[], home: string, input?: SlackCli
           process.stderr.write("未批准：消息没有发送（发消息须显式批准，加 --yes 或在确认里答 y）。\n");
           return 1;
         }
+      }
+      // 缺口 51：同 Gmail——发消息须人批（确认已满足），收紧到禁做时即使已批准也拒绝。
+      const slackRedline = reviewBusinessAction({ home, connector: "slack", action: "send_message", approved: true });
+      if (slackRedline.decision === "BLOCK") {
+        try {
+          appendBusinessRedlineAudit(home, { kind: "blocked", connector: "slack", action: "send_message", tier: "never", via: "cli-slack-send" });
+        } catch { /* 审计落盘失败不破坏拦截 */ }
+        process.stderr.write(`红线拦截：${slackRedline.reason}\n`);
+        return 1;
       }
       const { ts } = await client().postMessage(channelId, text);
       process.stdout.write(`已发送到频道 ${channelId}（消息 ts=${ts}）。\n`);
