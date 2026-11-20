@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Node/Python 执行入口归属核实；无运行时代码变更）
+
+- 静态确认开发分支 Python Angel 与默认主分支 Node Nyra 为不同运行时，暂停向 Python ToolJournal 添加不能保护主分支的伪原子检查。ROADMAP 更新运行时审查前置任务及 2026-11-19 新用户反馈；VERIFICATION 记录静态限制。未运行测试或 CI。
+
 ## 未发布（2026-11-20，P0 执行所有权实施前置核对；无运行时变更）
 
 - 记录开发分支 Python ToolJournal 与近期主分支 TypeScript 运行时的架构归属待确认问题；本轮不声称实现原子锁或安全恢复。
