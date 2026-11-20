@@ -1,3 +1,7 @@
+## 2026-11-21 — Node claim 目录同步后名称复核
+
+静态检查：在 `scripts/node_tool_claim.ts` 中缓存已核验文件身份，目录 `fsync` 后重新 `lstat` 对照 dev/ino、类型、链接数、UID、私有权限和长度；任何异常失败关闭且不自动清理 claim。**未运行** TypeScript 编译、测试、脚本或 CI；没有运行时证明。该复核不能消除最后一次检查后的路径替换，也不提供 openat 或 exactly-once。Windows 仍拒绝 claim，组件未接入主执行器。
+
 ## 2026-11-21 — Node claim 文件身份复核（仅静态）
 
 - 读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal；对照 main Node Agent/Tools，查询 main 近期提交、开放 Issues/PR、前次提交 combined status 与关联 PR workflow（均无检查返回，不能推断通过）。
