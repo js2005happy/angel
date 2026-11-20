@@ -35,10 +35,14 @@ function checkPrivateDirectory(directory: string): void {
     let info;
     try { info = lstatSync(current); } catch { throw new ClaimUnavailable(); }
     if (!info.isDirectory() || info.isSymbolicLink()) throw new ClaimUnavailable();
-    if (current === leaf && process.platform !== "win32") {
-      if (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
-        throw new ClaimUnavailable();
-      }
+    // A writable ancestor can redirect the claim path after preflight.
+    // Reject it even when sticky (e.g. /tmp); only root or this user
+    // may own ancestors. The leaf must remain private to this user.
+    const uid = process.getuid?.();
+    if (uid === undefined || (info.uid !== uid && info.uid !== 0) ||
+        (info.mode & 0o022) !== 0 ||
+        (current === leaf && (info.uid !== uid || (info.mode & 0o077) !== 0))) {
+      throw new ClaimUnavailable();
     }
     const parent = dirname(current);
     if (parent === current) break;
