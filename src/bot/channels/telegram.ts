@@ -19,6 +19,15 @@ interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
+  /** Phase 2：审批按钮回调（callback_data 形如 bot:approve:<id>）。 */
+  callback_query?: TelegramCallbackQuery;
+}
+
+interface TelegramCallbackQuery {
+  id: string;
+  data?: string;
+  from: { id: number; username?: string; is_bot?: boolean };
+  message?: TelegramMessage;
 }
 
 interface TelegramMessage {
@@ -115,8 +124,44 @@ export class TelegramAdapter implements ChannelAdapter {
       this.offset = Math.max(this.offset ?? 0, u.update_id + 1);
       const msg = this.toInbound(u.message);
       if (msg) out.push(msg);
+      const cb = this.toCallback(u.callback_query);
+      if (cb) out.push(cb);
     }
     return out;
+  }
+
+  /**
+   * 按钮回调 → InboundMessage：callback_data 只认 `bot:approve:<id>` 与
+   * `bot:reject:<id>` 两种，其余一律忽略（伪造的回调数据到不了审批层）。
+   * 正文转成对应的 /approve / /reject 指令，走同一条确定性指令链路；
+   * viaCallback 标记供主链路回 answerCallbackQuery 消转圈。
+   */
+  toCallback(query: TelegramCallbackQuery | undefined): InboundMessage | null {
+    if (!query || !query.data || query.from?.is_bot) return null;
+    const m = /^bot:(approve|reject):([0-9a-f]{8})$/.exec(query.data);
+    if (!m) return null;
+    const chatId = query.message ? String(query.message.chat.id) : String(query.from.id);
+    const threadId = query.message && typeof query.message.message_thread_id === "number"
+      ? String(query.message.message_thread_id)
+      : null;
+    const chatType = (query.message?.chat.type === "private" || query.message?.chat.type === "group" || query.message?.chat.type === "supergroup")
+      ? (query.message.chat.type as BotChatType)
+      : "private";
+    return {
+      channel: "telegram",
+      chatId,
+      threadId,
+      senderId: String(query.from.id),
+      senderRole: "member",
+      isMentioned: true,
+      messageId: query.message ? String(query.message.message_id) : `cb-${query.id}`,
+      text: `/${m[1]} ${m[2]}`,
+      attachments: [],
+      chatType,
+      timestamp: Date.now(),
+      viaCallback: true,
+      callbackId: query.id,
+    };
   }
 
   /** 一条 Telegram 消息 → InboundMessage；edited_message 与机器人自己发的消息直接忽略。 */
@@ -166,11 +211,23 @@ export class TelegramAdapter implements ChannelAdapter {
     const body: Record<string, unknown> = { chat_id: Number(msg.chatId), text: msg.text };
     if (msg.threadId !== null) body.message_thread_id = Number(msg.threadId);
     if (msg.replyToMessageId) body.reply_to_message_id = Number(msg.replyToMessageId);
+    if (msg.inlineKeyboard?.length) {
+      body.reply_markup = {
+        inline_keyboard: msg.inlineKeyboard.map((row) =>
+          row.map((b) => ({ text: b.text, callback_data: b.callbackData })),
+        ),
+      };
+    }
     const sent = await this.callApi<{ message_id: number }>("sendMessage", body);
     return String(sent.message_id);
   }
 
   async editText(chatId: string, messageId: string, text: string): Promise<void> {
     await this.callApi("editMessageText", { chat_id: Number(chatId), message_id: Number(messageId), text });
+  }
+
+  /** 回应按钮点击（消掉客户端的等待转圈；文案只写结论，不带敏感信息）。 */
+  async answerCallback(callbackId: string, text: string): Promise<void> {
+    await this.callApi("answerCallbackQuery", { callback_query_id: callbackId, text });
   }
 }
