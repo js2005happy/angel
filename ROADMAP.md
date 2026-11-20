@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 claim 目录同步后文件名复核（静态审阅）
+
+- **仓库事实**：`scripts/node_tool_claim.ts` 原先只在文件 fsync 后核对 claim 名称，目录 fsync 后没有再次核对同一名称；仍未接入真实 Node 工具派发。main 最近检索提交 [e240b5e](https://github.com/js2005happy/nyra/commit/e240b5e33df5d9dbfb613fdb83cdca798e91fb4c)（2026-11-20 17:27 UTC）为 Office 导出，不重复本项；开放 Issues/PR 为空，CI 未返回状态或运行记录。
+- **外部事实**：[Codex #60104](https://github.com/openai/codex/issues/60104)（2026-11-07）用户报告长任务反复返工、浪费额度及进度失真；[Codex #40646](https://github.com/openai/codex/issues/40646)（2026-08-25）报告执行声明与工具轨迹不一致。**工程推断**：副作用所有权需要与可核查的持久证据绑定；这些个案不证明 Angel 存在同样故障或统计高频。
+- **本轮单项增量**：保存 fsync 后已核验的 claim inode 身份，目录 fsync 完成后再次核对路径指向同一普通文件、单硬链接、当前 UID、私有权限与长度。价值高／难度低／安全风险低／依赖现有 POSIX 元数据；检查后仍有 TOCTOU，非 exactly-once。
+- **后续排序（价值／难度／风险／依赖）**：P0 真正目录句柄相对原子创建（高／高／高／原生 openat）；P0 Windows reparse 防护（高／高／高／原生句柄 API）；P0 真实工具派发集成（高／高／高／可信 claim）；P1 MCP 目录失效检测（中高／中／中／协议）；P1 可信副作用回执（高／高／高／适配器）。未运行编译、测试、脚本或 CI。
+
 ## 2026-11-21 — P0 Node claim 文件身份与私有性复核（仅静态）
 
 - **仓库事实**：开发分支 `scripts/node_tool_claim.ts` 原先仅在写入前以 O_EXCL 排他创建，fsync 后未核对文件名是否仍指向所写入的 inode、文件类型、链接数、所有者、权限及长度。主分支最新检索提交 [e240b5e](https://github.com/js2005happy/nyra/commit/e240b5e33df5d9dbfb613fdb83cdca798e91fb4c)（2026-11-20 17:27 UTC）为 Office 直出功能，不重复此项；开放 Issues/PR 查询为空。
