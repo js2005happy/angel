@@ -113,6 +113,26 @@ export function parseRules(input: { allow?: unknown; ask?: unknown; deny?: unkno
   return out;
 }
 
+// ---- 缺口 28：Soul invariant 编译进规则层 ----
+//
+// Soul 的 invariant 是“编译进来的 deny 规则”：调用方（soul.ts）把
+// Tenet 的 deny 文本交给这里，拿回一个只有 deny 的 RuleSet，再用
+// evaluate() 求值。纯函数、不读文件——规则文本在写入 Soul 时已校验过，
+// 这里再遇到无法解析的（手改文件改坏了）就跳过并记 warning，调用方负责
+// 把 warning 亮出来（soul show / soul status），不让人“写了规则以为挡
+// 住了、实际没生效”。
+/** 把若干条 deny 规则文本编译成只有 deny 的规则集；解析失败的进 warnings。 */
+export function compileDenyRules(texts: readonly string[]): { rules: RuleSet; warnings: string[] } {
+  const deny: PermissionRule[] = [];
+  const warnings: string[] = [];
+  for (const raw of texts) {
+    const rule = parseRule(raw);
+    if (rule) deny.push(rule);
+    else warnings.push(`无法解析 "${raw}"`);
+  }
+  return { rules: { allow: [], ask: [], deny, warnings }, warnings };
+}
+
 // 与 skills.ts 的 matchGlob 同款语义（该模块已导出，这里直接复用会形成循环依赖风险，
 // 故在 permissionRules 内保留一份等价的轻量实现；两处语义由各自测试锁定）。
 function segmentMatch(pat: string, str: string): boolean {

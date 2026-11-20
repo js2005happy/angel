@@ -9,6 +9,7 @@ import {
 import { join, relative, sep, dirname, basename } from "node:path";
 import { pythonJsonDump } from "./pyjson.ts";
 import { tokenize, scoreBm25 } from "./knowledge.ts";
+import { listSoulAgents, loadSoul, type SoulTenet, type TenetKind } from "./soul.ts";
 
 export function resolveNyraHome(homeOverride?: string): string {
   if (homeOverride) return homeOverride;
@@ -504,6 +505,51 @@ export function deleteMemoryEntries(
   };
 }
 
+
+export interface TenetIndexEntry {
+  agent: string;
+  id: string;
+  kind: TenetKind;
+  enabled: boolean;
+  text: string;
+}
+
+/**
+ * 缺口 28：Tenet 索引——Tenet 按 id 全局可查（soul show / 审计要回答
+ * “这条 Tenet 属于哪个 Soul”）。索引是派生的：读 Soul 文件现算，不另存
+ * 文件、不与 Soul 文件抢写；某个 Soul 文件损坏时跳过它（损坏本身由
+ * `nyra soul status` 报错，不在这里拦住整张索引）。
+ */
+export function buildTenetIndex(home: string): TenetIndexEntry[] {
+  const out: TenetIndexEntry[] = [];
+  for (const agent of listSoulAgents(home)) {
+    let soul;
+    try {
+      soul = loadSoul(home, agent);
+    } catch {
+      continue;
+    }
+    for (const tenet of soul.tenets) {
+      out.push({ agent, id: tenet.id, kind: tenet.kind, enabled: tenet.enabled, text: tenet.text });
+    }
+  }
+  return out;
+}
+
+/** 按 Tenet id 找它属于哪个 Soul（找不到返回 null，不抛错）。 */
+export function findTenetById(home: string, tenetId: string): { agent: string; tenet: SoulTenet } | null {
+  for (const agent of listSoulAgents(home)) {
+    let soul;
+    try {
+      soul = loadSoul(home, agent);
+    } catch {
+      continue;
+    }
+    const tenet = soul.tenets.find((t) => t.id === tenetId);
+    if (tenet) return { agent, tenet };
+  }
+  return null;
+}
 
 export function listSessions(home?: string): SessionMeta[] {
   const dir = sessionsDir(home);
