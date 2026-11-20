@@ -9,7 +9,7 @@
  * proving an external side effect. Never use on an untrusted/shared filesystem.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, writeSync } from "node:fs";
+import { closeSync, constants, fsyncSync, lstatSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 export class ClaimUnavailable extends Error {
