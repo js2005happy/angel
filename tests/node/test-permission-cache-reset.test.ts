@@ -9,9 +9,9 @@
 //
 // 这里锁的是"刷新真的有效"，而不只是"函数存在"。
 //
-// 只用**路径 glob 规则**（`write_file(**/*.env)`）做断言：它是当前实现里能稳定命中的形式。
-// 顺带记录一个观察：`shell(...)` 形式的规则在本版本里 evaluate 返回 null（不命中），
-// 已单独反馈，不在本文件中假设其行为。
+// 只用**路径 glob 规则**（`write_file(**/*.env)`）做断言：这个文件只关心缓存刷新语义。
+// shell 命令规则的匹配另有一组测试（test-permission-shell-matching.test.ts）——
+// 那边曾抓到真缺陷：`Bash(rm *)` 在带 workdir 时永不命中（deny 规则静默失效）。
 import { test, expect, beforeEach } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
