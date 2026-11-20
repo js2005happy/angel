@@ -6,7 +6,8 @@
   "description": "Nyra 手机端：Capacitor 壳，启动器页面连电脑上 Nyra 的手机页（/m）。工具仍在电脑上执行。",
   "devDependencies": {
     "@capacitor/assets": "4.0.0",
-    "@capacitor/cli": "8.6.2"
+    "@capacitor/cli": "8.6.2",
+    "typescript": "7.0.2"
   },
   "name": "nyra-mobile",
   "private": true,
