@@ -253,3 +253,30 @@ test("gateway: 桌面审批——编辑带 diff、命令 Always（本项目）�
     expect((await fetch(`${url}/api/rules/${rule!.id}/revoke`, { method: "POST", headers: h, body: "{}" })).status).toBe(404);
   } finally { await gw.stop(); }
 });
+
+test("desktop page: / 是按设计稿重做的桌面页（令牌、文案、入场动画、不画假窗口按钮、不出现 angel）", async () => {
+  const { DESKTOP_HTML, DESKTOP_COLORS, desktopMessages } = await import("../../src/webuiDesktop.ts");
+  const { PAGE_HTML } = await import("../../src/webuiPage.ts");
+  expect(typeof PAGE_HTML).toBe("string"); // 旧页仍导出
+  const gw = new Gateway({ home: tmp("nyra-dp-"), workdir: "/tmp", host: "127.0.0.1", port: 0, config: { mcp_enabled: false } });
+  const info = await gw.start();
+  try {
+    const res = await fetch(`http://127.0.0.1:${info.port}/?token=${gw.token}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-security-policy")).toContain("default-src 'none'");
+    const html = await res.text();
+    expect(html).toBe(DESKTOP_HTML);
+    expect((await fetch(`http://127.0.0.1:${info.port}/`)).status).toBe(403);
+  } finally { await gw.stop(); }
+  for (const tone of [DESKTOP_COLORS.light, DESKTOP_COLORS.dark]) for (const v of Object.values(tone)) expect(DESKTOP_HTML).toContain(v);
+  expect(DESKTOP_HTML).toContain("prefers-color-scheme: dark");
+  expect(DESKTOP_HTML).toContain("var NyraSplash="); // 与手机同一份原 Nyra 入场动画
+  expect(DESKTOP_HTML).toContain("shell === 'desktop' ? playSplash()");
+  expect(DESKTOP_HTML).not.toMatch(/#FF5F57|#FEBC2E|#28C840/); // 原生标题栏：不画 mac 红黄绿假按钮
+  expect(DESKTOP_HTML.toLowerCase()).not.toContain("angel");
+  const msgs = desktopMessages();
+  expect(Object.keys(msgs.zh).sort()).toEqual(Object.keys(msgs.en).sort());
+  expect(msgs.en["d.appr.always"]).toBe("Always");
+  expect(msgs.zh["d.appr.always"]).toBe("总是允许");
+  expect(msgs.en["d.mode.auto"]).toBe("Ask before writes");
+});

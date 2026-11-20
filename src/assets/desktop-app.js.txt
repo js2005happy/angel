@@ -1,0 +1,992 @@
+'use strict';
+// 桌面端（nyra ui 的 /）前端：侧栏（新对话 / 搜索 / 自动化 / 技能 / MCP / 项目分组的对话列表 / 设置）、
+// 新对话空状态、对话 + Codex 式审批卡、右侧审阅面板（Diff / 计划 / 证据 / 终端）、状态栏、设置、首次引导。
+// 版式按 nyra-design v2 desktop.py；文案来自 src/i18n.ts 的 d.* / m.* 键，语言跟随系统，认不出回落 en。
+// 页面不含秘密：owner token 来自启动链接的 ?token=（另存一份在 sessionStorage），每次 API 调用带 X-Nyra-Token 头。
+// API Key 只在首次引导 / 设置里输入（password 框），提交后立刻清空；接口只回掩码。
+const $ = (id) => document.getElementById(id);
+const LANG = (() => { const l = String((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase(); return l.startsWith('zh') ? 'zh' : 'en'; })();
+const MSG = (window.NYRA_I18N && (window.NYRA_I18N[LANG] || window.NYRA_I18N.en)) || {};
+function t(key, vars){ let s = MSG[key] != null ? MSG[key] : key; if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)); return s; }
+document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en';
+const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+const EDIT_TOOLS = ['write_file', 'edit_file', 'apply_patch'];
+const S = {
+  view: 'home', session: null, info: null, sessions: null, approvals: [], sv: null, schedule: null,
+  review: { open: false, tab: 'diff', file: null }, card: {}, collapsed: {}, pending: '', planFirst: false,
+  feedKey: '', setSec: 'model', keyEdit: null, setup: { provider: null, tested: null, busy: false },
+};
+
+// ---------------------------------------------------------------- 基础 ---
+function token(){
+  const q = new URLSearchParams(location.search).get('token');
+  if (q) {
+    try { sessionStorage.setItem('nyra-token', q); } catch(e){}
+    return q;
+  }
+  try { return sessionStorage.getItem('nyra-token') || ''; } catch(e){ return ''; }
+}
+const TOKEN = token();
+async function api(path, opts){
+  opts = opts || {};
+  const res = await fetch(path, { ...opts, headers: { 'X-Nyra-Token': TOKEN, 'Content-Type': 'application/json' } });
+  let data = null; try { data = await res.json(); } catch(e){}
+  if (!res.ok) { const err = new Error((data && data.error) || ('HTTP ' + res.status)); err.status = res.status; throw err; }
+  return data;
+}
+const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body || {}) });
+function el(tag, cls, text){ const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined && text !== null) e.textContent = text; return e; }
+function icon(name){ const tpl = $('ic-' + name); const s = el('span', 'ic'); if (tpl) s.appendChild(tpl.content.firstElementChild.cloneNode(true)); return s; }
+function toast(text){ const x = el('div', 'toast', text); document.body.appendChild(x); setTimeout(() => x.remove(), 2600); }
+function applyI18n(root){
+  (root || document).querySelectorAll('[data-i]').forEach(n => { n.textContent = t(n.dataset.i); });
+  (root || document).querySelectorAll('[data-ip]').forEach(n => { n.placeholder = t(n.dataset.ip); });
+  (root || document).querySelectorAll('[data-ia]').forEach(n => { n.setAttribute('aria-label', t(n.dataset.ia)); n.title = t(n.dataset.ia); });
+}
+function textOf(m){
+  if (typeof m.content === 'string') return m.content;
+  if (Array.isArray(m.content)) return m.content.map(p => (p && p.text) || '').join('');
+  return m.content == null ? '' : JSON.stringify(m.content);
+}
+function ago(iso){
+  if (!iso) return '';
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z');
+  let s = (Date.now() - d.getTime()) / 1000;
+  if (!isFinite(s)) return '';
+  if (s < 0) { const d2 = new Date(iso); s = (Date.now() - d2.getTime()) / 1000; }
+  if (s < 60) return t('d.ago.now');
+  if (s < 3600) return t('d.ago.m', { n: Math.floor(s / 60) });
+  if (s < 86400) return t('d.ago.h', { n: Math.floor(s / 3600) });
+  return t('d.ago.d', { n: Math.floor(s / 86400) });
+}
+function modeLabel(m){ return t('d.mode.' + (m || 'auto')); }
+function projectName(){ return (S.sessions && S.sessions.project && S.sessions.project.name) || (S.info && S.info.workdir ? S.info.workdir.split(/[\\/]/).pop() : ''); }
+function sandboxLabel(){ const sb = S.info && S.info.config ? S.info.config.sandbox : 'local'; return sb === 'e2b' ? 'E2B' : sb === 'bwrap' ? t('d.sandbox.bwrap') : t('d.sandbox.local'); }
+
+// 统一 diff（网关审批摘要里的 unifiedPreview）→ 文件名、增删数、逐行。网关预览不带行号，栏里显示 +/−。
+function parseDiff(summary){
+  const lines = String(summary || '').split('\n');
+  let path = '', add = 0, del = 0; const body = [];
+  lines.slice(1).forEach(l => {
+    if (l.startsWith('+++ ')) { path = l.replace(/^\+\+\+ (b\/)?/, ''); return; }
+    if (l.startsWith('--- ')) { if (!path) path = l.replace(/^--- (a\/)?/, ''); return; }
+    if (l.startsWith('+')) { add++; body.push(['a', '+', l.slice(1)]); }
+    else if (l.startsWith('-')) { del++; body.push(['d', '−', l.slice(1)]); }
+    else if (l.trim()) body.push(['', '', l]);
+  });
+  return { path, add, del, body, head: lines[0] || '' };
+}
+
+// ---------------------------------------------------------------- 视图 ---
+const VIEWS = ['home', 'thread', 'automations', 'skills', 'mcp', 'settings'];
+function show(view){
+  S.view = view;
+  VIEWS.forEach(v => $('v-' + v).classList.toggle('hidden', v !== view));
+  if (view !== 'thread') { S.session = null; }
+  ['automations', 'skills', 'mcp', 'settings'].forEach(v => $('nav-' + v).classList.toggle('on', v === view));
+  renderTop(); renderReview(); renderThreads(); renderStatus();
+}
+function renderTop(){
+  const top = $('top'); top.innerHTML = '';
+  if (S.view === 'thread') {
+    const s = sessionById(S.session);
+    top.appendChild(el('span', 'crumb', (s && s.project) || projectName()));
+    top.appendChild(el('span', 'crumb', '/'));
+    top.appendChild(el('b', '', titleOf(s) || t('d.untitled')));
+    top.appendChild(el('span', 'sp'));
+    const rv = el('button', 'tbtn' + (S.review.open ? ' on' : '')); rv.id = 'toggle-review';
+    rv.appendChild(icon('panel')); rv.appendChild(document.createTextNode(t('d.review')));
+    rv.onclick = () => { S.review.open = !S.review.open; renderTop(); renderReview(); };
+    top.appendChild(rv);
+    const nw = el('button', 'tbtn p'); nw.appendChild(icon('pencil')); nw.appendChild(document.createTextNode(t('d.newThread'))); nw.onclick = newThread;
+    top.appendChild(nw);
+  } else {
+    const names = { home: t('d.newThread'), automations: t('d.automations'), skills: t('d.skills'), mcp: t('d.mcp'), settings: t('d.settings') };
+    top.appendChild(el('b', '', names[S.view] || 'Nyra'));
+    if (S.view === 'home') { top.appendChild(el('span', 'crumb', '· ' + projectName())); }
+  }
+}
+function sessionById(id){ return S.sessions && (S.sessions.sessions || []).find(x => x.id === id); }
+function titleOf(s){ const raw = s ? String(s.preview || '') : ''; const txt = raw || ((!s || s.id === S.session) ? S.title || '' : ''); return txt.split('\n')[0].slice(0, 80); }
+
+// ---------------------------------------------------------------- 侧栏 ---
+function renderThreads(){
+  const box = $('threads'); box.innerHTML = '';
+  if (!S.sessions) return;
+  const pend = new Set(S.approvals.map(a => a.session));
+  const list = (S.sessions.sessions || []).slice().sort((a, b) => String(b.mtime).localeCompare(String(a.mtime)));
+  const groups = new Map(); const chats = [];
+  const here = projectName();
+  if (here) groups.set(here, []);
+  list.forEach(s => { if (s.project) { if (!groups.has(s.project)) groups.set(s.project, []); groups.get(s.project).push(s); } else chats.push(s); });
+  const row = (s, chat) => {
+    const b = el('button', 'th' + (chat ? ' chat' : '') + (s.id === S.session ? ' on' : ''));
+    b.dataset.sid = s.id;
+    if (s.status === 'running' && !pend.has(s.id)) b.appendChild(el('span', 'spin'));
+    else if (pend.has(s.id)) b.appendChild(el('span', 'dot warn'));
+    else if (s.status === 'error') b.appendChild(el('span', 'dot err'));
+    b.appendChild(el('span', 'tt', titleOf(s) || t('d.untitled')));
+    b.appendChild(el('span', 't', s.status === 'running' ? t('d.ago.now') : ago(s.mtime)));
+    b.title = titleOf(s);
+    b.onclick = () => openSession(s.id);
+    return b;
+  };
+  groups.forEach((items, name) => {
+    const closed = !!S.collapsed[name];
+    const h = el('button', 'pr'); h.appendChild(el('span', 'car', closed ? '▸' : '▾')); h.appendChild(document.createTextNode(name));
+    h.onclick = () => { S.collapsed[name] = !closed; renderThreads(); };
+    box.appendChild(h);
+    if (closed) return;
+    if (!items.length) box.appendChild(el('div', 'side-empty', t('d.noThreads')));
+    items.slice(0, 30).forEach(s => box.appendChild(row(s, false)));
+  });
+  if (chats.length) {
+    const sh = el('div', 'sh'); sh.appendChild(el('span', '', t('d.chats'))); box.appendChild(sh);
+    chats.slice(0, 30).forEach(s => box.appendChild(row(s, true)));
+  }
+}
+
+// ---------------------------------------------------------------- 数据 ---
+async function loadInfo(){ S.info = await api('/api/info'); renderStatus(); renderPills(); return S.info; }
+async function loadSessions(){ S.sessions = await api('/api/sessions'); renderThreads(); if (S.view === 'home') $('home-proj').textContent = projectName(); }
+async function loadApprovals(){ const d = await api('/api/approvals'); S.approvals = d.approvals || []; }
+async function loadSchedule(){ try { S.schedule = (await api('/api/schedule')).tasks || []; } catch(e){ S.schedule = []; } }
+
+// ---------------------------------------------------------------- 输入框 ---
+function renderPills(){
+  if (!S.info) return;
+  ['home', 'thread'].forEach(where => {
+    const row = $(where + '-pills'); if (!row) return; row.innerHTML = '';
+    const model = el('button', 'pk'); model.appendChild(icon('target')); model.appendChild(document.createTextNode(S.info.model || t('d.notConfigured')));
+    model.title = t('d.pill.model'); model.onclick = () => openSettings('model'); row.appendChild(model);
+    const mode = el('button', 'pk'); mode.dataset.role = 'mode'; mode.appendChild(icon('shield')); mode.appendChild(document.createTextNode(modeLabel(S.info.mode)));
+    mode.title = t('d.pill.mode'); mode.onclick = (ev) => modeMenu(ev.currentTarget); row.appendChild(mode);
+    const sb = el('span', 'pk'); sb.appendChild(icon('box')); sb.appendChild(document.createTextNode(sandboxLabel())); sb.title = t('d.pill.sandbox'); row.appendChild(sb);
+    if (where === 'home') {
+      const pf = el('button', 'pk' + (S.planFirst ? ' on' : '')); pf.id = 'plan-first'; pf.appendChild(icon('list')); pf.appendChild(document.createTextNode(t('d.planFirst')));
+      pf.title = t('d.planFirstHint'); pf.onclick = () => { S.planFirst = !S.planFirst; renderPills(); }; row.appendChild(pf);
+    }
+    const send = el('button', 'send'); send.id = where + '-send'; send.setAttribute('aria-label', t('d.send')); send.appendChild($('ic-up').content.firstElementChild.cloneNode(true));
+    send.onclick = () => (where === 'home' ? sendHome() : sendMsg()); row.appendChild(send);
+  });
+}
+function closeMenus(){ document.querySelectorAll('.menu').forEach(m => m.remove()); }
+function modeMenu(anchor){
+  closeMenus();
+  const m = el('div', 'menu'); m.id = 'mode-menu';
+  ['readonly', 'auto', 'full'].forEach(k => {
+    const b = el('button', S.info.mode === k ? 'on' : ''); b.dataset.mode = k;
+    b.appendChild(el('span', '', modeLabel(k))); b.appendChild(el('small', '', t('d.mode.' + k + '.hint')));
+    b.onclick = () => { closeMenus(); setMode(k); };
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  const r = anchor.getBoundingClientRect();
+  m.style.left = r.left + 'px'; m.style.top = Math.max(8, r.top - m.offsetHeight - 6) + 'px';
+  setTimeout(() => document.addEventListener('click', closeMenus, { once: true }), 0);
+}
+async function setMode(mode){
+  if (mode === S.info.mode) return;
+  if (mode === 'full' && !(await confirmDlg(t('d.full.title'), t('d.full.body'), t('d.full.ok')))) return;
+  try { await post('/api/mode', { mode }); await loadInfo(); toast(t('d.modeSwitched', { mode: modeLabel(mode) })); if (S.view === 'settings') renderSettings(); }
+  catch (e) { toast(t('d.failed', { msg: e.message })); }
+}
+function confirmDlg(title, body, okText){
+  return new Promise(resolve => {
+    const ov = el('div', 'overlay'); ov.id = 'confirm-dlg';
+    const d = el('div', 'dlg'); const pad = el('div', 'pad');
+    pad.appendChild(el('h2', '', title)); pad.appendChild(el('p', '', body));
+    const btns = el('div', 'btns');
+    const no = el('button', 'tbtn', t('d.cancel')); const yes = el('button', 'tbtn p danger', okText); yes.id = 'confirm-ok';
+    const done = (v) => { ov.remove(); resolve(v); };
+    no.onclick = () => done(false); yes.onclick = () => done(true);
+    btns.appendChild(no); btns.appendChild(yes); pad.appendChild(btns); d.appendChild(pad); ov.appendChild(d);
+    ov.onclick = (e) => { if (e.target === ov) done(false); };
+    document.body.appendChild(ov);
+  });
+}
+function autoGrow(ta){ ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'; }
+
+// ---------------------------------------------------------------- 新对话 ---
+async function newThread(){
+  S.session = null; S.feedKey = ''; S.review.file = null;
+  show('home');
+  await loadSchedule(); renderHome();
+  $('home-input').focus();
+}
+function renderHome(){
+  $('home-proj').textContent = projectName();
+  $('home-proj').title = (S.info && S.info.workdir) || '';
+  const cards = $('cards'); cards.innerHTML = '';
+  [['explain', false], ['fix', true], ['research', false], ['schedule', false]].forEach(([k, plan]) => {
+    const c = el('button', 'card'); c.dataset.card = k;
+    c.appendChild(el('b', '', t('d.card.' + k))); c.appendChild(el('span', '', t('d.card.' + k + '.sub')));
+    c.onclick = () => {
+      if (k === 'schedule') { openAutomations(); return; }
+      S.planFirst = plan; renderPills();
+      const ta = $('home-input'); ta.value = t('d.card.' + k + '.prompt'); autoGrow(ta); ta.focus();
+    };
+    cards.appendChild(c);
+  });
+  const box = $('home-autos'); box.innerHTML = '';
+  box.appendChild(autoList(S.schedule || [], true));
+}
+function scheduleWhen(task){
+  if (task.enabled === false) return t('m.auto.paused');
+  if (task.at) return t('m.auto.daily', { at: task.at });
+  const sec = Number(task.every_seconds || 0);
+  if (sec >= 3600 && sec % 3600 === 0) return t('m.auto.everyHour', { n: sec / 3600 });
+  if (sec) return t('m.auto.everyMin', { n: Math.round(sec / 60) });
+  return '';
+}
+function autoList(tasks, compact){
+  const wrap = el('div', 'files');
+  if (!tasks.length) {
+    const e = el('div', 'empty'); e.appendChild(el('div', '', t('m.auto.emptyTitle')));
+    const c = el('div'); c.appendChild(document.createTextNode(t('d.auto.emptyCmd') + ' ')); c.appendChild(el('code', '', 'nyra schedule add --name … --prompt … --at HH:MM'));
+    e.appendChild(c); wrap.appendChild(e); return wrap;
+  }
+  tasks.forEach(task => {
+    const r = el(compact ? 'div' : 'div', 'fr');
+    r.appendChild(el('span', 'dot ' + (task.enabled === false ? 'off' : task.last_status === 'error' ? 'err' : 'ok')));
+    const tx = el('span', '', task.name); r.appendChild(tx);
+    const when = el('span', 'when', scheduleWhen(task)); when.style.marginLeft = 'auto'; when.style.color = 'var(--mu)'; r.appendChild(when);
+    if (!compact) {
+      const tg = el('button', 'tbtn', task.enabled === false ? t('d.auto.resume') : t('d.auto.pause'));
+      tg.onclick = async () => { try { await post('/api/schedule', { action: 'toggle', name: task.name }); await loadSchedule(); renderAutomations(); } catch (e) { toast(t('d.failed', { msg: e.message })); } };
+      r.appendChild(tg);
+    }
+    wrap.appendChild(r);
+  });
+  return wrap;
+}
+async function sendHome(){
+  const ta = $('home-input'); const text = ta.value.trim();
+  if (!text) { ta.focus(); return; }
+  try {
+    const data = await post('/api/sessions', {});
+    S.pending = text; ta.value = ''; autoGrow(ta);
+    await post('/api/sessions/' + encodeURIComponent(data.id) + (S.planFirst ? '/plan' : '/messages'), { text });
+    S.planFirst = false;
+    await loadSessions();
+    await openSession(data.id);
+  } catch (e) { toast(t('d.failed', { msg: e.message })); }
+}
+
+// ---------------------------------------------------------------- 对话 ---
+async function openSession(id){
+  S.session = id; S.feedKey = ''; S.card = {}; S.review.file = null; S.sv = null; S.title = '';
+  $('col').innerHTML = '';
+  show('thread');
+  S.session = id;
+  renderTop(); renderThreads();
+  await tick();
+  $('input').focus();
+}
+function stepRow(name, args){
+  const r = el('div', 'r');
+  const put = (ic, verb, code) => { r.appendChild(icon(ic)); r.appendChild(document.createTextNode(t(verb))); if (code) r.appendChild(el('span', 'c', code)); };
+  if (name === 'shell' && args.command) put('play', 'm.step.ran', String(args.command));
+  else if (name === 'read_file' && args.path) put('diamond', 'm.step.read', String(args.path));
+  else if (EDIT_TOOLS.includes(name) && args.path) put('pencil', 'm.step.edited', String(args.path));
+  else if (/search|grep|glob|list/.test(name)) put('search', 'm.step.called', name + (args.pattern || args.query ? ' "' + (args.pattern || args.query) + '"' : ''));
+  else put('dot', 'm.step.called', name + (args.path ? ' ' + args.path : ''));
+  return r;
+}
+function argsOf(c){ let a = {}; try { a = typeof c.function.arguments === 'string' ? JSON.parse(c.function.arguments || '{}') : (c.function.arguments || {}); } catch(e){} return a; }
+// 运行中的这一轮还没写进会话：从事件流补上本轮的用户消息、工具步骤和中间回复（与手机端一致）。
+function liveTurn(v){
+  const out = [];
+  if (v.status !== 'running' || !Array.isArray(v.events)) return out;
+  let last = -1; v.events.forEach((e, i) => { if (e.type === 'user') last = i; });
+  if (last < 0) return out;
+  v.events.slice(last).forEach(e => {
+    const d = e.data || {};
+    if (e.type === 'user') out.push({ role: 'user', content: String(d.content || '') });
+    else if (e.type === 'tool_start') out.push({ role: 'assistant', content: '', tool_calls: [{ function: { name: String(d.name || '?'), arguments: typeof d.arguments === 'string' ? d.arguments : JSON.stringify(d.arguments || {}) } }] });
+    else if (e.type === 'assistant') out.push({ role: 'assistant', content: String(d.content || '') });
+  });
+  return out;
+}
+// 本会话里审批过的编辑：路径 → 统一 diff（Diff 面板与“改动文件”卡片的 +/− 用它，不编数字）。
+function diffsByPath(v){
+  const out = {};
+  (v.events || []).forEach(e => { const d = e.data || {}; if (e.type === 'approval' && EDIT_TOOLS.includes(d.tool) && d.summary) { const p = parseDiff(d.summary); if (p.path) out[p.path] = p; } });
+  S.approvals.filter(a => a.session === S.session && EDIT_TOOLS.includes(a.tool)).forEach(a => { const p = parseDiff(a.summary); if (p.path) out[p.path] = p; });
+  return out;
+}
+function turnDuration(v){
+  const ev = v.events || []; if (!ev.length) return null;
+  let start = null; ev.forEach(e => { if (e.type === 'user') start = e.ts; });
+  if (start === null) return null;
+  const end = v.status === 'running' ? Date.now() / 1000 : ev[ev.length - 1].ts;
+  return Math.max(1, Math.round(end - start));
+}
+function renderFeed(v){
+  const all = v.messages || [];
+  const msgs = all.filter(m => m.role !== 'system').concat(liveTurn(v));
+  const pend = S.approvals.find(a => a.session === S.session) || null;
+  const card = pend ? S.card[pend.id] || {} : {};
+  const key = [msgs.length, msgs.length ? textOf(msgs[msgs.length - 1]).length : 0, v.status, v.next || 0, pend ? pend.id + (card.open || '') + (card.scope || '') : '', S.pending].join(':');
+  const fu = msgs.find(m => m.role === 'user'); const newTitle = fu ? textOf(fu) : (S.pending || '');
+  if (newTitle && newTitle !== S.title) { S.title = newTitle; renderTop(); renderThreads(); }
+  if (key === S.feedKey) return;
+  const feedEl = $('feed');
+  const nearBottom = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 120;
+  const keepFeedback = document.querySelector('#col .appr textarea');
+  const fbText = keepFeedback ? keepFeedback.value : null;
+  S.feedKey = key;
+  const col = $('col'); col.innerHTML = '';
+  const diffs = diffsByPath(v);
+  // 按轮切：用户消息 → 步骤日志 → 回复 → 改动文件。
+  let steps = [], edited = [];
+  const flush = (last) => {
+    if (steps.length) {
+      const lg = el('div', 'log' + (last ? '' : ' closed'));
+      const h = el('button', 'h'); const dur = last ? turnDuration(v) : null;
+      h.appendChild(el('span', 'car', last ? '▾' : '▸'));
+      h.appendChild(document.createTextNode(dur ? t('d.workedFor', { s: dur, n: steps.length }) : t('m.worked', { n: steps.length })));
+      h.onclick = () => { lg.classList.toggle('closed'); h.firstChild.textContent = lg.classList.contains('closed') ? '▸' : '▾'; };
+      lg.appendChild(h); steps.forEach(s => lg.appendChild(s)); col.appendChild(lg);
+    }
+    steps = [];
+  };
+  const flushFiles = () => {
+    const uniq = [...new Set(edited)]; edited = [];
+    if (!uniq.length) return;
+    const f = el('div', 'files');
+    uniq.forEach(p => {
+      const d = diffs[p];
+      const r = el('button', 'fr'); r.appendChild(el('span', 'mono', p)); r.firstChild.style.fontSize = '12px';
+      if (d) { const a = el('span', 'add', '+' + d.add); a.style.marginLeft = 'auto'; r.appendChild(a); r.appendChild(el('span', 'del', '−' + d.del)); }
+      r.onclick = () => { S.review.open = true; S.review.tab = 'diff'; S.review.file = p; renderTop(); renderReview(); };
+      f.appendChild(r);
+    });
+    col.appendChild(f);
+  };
+  msgs.forEach((m, idx) => {
+    if (m.role === 'tool') return;
+    const txt = textOf(m);
+    if (m.role === 'user') {
+      flush(false); flushFiles();
+      col.appendChild(bubble(m, all, txt, 'u'));
+      return;
+    }
+    if (m.tool_calls && m.tool_calls.length) {
+      if (txt) { flush(false); col.appendChild(bubble(m, all, txt, 'p')); }
+      m.tool_calls.forEach(c => { const n = (c.function && c.function.name) || '?'; const a = argsOf(c); steps.push(stepRow(n, a)); if (EDIT_TOOLS.includes(n) && a.path) edited.push(String(a.path)); });
+      return;
+    }
+    if (!txt) return;
+    const lastUser = msgs.map(x => x.role).lastIndexOf('user');
+    flush(idx > lastUser);
+    col.appendChild(bubble(m, all, txt, 'p'));
+    flushFiles();
+  });
+  if (S.pending && v.status === 'running' && !msgs.some(m => m.role === 'user' && textOf(m) === S.pending)) col.appendChild(bubble({ role: 'user' }, all, S.pending, 'u'));
+  flush(true); flushFiles();
+  if (v.status !== 'running') S.pending = '';
+  if (pend) col.appendChild(approvalCard(pend, fbText));
+  else if (v.status === 'running') { const w = el('div', 'working'); w.appendChild(el('span', 'spin')); w.appendChild(document.createTextNode(t('d.working'))); col.appendChild(w); }
+  if (v.status === 'error' && v.error) col.appendChild(el('div', 'err-line', t('d.errorPrefix', { msg: v.error })));
+  if (!msgs.length && v.status !== 'running') col.appendChild(el('div', 'empty', t('d.threadEmpty')));
+  if (nearBottom || pend) feedEl.scrollTop = feedEl.scrollHeight;
+}
+function bubble(m, all, txt, cls){
+  const wrap = el('div', 'msg' + (cls === 'u' ? ' u-wrap' : ''));
+  const b = el('div', cls, txt); wrap.appendChild(b);
+  const index = all.indexOf(m);
+  if (index >= 0) { b.title = t('d.rewindHint'); b.style.cursor = 'pointer'; b.onclick = () => toggleRewind(wrap, index, txt); }
+  return wrap;
+}
+function toggleRewind(wrap, index, text){
+  const ex = wrap.querySelector('.rw'); if (ex) { ex.remove(); return; }
+  const row = el('div', 'rw');
+  [['m.rewind.truncate', 'truncate'], ['m.rewind.edit', 'edit'], ['m.rewind.fork', 'fork']].forEach(([label, action]) => {
+    const x = el('button', '', t(label)); x.onclick = () => doRewind(index, action, text); row.appendChild(x);
+  });
+  wrap.appendChild(row);
+}
+async function doRewind(index, action, text){
+  if (!S.session) return;
+  const rows = await api('/api/sessions/' + encodeURIComponent(S.session) + '/history').catch(() => null);
+  const messageId = rows && rows.messages && rows.messages[index] ? rows.messages[index].id : null;
+  if (messageId === null) { toast(t('m.rewind.notYet')); return; }
+  let edited = null;
+  if (action === 'edit') { edited = prompt(t('m.rewind.editPrompt'), text || ''); if (edited === null) return; }
+  try {
+    const res = await post('/api/sessions/' + encodeURIComponent(S.session) + '/rewind', { message_id: messageId, action, text: edited });
+    if (res && res.new_session_id) { await loadSessions(); await openSession(res.new_session_id); return; }
+    S.feedKey = ''; await tick();
+  } catch (e) { toast(t('m.rewind.failed', { msg: e.message })); }
+}
+async function sendMsg(){
+  const ta = $('input'); const text = ta.value.trim();
+  if (!text || !S.session) return;
+  ta.value = ''; autoGrow(ta); S.pending = text; S.feedKey = '';
+  try { await post('/api/sessions/' + encodeURIComponent(S.session) + '/messages', { text }); }
+  catch (e) { toast(e.message); ta.value = text; }
+  await tick();
+}
+
+// ---------------------------------------------------------------- 审批卡 ---
+function ruleLabel(sg){
+  if (!sg) return '';
+  if (sg.kind === 'prefix' && Array.isArray(sg.prefix)) return t('m.rule.prefix', { prefix: sg.prefix.join(' ') });
+  if (sg.kind === 'edits') return t('m.rule.edits');
+  return sg.label || '';
+}
+function approvalCard(a, fbText){
+  const st = S.card[a.id] || (S.card[a.id] = { open: null, scope: 'session' });
+  const isEdit = EDIT_TOOLS.includes(a.tool);
+  const isShell = a.tool === 'shell' && a.command;
+  const box = el('div', 'appr'); box.dataset.id = a.id; box.dataset.tool = a.tool;
+  const fr = el('div', 'fr');
+  fr.appendChild(icon(isEdit ? 'pencil' : 'play'));
+  const ttl = el('div', 'ttl'); const line = el('div', 'a');
+  let sub = '';
+  if (isEdit) {
+    const d = parseDiff(a.summary);
+    line.appendChild(document.createTextNode(t('d.appr.edit') + ' ')); line.appendChild(el('span', 'mono', d.path || a.tool));
+    line.appendChild(document.createTextNode('  ')); line.appendChild(el('span', 'add', '+' + d.add)); line.appendChild(document.createTextNode(' ')); line.appendChild(el('span', 'del', '−' + d.del));
+    sub = t('d.appr.editSub');
+  } else if (isShell) {
+    line.appendChild(document.createTextNode(t('d.appr.run') + ' ')); const c = el('span', 'mono', a.command); c.style.fontSize = '12px'; line.appendChild(c);
+    line.title = a.command;
+    sub = t('d.appr.shellSub', { project: projectName() });
+  } else {
+    line.textContent = t('m.allowTool', { tool: a.tool });
+    sub = a.summary ? String(a.summary).split('\n')[0].slice(0, 140) : '';
+  }
+  ttl.appendChild(line); ttl.appendChild(el('div', 's', sub)); fr.appendChild(ttl);
+  const acts = el('div', 'acts');
+  const deny = el('button', 'tbtn', t('d.appr.deny')); deny.dataset.act = 'deny';
+  deny.onclick = () => { st.open = st.open === 'deny' ? null : 'deny'; S.feedKey = ''; tick(); };
+  const always = el('button', 'tbtn', t('d.appr.always')); always.dataset.act = 'always';
+  // 没有建议规则的 shell（复合 / 高风险命令）只能单次允许：不退化成“本会话所有命令都允许”。
+  const canRule = !!a.suggestion; const canAlways = canRule || (a.always && a.tool !== 'shell');
+  if (!canAlways) { always.disabled = true; always.title = t('d.appr.onceOnly'); }
+  always.onclick = () => {
+    if (canRule) { st.open = st.open === 'always' ? null : 'always'; S.feedKey = ''; tick(); }
+    else decide(a.id, { approve: true, always: true });
+  };
+  const once = el('button', 'tbtn p', isShell ? t('d.appr.runOnce') : t('d.appr.allowOnce')); once.dataset.act = 'once';
+  once.onclick = () => decide(a.id, { approve: true });
+  acts.appendChild(deny); acts.appendChild(always); acts.appendChild(once); fr.appendChild(acts);
+  box.appendChild(fr);
+  if (st.open === 'always' && canRule) {
+    const more = el('div', 'more');
+    const row = el('div', 'row');
+    row.appendChild(el('span', '', t('d.appr.dontAsk'))); row.appendChild(el('b', 'mono', ruleLabel(a.suggestion)));
+    more.appendChild(row);
+    const row2 = el('div', 'row');
+    const seg = el('div', 'seg');
+    [['session', 'd.scope.session'], ['project', 'd.scope.project']].forEach(([k, l]) => {
+      const b = el('button', st.scope === k ? 'on' : '', t(l)); b.dataset.scope = k;
+      b.onclick = () => { st.scope = k; S.feedKey = ''; tick(); }; seg.appendChild(b);
+    });
+    row2.appendChild(seg);
+    const ok = el('button', 'tbtn p', t('d.appr.saveRule')); ok.dataset.act = 'rule'; ok.style.marginLeft = 'auto';
+    ok.onclick = () => decide(a.id, { approve: true, scope: st.scope });
+    row2.appendChild(ok); more.appendChild(row2);
+    more.appendChild(el('div', 'hint', st.scope === 'project' ? t('d.scope.projectHint') : t('d.scope.sessionHint')));
+    box.appendChild(more);
+  }
+  if (st.open === 'deny') {
+    const more = el('div', 'more');
+    const ta = el('textarea'); ta.placeholder = t('d.appr.feedbackPh'); ta.maxLength = 2000; if (fbText) ta.value = fbText;
+    ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendDeny(); } };
+    const sendDeny = () => { const fb = ta.value.trim(); decide(a.id, fb ? { approve: false, feedback: fb } : { approve: false }); };
+    more.appendChild(ta);
+    const row = el('div', 'row');
+    row.appendChild(el('span', 'hint', t('d.appr.feedbackHint')));
+    const cancel = el('button', 'tbtn', t('d.cancel')); cancel.style.marginLeft = 'auto'; cancel.onclick = () => { st.open = null; S.feedKey = ''; tick(); };
+    const go = el('button', 'tbtn p', t('d.appr.denySend')); go.dataset.act = 'deny-send'; go.onclick = sendDeny;
+    row.appendChild(cancel); row.appendChild(go); more.appendChild(row);
+    box.appendChild(more);
+    setTimeout(() => { if (document.activeElement !== ta) ta.focus(); }, 0);
+  }
+  return box;
+}
+async function decide(id, body){
+  try { await post('/api/approvals/' + encodeURIComponent(id), body); }
+  catch (e) { toast(t('d.failed', { msg: e.message })); }
+  delete S.card[id]; S.feedKey = '';
+  setTimeout(tick, 120);
+}
+
+// ---------------------------------------------------------------- 审阅面板 ---
+function renderReview(){
+  const pane = $('review');
+  const v = S.sv;
+  const pend = S.view === 'thread' ? S.approvals.find(a => a.session === S.session) : null;
+  if (pend && (EDIT_TOOLS.includes(pend.tool) || pend.tool === 'shell') && !S.review.autoOpened) { S.review.open = true; S.review.autoOpened = true; renderTop(); }
+  if (!pend) S.review.autoOpened = false;
+  const visible = S.view === 'thread' && S.review.open;
+  pane.classList.toggle('hidden', !visible);
+  if (!visible || !v) return;
+  const diffs = diffsByPath(v);
+  const pendDiff = pend && EDIT_TOOLS.includes(pend.tool) ? parseDiff(pend.summary) : null;
+  const files = Object.values(diffs);
+  const evN = (v.evidence || []).length;
+  const tabs = $('rtabs'); tabs.innerHTML = '';
+  [['diff', t('d.tab.diff')], ['plan', t('d.tab.plan')], ['evidence', t('d.tab.evidence') + (evN ? ' ' + evN : '')], ['terminal', t('d.tab.terminal')]].forEach(([k, l]) => {
+    const b = el('button', 'tab' + (S.review.tab === k ? ' on' : ''), l); b.dataset.tab = k;
+    b.onclick = () => { S.review.tab = k; renderReview(); }; tabs.appendChild(b);
+  });
+  if (files.length) {
+    const sum = el('span', 'sum'); const A = files.reduce((n, f) => n + f.add, 0), D = files.reduce((n, f) => n + f.del, 0);
+    sum.appendChild(document.createTextNode(t(files.length === 1 ? 'd.filesOne' : 'd.filesCount', { n: files.length }) + ' · ')); sum.appendChild(el('span', 'add', '+' + A)); sum.appendChild(document.createTextNode(' ')); sum.appendChild(el('span', 'del', '−' + D));
+    tabs.appendChild(sum);
+  }
+  const body = $('rbody'); body.innerHTML = '';
+  if (S.review.tab === 'diff') {
+    let show = pendDiff || (S.review.file && diffs[S.review.file]) || files[files.length - 1] || null;
+    if (!show) { const e = el('div', 'rempty', t('d.diffEmpty')); body.appendChild(e); }
+    else {
+      if (files.length > 1 && !pendDiff) {
+        const pick = el('div', 'tabs2'); pick.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;padding:10px 14px 0';
+        files.forEach(f => { const b = el('button', 'tab' + (f === show ? ' on' : ''), f.path); b.onclick = () => { S.review.file = f.path; renderReview(); }; pick.appendChild(b); });
+        body.appendChild(pick);
+      }
+      const fh = el('div', 'fh'); fh.appendChild(el('span', '', show.path || show.head));
+      const a = el('span', 'add', '+' + show.add); a.style.marginLeft = 'auto'; fh.appendChild(a); fh.appendChild(el('span', 'del', '−' + show.del));
+      if (pendDiff) { const w = el('span', '', ' · ' + t('d.waitingApproval')); w.style.color = 'var(--mu)'; w.style.fontFamily = 'inherit'; fh.appendChild(w); }
+      body.appendChild(fh);
+      const code = el('div', 'code');
+      (show.body.length ? show.body : [['', '', show.head]]).forEach(([c, sign, txt]) => { const ln = el('div', 'ln ' + c); ln.appendChild(el('span', 'n', sign)); ln.appendChild(document.createTextNode(txt)); code.appendChild(ln); });
+      body.appendChild(code);
+    }
+  } else if (S.review.tab === 'plan') {
+    if (v.plan && v.plan.plan) { body.appendChild(el('div', 'plan', String(v.plan.plan))); }
+    else body.appendChild(el('div', 'rempty', t('d.planEmpty')));
+  } else if (S.review.tab === 'evidence') {
+    if (evN) { const box = el('div', 'evi'); v.evidence.forEach(e => box.appendChild(el('div', '', e.name))); body.appendChild(box); }
+    else body.appendChild(el('div', 'rempty', t('d.evidenceEmpty')));
+  } else {
+    const shells = (v.events || []).filter(e => (e.type === 'tool_start' || e.type === 'tool_result') && e.data && e.data.name === 'shell');
+    if (!shells.length && !(pend && pend.tool === 'shell')) body.appendChild(el('div', 'rempty', t('d.terminalEmpty')));
+    else {
+      const box = el('div', 'plan mono'); box.style.fontSize = '12px';
+      shells.forEach(e => { if (e.type === 'tool_start') { const a = e.data.arguments || {}; box.appendChild(document.createTextNode('$ ' + (a.command || '') + '\n')); } else box.appendChild(document.createTextNode(String(e.data.result || '').slice(0, 2000) + '\n\n')); });
+      body.appendChild(box);
+    }
+  }
+  const term = $('term'); term.innerHTML = '';
+  if (pend && pend.tool === 'shell' && pend.command) {
+    term.classList.remove('hidden'); term.appendChild(document.createTextNode('$ ' + pend.command + '\n')); term.appendChild(el('span', 'w', t('d.waitingApproval')));
+  } else term.classList.add('hidden');
+}
+
+// ---------------------------------------------------------------- 状态栏 ---
+function renderStatus(){
+  const st = $('status'); st.innerHTML = '';
+  if (!S.info) return;
+  const add = (ic, text, cls) => { const s = el('span', cls || ''); if (ic) s.appendChild(icon(ic)); s.appendChild(document.createTextNode(text)); st.appendChild(s); return s; };
+  add('shield', modeLabel(S.info.mode));
+  add('box', sandboxLabel());
+  const v = S.view === 'thread' ? S.sv : null;
+  const u = v && v.usage;
+  if (u && u.last_prompt_tokens && u.context_window_tokens) add('pie', t('d.context', { n: Math.round(100 * u.last_prompt_tokens / u.context_window_tokens) }));
+  if (u && (u.prompt_tokens || u.completion_tokens)) add('', t('d.tokens', { i: fmtK(u.prompt_tokens || 0), o: fmtK(u.completion_tokens || 0) }));
+  if (v && Array.isArray(v.messages) && v.messages.length) add('undo', t('d.rewindTip'));
+  const n = S.info.mcp_tools || 0;
+  const right = el('span', 'r'); right.appendChild(el('span', 'dot ' + (n ? 'ok' : 'off'))); right.appendChild(document.createTextNode(n ? t('d.mcpOn', { n }) : t('d.mcpOff'))); st.appendChild(right);
+}
+function fmtK(n){ return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 1 : 2).replace(/\.?0+$/, '') + 'k' : String(n); }
+
+// ---------------------------------------------------------------- 轮询 ---
+let ticking = false;
+async function tick(){
+  if (ticking) return; ticking = true;
+  try {
+    await loadApprovals();
+    if (S.view === 'thread' && S.session) {
+      const sid = S.session;
+      const v = await api('/api/sessions/' + encodeURIComponent(sid));
+      if (sid === S.session) { S.sv = v; renderFeed(v); renderReview(); renderStatus(); }
+    }
+    renderThreads();
+  } catch (e) { /* 网关重启或断网：下一轮再试 */ }
+  finally { ticking = false; }
+}
+
+// ---------------------------------------------------------------- 搜索 ---
+function openSearch(){
+  closeMenus();
+  const ov = $('search-dlg'); ov.classList.remove('hidden');
+  const q = $('search-q'); q.value = ''; renderSearch(); q.focus();
+}
+function closeSearch(){ $('search-dlg').classList.add('hidden'); }
+function renderSearch(){
+  const q = $('search-q').value.trim().toLowerCase();
+  const res = $('search-res'); res.innerHTML = '';
+  const items = (S.sessions && S.sessions.sessions || []).filter(s => !q || String(s.preview || '').toLowerCase().includes(q) || String(s.project || '').toLowerCase().includes(q)).slice(0, 30);
+  if (!items.length) { res.appendChild(el('div', 'empty', q ? t('d.searchNone') : t('d.noThreads'))); return; }
+  items.forEach((s, i) => {
+    const b = el('button', i === 0 ? 'on' : ''); b.appendChild(el('span', '', titleOf(s) || t('d.untitled')));
+    b.appendChild(el('small', '', (s.project ? s.project + ' · ' : '') + ago(s.mtime)));
+    b.onclick = () => { closeSearch(); openSession(s.id); }; res.appendChild(b);
+  });
+}
+
+// ---------------------------------------------------------------- 自动化 / 技能 / MCP ---
+async function openAutomations(){ show('automations'); await loadSchedule(); renderAutomations(); }
+function renderAutomations(){
+  const box = $('auto-list'); box.innerHTML = ''; box.appendChild(autoList(S.schedule || [], false));
+}
+async function openSkills(){
+  show('skills'); if (!S.info) await loadInfo();
+  const box = $('skill-list'); box.innerHTML = '';
+  const skills = S.info.skills || [];
+  if (!skills.length) {
+    const e = el('div', 'empty'); e.appendChild(el('div', '', t('m.skills.emptyTitle'))); e.appendChild(el('div', '', t('m.skills.emptyHint'))); box.appendChild(e); box.className = 'files'; return;
+  }
+  box.className = 'list';
+  skills.forEach(s => { const it = el('div', 'it'); it.appendChild(icon('skills')); const tx = el('div', 'tx'); tx.appendChild(el('b', '', s.name)); tx.lastChild.style.fontWeight = '500'; tx.appendChild(el('small', '', s.description || '')); it.appendChild(tx); box.appendChild(it); });
+}
+async function openMcp(){
+  show('mcp');
+  const box = $('mcp-list'); box.innerHTML = '';
+  let st; try { st = await api('/api/settings'); } catch (e) { box.appendChild(el('div', 'empty', e.message)); return; }
+  box.appendChild(mcpBlock(st));
+}
+function mcpBlock(st){
+  const wrap = el('div');
+  const m = st.mcp || {};
+  const note = el('p', 'hint2'); note.style.marginTop = '0'; note.style.marginBottom = '12px';
+  note.textContent = !m.enabled ? t('d.mcp.disabled') : (!m.mode_allows ? t('d.mcp.needsFull') : t('d.mcp.active'));
+  wrap.appendChild(note);
+  const list = el('div', 'list');
+  if (!(m.servers || []).length) { const e = el('div', 'empty'); e.appendChild(document.createTextNode(t('d.mcp.none') + ' ')); e.appendChild(el('code', '', 'mcp_servers')); list.className = 'files'; list.appendChild(e); }
+  (m.servers || []).forEach(s => {
+    const it = el('div', 'it'); it.appendChild(el('span', 'dot ' + (s.connected ? 'ok' : 'off')));
+    const tx = el('div', 'tx'); tx.appendChild(el('b', '', s.name)); tx.lastChild.style.fontWeight = '500'; tx.appendChild(el('small', 'mono', s.command)); it.appendChild(tx);
+    it.appendChild(el('span', 'meta', (s.preset ? t('d.mcp.preset') + ' · ' : '') + (s.connected ? t('d.mcp.tools', { n: s.tools }) : t('d.mcp.notRunning'))));
+    list.appendChild(it);
+  });
+  wrap.appendChild(list);
+  const p = el('p', 'hint2'); p.appendChild(document.createTextNode(t('d.mcp.howto') + ' ')); p.appendChild(el('code', '', (st.paths && st.paths.config) || 'config.json')); wrap.appendChild(p);
+  return wrap;
+}
+
+// ---------------------------------------------------------------- 设置 ---
+const SECTIONS = ['model', 'permissions', 'mcp', 'devices', 'general', 'about'];
+function openSettings(sec){ S.setSec = sec || S.setSec || 'model'; show('settings'); renderSettings(); }
+async function renderSettings(){
+  const nav = $('set-nav'); nav.innerHTML = '';
+  nav.appendChild(el('h2', '', t('d.settings')));
+  SECTIONS.forEach(k => { const b = el('button', k === S.setSec ? 'on' : '', t('d.set.' + k)); b.dataset.sec = k; b.onclick = () => { S.setSec = k; S.keyEdit = null; renderSettings(); }; nav.appendChild(b); });
+  const body = $('set-body'); body.innerHTML = '';
+  const sec = el('section', 'sset'); sec.dataset.sec = S.setSec; body.appendChild(sec);
+  sec.appendChild(el('h2', '', t('d.set.' + S.setSec)));
+  sec.appendChild(el('p', 'desc', t('d.set.' + S.setSec + '.desc')));
+  try {
+    if (S.setSec === 'model') await secModel(sec);
+    else if (S.setSec === 'permissions') await secPerms(sec);
+    else if (S.setSec === 'mcp') sec.appendChild(mcpBlock(await api('/api/settings')));
+    else if (S.setSec === 'devices') await secDevices(sec);
+    else if (S.setSec === 'general') await secGeneral(sec);
+    else await secAbout(sec);
+  } catch (e) { sec.appendChild(el('p', 'bad-t', e.message)); }
+}
+function srow(title, small, control){
+  const r = el('div', 'srow'); const k = el('div', 'k'); k.appendChild(el('b', '', title)); if (small) k.appendChild(el('small', '', small)); r.appendChild(k); if (control) r.appendChild(control); return r;
+}
+function sw(on, onChange, id){ const b = el('button', 'sw' + (on ? ' on' : '')); if (id) b.id = id; b.setAttribute('role', 'switch'); b.setAttribute('aria-checked', String(!!on)); b.onclick = () => onChange(!on); return b; }
+async function saveSettings(patch){
+  try { await post('/api/settings', patch); toast(t('d.saved')); await loadInfo(); }
+  catch (e) { toast(t('d.failed', { msg: e.message })); }
+  renderSettings();
+}
+function sourceLabel(p){
+  const m = { env: t('d.key.env', { env: p.env_key }), env_generic: t('d.key.env', { env: 'NYRA_API_KEY' }), vault: t('d.key.vault'), file: t('d.key.file'), missing: t('d.key.missing'), none_needed: t('d.key.none') };
+  return m[p.source] || p.source;
+}
+async function secModel(sec){
+  const [keys, st] = await Promise.all([api('/api/keys'), api('/api/settings')]);
+  const provs = keys.providers.filter(p => p.provider !== 'custom');
+  const sel = el('select', 'fld'); sel.id = 'provider-select';
+  provs.forEach(p => { const o = el('option', '', p.provider); o.value = p.provider; if (p.provider === S.info.provider) o.selected = true; sel.appendChild(o); });
+  const mi = el('input', 'fld'); mi.id = 'model-input'; mi.value = S.info.model || ''; mi.maxLength = 180; mi.setAttribute('list', 'model-list'); mi.style.width = '200px';
+  const dl = el('datalist'); dl.id = 'model-list';
+  const fillModels = () => { dl.innerHTML = ''; const p = provs.find(x => x.provider === sel.value); (p ? p.models : []).forEach(m => { const o = el('option'); o.value = m; dl.appendChild(o); }); if (p && sel.value !== S.info.provider) mi.value = p.default_model || ''; };
+  sel.onchange = fillModels; fillModels(); mi.value = sel.value === S.info.provider ? (S.info.model || '') : mi.value;
+  const row = el('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+  row.appendChild(sel); row.appendChild(mi); row.appendChild(dl);
+  const use = el('button', 'tbtn', t('d.model.useNow')); use.onclick = async () => { try { await post('/api/provider', { provider: sel.value, model: mi.value.trim() }); await loadInfo(); toast(t('d.saved')); renderSettings(); } catch (e) { toast(t('d.failed', { msg: e.message })); } };
+  const def = el('button', 'tbtn p', t('d.model.setDefault')); def.id = 'set-default-model'; def.onclick = () => saveSettings({ default_provider: sel.value, default_model: mi.value.trim() });
+  row.appendChild(use); row.appendChild(def);
+  sec.appendChild(srow(t('d.model.current'), t('d.model.currentHint', { p: st.model.default_provider || '-', m: st.model.default_model || '-' }), null));
+  sec.appendChild(row);
+  sec.appendChild(el('h3', '', t('d.model.keys')));
+  sec.appendChild(el('p', 'hint2', keys.vault.unlocked ? t('d.key.storeVault') : t('d.key.storeFile')));
+  provs.filter(p => p.needs_key).forEach(p => {
+    const r = el('div', 'srow keyrow'); r.dataset.provider = p.provider;
+    const k = el('div', 'k'); k.appendChild(el('b', '', brand(p.provider)));
+    const sm = el('small'); sm.appendChild(document.createTextNode(sourceLabel(p))); if (p.masked) { sm.appendChild(document.createTextNode(' · ')); sm.appendChild(el('span', 'mono', p.masked)); }
+    k.appendChild(sm); r.appendChild(k);
+    if (p.source !== 'env' && p.source !== 'env_generic') {
+      const ed = el('button', 'tbtn', p.masked ? t('d.key.replace') : t('d.key.add')); ed.dataset.act = 'edit-key'; ed.onclick = () => { S.keyEdit = S.keyEdit === p.provider ? null : p.provider; renderSettings(); };
+      r.appendChild(ed);
+      if (p.source === 'file' || p.source === 'vault') {
+        const rm = el('button', 'tbtn danger', t('d.key.remove')); rm.onclick = async () => { if (!(await confirmDlg(t('d.key.removeTitle', { p: p.provider }), t('d.key.removeBody'), t('d.key.remove')))) return; try { await post('/api/keys/remove', { provider: p.provider }); await loadInfo(); } catch (e) { toast(e.message); } renderSettings(); };
+        r.appendChild(rm);
+      }
+    }
+    if (S.keyEdit === p.provider) r.appendChild(keyEditor(p.provider, async () => { S.keyEdit = null; await loadInfo(); renderSettings(); }));
+    sec.appendChild(r);
+  });
+}
+// 输入 Key：password 框 → 测试连接（真请求 provider）→ 保存；保存/离开后立即清空输入框。
+function keyEditor(provider, onSaved){
+  const box = el('div', 'keyedit'); box.style.flexWrap = 'wrap';
+  const inp = el('input', 'fld'); inp.type = 'password'; inp.autocomplete = 'off'; inp.spellcheck = false; inp.placeholder = t('d.key.placeholder'); inp.dataset.role = 'key-input';
+  const test = el('button', 'tbtn', t('d.key.test')); test.dataset.act = 'test-key';
+  const save = el('button', 'tbtn p', t('d.key.save')); save.dataset.act = 'save-key';
+  const res = el('div', 'result'); res.style.width = '100%';
+  test.onclick = async () => {
+    res.className = 'result'; res.textContent = t('d.key.testing'); test.disabled = true;
+    try { const r = await post('/api/keys/test', { provider, key: inp.value.trim() || undefined }); showTest(res, r); }
+    catch (e) { res.className = 'result bad-t'; res.textContent = e.message; }
+    test.disabled = false;
+  };
+  save.onclick = async () => {
+    const v = inp.value.trim(); if (!v) { inp.focus(); return; }
+    try { const r = await post('/api/keys', { provider, key: v }); inp.value = ''; toast(t(r.stored === 'vault' ? 'd.key.savedVault' : 'd.key.savedFile', { mask: r.masked })); await onSaved(r); }
+    catch (e) { res.className = 'result bad-t'; res.textContent = e.message; }
+  };
+  inp.onkeydown = (e) => { if (e.key === 'Enter') save.click(); };
+  box.appendChild(inp); box.appendChild(test); box.appendChild(save); box.appendChild(res);
+  setTimeout(() => inp.focus(), 0);
+  return box;
+}
+function showTest(res, r){
+  if (r.ok) { res.className = 'result ok-t'; res.textContent = '✓ ' + t('d.key.testOk', { mask: r.masked || '—', n: r.models != null ? r.models : '?' }) + (r.model_found === false ? ' ' + t('d.key.modelMissing') : ''); }
+  else { res.className = 'result bad-t'; res.textContent = '✕ ' + (r.status ? 'HTTP ' + r.status + ' · ' : '') + (r.error || t('d.key.testBad')); }
+}
+async function secPerms(sec){
+  const [rules, st] = await Promise.all([api('/api/rules'), api('/api/settings')]);
+  const seg = el('div', 'seg'); seg.id = 'mode-seg';
+  ['readonly', 'auto', 'full'].forEach(k => { const b = el('button', (S.info.mode === k ? 'on' : '') + (k === 'full' ? ' risk' : ''), modeLabel(k)); b.dataset.mode = k; b.onclick = () => setMode(k); seg.appendChild(b); });
+  sec.appendChild(srow(t('d.perm.current'), t('d.perm.currentHint'), seg));
+  const seg2 = el('div', 'seg'); seg2.id = 'default-mode-seg';
+  ['readonly', 'auto'].forEach(k => { const b = el('button', st.general.default_mode === k ? 'on' : '', modeLabel(k)); b.dataset.mode = k; b.onclick = () => saveSettings({ default_mode: k }); seg2.appendChild(b); });
+  sec.appendChild(srow(t('d.perm.default'), t('d.perm.defaultHint'), seg2));
+  sec.appendChild(el('p', 'hint2', t('m.set.modeHelp')));
+  sec.appendChild(el('h3', '', t('m.set.rules')));
+  const list = el('div', 'list'); list.id = 'rules-list';
+  if (!(rules.rules || []).length) { list.className = 'files'; list.appendChild(el('div', 'empty', t('m.set.rulesEmpty'))); }
+  (rules.rules || []).forEach(r => {
+    const it = el('div', 'it rulerow'); const tx = el('div', 'tx'); tx.appendChild(el('span', 'mono', r.label || r.id)); tx.firstChild.style.fontSize = '12.5px';
+    tx.appendChild(el('small', '', r.scope === 'project' ? t('d.scope.project') + ' · ' + (rules.project || '') : t('d.scope.session')));
+    it.appendChild(tx);
+    const rv = el('button', 'tbtn', t('m.set.revoke')); rv.dataset.act = 'revoke';
+    rv.onclick = async () => { try { await post('/api/rules/' + encodeURIComponent(r.id) + '/revoke', {}); toast(t('m.set.revoked')); } catch (e) { toast(t('m.set.revokeFailed', { msg: e.message })); } renderSettings(); };
+    it.appendChild(rv); list.appendChild(it);
+  });
+  sec.appendChild(list);
+  const p = el('p', 'hint2'); p.appendChild(document.createTextNode(t('d.perm.rulesHelp') + ' ')); p.appendChild(el('code', '', 'nyra rules')); sec.appendChild(p);
+}
+async function secDevices(sec){
+  const row = el('div'); row.style.cssText = 'display:flex;gap:10px;align-items:center';
+  const btn = el('button', 'tbtn p', t('d.dev.connect')); btn.id = 'pair-start'; row.appendChild(btn);
+  const stx = el('span', 'hint2'); stx.style.marginTop = '0'; row.appendChild(stx); sec.appendChild(row);
+  const box = el('div'); sec.appendChild(box);
+  btn.onclick = async () => {
+    box.innerHTML = ''; stx.textContent = '';
+    try {
+      const p = await post('/api/pair/start', {});
+      const pb = el('div', 'pair-box'); const qr = el('div', 'pair-qr');
+      if (p.qr_svg) { const doc = new DOMParser().parseFromString(p.qr_svg, 'image/svg+xml'); const svg = doc.documentElement; if (svg && svg.nodeName.toLowerCase() === 'svg') qr.appendChild(document.importNode(svg, true)); }
+      pb.appendChild(qr);
+      const info = el('div'); info.appendChild(el('div', 'hint2', t('d.dev.scan'))); info.appendChild(el('div', 'pair-code', p.code)); const u = el('code', '', p.url); info.appendChild(u);
+      info.appendChild(el('div', 'hint2', t('d.dev.expires', { n: Math.round((p.expires_in || 300) / 60) })));
+      pb.appendChild(info); box.appendChild(pb);
+    } catch (e) {
+      const m = el('p', 'hint2'); m.appendChild(document.createTextNode(e.status === 409 ? t('d.dev.needLan') + ' ' : e.message)); if (e.status === 409) m.appendChild(el('code', '', 'nyra ui --pair')); box.appendChild(m);
+    }
+  };
+  sec.appendChild(el('h3', '', t('d.dev.paired')));
+  const d = await api('/api/devices');
+  const list = el('div', 'list');
+  if (!(d.devices || []).length) { list.className = 'files'; list.appendChild(el('div', 'empty', t('d.dev.none'))); }
+  (d.devices || []).forEach(dev => {
+    const it = el('div', 'it'); const tx = el('div', 'tx'); tx.appendChild(el('b', '', dev.name || dev.id)); tx.firstChild.style.fontWeight = '500';
+    tx.appendChild(el('small', '', t('d.dev.lastSeen', { t: ago(dev.last_seen || dev.created_at || '') || '—' }))); it.appendChild(tx);
+    const rv = el('button', 'tbtn danger', t('m.set.revoke')); rv.onclick = async () => { try { await post('/api/devices/' + encodeURIComponent(dev.id) + '/revoke', {}); } catch (e) { toast(e.message); } renderSettings(); };
+    it.appendChild(rv); list.appendChild(it);
+  });
+  sec.appendChild(list);
+  sec.appendChild(el('p', 'hint2', t('d.dev.help')));
+}
+async function secGeneral(sec){
+  const st = await api('/api/settings');
+  const g = st.general, c = st.context;
+  const mt = el('input', 'fld'); mt.type = 'number'; mt.min = 1; mt.max = 200; mt.value = g.max_turns; mt.style.width = '80px'; mt.id = 'max-turns';
+  mt.onchange = () => saveSettings({ max_turns: Number(mt.value) });
+  sec.appendChild(srow(t('d.gen.maxTurns'), t('d.gen.maxTurnsHint'), mt));
+  const re = el('select', 'fld'); [['', t('d.gen.effortDefault')], ['minimal', 'minimal'], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh']].forEach(([v, l]) => { const o = el('option', '', l); o.value = v; if ((g.reasoning_effort || '') === v) o.selected = true; re.appendChild(o); });
+  re.onchange = () => saveSettings({ reasoning_effort: re.value || null });
+  sec.appendChild(srow(t('d.gen.effort'), t('d.gen.effortHint'), re));
+  const lg = el('select', 'fld'); [['', t('d.gen.langSystem')], ['zh', '中文'], ['en', 'English']].forEach(([v, l]) => { const o = el('option', '', l); o.value = v; if ((g.language || '') === v) o.selected = true; lg.appendChild(o); });
+  lg.onchange = () => saveSettings({ language: lg.value || null });
+  sec.appendChild(srow(t('d.gen.lang'), t('d.gen.langHint'), lg));
+  sec.appendChild(el('h3', '', t('d.gen.context')));
+  sec.appendChild(srow(t('d.gen.autoCompact'), t('d.gen.autoCompactHint', { n: Math.round(c.auto_compact_threshold * 100) }), sw(c.auto_compact_enabled, v => saveSettings({ auto_compact_enabled: v }), 'sw-compact')));
+  const th = el('select', 'fld'); [0.6, 0.7, 0.8, 0.9].forEach(v => { const o = el('option', '', Math.round(v * 100) + '%'); o.value = v; if (Math.abs(c.auto_compact_threshold - v) < 0.001) o.selected = true; th.appendChild(o); });
+  if (![0.6, 0.7, 0.8, 0.9].some(v => Math.abs(c.auto_compact_threshold - v) < 0.001)) { const o = el('option', '', Math.round(c.auto_compact_threshold * 100) + '%'); o.value = c.auto_compact_threshold; o.selected = true; th.appendChild(o); }
+  th.onchange = () => saveSettings({ auto_compact_threshold: Number(th.value) });
+  sec.appendChild(srow(t('d.gen.threshold'), t('d.gen.thresholdHint'), th));
+  sec.appendChild(srow(t('d.gen.toolSearch'), t('d.gen.toolSearchHint'), sw(c.tool_search_enabled, v => saveSettings({ tool_search_enabled: v }), 'sw-toolsearch')));
+  sec.appendChild(srow(t('d.gen.window'), c.context_window_tokens ? t('d.gen.windowVal', { n: Number(c.context_window_tokens).toLocaleString(), src: c.context_window_source }) : t('d.gen.windowUnknown'), null));
+  const p = el('p', 'hint2'); p.appendChild(document.createTextNode(t('d.gen.file') + ' ')); p.appendChild(el('code', '', st.paths.config)); sec.appendChild(p);
+}
+async function secAbout(sec){
+  const i = S.info || await loadInfo();
+  const st = await api('/api/settings');
+  [[t('d.about.version'), 'Nyra ' + i.version], [t('d.about.model'), (i.provider || '-') + ' / ' + (i.model || '-')], [t('d.about.workdir'), i.workdir], [t('d.about.home'), st.paths.home], [t('d.about.tools'), String(i.tool_count || 0)], [t('d.about.skills'), String((i.skills || []).length)], [t('d.about.platform'), i.platform + (i.shell === 'desktop' ? ' · ' + t('d.about.desktopShell') : '')]].forEach(([k, v]) => {
+    const r = srow(k, null, el('span', 'mono', v)); r.lastChild.style.cssText = 'font-size:12px;color:var(--mu);max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'; sec.appendChild(r);
+  });
+  const p = el('p', 'hint2'); p.appendChild(document.createTextNode(t('d.about.doctor') + ' ')); p.appendChild(el('code', '', 'nyra doctor')); sec.appendChild(p);
+}
+
+// ---------------------------------------------------------------- 首次引导 ---
+async function maybeSetup(force){
+  let s; try { s = await api('/api/setup'); } catch (e) { return; }
+  if (!s.needs_setup && !force) return;
+  S.setupData = s;
+  S.setup.provider = S.setup.provider || (s.providers.find(p => p.provider === s.provider && (p.needs_key || p.local)) || {}).provider || 'deepseek';
+  S.setup.tested = null;
+  $('setup').classList.remove('hidden');
+  renderSetup();
+}
+const BRAND = { deepseek: 'DeepSeek', openai: 'OpenAI', gemini: 'Gemini', qwen: 'Qwen', kimi: 'Kimi', glm: 'GLM', mistral: 'Mistral', groq: 'Groq', together: 'Together', xai: 'xAI', openrouter: 'OpenRouter', ollama: 'Ollama', codex: 'Codex' };
+const brand = (id) => BRAND[id] || id;
+const SETUP_ORDER = ['deepseek', 'openai', 'gemini', 'qwen', 'kimi', 'glm', 'mistral', 'groq', 'together', 'xai', 'openrouter', 'ollama'];
+function renderSetup(){
+  const s = S.setupData; const box = $('setup-provs'); box.innerHTML = '';
+  const provs = s.providers.filter(p => p.needs_key || p.provider === 'ollama').filter(p => p.provider !== 'custom');
+  provs.sort((a, b) => (SETUP_ORDER.indexOf(a.provider) + 1 || 99) - (SETUP_ORDER.indexOf(b.provider) + 1 || 99));
+  provs.forEach(p => {
+    const b = el('button', 'prov' + (p.provider === S.setup.provider ? ' on' : '')); b.dataset.provider = p.provider;
+    b.appendChild(el('b', '', brand(p.provider))); b.appendChild(el('small', '', p.local ? t('d.setup.noKey') : (p.source === 'missing' ? (p.default_model || '') : sourceLabel(p))));
+    b.onclick = () => { S.setup.provider = p.provider; S.setup.tested = null; $('setup-key').value = ''; renderSetup(); };
+    box.appendChild(b);
+  });
+  const cur = provs.find(p => p.provider === S.setup.provider) || provs[0];
+  const local = cur && cur.local;
+  $('setup-step2').classList.toggle('hidden', !!local);
+  $('setup-key').placeholder = cur && cur.env_key ? t('d.setup.keyPh', { env: cur.env_key }) : '';
+  $('setup-store').textContent = s.vault.unlocked ? t('d.key.storeVault') : t('d.key.storeFile');
+  const res = $('setup-result');
+  if (!S.setup.tested) { res.className = 'result'; res.textContent = local ? t('d.setup.localHint') : ''; }
+  else showTest(res, S.setup.tested);
+  $('setup-save').disabled = !(S.setup.tested && S.setup.tested.ok) || S.setup.busy;
+}
+async function setupTest(){
+  const key = $('setup-key').value.trim();
+  const cur = S.setupData.providers.find(p => p.provider === S.setup.provider);
+  if (cur && !cur.local && !key) { $('setup-key').focus(); return; }
+  const res = $('setup-result'); res.className = 'result'; res.textContent = t('d.key.testing');
+  $('setup-test').disabled = true;
+  try { S.setup.tested = await post('/api/keys/test', { provider: S.setup.provider, key: key || undefined }); }
+  catch (e) { S.setup.tested = { ok: false, error: e.message }; }
+  $('setup-test').disabled = false;
+  renderSetup();
+}
+async function setupSave(){
+  const key = $('setup-key').value.trim();
+  const cur = S.setupData.providers.find(p => p.provider === S.setup.provider);
+  S.setup.busy = true; renderSetup();
+  try {
+    if (cur && !cur.local) { const r = await post('/api/keys', { provider: S.setup.provider, key }); toast(t(r.stored === 'vault' ? 'd.key.savedVault' : 'd.key.savedFile', { mask: r.masked })); }
+    $('setup-key').value = '';
+    await post('/api/settings', { default_provider: S.setup.provider });
+    await loadInfo();
+    $('setup').classList.add('hidden');
+    renderPills(); if (S.view === 'home') renderHome();
+    $('home-input').focus();
+  } catch (e) { const res = $('setup-result'); res.className = 'result bad-t'; res.textContent = e.message; }
+  S.setup.busy = false; if (!$('setup').classList.contains('hidden')) renderSetup();
+}
+
+// ---------------------------------------------------------------- 入场动画 ---
+// 只在桌面外壳（/api/info 的 shell === "desktop"）里、每次冷启动播一次（sessionStorage 随窗口进程清空）；
+// 不能点击跳过；减少动态效果时只淡入终帧。
+function playSplash(){
+  return new Promise(resolve => {
+    let played = false; try { played = sessionStorage.getItem('nyra-splash') === '1'; } catch(e){}
+    if (played || typeof NyraSplash === 'undefined') { resolve(); return; }
+    try { sessionStorage.setItem('nyra-splash', '1'); } catch(e){}
+    const sp = $('splash'); sp.classList.remove('hidden');
+    const svgAt = (tm) => NyraSplash.frame(tm).replace(/width="\d+" height="\d+"/, 'width="100%" height="100%" preserveAspectRatio="xMidYMid meet"');
+    const end = () => { sp.classList.add('fade'); setTimeout(() => { sp.classList.add('hidden'); sp.innerHTML = ''; resolve(); }, 460); };
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      sp.innerHTML = svgAt(SPLASH_END); sp.classList.add('fadein');
+      setTimeout(end, 1400); return;
+    }
+    const t0 = performance.now();
+    const step = (now) => {
+      const tm = Math.min((now - t0) / 1000, SPLASH_END);
+      sp.innerHTML = svgAt(tm);
+      if ((now - t0) / 1000 < SPLASH_HOLD) requestAnimationFrame(step); else end();
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+// ---------------------------------------------------------------- 字体 ---
+function loadFonts(){
+  if (!window.FontFace || !document.fonts) return;
+  [['Inter', 'inter-400', '400'], ['Inter', 'inter-600', '500 600'], ['JetBrains Mono', 'jbm-400', '400']].forEach(([fam, file, weight]) => {
+    fetch('/m/fonts/' + file + '.woff').then(r => r.ok ? r.arrayBuffer() : Promise.reject())
+      .then(buf => new FontFace(fam, buf, { weight }).load()).then(f => document.fonts.add(f)).catch(() => {});
+  });
+}
+
+// ---------------------------------------------------------------- 启动 ---
+function bind(){
+  $('nav-new').onclick = newThread;
+  $('nav-search').onclick = openSearch;
+  $('nav-automations').onclick = openAutomations;
+  $('nav-skills').onclick = openSkills;
+  $('nav-mcp').onclick = openMcp;
+  $('nav-settings').onclick = () => openSettings();
+  $('kbd-new').textContent = IS_MAC ? '⌘N' : 'Ctrl N';
+  $('kbd-search').textContent = IS_MAC ? '⌘K' : 'Ctrl K';
+  ['home-input', 'input'].forEach(id => {
+    const ta = $(id);
+    ta.addEventListener('input', () => autoGrow(ta));
+    ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); id === 'input' ? sendMsg() : sendHome(); } });
+  });
+  $('search-q').addEventListener('input', renderSearch);
+  $('search-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { const b = $('search-res').querySelector('button'); if (b) b.click(); } });
+  $('search-dlg').addEventListener('click', (e) => { if (e.target === $('search-dlg')) closeSearch(); });
+  $('setup-test').onclick = setupTest;
+  $('setup-save').onclick = setupSave;
+  $('setup-key').addEventListener('input', () => { S.setup.tested = null; renderSetup(); });
+  $('setup-key').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); S.setup.tested && S.setup.tested.ok ? setupSave() : setupTest(); } });
+  $('setup-skip').onclick = () => { $('setup-key').value = ''; $('setup').classList.add('hidden'); };
+  document.addEventListener('keydown', (e) => {
+    const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+    if (mod && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); newThread(); }
+    else if (mod && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); openSearch(); }
+    else if (e.key === 'Escape') { closeMenus(); closeSearch(); }
+  });
+}
+async function boot(){
+  applyI18n(); bind(); loadFonts();
+  if (!TOKEN) { document.body.innerHTML = ''; document.body.appendChild(el('p', 'empty', t('d.noToken'))); return; }
+  let info = null; try { info = await loadInfo(); } catch (e) { /* 下面照常渲染，轮询会重试 */ }
+  const splash = info && info.shell === 'desktop' ? playSplash() : Promise.resolve();
+  try { await loadSessions(); } catch (e) {}
+  await loadSchedule();
+  show('home'); renderHome(); renderPills();
+  await splash;
+  await maybeSetup(false);
+  setInterval(tick, 1000);
+  setInterval(() => { loadSessions().catch(() => {}); }, 4000);
+  setInterval(() => { loadInfo().catch(() => {}); }, 15000);
+}
+boot();

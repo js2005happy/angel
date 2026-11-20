@@ -61,7 +61,9 @@ import GROUP_UI_JS from "./assets/group-ui.js.txt" with { type: "text" };
 import { decideSmartApproval, reviewerEnabled, smartApprovalConfig, readAudit } from "./smartApprovals.ts";
 import { reviewerStatus, resolveReviewerModel } from "./reviewer.ts";
 import { rewind as doRewind, storeHistoryToAgentMessages, type RewindAction } from "./rewind.ts";
-import { PAGE_HTML, MANIFEST, CSP, solidPng } from "./webuiPage.ts";
+import { MANIFEST, CSP, solidPng } from "./webuiPage.ts";
+// 桌面端界面（按 docs/design 设计稿重做）；旧页 PAGE_HTML 仍从 webuiPage.ts 导出，不再挂在 / 上。
+import { DESKTOP_HTML } from "./webuiDesktop.ts";
 import { keyStatus, setKey, removeKey, maskKey, validateKey, openVault, vaultState, migrateKeysToVault, keysPath } from "./keystore.ts";
 import { loadMcpServers } from "./mcp.ts";
 import { saveConfig, configPath } from "./config.ts";
@@ -1526,7 +1528,7 @@ export class Gateway {
     }
     if (method === "GET" && (path === "/" || path === "/index.html")) {
       if (!this.pageTokenOk(req) && !this.device(req)) { this.sendHtml(res, 403, FORBIDDEN_PAGE); return; }
-      this.sendHtml(res, 200, PAGE_HTML);
+      this.sendHtml(res, 200, DESKTOP_HTML);
       return;
     }
     if (method === "GET" && path === "/manifest.json") {
