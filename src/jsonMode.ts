@@ -82,6 +82,14 @@ export class JsonLines {
         hook: data.hook ?? "",
         reason: typeof data.reason === "string" && data.reason.length > 120 ? data.reason.slice(0, 117) + "…" : (data.reason ?? ""),
       });
+    } else if (kind === "reviewer_verdict") {
+      // 缺口 10：独立审查结论进 JSON 事件流（放行与拦截都记，不含工具参数原文）。
+      this.emit("reviewer_verdict", {
+        tool: data.tool ?? "",
+        decision: data.decision ?? "",
+        reason: typeof data.reason === "string" && data.reason.length > 120 ? data.reason.slice(0, 117) + "…" : (data.reason ?? ""),
+        reviewer_model: data.reviewer_model ?? "",
+      });
     } else if (kind === "assistant") {
       this.emit("assistant", { content: data.content ?? "" });
     } else if (kind === "max_turns") {

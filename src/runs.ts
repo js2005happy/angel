@@ -53,6 +53,10 @@ review_applied: ["item_id", "files"],
 // 缺口 19：钩子拦截进证据链——审查 fail-closed 要留痕：哪个事件、哪个工具、
 // 哪个钩子、为什么拦。只记拦截（blocked），放行不记（钩子默认不装，记了全是噪音）。
 hook_blocked: ["event", "tool", "hook", "reason"],
+// 缺口 10：独立审查结论进证据链——放行与拦截都记（谁审的、审了什么工具、
+// 为什么放行/拦截、命中哪条确定性规则）。与缺口 3b 的 review_decision
+// （审阅队列的批复）是两个事件，不要混用。
+reviewer_verdict: ["tool", "decision", "reason", "reviewer_model", "rule"],
 // 缺口 7：事件触发进证据链——哪个触发器、什么事件、谁发的、进了哪个任务、
 // 什么模式、什么鉴权。event_id 过长时只记指纹（见 eventTriggers.ts 的 shortEventId），
 // 完整 id 在 ~/.nyra/event-deliveries.json。
@@ -719,7 +723,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "patrol_write_blocked"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

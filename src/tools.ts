@@ -26,6 +26,7 @@ import type { ProviderLike } from "./providers.ts";
 import { CDPBrowser } from "./cdpBrowser.ts";
 import { ComputerControl, computerErrorMessage } from "./computer.ts";
 import { runHooks } from "./hooks.ts";
+import { reviewToolCall, reviewerConfig, type ReviewerLike } from "./reviewer.ts";
 import { effectiveStringList, effectiveValue } from "./enforcedConfig.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 的两处执行点统一走这里解析后端。
 // 审批仍在 checkApproval，钩子仍在宿主机跑（hooks.ts 不动），沙箱内只跑命令本身。
@@ -186,6 +187,16 @@ export interface ToolContext {
    */
   hookPromptRunner?: ((input: { prompt: string; model?: string; payload: Record<string, unknown> }) => Promise<string>) | null;
   hookAgentRunner?: ((input: { prompt: string; model?: string; maxTurns?: number; payload: Record<string, unknown> }) => Promise<string>) | null;
+  /**
+   * 缺口 10：独立审查层的运行实例与审查上下文（由 Agent 在每次工具调用前
+   * 填入，见 agent.ts）。reviewerRunner 为 null 表示审查模型不可用——审查层
+   * 开启时这会让被审工具全部拦截（fail-closed），而不是静默放行。
+   * reviewTask 是原始任务（第一条用户消息），reviewRecentMessages 是最近
+   * 几条消息（审查员只看这些，看不到完整对话）。
+   */
+  reviewerRunner?: ReviewerLike | null;
+  reviewTask?: string;
+  reviewRecentMessages?: string[];
 }
 
 export function newToolContext(partial: Partial<ToolContext> & { workdir: string }): ToolContext {
@@ -2055,9 +2066,44 @@ async function runPreToolHook(ctx: ToolContext, tool: string, args: Record<strin
   return result.updatedInput ?? null;
 }
 
-/** PostToolUse：只通知、不拦截（只通知事件上钩子出错只警告）；这里再兜一层。 */
-async function runPostToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {
+/**
+ * 缺口 10：独立审查门——PreToolUse 钩子之后、审批之前跑（与钩子同顺序：
+ * 先拦下危险操作，省一次人工审批打扰；审批流程本身不变）。
+ * 只审默认被审集里的工具；审查层未开启时直接返回（零打扰、零性能损耗）。
+ * 结论（放行与拦截都）发 reviewer_verdict 事件进证据链；被拦截时抛
+ * ToolError，executeTool 会把它转成 `错误：…` 的工具结果给模型看。
+ * ctx.home 未传时无法读配置，直接跳过（不建配置、不报错）。
+ * 幂等重试（ctx.idempotentRetry === true）不重审：首次调用已审过。
+ */
+async function runReviewGate(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {
   if (!ctx.home) return;
+  const config = loadConfig(ctx.home);
+  if (!reviewerConfig(config).enabled) return;
+  const verdict = await reviewToolCall({
+    config,
+    tool,
+    args,
+    task: ctx.reviewTask ?? "",
+    recentMessages: ctx.reviewRecentMessages ?? [],
+    runner: ctx.reviewerRunner ?? null,
+  });
+  if (verdict.source === "skipped") return;
+  try {
+    ctx.onEvent?.("reviewer_verdict", {
+      tool,
+      decision: verdict.decision,
+      reason: verdict.reason,
+      reviewer_model: verdict.reviewerModel ?? "",
+      rule: verdict.rule ?? "",
+    });
+  } catch { /* 观察器故障不破坏拦截 */ }
+  if (verdict.decision === "BLOCK") {
+    throw new ToolError(`独立审查拦截了 ${tool}：${verdict.reason}`);
+  }
+}
+
+/** PostToolUse：只通知、不拦截（只通知事件上钩子出错只警告）；这里再兜一层。 */
+async function runPostToolHook(ctx: ToolContext, tool: string, args: Record<string, unknown>): Promise<void> {  if (!ctx.home) return;
   try {
     await runHooks("PostToolUse", {
       tool,
@@ -2128,6 +2174,10 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         console.error(`[hook] ${name} 入参被钩子改写：${keys}`);
         Object.assign(args, updated);
     }
+    }
+    // 缺口 10：独立审查门——钩子之后、审批之前；幂等重试不重审（首次已审过）。
+    if (ctx.idempotentRetry !== true) {
+      await runReviewGate(ctx, name, args);
     }
     const result = await (async (): Promise<string> => {
       switch (name) {

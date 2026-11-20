@@ -95,6 +95,15 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 绝不放 client_id / client_secret / token——凭证只存密码箱（见 vault.ts）。
   // 目前只有 gmail：{ enabled: false }。
   connectors: { gmail: { enabled: false } },
+  // 缺口 10：独立审查层（学 Dots Auto-review / Meta Muse Sentinel / Goose
+  // Adversary Mode）。默认关闭（显式 opt-in）；开启后敏感工具调用先过独立
+  // 审查 agent（独立上下文、只读原始任务与最近消息、便宜模型），结论进证据链；
+  // 审查失败即拦截（fail-closed，不学 Goose 的 fail-open）。
+  // provider/model 不填时沿用 smart_approvals.reviewer_*，再没有用 deepseek /
+  // deepseek-flash；tools 不填时用默认被审集（write/edit/apply_patch/shell/
+  // memory_forget/memory_delete/gmail_send/http_post）；rules 是用户用自然语言
+  // 写的额外审查规则（审查提示里原样交给审查模型）。
+  reviewer: { enabled: false, provider: null, model: null, tools: null, rules: [] },
 };
 
 export const VALID_MODES = ["readonly", "auto", "full", "creator"] as const;

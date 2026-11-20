@@ -38,6 +38,7 @@ import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
+import { resolveReviewerModel } from "./reviewer.ts";
 import { resolveEnforced, applyEnforced, formatEnforced } from "./enforcedConfig.ts";
 import { buildRecallNote, selectRecalledRuns } from "./runRecall.ts";
 import { resolveAuxRouting } from "./modelRouting.ts";
@@ -147,6 +148,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
   nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
   nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
+  nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -215,6 +217,7 @@ Usage:
   nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
   nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
   nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
+  nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
   nyra kb <create|list|add|search|ask|remove>  local knowledge base
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -621,6 +624,9 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     monthlySpentBeforeUsd,
     // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
     auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
+    // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
+    // reviewer_model / 默认 deepseek-flash，见 reviewer.ts）。
+    reviewerModel: resolveReviewerModel(config).model,
     // 缺口 5：对话中途手动换模型的允许列表（primary + fallback_providers，
     // 与兜底链同一份名单；不受 fallback_enabled 开关影响，见 config.ts）。
     modelSwitchAllowlist: resolveSwitchAllowlist(config, primaryCfg.name),
@@ -1282,6 +1288,113 @@ async function handleResponsibility(argv: string[], workdir: string): Promise<nu
   } catch (err: unknown) {
     if (err instanceof ResponsibilityError) process.stderr.write(`错误：${err.message}\n`);
     else process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+// ---- 子命令：reviewer（缺口 10：独立审查层） ----
+async function handleReviewer(argv: string[], workdir: string): Promise<number> {
+  const action = argv[0];
+  const home = resolveHome();
+  if (!action) {
+    process.stdout.write("用法：nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check> [选项]\n");
+    return 2;
+  }
+  const get = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  try {
+    const { reviewerConfig, reviewerStatus, resolveReviewerModel, buildReviewerRunner, reviewToolCall } = await import("./reviewer.ts");
+    const config = loadConfig(home);
+    if (action === "status") {
+      const st = reviewerStatus(config, home);
+      process.stdout.write(`独立审查层：${st.enabled ? "启用" : "禁用（默认关闭）"}\n`);
+      process.stdout.write(`审查模型：${st.provider}:${st.model}${st.hasCredentials ? "" : "（无凭证：开启后被审工具会被拦截，请先配好该模型的凭证）"}\n`);
+      process.stdout.write(`被审工具（${st.tools.length}）：${st.tools.join("、")}\n`);
+      process.stdout.write(`额外规则（${st.rules.length}）：${st.rules.length ? st.rules.map((r, i) => `${i + 1}. ${r}`).join("；") : "（无）"}\n`);
+      return 0;
+    }
+    if (action === "enable" || action === "disable") {
+      const cfg = reviewerConfig(config);
+      saveConfig(home, { reviewer: { ...cfg, enabled: action === "enable" } });
+      process.stdout.write(`已${action === "enable" ? "启用" : "禁用"}独立审查层${action === "enable" ? "（敏感工具调用先过独立审查，审查失败即拦截）" : ""}\n`);
+      return 0;
+    }
+    if (action === "set-model") {
+      const spec = argv[1];
+      if (!spec) { process.stderr.write("错误：用法：nyra reviewer set-model <provider:模型> 或 <模型>\n"); return 2; }
+      const cfg = reviewerConfig(config);
+      let provider = cfg.provider;
+      let model: string | null = cfg.model;
+      const idx = spec.indexOf(":");
+      if (idx >= 0) {
+        provider = spec.slice(0, idx).trim() || null;
+        model = spec.slice(idx + 1).trim() || null;
+      } else {
+        model = spec.trim();
+      }
+      if (!model) { process.stderr.write("错误：set-model 需要模型名\n"); return 2; }
+      saveConfig(home, { reviewer: { ...cfg, provider, model } });
+      const resolved = resolveReviewerModel(loadConfig(home));
+      process.stdout.write(`审查模型已设为 ${resolved.provider}:${resolved.model}\n`);
+      return 0;
+    }
+    if (action === "add-rule") {
+      const rule = argv.slice(1).join(" ").trim();
+      if (!rule) { process.stderr.write("错误：用法：nyra reviewer add-rule <自然语言规则>\n"); return 2; }
+      const cfg = reviewerConfig(config);
+      saveConfig(home, { reviewer: { ...cfg, rules: [...cfg.rules, rule] } });
+      process.stdout.write(`已添加审查规则（共 ${cfg.rules.length + 1} 条）：${rule}\n`);
+      return 0;
+    }
+    if (action === "remove-rule") {
+      const n = parseInt(argv[1] ?? "", 10);
+      const cfg = reviewerConfig(config);
+      if (!Number.isInteger(n) || n < 1 || n > cfg.rules.length) {
+        process.stderr.write(`错误：remove-rule 需要 1–${cfg.rules.length} 之间的序号（先 nyra reviewer list-rules 查看）\n`);
+        return 2;
+      }
+      const removed = cfg.rules[n - 1];
+      const rules = cfg.rules.filter((_r, i) => i !== n - 1);
+      saveConfig(home, { reviewer: { ...cfg, rules } });
+      process.stdout.write(`已删除审查规则 ${n}：${removed}\n`);
+      return 0;
+    }
+    if (action === "list-rules") {
+      const cfg = reviewerConfig(config);
+      if (!cfg.rules.length) { process.stdout.write("没有额外审查规则\n"); return 0; }
+      cfg.rules.forEach((r, i) => process.stdout.write(`${i + 1}. ${r}\n`));
+      return 0;
+    }
+    if (action === "check") {
+      const tool = get("--tool");
+      const argsJson = get("--args") ?? "{}";
+      if (!tool) { process.stderr.write("错误：用法：nyra reviewer check --tool <工具> --args '<JSON 对象>' [--task <任务>]\n"); return 2; }
+      let args: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(argsJson);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+        args = parsed as Record<string, unknown>;
+      } catch {
+        process.stderr.write("错误：--args 必须是 JSON 对象\n");
+        return 2;
+      }
+      const cfg = reviewerConfig(config);
+      // 试运行：即使审查层未开启也按开启后的口径审一次（生产上未开启时不审）。
+      const verdict = await reviewToolCall({
+        config: { ...config, reviewer: { ...cfg, enabled: true } },
+        tool, args, task: get("--task") ?? "", recentMessages: [],
+        runner: buildReviewerRunner(config, home),
+      });
+      if (!cfg.enabled) process.stdout.write("（审查层当前未开启，以下是开启后的试运行结果）\n");
+      process.stdout.write(`审查结论：${verdict.decision}（${verdict.source}）\n原因：${verdict.reason}\n审查模型：${verdict.reviewerModel ?? "—"}\n`);
+      return verdict.decision === "BLOCK" ? 3 : 0;
+    }
+    process.stderr.write(`错误：未知子命令 reviewer ${action}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
@@ -3337,6 +3450,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "events") return handleEvents(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "mail-inbox") return handleMailInbox(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "responsibility") return handleResponsibility(args.subArgs ?? [], resolve(args.workdir));
+  if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);

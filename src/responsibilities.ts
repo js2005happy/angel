@@ -24,6 +24,7 @@ import {
 import { join } from "node:path";
 import { loadConfig } from "./config.ts";
 import type { Provider } from "./providers.ts";
+import { reviewPatrolReport, type ReviewerLike } from "./reviewer.ts";
 import { RunStore } from "./runs.ts";
 import { addTask, appendInbox, buildProvider, nyraHome, runOne, TASKS_DIR } from "./tasks.ts";
 
@@ -240,7 +241,7 @@ export interface PatrolResult {
 */
 export async function runPatrol(
   resp: Responsibility,
-  opts: { home: string; workdir: string; provider?: Provider; config?: Record<string, unknown> | null },
+  opts: { home: string; workdir: string; provider?: Provider; config?: Record<string, unknown> | null; reviewerRunner?: ReviewerLike | null },
 ): Promise<PatrolResult> {
   const home = opts.home;
   const workdir = opts.workdir;
@@ -259,7 +260,23 @@ export async function runPatrol(
   if (final.status === "awaiting_approval") {
     throw new ResponsibilityError(`巡查「${resp.name}」意外挂起等审批（只读巡查不应走到审批）`);
   }
-  const hasFindings = parsePatrolConclusion(output);
+  const hasFindingsBeforeReview = parsePatrolConclusion(output);
+  // 缺口 10：巡查结论先过一层独立审查再汇报（缺口 8 的巡查报告原先由模型
+  // 自己写、自己判）。审查结论进 reviewer_verdict 事件；审查拦截（结论与
+  // 发现不符、有发现被掩盖、审查失败）时按“有发现”处理（fail-closed 向汇报）。
+  // 审查层未开启时 reviewPatrolReport 直接返回 skipped，不调模型、不记事件。
+  let hasFindings = hasFindingsBeforeReview;
+  const review = await reviewPatrolReport({
+    config, goal: resp.goal, output, hasFindings: hasFindingsBeforeReview, home,
+    ...(opts.reviewerRunner !== undefined ? { runner: opts.reviewerRunner } : {}),
+  });
+  if (review.source !== "skipped") {
+    store.appendEvent(final.run_id, "reviewer_verdict", {
+      tool: "patrol_report", decision: review.decision, reason: review.reason,
+      reviewer_model: review.reviewerModel ?? "", rule: review.rule ?? "",
+    });
+    if (review.decision === "BLOCK") hasFindings = true;
+  }
   const shouldReport = resp.report === "always" || hasFindings;
   store.appendEvent(final.run_id, "patrol_report", {
       responsibility_id: resp.id, responsibility_name: resp.name, run_id: final.run_id,

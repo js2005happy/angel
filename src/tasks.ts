@@ -12,6 +12,7 @@ import { loadSession } from "./memory.ts";
 import { RunStore, prepareResume, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, RunNotResumable, type RunState } from "./runs.ts";
 import { ApprovalRequired } from "./tools.ts";
 import { Agent } from "./agent.ts";
+import { resolveReviewerModel } from "./reviewer.ts";
 import { pythonJsonDump } from "./pyjson.ts";
 import { t } from "./i18n.ts";
 
@@ -244,6 +245,8 @@ export async function runOne(
     sessionId: state.session_id, messages,
     interactive: defer !== null ? true : (opts.interactive ?? false),
     approveFn: defer ?? undefined, skillsDirs: [], home: opts.home,
+    // 缺口 10：队列任务同样过独立审查（审查模型从配置解析）。
+    reviewerModel: resolveReviewerModel(opts.config ?? {}).model,
   });
   const recorder = new RunRecorder(opts.store, agent, state.task, {
     state, verifyTimeout: timeout, verifyRetries: retries,
@@ -301,6 +304,8 @@ export async function approveTask(runId: string, opts?: { store?: RunStore; prov
   const agent = new Agent(provider, {
     workdir: next.workdir, mode: next.mode, maxTurns: next.max_turns,
     sessionId: next.session_id, messages, interactive: true, skillsDirs: [], home: opts?.home,
+    // 缺口 10：批复后继续跑同样过独立审查。
+    reviewerModel: resolveReviewerModel(opts?.config ?? {}).model,
   });
   const recorder = new RunRecorder(store, agent, next.task, {
     state: next, interruptedToolCalls: count, verifyTimeout: timeout, verifyRetries: retries,

@@ -42,6 +42,7 @@ import type { AuxTask } from "./modelRouting.ts";
 import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults, SEARCH_TOOLS_SCHEMA } from "./toolSearch.ts";
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import { runHooks, type RunHooksContext } from "./hooks.ts";
+import type { ReviewerLike } from "./reviewer.ts";
 import {
   runParallelDelegate, formatParallelResults, parallelConvergenceNote,
   resolveParallelOptions,
@@ -189,6 +190,16 @@ export interface AgentOptions {
   /** 辅助任务路由（对齐 Alma 的 Tool Model）：压缩/子任务走便宜模型。 */
   auxModels?: { compact?: string; delegate?: string };
   /**
+   * 缺口 10：独立审查层用的模型名（仅模型名，如 "deepseek-flash"；provider
+   * 由 multiModelFactory 按模型名解析）。不传时用 delegate 便宜模型，
+   * 再没有用主模型（审查上下文仍是独立的，只是模型与主 agent 相同）。
+   * CLI / 网关 / 任务队列从 config 的 reviewer.model（或 smart_approvals
+   * reviewer_model）解析后传入；直接构造 Agent 的测试可传 reviewerRunner。
+   */
+  reviewerModel?: string | null;
+  /** 缺口 10：独立审查层的运行实例（网关/测试注入；不传时 Agent 按上款懒建）。 */
+  reviewerRunner?: ReviewerLike | null;
+  /**
    * 缺口 5：对话中途手动换模型的允许列表（provider 名）。
    * 只切列表里的服务商；null = 未配置（仅供直接构造 Agent 的嵌入 /
    * 测试场景，CLI 与网关等生产入口一定传 resolveSwitchAllowlist 的结果）。
@@ -296,6 +307,14 @@ export class Agent {
   private monthlySpentBeforeUsd: AgentOptions["monthlySpentBeforeUsd"];
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
+  /**
+   * 缺口 10：独立审查层用的模型名（仅模型名）与注入的运行实例。
+   * reviewerRunnerInstance 为 undefined = 还没建过（懒建一次后缓存；
+   * 建出来是 null 表示审查模型不可用——审查层开启时被审工具全部拦截）。
+   */
+  private reviewerModelName: string | null;
+  private reviewerRunnerOpt: ReviewerLike | null;
+  private reviewerRunnerInstance: ReviewerLike | null | undefined = undefined;
   /** 缺口 5：对话中途手动换模型的允许列表（provider 名）；见 AgentOptions。 */
   private modelSwitchAllowlist: string[] | null;
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
@@ -357,6 +376,8 @@ export class Agent {
     this.monthlyCostLimitUsd = typeof opts.monthlyCostLimitUsd === "number" ? opts.monthlyCostLimitUsd : null;
     this.monthlySpentBeforeUsd = opts.monthlySpentBeforeUsd ?? null;
     this.auxModels = opts.auxModels ?? {};
+    this.reviewerModelName = opts.reviewerModel ?? null;
+    this.reviewerRunnerOpt = opts.reviewerRunner ?? null;
     this.modelSwitchAllowlist = opts.modelSwitchAllowlist ?? null;
     this.recallNote = opts.recallNote ?? null;
     this.skillsDisabled = Array.isArray(opts.skillsDisabled) ? opts.skillsDisabled : [];
@@ -484,6 +505,55 @@ export class Agent {
     const cheap = this.auxProvider("delegate");
     if (cheap) return cheap;
     return this.provider;
+  }
+
+  /**
+   * 缺口 10：独立审查层的运行实例（懒建一次后缓存）。
+   * 顺序与 hookModelProvider 同款：注入的实例 > multiModelFactory 按
+   * reviewerModel 名造 > delegate 便宜模型 > 主模型。模型分开是“最好”，
+   * 独立上下文是“必须”——没有便宜模型可造时仍用主模型跑审查（审查提示
+   * 是全新的独立上下文，不带主对话），而不是让审查层直接不可用。
+   * 审查模型本身不可用（工厂抛错、aux 也没有）时返回 null，调用方
+   * fail-closed：审查层开启时被审工具全部拦截。
+   */
+  private reviewerRunner(): ReviewerLike | null {
+    if (this.reviewerRunnerInstance !== undefined) return this.reviewerRunnerInstance;
+    if (this.reviewerRunnerOpt) {
+      this.reviewerRunnerInstance = this.reviewerRunnerOpt;
+      return this.reviewerRunnerInstance;
+    }
+    const factory = this.ctx.multiModelFactory;
+    const modelName = this.reviewerModelName ?? this.auxModels.delegate ?? null;
+    if (modelName && factory) {
+      try {
+        this.reviewerRunnerInstance = factory("reviewer", modelName) as unknown as ReviewerLike;
+        return this.reviewerRunnerInstance;
+      } catch { /* 造不出来就往下走便宜模型/主模型 */ }
+    }
+    const cheap = this.auxProvider("delegate");
+    if (cheap) {
+      this.reviewerRunnerInstance = cheap as unknown as ReviewerLike;
+      return this.reviewerRunnerInstance;
+    }
+    this.reviewerRunnerInstance = this.provider as unknown as ReviewerLike;
+    return this.reviewerRunnerInstance;
+  }
+
+  /** 缺口 10：审查员看到的“原始任务”——第一条用户消息（截断 2000 字）。 */
+  private reviewTaskText(): string {
+    const first = this.messages.find((m) => m.role === "user");
+    const content = typeof first?.content === "string" ? first.content : "";
+    return content.length > 2000 ? content.slice(0, 2000) + "…" : content;
+  }
+
+  /** 缺口 10：审查员看到的“最近消息”——最近 6 条（角色 + 截断 500 字）。 */
+  private reviewRecentMessages(): string[] {
+    return this.messages.slice(-6).map((m) => {
+      const role = typeof m.role === "string" ? m.role : "?";
+      const raw = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+      const text = raw.length > 500 ? raw.slice(0, 500) + "…" : raw;
+      return `${role}: ${text}`;
+    });
   }
 
   /** 调研报告第 2 项：技能渐进披露——常驻技能索引（描述常驻、全文按需）；技能集合变化时才重算。 */
@@ -1042,6 +1112,11 @@ export class Agent {
           name: fnName,
           arguments: args !== null && typeof args === "object" ? args : argsRaw,
         });
+        // 缺口 10：独立审查上下文——原始任务 + 最近消息，每次工具调用前刷新
+        //（审查门在 executeTool 里，审查模型实例懒建一次后缓存）。
+        this.ctx.reviewerRunner = this.reviewerRunner();
+        this.ctx.reviewTask = this.reviewTaskText();
+        this.ctx.reviewRecentMessages = this.reviewRecentMessages();
         let result: string;
         // P1-4：续跑去重——中断前已成功、且读回仍证明生效的写操作直接跳过，不重复执行。
         // 先于循环守卫判定（已成功的调用本就不该再被守卫计数）。
@@ -1327,6 +1402,8 @@ export class Agent {
       // worktree 子任务不共用主工作区的检查点库，避免把临时工作树的内容写进主回滚链。
       checkpointStore: worktreePath ? null : this.checkpoints,
       poppyEnabled: this.poppyEnabled,
+      // 缺口 10：子 agent 继承父级的审查模型（审查层对子级同样生效）。
+      reviewerModel: this.reviewerModelName,
       home: this.home,
       disabledTools,
       multiModelFactory: this.ctx.multiModelFactory,

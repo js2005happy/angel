@@ -59,6 +59,7 @@ import { GroupStore, type BotConfig } from "./groups.ts";
 import GROUP_UI_HTML from "./assets/group_ui.html.txt" with { type: "text" };
 import GROUP_UI_JS from "./assets/group-ui.js.txt" with { type: "text" };
 import { decideSmartApproval, reviewerEnabled, smartApprovalConfig, readAudit } from "./smartApprovals.ts";
+import { reviewerStatus, resolveReviewerModel } from "./reviewer.ts";
 import { rewind as doRewind, storeHistoryToAgentMessages, type RewindAction } from "./rewind.ts";
 import { PAGE_HTML, MANIFEST, CSP, solidPng } from "./webuiPage.ts";
 
@@ -826,6 +827,9 @@ export class Gateway {
           contextWindowModel: this.contextWindowModel,
           autoCompactEnabled: this.autoCompactEnabled,
           autoCompactThreshold: this.autoCompactThreshold,
+          // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
+          // reviewer_model / 默认 deepseek-flash）。
+          reviewerModel: resolveReviewerModel(this.config).model,
           home: this.home,
           // 单技能启停：网关起的 agent 与 CLI 同口径（config.skills.disabled）。
           skillsDisabled: (() => {
@@ -1058,6 +1062,8 @@ export class Gateway {
             // 调研报告第 9 项：定时任务用的 Agent 也接沙箱（与 send 同一套解析；
             // 配置非法时这里抛错，tick 的 catch 会记日志，任务不裸奔执行）。
             sandbox: this.sandboxSettings(),
+            // 缺口 10：定时任务同样过独立审查（无人值守入口更要第二双眼睛）。
+            reviewerModel: resolveReviewerModel(this.config).model,
           });
           const out = await agent.run(task.prompt);
           appendInbox(`schedule-${task.name}`, "ok", out.slice(0, 200), this.home);
@@ -1500,6 +1506,12 @@ export class Gateway {
     if (method === "GET" && path === "/api/responsibilities") {
       try { this.sendJson(res, 200, { responsibilities: listResponsibilitiesPublic(this.home) }); }
       catch (err) { this.sendError(res, 400, `常驻责任读取失败：${err instanceof Error ? err.message : String(err)}`); }
+      return;
+    }
+    // 缺口 10：独立审查层状态（供桌面端/手机 PWA 消费；只给开关与模型名，不含凭证）。
+    if (method === "GET" && path === "/api/reviewer") {
+      try { this.sendJson(res, 200, reviewerStatus(this.config, this.home)); }
+      catch (err) { this.sendError(res, 400, `审查层状态读取失败：${err instanceof Error ? err.message : String(err)}`); }
       return;
     }
     if (method === "GET" && path === "/api/memory/scopes") {
