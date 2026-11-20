@@ -110,6 +110,11 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // act_model = 执行阶段（Act）用的便宜模型（不填沿用主模型）。与主模型相同会被忽略。
   plan_model: null,
   act_model: null,
+  // 缺口 16：图像 / 视频输入（见 docs/vision.md）。max_bytes = 单张图片上限
+  // （默认 10MB）；max_frames = 单个视频最多抽几帧（默认 6）；max_images =
+  // 一次最多附几张图片（默认 5）；video_max_bytes = 单个视频上限（默认 50MB）；
+  // max_videos = 一次最多附几个视频（默认 3）。数字不合法时回退默认值。
+  vision: { max_bytes: 10 * 1024 * 1024, max_frames: 6, max_images: 5, video_max_bytes: 50 * 1024 * 1024, max_videos: 3 },
   // 缺口 24：子 agent（delegate）独立的推理档位；不填沿用全局 reasoning_effort。
   delegate_reasoning_effort: null,
   // 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图）。enabled 默认关（显式 opt-in）；
