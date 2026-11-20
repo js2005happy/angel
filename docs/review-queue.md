@@ -112,6 +112,13 @@ verifier——`nyra review verify <id>` / `POST /api/review/:id/verify`
 - 失败时 verification 记 `failed` 并列出缺的文件；既无 worktree 也无工作
   目录时直接报错（无处核对，不假装验过）。只允许 pending / approved 的项。
 
+缺口 13（验收者）开启后，`verify` 改跑完整验收（详见 `docs/verifier.md`）：
+先跑确定性四项（改动存在、文件存在、diff 完整、证据齐全），再由验收模型
+复核，方法记 `verifier` 或 `verifier-deterministic`，并另记一条
+`verifier_verdict` 事件；未开启时沿用上面这套 `files-exist`，行为一字不改。
+注意：只验新文件时 `git diff --stat HEAD` 是空的（untracked 文件不在 diff
+里），`diff-stat` 一项会失败——与这里的 `files-exist` 同一口径。
+
 ## 证据链字段
 
 批复、入队、验证、应用都记审计。新事件类型（已在 `src/runs.ts` 的
@@ -123,6 +130,8 @@ verifier——`nyra review verify <id>` / `POST /api/review/:id/verify`
 | `review_decision` | `item_id`, `decision`, `decided_by`, `spent_usd` |
 | `review_verified` | `item_id`, `status`, `method` |
 | `review_applied` | `item_id`, `files`（拷回的文件，逗号分隔） |
+| `verifier_verdict`（缺口 13） | `target`, `verdict`, `reason`, `verifier_model`, `source`, `checks_passed`, `checks_failed` |
+| `verifier_rework`（缺口 13） | `target`, `attempt`, `reason` |
 
 写到哪：有 `runId` 且 `~/.nyra/runs` 或 `~/.nyra/tasks` 下有该运行目录时，
 写该运行的 `events.jsonl`；否则写 `~/.nyra/evidence/review/` 下的证据文件
@@ -149,8 +158,9 @@ verifier——`nyra review verify <id>` / `POST /api/review/:id/verify`
   批复/验证/应用全流程），但本批没有真机，只在本地用网关 HTTP 测试验过
   API 与页面含审阅标签页。**待用户在真机上验证后才算可用**，不要声称已验证。
   推送通知（push）不在本批范围（报告原文是“先在真机上验证现有 PWA 再谈推送”）。
-- **验证是轻量的**：`files-exist` 只核对文件存在，不跑测试、不审语义；
-  真正的验收（verifier 跑测试子集）是后续批次（缺口 13 验收队列）的事。
+- **验证是轻量的**（验收者未开启时）：`files-exist` 只核对文件存在，不跑
+  测试、不审语义；开启验收者后 `verify` 改跑完整验收（确定性四项 + 模型
+  复核，见上与 `docs/verifier.md`）。
 - **定时任务结果无改动文件**：调度器路径不经过 RunRecorder，进队项的
   `changedFiles` 为空、`diffStat` 为 null，验证栏如实注明；`verify` 对这类项
   会报错（无处核对）。
