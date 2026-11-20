@@ -1,3 +1,9 @@
+## 2026-11-20 — Windows Node claim 失败关闭（静态审阅）
+
+- 读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python ToolJournal，并对照主分支 `src/agent.ts`、`src/tools.ts`；检查近期提交及开放 Issues/PR。此前提交 `ada0536` 的 GitHub status 列表为空，不能视为 CI 通过。
+- 静态确认 `checkPrivateDirectory()` 在 Windows 进入路径预检前抛出 `ClaimUnavailable`，阻止 Windows reparse/junction 未验证情况下的 claim 创建；POSIX 逻辑未修改。
+- **未运行脚本、编译、测试、CI 或 Windows 实机验证**。仍未建立 POSIX 稳定目录句柄，未解决祖先 TOCTOU/网络文件系统风险，尚未接入真实 Node 工具派发；不提供 exactly-once 保证。
+
 ## 2026-11-20 — Node claim 目录预检（静态审阅）
 
 - 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 和 Node claim；核对主仓库近期提交及开放 Issues/PR。
