@@ -65,6 +65,8 @@ export const VERIFIER_CHECKLIST: { id: string; label: string; what: string }[] =
   { id: "files-exist", label: "改动文件都存在", what: "每个改动文件在 worktree/工作目录里存在" },
   { id: "diff-stat", label: "diff 摘要完整", what: "有改动文件时 diff 摘要非空" },
   { id: "evidence-complete", label: "证据齐全", what: "摘要非空，且改动位置（worktree 或工作目录）有记录" },
+  { id: "draft-labeled", label: "草稿标未完成", what: "标题/摘要含草稿标记时不得声称已完成" },
+  { id: "ui-before-shot", label: "UI 改动附 before 证据", what: "改了界面文件时摘要须提 before/对比/截图" },
 ];
 
 /** 一次验收的输入：并行线程证据 / 审阅项 / 单次 delegate 结果都能拼出来。 */
@@ -173,9 +175,37 @@ export function loadVerifierConfig(home?: string): VerifierConfig {
   return verifierConfig(loadConfig(home));
 }
 
+/** 草稿标记（标题/摘要里出现即视为草稿；拉丁词小写比对）。 */
+const DRAFT_MARKERS = ["草稿", "草案", "初稿", "待完善", "wip", "draft"];
+/** 完成声称（摘要里出现即视为声称已完成；不含裸的“通过”，免得“12 通过”误判）。 */
+const COMPLETION_MARKERS = ["已完成", "全部完成", "已搞定", "已交付", "ready", "验收通过", "测试通过", "测试全部通过"];
+/** before 证据提法（摘要里出现即视为提了 before/对比/截图）。 */
+const BEFORE_MARKERS = ["before", "对比", "截图", "前后对比"];
+
+/** 界面文件：扩展名或路径判定（裸 .html 不算——文档页不是产品界面）。 */
+const UI_EXTS = new Set([".tsx", ".jsx", ".vue", ".svelte", ".css"]);
+
+function containsMarker(text: string, markers: string[]): string | null {
+  const lower = text.toLowerCase();
+  for (const m of markers) {
+    if (lower.includes(m.toLowerCase())) return m;
+  }
+  return null;
+}
+
+function isUiFile(f: string): boolean {
+  const p = f.replace(/\\/g, "/");
+  if (p.startsWith("desktop/ui/") || p.startsWith("docs/design/")) return true;
+  const dot = p.lastIndexOf(".");
+  const ext = dot >= 0 ? p.slice(dot) : "";
+  return UI_EXTS.has(ext);
+}
+
 /**
  * 确定性检查（不调模型、零成本、纯函数；文件存在性用 existsSync 当场核对）。
  * 注意：spentUsd 为 null（未计价）不是失败——不编花费数字，只在 detail 里注明。
+ * DSH-5b 的两条诚实交付检查是启发式文本判定：只核对标题/摘要里的说法，
+ * 不验截图像素真假（像素真假靠模型复核与人）；误判时用 add-rule 覆盖或人工批。
  */
 export function runDeterministicChecks(input: VerifierInput): VerifierCheck[] {
   const changed = input.changedFiles.filter((f) => typeof f === "string" && f.trim());
@@ -228,6 +258,32 @@ export function runDeterministicChecks(input: VerifierInput): VerifierCheck[] {
       locationOk ? "改动位置有记录" : "改动位置无记录（既无 worktree 也无工作目录）",
     ].join("；") + costNote,
   });
+  // DSH-5b：草稿必须标未完成——标题/摘要含草稿标记却声称已完成时不通过。
+  const draftHit = containsMarker(`${input.title}\n${input.summary}`, DRAFT_MARKERS);
+  const doneHit = containsMarker(input.summary, COMPLETION_MARKERS);
+  checks.push({
+    id: "draft-labeled",
+    label: "草稿标未完成",
+    passed: !(draftHit && doneHit),
+    detail: draftHit
+      ? doneHit
+        ? `标题/摘要含草稿标记（${draftHit}），却声称已完成（${doneHit}）：草稿不能按已完成验收`
+        : `已标草稿（${draftHit}），未声称已完成`
+      : "非草稿",
+  });
+  // DSH-5b：UI 改动无真实 before 截图不算 ready——摘要须提 before/对比/截图。
+  const uiFiles = changed.filter(isUiFile);
+  const beforeHit = containsMarker(input.summary, BEFORE_MARKERS);
+  checks.push({
+    id: "ui-before-shot",
+    label: "UI 改动附 before 证据",
+    passed: uiFiles.length === 0 || beforeHit !== null,
+    detail: uiFiles.length === 0
+      ? "无界面改动"
+      : beforeHit
+        ? `改了 ${uiFiles.length} 个界面文件，摘要已提 before/对比/截图（${beforeHit}）`
+        : `改了 ${uiFiles.length} 个界面文件（${uiFiles.slice(0, 5).join("、")}${uiFiles.length > 5 ? "…" : ""}），摘要里没提 before/对比/截图：没图不算 ready`,
+  });
   return checks;
 }
 
@@ -237,6 +293,8 @@ export const VERIFIER_SYSTEM_PROMPT =
   "你看不到完整对话、看不到工作目录以外的文件。你是只读的：不改代码、不跑命令。\n" +
   "通过的标准：改动与任务标题相符；摘要里声称的验证（跑了什么命令、结果如何）具体可核查，" +
   "而不是一句“已验证/测试通过”；没有凭空编造的数字与结论。\n" +
+  "草稿须标未完成：标题或摘要写着草稿却声称已完成时打回；界面改动须附真实 before 截图证据：" +
+  "摘要里没提 before、对比或截图时打回。\n" +
   "摘要里声称跑了测试却没给命令与结果、改动与任务明显不符、结论含编造痕迹时，打回。\n" +
   "拿不准时打回，不要放行——放行错了会把坏改动合进主线。\n" +
   "只输出一个 JSON 对象：{\"decision\": \"approve\" 或 \"deny\", \"reason\": \"一句话原因\"}，" +
