@@ -390,3 +390,46 @@ test("IdempotentRetry.test_verify_write_applied", async () => {
   expect(await verifyWriteApplied("shell", { command: "echo hi" }, ctx)).toBeNull();
   expect(await verifyWriteApplied("http_post", { url: "https://example.invalid", body: "" }, ctx)).toBeNull();
 });
+
+test("IdempotentRetry.test_approval_refusal_never_retries", async () => {
+  // 回归：审批拒绝曾被当成普通失败重试——重试时 ctx.idempotentRetry 置 true，
+  // checkApproval 直接放行，拒绝过的写操作照样执行（Bot Phase 2 全链路测试先抓到）。
+  // 拒绝（approveFn 说不 / 只读模式 / 权限规则 deny）一律不重试、只问一次。
+  const home = mkdtempSync(join(tmpdir(), "nyra-retry-refuse-home-"));
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-retry-refuse-wd-"));
+  try {
+    let asked = 0;
+    const ctx = newToolContext({
+      workdir, home, mode: "auto", interactive: true,
+      memoryPath: join(workdir, "MEMORY.md"),
+      skillsDir: join(workdir, "skills"),
+      approveFn: async () => { asked += 1; return false; },
+    });
+    const result = await executeToolIdempotent("write_file", { path: "a.txt", content: "hi\n" }, ctx, { delaysMs: [0] });
+    expect(result).toContain("拒绝");
+    expect(existsSync(join(workdir, "a.txt"))).toBe(false);
+    expect(asked).toBe(1);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("IdempotentRetry.test_readonly_refusal_never_retries", async () => {
+  // 同上：readonly 拒绝也是审批拒绝，重试不能绕过只读模式。
+  const home = mkdtempSync(join(tmpdir(), "nyra-retry-ro-home-"));
+  const workdir = mkdtempSync(join(tmpdir(), "nyra-retry-ro-wd-"));
+  try {
+    const ctx = newToolContext({
+      workdir, home, mode: "readonly", interactive: false,
+      memoryPath: join(workdir, "MEMORY.md"),
+      skillsDir: join(workdir, "skills"),
+    });
+    const result = await executeToolIdempotent("write_file", { path: "a.txt", content: "hi\n" }, ctx, { delaysMs: [0] });
+    expect(result).toContain("只读");
+    expect(existsSync(join(workdir, "a.txt"))).toBe(false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
