@@ -35,6 +35,7 @@
 | `nyra tools` | 工具集体检：每轮 schema 成本与裁剪建议 |
 | `nyra models [list\|show\|refresh]` | 模型上下文窗口查询与刷新 |
 | `nyra reviewer <status\|enable\|disable\|set-model\|add-rule\|remove-rule\|list-rules\|check>` | 独立审查层：敏感工具调用先过独立审查 agent，审查失败即拦截（详见 `docs/reviewer.md`） |
+| `nyra account <status\|login\|logout\|list\|revoke\|link>` | 用户账号登录：Google / GitHub / 邮箱（邮箱随网关兑换端点在下一批），账号身份 + 会话（详见 `docs/accounts.md`） |
 
 ## 记忆与复用
 
