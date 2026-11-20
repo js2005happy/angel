@@ -186,6 +186,7 @@ test("R12 nextSteps 最多 3 条", () => {
 
 // ---- 批量趋势（buildTrendVerdict / summarizeTrend）----
 import { buildTrendVerdict, summarizeTrend } from "../../src/verdict.ts";
+import { RUN_STATUSES } from "../../src/runs.ts";
 
 const R = (status: string, over: Record<string, unknown> = {}) => ({
   run_id: "r", status,
