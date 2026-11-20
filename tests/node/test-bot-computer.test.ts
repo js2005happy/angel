@@ -4,7 +4,8 @@
 //   - 账本往返（原子写 0600、损坏先备份再抛错）、隔离判定三档（allow/ask/deny）；
 //   - 内存上限拒绝（注入小内存才可确定性测）、休眠/唤醒与 sleep-due；
 //   - 凭证 Vault 存列删（列表只给掩码、明文只进应用层代填）、删电脑清凭证与目录；
-//   - 浏览器访问只记 host、shell 经假 bwrap（不依赖真实 bwrap）；
+//   - 浏览器访问只记 host、shell 经假 bwrap（不依赖真实 bwrap；假 bwrap 只在
+//     Linux 跑，非 Linux 上 detectBwrap 直接返回 false，测试只钉 fail-closed）；
 //   - 活动账本 + 运行事件镜像（EVENT_FIELDS 已注册）与时间线渲染；
 //   - CLI 端到端（含 --yes 门与注入的 secret/confirm）。
 import { test, expect } from "bun:test";
@@ -252,22 +253,28 @@ test("BotComputerTest.test_shell_via_fake_bwrap", async () => {
   const home = tmpHome("nyra-computer-");
   withSoul(home, "nyra");
   const c = createComputer(home, { agent: "nyra" });
-  const shim = makeBwrapShim();
-  await withEnv({ PATH: `${shim.dir}:${process.env.PATH ?? ""}` }, async () => {
-    const result = await runComputerShell(home, c.id, "echo hi > hello.txt && echo done", { agent: "nyra" });
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain("done");
-    expect(existsSync(join(computerWorkspacePath(home, c), "hello.txt"))).toBe(true);
-    const activity = readComputerActivity(home, c.id, 10);
-    const shell = activity.find((a) => a.action === "shell.run");
-    expect(shell).toBeDefined();
-    expect(shell!.ok).toBe(true);
-    // 失败的命令也记一条 ok=false 的活动（进回归沉淀口径）。
-    const failed = await runComputerShell(home, c.id, "exit 3", { agent: "nyra" });
-    expect(failed.code).toBe(3);
-    const activity2 = readComputerActivity(home, c.id, 10);
-    expect(activity2.some((a) => a.action === "shell.run" && a.ok === false)).toBe(true);
-  });
+  // bwrap 只在 Linux：detectBwrap 在非 Linux 上直接返回 false，PATH 里放假 shim
+  // 也找不到（与 test-sandbox.test.ts 同款平台守卫）。非 Linux 只钉 fail-closed。
+  if (process.platform === "linux") {
+    const shim = makeBwrapShim();
+    await withEnv({ PATH: `${shim.dir}:${process.env.PATH ?? ""}` }, async () => {
+      const result = await runComputerShell(home, c.id, "echo hi > hello.txt && echo done", { agent: "nyra" });
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("done");
+      expect(existsSync(join(computerWorkspacePath(home, c), "hello.txt"))).toBe(true);
+      const activity = readComputerActivity(home, c.id, 10);
+      const shell = activity.find((a) => a.action === "shell.run");
+      expect(shell).toBeDefined();
+      expect(shell!.ok).toBe(true);
+      // 失败的命令也记一条 ok=false 的活动（进回归沉淀口径）。
+      const failed = await runComputerShell(home, c.id, "exit 3", { agent: "nyra" });
+      expect(failed.code).toBe(3);
+      const activity2 = readComputerActivity(home, c.id, 10);
+      expect(activity2.some((a) => a.action === "shell.run" && a.ok === false)).toBe(true);
+    });
+  } else {
+    await expect(runComputerShell(home, c.id, "echo hi", { agent: "nyra" })).rejects.toThrow("bwrap");
+  }
   // 没 bwrap 时 fail-closed，不裸奔。
   await withEnv({ PATH: tmpHome("nyra-empty-path-") }, async () => {
     await expect(runComputerShell(home, c.id, "echo hi", { agent: "nyra" })).rejects.toThrow("bwrap");
