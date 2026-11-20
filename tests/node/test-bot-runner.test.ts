@@ -232,7 +232,7 @@ test("/stop：没有在跑的任务时老实说", async () => {
   }
 });
 
-test("纯附件消息：回一句暂不支持，不调模型", async () => {
+test("纯附件消息（渠道不支持下载）：回一句说明，不调模型", async () => {
   const home = tempHome("nyra-bot-run10-");
   try {
     let calls = 0;
@@ -245,7 +245,9 @@ test("纯附件消息：回一句暂不支持，不调模型", async () => {
       attachments: [{ kind: "photo", fileId: "abc" }],
     }));
     expect(calls).toBe(0);
-    expect(adapter.sent[0].text).toContain("暂不支持");
+    // Phase 3：附件走下载流程；这个假适配器没有 downloadFile，所以回
+    // “不支持下载附件”的说明（旧文案“暂不支持解析图片/文件内容”已作废）。
+    expect(adapter.sent[0].text).toContain("不支持下载附件");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
