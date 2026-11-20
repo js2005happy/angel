@@ -1,3 +1,10 @@
+## 2026-11-20 — P0 静态审计缺失锚点失败关闭（v4）
+
+- **事实（仓库静态审阅）**：主分支 `src/agent.ts` 存在 `executeTool`、`executeToolIdempotent` 调用及工具结果追加与 `saveSession`；`src/gateway.ts` 具有交互和调度调用入口。主分支最新检索提交 [39084ea](https://github.com/js2005happy/nyra/commit/39084ea7311aed1aabad0feb57997a393d0bb386)（2026-11-20 06:12 UTC）主要修改 TUI，未直接解决跨进程执行所有权。开放 Issue/PR 检索为空。
+- **本轮增量（价值高／难度低／风险低）**：审计脚本 v4 要求主分支所有 Node 静态锚点均可读取且至少命中一行；新增 `missing_node_anchors`，缺失时 `audit_incomplete=true` 并非零退出。避免源码重构后旧文本探针静默失效。未运行脚本或测试；这仍不是动态控制流证明。
+- **外部反馈（2026-11-20 检索）**：[Codex #62681](https://github.com/openai/codex/issues/62681) 报告 Windows 上 MCP 工具目录变更后未刷新（报告中的协议/版本细节未经本项目复现）。**推断**：工具目录变化时需要版本感知和明确的过期状态；与本轮静态锚点失败关闭同属防止静默过期，但不证明 Nyra 存在此问题。
+- **候选排序（价值／难度／安全风险／依赖）**：P0 主运行时执行所有权（高／高／高／全部真实入口与崩溃对账）；P1 工具目录变更检测（中高／中／中／MCP 版本协商与订阅）；P1 可信副作用凭证（高／高／高／工具适配器）；P1 权限拒绝结构化（高／中／中／审批路径）；P2 等待与安全续跑（高／高／高／所有权及人工审批）。
+
 ## 2026-11-20 — P0 Node 派发与持久化静态锚点（本轮）
 
 - **仓库事实（2026-11-20）**：main 的 `src/agent.ts` 在工具结果写入消息数组后调用 `saveSession(this.sessionId, messages.slice(1), this.home)`；`src/gateway.ts` 的会话消息入口调用 `run.agent!.run(text)`，调度任务调用 `agent.run(task.prompt)`；`src/tools.ts` 包含 `executeTool` 与 `executeToolIdempotent`。静态审阅不证明所有路径均经过相同审批或持久化边界。
