@@ -50,6 +50,7 @@
 | `nyra ui` | 启动 gateway 网页界面（含手机 PWA） |
 | `nyra gw <sessions\|send\|view\|approve…>` | 连正在跑的 gateway 当客户端 |
 | `nyra schedule <list\|add\|remove\|run\|daemon>` | 定时任务 |
+| `nyra events <list\|add\|remove\|enable\|disable\|test\|poll>` | 事件触发任务：webhook 与新邮件触发进任务队列（详见 `docs/event-triggers.md`） |
 | `nyra task <add\|list\|show\|cancel\|worker\|approve>` | 后台任务队列 |
 | `nyra review <list\|show\|approve\|reject\|apply…>` | 审阅队列：逐项批准并行线程与定时任务结果 |
 
