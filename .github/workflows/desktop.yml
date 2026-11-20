@@ -120,9 +120,15 @@ jobs:
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 15
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # man-db 的触发器会让 GitHub runner 上的 apt install 慢到十几分钟
+          # （v0.5.3 第一次 Linux 构建卡在这一步），先关掉它的自动更新。
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -138,10 +144,15 @@ jobs:
           BIN=desktop/src-tauri/binaries
           mkdir -p "$BIN"
           want=$(node -p "require('./package.json').version")
+          # 直接调 bun build（与 scripts/build-binaries.sh 同一条命令）：macOS 自带
+          # bash 3.2 解析不了那个脚本里紧跟变量名的全角括号（v0.5.3 首次构建即报
+          # “name: unbound variable”）。
+          cli() { bun build --compile --target="$1" --outfile "dist-cli/$2" src/cli.ts; }
+          mkdir -p dist-cli
           case "$RUNNER_OS" in
             macOS)
-              bash scripts/build-binaries.sh --out-dir dist-cli --only macos-arm64
-              bash scripts/build-binaries.sh --out-dir dist-cli --only macos-x64
+              cli bun-darwin-arm64 nyra-macos-arm64
+              cli bun-darwin-x64 nyra-macos-x64
               cp dist-cli/nyra-macos-arm64 "$BIN/nyra-cli-aarch64-apple-darwin"
               cp dist-cli/nyra-macos-x64 "$BIN/nyra-cli-x86_64-apple-darwin"
               lipo -create -output "$BIN/nyra-cli-universal-apple-darwin" dist-cli/nyra-macos-arm64 dist-cli/nyra-macos-x64
@@ -149,12 +160,12 @@ jobs:
               [ -f "$host" ] || host="$BIN/nyra-cli-universal-apple-darwin"
               ;;
             Windows)
-              bash scripts/build-binaries.sh --out-dir dist-cli --only windows-x64
+              cli bun-windows-x64 nyra-windows-x64.exe
               cp dist-cli/nyra-windows-x64.exe "$BIN/nyra-cli-x86_64-pc-windows-msvc.exe"
               host="$BIN/nyra-cli-x86_64-pc-windows-msvc.exe"
               ;;
             Linux)
-              bash scripts/build-binaries.sh --out-dir dist-cli --only linux-x64
+              cli bun-linux-x64 nyra-linux-x64
               cp dist-cli/nyra-linux-x64 "$BIN/nyra-cli-x86_64-unknown-linux-gnu"
               host="$BIN/nyra-cli-x86_64-unknown-linux-gnu"
               ;;

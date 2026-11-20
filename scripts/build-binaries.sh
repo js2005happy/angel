@@ -59,9 +59,9 @@ mkdir -p "$OUT_DIR"
 
 build_one() {
     local name="$1" target="$2" outfile="$3"
-    echo "编 $name（$target）..."
+    echo "编 ${name}（${target}）..."
     bun build --compile --target="$target" --outfile "$OUT_DIR/$outfile" "$ROOT/src/cli.ts"
-    echo "  -> $OUT_DIR/$outfile（$(du -h "$OUT_DIR/$outfile" | cut -f1)）"
+    echo "  -> ${OUT_DIR}/${outfile}（$(du -h "$OUT_DIR/$outfile" | cut -f1)）"
 }
 
 if [ -n "$ONLY" ]; then
