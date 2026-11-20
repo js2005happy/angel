@@ -109,6 +109,14 @@ bot_approval_decided: ["approval_id", "decision", "decided_by", "via", "reason"]
 // bot_approval_*（审批线）是不同的事件，不要混用。
 bot_notify_sent: ["kind", "target_chat_id", "summary"],
 bot_watch_changed: ["watch_id", "label", "from_hash", "to_hash"],
+// 缺口 42 第一批：每 Bot 一台持久电脑——创建（哪个电脑、哪个 agent、什么
+// 隔离）、动作（哪个电脑、哪类动作、做了什么、目标摘要、成没成）、生命
+// 周期（休眠/唤醒/删除、为什么）、凭证（哪个电脑、哪个账号、存/删；
+// 凭证本身绝不进事件，只记账号名与操作）。
+bot_computer_created: ["computer_id", "agent", "isolation"],
+bot_computer_action: ["computer_id", "kind", "action", "target", "ok"],
+bot_computer_lifecycle: ["computer_id", "action", "reason"],
+bot_computer_credential: ["computer_id", "account", "op"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

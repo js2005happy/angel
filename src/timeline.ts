@@ -425,6 +425,20 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "approval", `审批 ${tool}：${bool(ev.approved) === true ? "批准" : bool(ev.approved) === false ? "拒绝" : "未知"}`, null, bool(ev.approved), null);
         break;
       }
+      case "bot_computer_created":
+        push(at, "event", `Bot 电脑已创建：${str(ev.agent) ?? "?"}（${str(ev.isolation) === "shared" ? "共享" : "独占"}）`, null, null, null);
+        break;
+      case "bot_computer_action": {
+        const ok = bool(ev.ok);
+        push(at, "tool", `电脑 ${str(ev.computer_id) ?? "?"}：${str(ev.action) ?? "?"} ${safeText(ev.target) ?? ""}`, null, ok, null);
+        break;
+      }
+      case "bot_computer_lifecycle":
+        push(at, "event", `电脑 ${str(ev.computer_id) ?? "?"}：${str(ev.action) ?? "?"}${str(ev.reason) ? `（${safeText(ev.reason)}）` : ""}`, null, null, null);
+        break;
+      case "bot_computer_credential":
+        push(at, "event", `电脑 ${str(ev.computer_id) ?? "?"}：凭证 ${str(ev.account) ?? "?"} ${str(ev.op) ?? "?"}`, null, null, null);
+        break;
       case "model_switch":
         push(at, "model", `换模型 ${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}` + (str(ev.reason) ? `（${safeText(ev.reason)}）` : ""), null, null, null);
         break;
