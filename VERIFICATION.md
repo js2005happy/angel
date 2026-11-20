@@ -1,3 +1,9 @@
+## 2026-11-21 — Node claim Linux fd-relative create 静态核查
+
+- **检查范围**：开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python Agent/Tools、Node claim、main Node Agent/Tools、近期提交、开放 Issues/PR、提交状态。
+- **静态结论**：Linux claim 创建时保持已检查的目录 fd 打开，借助 `/proc/self/fd/<fd>/<filename>` 使用 O_EXCL|O_NOFOLLOW 创建；不再在关闭目录 fd 后用原路径创建。非 Linux 平台失败关闭。
+- **未验证**：未运行任何测试、编译、脚本或 CI；未确认 procfs 挂载真实性及不同文件系统的持久化语义；不保证祖先竞态全部消除、审计防篡改或远端副作用恰好一次。提交状态列表为空不代表通过。
+
 ## 2026-11-21 — Node claim 运行时 ID 类型校验（仅静态）
 
 - 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal，并对照 main 的 Node Agent 与 Tools。main 近期检索提交 [297039e](https://github.com/js2005happy/nyra/commit/297039e5ae63d6f6d789ce3550cacb60e724dff9)（2026-11-20 19:34 UTC）为 media setup CI mock 修复，不重复本增量；开放 Issues/PR 搜索为空。
