@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 Node claim 文件身份与私有性复核（仅静态）
+
+- **仓库事实**：开发分支 `scripts/node_tool_claim.ts` 原先仅在写入前以 O_EXCL 排他创建，fsync 后未核对文件名是否仍指向所写入的 inode、文件类型、链接数、所有者、权限及长度。主分支最新检索提交 [e240b5e](https://github.com/js2005happy/nyra/commit/e240b5e33df5d9dbfb613fdb83cdca798e91fb4c)（2026-11-20 17:27 UTC）为 Office 直出功能，不重复此项；开放 Issues/PR 查询为空。
+- **外部反馈（事实）**：[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07，重复投递个案）、[Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19，安全等待/恢复请求）。**工程推断**：本地持久操作记录被替换或篡改时应失败关闭；外部个案不证明 Angel 复现或统计高频。
+- **本轮单项增量**：fsync 后以 fstat/lstat 对照 claim 文件 dev/ino、普通文件、单硬链接、当前 UID、私有权限与字节长度；不满足时拒绝报告成功，不删除文件。价值高／难度低／安全风险低／依赖 POSIX 文件元数据；仍存在复核后的路径替换竞态。
+- **后续排序（价值／难度／安全风险／依赖）**：P0 真正目录句柄相对原子创建（高／高／高／openat 或可信原生桥）；P0 Windows reparse 句柄级防护（高／高／高／原生 API）；P0 Node 真实派发集成（高／高／高／可信 claim）；P1 MCP 目录变化检测（中高／中／中／协议）；P1 可信副作用回执（高／高／高／工具适配器）。静态审阅，未运行测试/CI；不保证 exactly-once。
+
 ## 2026-11-21 — P0 Node claim 祖先目录可写性门禁（仅静态）
 
 - **仓库事实**：开发分支的 `scripts/node_tool_claim.ts` 先前只要求叶目录私有，祖先目录仅检查类型和 symlink；可被其他用户写入的祖先可能在路径创建期间被替换。该组件尚未接入 main 的 Node 工具派发。
