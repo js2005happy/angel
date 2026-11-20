@@ -31,6 +31,8 @@ import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
 import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict, toVerdictJson, guardExitCode, formatGuardLine, type Verdict as VerdictShape } from "./verdict.ts";
+import { subcommandSet } from "./subcommands.ts";
+import { checkDocs } from "./docCheck.ts";
 import type { RedlineResult } from "./redlines.ts";
 import { measureToolBudget, filterSchemas, summarizeSavings, formatToolBudget } from "./toolBudget.ts";
 import { resolveFeatures, featureOn, formatFeatures } from "./features.ts";
@@ -269,7 +271,7 @@ export function parseArgs(argv: string[]): CliArgs {
     "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
     "--lang", "--channel",
   ]);
-  const subcommands = new Set(["guard", "verdict", "savings", "recall", "features", "tools", "config", "redlines", "evidence", "restore", "cost", "models", "schedule", "task", "review", "ui", "gw", "permissions", "eigenflux", "kb", "plugin", "creator", "memory", "style", "doctor", "setup", "vault", "hooks", "stats", "status"]);
+  const subcommands = subcommandSet();
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
   // 会按配置文件里的 provider 跑）。schedule/task 等仍从 subArgs 取自己的参数，不受影响。
@@ -2878,7 +2880,15 @@ export async function main(argv: string[]): Promise<number> {
       runStatusCounts = Object.keys(counts).length ? counts : null;
     } catch { runStatusCounts = null; }
 
-    const verdict = buildVerdict({ redlines, savings, modelSavings, recallAvailable, runStatusCounts, turns });
+    // 文档一致性：命令索引是否与代码对齐（docs/*.md 全量扫一遍）
+    let docs: { ok: boolean; findings: { code: string; command: string; doc: string }[]; mentioned: string[] } | null = null;
+    try {
+      const docsDir = join(resolve(args.workdir), "docs");
+      const files = readdirSync(docsDir).filter((f2) => f2.endsWith(".md"));
+      const loaded = files.map((f2) => ({ name: f2, text: readFileSync(join(docsDir, f2), "utf-8") }));
+      docs = checkDocs(loaded, [...subcommandSet()]);
+    } catch { docs = null; }
+    const verdict = buildVerdict({ redlines, savings, modelSavings, recallAvailable, runStatusCounts, turns, docs });
     return emitVerdict(verdict, "config");
   }
   if (args.subcommand === "status") return handleStatus(home, resolve(args.workdir));
