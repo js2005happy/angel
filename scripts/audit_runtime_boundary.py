@@ -88,21 +88,28 @@ def main() -> int:
     split = (development["file_status"]["python_agent"] == "ok"
              and development["file_status"]["node_agent"] == "missing"
              and main["file_status"]["node_agent"] == "ok")
+    # Main runtime anchors are required: a missing textual match may mean the
+    # upstream code moved. Do not silently report a complete dispatch audit.
+    required_node_anchors = tuple(key for key in PROBES if key.startswith("node_"))
+    missing_node_anchors = [key for key in required_node_anchors
+                            if main["text_references"][key]["status"] != "ok"
+                            or not main["text_references"][key]["lines"]]
     # A failed inspection must not be mistaken for a missing runtime.
     errors = any(status not in ("ok", "missing")
                  for tree in (development, main)
                  for status in tree["file_status"].values())
     print(json.dumps({
-        "schema_version": 3,
+        "schema_version": 4,
         "development": development,
         "main": main,
         "runtime_split_detected": split if not errors else None,
-        "audit_incomplete": errors,
+        "audit_incomplete": errors or bool(missing_node_anchors),
+        "missing_node_anchors": missing_node_anchors,
         "node_protected_by_python_journal": "not_established",
         "node_dispatch_and_persistence": "textual_anchors_only_not_complete_call_graph",
         "static_only": True,
     }, ensure_ascii=False, indent=2))
-    return 2 if errors or not split else 0
+    return 2 if errors or not split or missing_node_anchors else 0
 
 
 if __name__ == "__main__":
