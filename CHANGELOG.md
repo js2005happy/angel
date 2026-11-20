@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，静态审计 v5）
+
+- `scripts/audit_runtime_boundary.py`：必需的 Python/Node 入口文件缺失或不可读时失败关闭，新增 `missing_required_files`；统一 `audit_incomplete` 与非零退出码，JSON schema v5。仅静态修改，未运行测试；不提供运行时所有权保证。
+
 ## 2026-11-20 — 静态审计 v4
 
 - `scripts/audit_runtime_boundary.py`：主分支 Node 派发、持久化文本锚点缺失时失败关闭，新增 `missing_node_anchors`，升级 JSON schema v4。避免上游重构后仍显示审计完整；仅静态源码修改，未运行测试，不提供运行时执行安全保证。
