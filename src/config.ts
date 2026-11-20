@@ -89,6 +89,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   e2b_template: "base",
   e2b_timeout: 3600,
   e2b_sandbox_id: null,
+  // 缺口 6：原生应用连接器。默认全部关闭（显式 opt-in）；这里只有开关，
+  // 绝不放 client_id / client_secret / token——凭证只存密码箱（见 vault.ts）。
+  // 目前只有 gmail：{ enabled: false }。
+  connectors: { gmail: { enabled: false } },
 };
 
 export const VALID_MODES = ["readonly", "auto", "full", "creator"] as const;

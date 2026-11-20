@@ -1684,6 +1684,242 @@ export async function handleVault(argv: string[], home: string, input?: VaultInp
   }
 }
 
+export interface GmailCliInput {
+  passwords?: string[];
+  secrets?: string[];
+}
+
+/** 缺口 6：nyra gmail —— Gmail 连接器的终端入口（状态/授权/搜索/读信/发信/吊销）。 */
+export async function handleGmail(argv: string[], home: string, input?: GmailCliInput): Promise<number> {
+  const GMAIL_USAGE = "用法：\n"
+    + "  nyra gmail status                              查看 Gmail 连接器状态（是否启用、是否已授权、账号邮箱）\n"
+    + "  nyra gmail auth                                在浏览器里授权 Gmail（回环回调；client_id/secret 交互输入，只存密码箱）\n"
+    + "  nyra gmail search <查询> [--limit N]           按 Gmail 搜索语法找邮件\n"
+    + "  nyra gmail read <id>                           读一封邮件全文\n"
+    + "  nyra gmail send --to <邮箱> --subject <主题> --body <正文> [--cc <邮箱>] [--bcc <邮箱>] [--thread <id>] [--draft] [--yes]\n"
+    + "                                                 发一封邮件（默认先展示确认；--yes 跳过确认；--draft 只存草稿）\n"
+    + "  nyra gmail revoke [--yes]                      吊销授权并删除本地 token\n"
+    + "详见 docs/connectors-gmail.md";
+  const {
+    createGmailTransport, exchangeCodeForTokens, buildAuthUrl, newAuthState,
+    startLoopbackCallbackServer, getGmailStatus, hasGmailTokensEntry,
+    revokeRefreshToken, formatGmailSearchResults, formatGmailMessage,
+    buildGmailSendEvidence, GmailApiTransport,
+    GMAIL_VAULT_CLIENT_ENTRY, GMAIL_VAULT_TOKENS_ENTRY, GmailError,
+  } = await import("./connectors/gmail.ts");
+  const { EvidenceStore } = await import("./evidence.ts");
+  const pwQueue = [...(input?.passwords ?? [])];
+  const secretQueue = [...(input?.secrets ?? [])];
+  const ask = async (prompt: string): Promise<string> => {
+    if (pwQueue.length) return pwQueue.shift()!;
+    if (process.env.NYRA_VAULT_PASSWORD) return process.env.NYRA_VAULT_PASSWORD;
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolvePromise) => {
+      rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+    });
+    return answer;
+  };
+  const askSecret = async (prompt: string): Promise<string> => {
+    if (secretQueue.length) return secretQueue.shift()!;
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolvePromise) => {
+      rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+    });
+    return answer;
+  };
+  const unlockVault = async (): Promise<Vault | null> => {
+    const vault = new Vault(join(home, "vault.json"));
+    if (!vault.exists()) {
+      process.stderr.write("密码箱不存在，先运行：nyra vault init\n");
+      return null;
+    }
+    if (!vault.unlock(await ask("主密码："))) {
+      const remaining = vault.lockoutRemainingMs();
+      if (remaining > 0) {
+        process.stderr.write(`尝试次数过多，请 ${Math.ceil(remaining / 1000)} 秒后再试\n`);
+      } else {
+        process.stderr.write("主密码错误或密码箱已损坏\n");
+      }
+      return null;
+    }
+    return vault;
+  };
+  const flagValue = (name: string): string | undefined => {
+    const idx = argv.indexOf(name);
+    return idx >= 0 && argv[idx + 1] !== undefined ? argv[idx + 1] : undefined;
+  };
+  const flagValues = (name: string): string[] => {
+    const out: string[] = [];
+    argv.forEach((a, i) => { if (a === name && argv[i + 1] !== undefined) out.push(argv[i + 1]); });
+    return out;
+  };
+  const cmd = argv[0];
+  try {
+    if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+      process.stdout.write(GMAIL_USAGE + "\n");
+      return 0;
+    }
+    if (cmd === "status") {
+      const status = getGmailStatus(home, loadConfig(home));
+      process.stdout.write(`Gmail 连接器：${status.enabled ? "已启用" : "未启用（默认关闭）"}\n`);
+      process.stdout.write(`授权：${status.configured ? "已授权" : "未授权"}\n`);
+      if (status.email) process.stdout.write(`账号：${status.email}\n`);
+      else if (status.configured) process.stdout.write("账号：（密码箱未解锁，看不到账号邮箱）\n");
+      if (status.scopes) process.stdout.write(`scope：${status.scopes}\n`);
+      if (!status.enabled || !status.configured) process.stdout.write("运行 nyra gmail auth 完成授权（授权成功会自动启用）。\n");
+      return 0;
+    }
+    if (cmd === "auth") {
+      const vault = await unlockVault();
+      if (!vault) return 1;
+      // OAuth 客户端：先读密码箱里已有的，没有再交互输入（绝不写命令行）。
+      let client: { client_id: string; client_secret: string } | null = null;
+      const rawClient = vault.get(GMAIL_VAULT_CLIENT_ENTRY);
+      if (rawClient) {
+        try {
+          const d = JSON.parse(rawClient) as Record<string, unknown>;
+          if (typeof d.client_id === "string" && d.client_id && typeof d.client_secret === "string" && d.client_secret) {
+            client = { client_id: d.client_id, client_secret: d.client_secret };
+          }
+        } catch { /* 损坏的客户端条目按没有处理，下面重新输入 */ }
+      }
+      if (!client) {
+        process.stdout.write("第一次授权需要 Google Cloud 的 OAuth 客户端（Desktop app 类型）：\n");
+        process.stdout.write("  在 console.cloud.google.com 建好 OAuth 2.0 客户端后，把 client_id 与 client_secret 粘贴进来（只存密码箱，不进配置文件）。\n");
+        const clientId = (await askSecret("client_id：")).trim();
+        const clientSecret = (await askSecret("client_secret：")).trim();
+        if (!clientId || !clientSecret) {
+          process.stderr.write("client_id 与 client_secret 不能为空\n");
+          return 1;
+        }
+        client = { client_id: clientId, client_secret: clientSecret };
+        vault.add(GMAIL_VAULT_CLIENT_ENTRY, JSON.stringify(client), true);
+      }
+      const state = newAuthState();
+      const server = await startLoopbackCallbackServer({ state });
+      process.stdout.write("请在浏览器里打开下面的链接完成 Google 授权：\n");
+      process.stdout.write(buildAuthUrl({ clientId: client.client_id, redirectUri: server.redirectUri, state }) + "\n");
+      process.stdout.write("（授权成功后回到这里；5 分钟内没完成请重新运行 nyra gmail auth）\n");
+      let code: string;
+      try {
+        code = await server.waitForCode();
+      } finally {
+        server.close();
+      }
+      const tokens = await exchangeCodeForTokens({ client, code, redirectUri: server.redirectUri });
+      let email: string | undefined;
+      try {
+        email = await new GmailApiTransport({ tokens, client }).profileEmail();
+      } catch { /* 取不到邮箱不拦授权：状态里只显示“已授权” */ }
+      vault.add(GMAIL_VAULT_TOKENS_ENTRY, JSON.stringify({ ...tokens, ...(email ? { email } : {}) }), true);
+      const cfg = loadConfig(home);
+      saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), gmail: { enabled: true } } });
+      process.stdout.write(`授权成功${email ? `：${email}` : ""}，Gmail 连接器已启用。\n`);
+      return 0;
+    }
+    if (cmd === "search") {
+      const query = argv[1];
+      if (!query) {
+        process.stderr.write("用法：nyra gmail search <查询> [--limit N]\n");
+        return 2;
+      }
+      const limitRaw = flagValue("--limit");
+      const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+      const transport = createGmailTransport(home, loadConfig(home));
+      const { messages, nextPageToken } = await transport.search(query, limit);
+      process.stdout.write(formatGmailSearchResults(messages, nextPageToken) + "\n");
+      return 0;
+    }
+    if (cmd === "read") {
+      const id = argv[1];
+      if (!id) {
+        process.stderr.write("用法：nyra gmail read <id>\n");
+        return 2;
+      }
+      const transport = createGmailTransport(home, loadConfig(home));
+      process.stdout.write(formatGmailMessage(await transport.get(id)) + "\n");
+      return 0;
+    }
+    if (cmd === "send") {
+      const to = flagValues("--to").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+      const cc = flagValues("--cc").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+      const bcc = flagValues("--bcc").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+      const subject = flagValue("--subject");
+      const body = flagValue("--body");
+      const threadId = flagValue("--thread");
+      const draft = argv.includes("--draft");
+      const yes = argv.includes("--yes");
+      if (!to.length || subject === undefined || body === undefined) {
+        process.stderr.write("用法：nyra gmail send --to <邮箱> --subject <主题> --body <正文> [--cc <邮箱>] [--bcc <邮箱>] [--thread <id>] [--draft] [--yes]\n");
+        return 2;
+      }
+      // 先建 transport（未启用/未授权直接报错，不走到确认那一步）。
+      const transport = createGmailTransport(home, loadConfig(home));
+      if (!yes) {
+        process.stdout.write(`收件人：${to.join(", ")}\n`);
+        if (cc.length) process.stdout.write(`抄送：${cc.join(", ")}\n`);
+        if (bcc.length) process.stdout.write(`密送：${bcc.join(", ")}\n`);
+        process.stdout.write(`主题：${subject}\n`);
+        if (threadId) process.stdout.write(`回复原串 threadId：${threadId}\n`);
+        process.stdout.write(`正文：\n${body}\n`);
+        const ans = (await ask(draft ? "确认保存草稿？[y/N] " : "确认发送？[y/N] ")).trim().toLowerCase();
+        if (ans !== "y" && ans !== "yes") {
+          process.stdout.write("已取消，未发送。\n");
+          return 1;
+        }
+      }
+      const result = draft
+        ? await transport.createDraft({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) })
+        : await transport.send({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) });
+      try {
+        new EvidenceStore(join(home, "evidence"), "gmail").save("gmail_send", `gmail://${result.id}`, buildGmailSendEvidence({
+          to, cc, bcc, subject, body, threadId, draft,
+          resultId: result.id, approvalChannel: "终端命令（nyra gmail send）", mode: "full",
+        }));
+      } catch { /* 证据落盘失败不破坏发送结果 */ }
+      process.stdout.write(draft ? `已存为草稿（草稿 id：${result.id}）。\n` : `已发送（邮件 id：${result.id}）。\n`);
+      return 0;
+    }
+    if (cmd === "revoke") {
+      if (!hasGmailTokensEntry(home)) {
+        process.stdout.write("Gmail 未授权，无需吊销。\n");
+        return 0;
+      }
+      if (!argv.includes("--yes")) {
+        const ans = (await ask("确认吊销 Gmail 授权并删除本地 token？[y/N] ")).trim().toLowerCase();
+        if (ans !== "y" && ans !== "yes") {
+          process.stdout.write("已取消。\n");
+          return 1;
+        }
+      }
+      const vault = await unlockVault();
+      if (!vault) return 1;
+      const raw = vault.get(GMAIL_VAULT_TOKENS_ENTRY);
+      let refreshToken: string | undefined;
+      try {
+        const d = JSON.parse(raw ?? "") as Record<string, unknown>;
+        if (typeof d.refresh_token === "string") refreshToken = d.refresh_token;
+      } catch { /* 损坏的 token 条目直接删 */ }
+      if (refreshToken) {
+        try { await revokeRefreshToken({ token: refreshToken }); } catch { /* Google 吊销失败也不拦本地清理 */ }
+      }
+      try { vault.remove(GMAIL_VAULT_TOKENS_ENTRY); } catch { /* 条目已不在就当删过了 */ }
+      const cfg = loadConfig(home);
+      saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), gmail: { enabled: false } } });
+      process.stdout.write("Gmail 授权已吊销，本地 token 已删除，连接器已关闭。\n");
+      return 0;
+    }
+    process.stderr.write(`未知命令：${cmd}\n${GMAIL_USAGE}\n`);
+    return 2;
+  } catch (err: unknown) {
+    if (err instanceof GmailError) {
+      process.stderr.write(`错误：${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+}
+
 // ---- JSON 模式 ----
 /**
  * 一次性任务的会话钩子外包：SessionStart 在任务开始前触发，SessionEnd 在
@@ -2735,6 +2971,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
+  if (args.subcommand === "gmail") return handleGmail(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "guard") {
     // guard = verdict 的门禁形态：一行输出 + 退出码。等级判定与 verdict 同源，不另写一套。

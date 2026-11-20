@@ -25,6 +25,7 @@ import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, t
 import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
 import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFont } from "./webuiMobile.ts";
 import { runHooks } from "./hooks.ts";
+import { getGmailStatus } from "./connectors/gmail.ts";
   // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
@@ -1376,6 +1377,22 @@ export class Gateway {
       return;
     }
     const reviewGetMatch = /^\/api\/review\/([0-9a-f]{16})$/.exec(path);
+    // 缺口 6：连接器状态（供桌面端连接管理页消费；页面本身在 desktop/，归 Hark）。
+    // 只返回状态与账号邮箱，不返回任何 token / client_secret。
+    if (method === "GET" && path === "/api/connectors") {
+      const gmail = getGmailStatus(this.home, this.config);
+      this.sendJson(res, 200, {
+        connectors: [{
+          id: "gmail",
+          name: "Gmail",
+          enabled: gmail.enabled,
+          configured: gmail.configured,
+          ...(gmail.email ? { email: gmail.email } : {}),
+          ...(gmail.scopes ? { scopes: gmail.scopes } : {}),
+        }],
+      });
+      return;
+    }
     if (method === "GET" && reviewGetMatch) {
       try {
         this.sendJson(res, 200, getReviewItem(this.home, reviewGetMatch[1]));

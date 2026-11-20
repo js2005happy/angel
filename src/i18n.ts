@@ -172,6 +172,8 @@ const zh = {
   "dash.noData": "数据不足",
   // 无 Key / 凭据
   "sum.write": "写入文件：{path}（{n} 字符）",
+  "sum.gmailSend": "发送邮件：收件人 {to}，主题“{subject}”{thread}",
+  "sum.gmailDraft": "保存邮件草稿：收件人 {to}，主题“{subject}”{thread}",
   "sum.edit": "编辑文件：{path}",
   "sum.editRemote": "编辑文件：{path}\n（远端文件不支持本地 diff 预览）",
   "sum.patch": "应用补丁：{path}",
@@ -565,6 +567,8 @@ const en: Record<MsgKey, string> = {
   "dash.unpriced": "{head} cost: unknown ({reason}) · {tokens} · {ctx}",
   "dash.noData": "not enough data",
   "sum.write": "Write file: {path} ({n} chars)",
+  "sum.gmailSend": "Send email: to {to}, subject “{subject}”{thread}",
+  "sum.gmailDraft": "Save email draft: to {to}, subject “{subject}”{thread}",
   "sum.edit": "Edit file: {path}",
   "sum.editRemote": "Edit file: {path}\n(no local diff preview for remote files)",
   "sum.patch": "Apply patch: {path}",
