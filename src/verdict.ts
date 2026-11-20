@@ -318,7 +318,10 @@ export function buildRunVerdict(input: RunVerdictInput): Verdict {
     ? `值：${input.task ? `「${input.task.slice(0, 30)}」` : "本次运行"}有验证证据`
     : grade === "red"
       ? "不值：本次运行没有拿到可用结果"
-      : "待定：跑完了，但证据不足以下结论";
+      // interrupted 是"没跑完就中断了"，说"跑完了"会误导人去怀疑校验而不是怀疑中断。
+      : input.status === "interrupted" || input.status === "incomplete"
+        ? "没跑完：那次中断或出错，结论不成立"
+        : "待定：跑完了，但证据不足以下结论";
 
   return { grade, headline, reasons, blockers, nextSteps: nextSteps.slice(0, 3), unknowns };
 }
