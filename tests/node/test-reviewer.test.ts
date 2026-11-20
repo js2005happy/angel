@@ -102,12 +102,15 @@ test("ReviewerTest.test_resolve_model_fallback_chain", () => {
 
 test("ReviewerTest.test_reviewed_tools_default_and_override", () => {
     expect([...DEFAULT_REVIEWED_TOOLS]).toEqual(
-      ["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "http_post"],
+      ["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "http_post", "submit_bughunt_report"],
     );
     const defaults = reviewedTools({});
     expect(defaults).toContain("shell");
     expect(defaults).toContain("gmail_send");
     expect(defaults).toContain("http_post");
+    // submit_bughunt_report 是虚拟敏感动作（不是 tools.ts 里的工具）：候选提案 1 的
+    // 提交前核对把它当敏感动作过审查，见 src/bughunt.ts 的 reviewSubmitReport。
+    expect(defaults).toContain("submit_bughunt_report");
     expect(defaults).not.toContain("read_file");
     expect(reviewedTools({ reviewer: { tools: ["shell"] } })).toEqual(["shell"]);
   });
