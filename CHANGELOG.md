@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Node claim 目录同步身份复核）
+
+- `scripts/node_tool_claim.ts`：在目录 fsync 前后检查目录路径与打开 fd 的设备/inode 身份，并使用 POSIX O_DIRECTORY/O_NOFOLLOW 拒绝部分路径替换；失败关闭，保留 unknown。仅静态审阅，未运行测试或 CI；不消除祖先路径竞态，仍未接入主运行时。
+
 ## 未发布（2026-11-20，Windows claim 门禁修复）
 
 - 修复 `scripts/node_tool_claim.ts` 的字面量 `\\n` 注释错误，使 Windows 失败关闭与绝对路径检查成为真正执行的代码；此前文档所述 Windows 拒绝行为在源码中并未生效。仅静态审阅，未运行测试/CI；模块仍未接入运行时。
