@@ -102,6 +102,7 @@ import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
 import { reviewBusinessAction, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
+import { handleSoul, resolveSoulAgentId } from "./soul.ts";
 import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
 import { listPresets } from "./mcpPresets.ts";
@@ -172,8 +173,7 @@ nyra review <list|show|approve|reject|apply|verify|enqueue>   审阅队列：并
 nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
 nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
 nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
-nyra bot telegram <start|stop|status>   Bot 方向：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；外部用户强制只读，详见 docs/bot.md）
-nyra bot discord <start|stop|status>   Bot 方向：Discord 渠道（Gateway 收消息、REST 发消息；需 Message Content Intent，详见 docs/bot.md）
+nyra bot telegram <start|stop|status>   Bot 方向 Phase 1：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；外部用户强制只读，详见 docs/bot.md）
 nyra bot redlines <status|list|show|tighten|loosen|set>   Bot 缺口 51：业务动作硬红线表——发消息/付款/删除永远须人批，转钱/交易证券永远禁做（详见 docs/business-redlines.md）
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   验收者：并行产出合入前先过验收门（确定性检查 + 便宜模型复核），未通过打回重做（详见 docs/verifier.md）
@@ -187,6 +187,7 @@ nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>
 nyra status                    诊断清单：损坏的配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher（只读，详见 docs/status.md）
 nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
 nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
+nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul 身份层：每 agent 的身份与 Tenets（不变量进规则层、代码拦截；详见 docs/soul.md）
 nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
 nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
 nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
@@ -263,8 +264,7 @@ nyra review <list|show|approve|reject|apply|verify|enqueue>   review queue: appr
 nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
 nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
 nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
-nyra bot telegram <start|stop|status>   bot direction: Telegram channel (long polling, per-session serial queue, dedup + quotas, deterministic commands; external users forced read-only, see docs/bot.md)
-nyra bot discord <start|stop|status>   bot direction: Discord channel (Gateway events, REST send; needs Message Content Intent, see docs/bot.md)
+nyra bot telegram <start|stop|status>   bot direction phase 1: Telegram channel (long polling, per-session serial queue, dedup + quotas, deterministic commands; external users forced read-only, see docs/bot.md)
 nyra bot redlines <status|list|show|tighten|loosen|set>   bot gap 51: business-action hard redlines — sending messages / payments / deletions always need approval, moving money / trading securities are always forbidden (see docs/business-redlines.md)
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   verifier: parallel output passes an acceptance gate before merging (deterministic checks + cheap-model review); failures are sent back for rework (see docs/verifier.md)
@@ -278,6 +278,7 @@ nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, s
 nyra status                    diagnose broken configs, unavailable sandbox, ignored permission rules, never-matching hook matchers (read-only, see docs/status.md)
 nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
 nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
+nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul identity layer: per-agent identity and Tenets (invariants compile into the rule layer and are enforced by code; see docs/soul.md)
 nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
 nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
 nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
@@ -716,6 +717,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       visionConfig: resolveVisionConfig(config),
       // 缺口 15：语音的配置（上限、模型、单价等）。
       voiceConfig: resolveVoiceConfig(config),
+      // 缺口 28：Soul 身份层——当前运行用哪个 Soul（config.soul.agent，默认 default）。
+      soulAgent: resolveSoulAgentId(config),
       // 缺口 24：子 agent 独立推理档位（delegate_reasoning_effort）。
       delegateReasoningEffort: typeof config.delegate_reasoning_effort === "string" ? config.delegate_reasoning_effort : null,
       // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
@@ -5322,6 +5325,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "plugin") return handlePlugin(args.subArgs ?? [], home);
   if (args.subcommand === "creator") return handleCreator(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "memory") return handleMemory(args.subArgs ?? [], home);
+  if (args.subcommand === "soul") return handleSoul(args.subArgs ?? [], home);
   if (args.subcommand === "style") return handleStyle(args.subArgs ?? [], home);
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "gmail") return handleGmail(args.subArgs ?? [], home);
