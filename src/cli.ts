@@ -100,6 +100,7 @@ import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from ".
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
 import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
+import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
 import { listPresets } from "./mcpPresets.ts";
 import { buildNotifierFromConfig, handleBot, type BotNotifier } from "./bot/index.ts";
 import {
@@ -113,6 +114,9 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
 用法：
 nyra "任务" [--provider 名字] [--mode readonly|auto|full|creator]   一次性执行任务
 nyra "任务" --image <图片路径> [--image ...] [--video <视频路径或链接>]   带图/视频做任务（图片 PNG/JPEG/WebP/GIF，视频先抽帧；模型须支持看图，详见 docs/vision.md）
+nyra --voice <音频路径> ["任务"]   语音指挥：先转文字再当任务跑（wav/mp3/m4a/ogg/flac；本地 whisper 优先、云端兜底，详见 docs/voice.md）
+nyra "任务" --speak   任务跑完后把结果读出来（默认关；只读结果前 500 字）
+nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
 nyra                                                        进入交互模式（REPL）
 nyra --help                    显示帮助（不用 Key、不联网）
@@ -150,6 +154,7 @@ nyra slack <auth|status|channels|history|send|card>   Slack 原生连接器：�
 nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra peer <status|enable|disable|list|auth|ask|handoff>   对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭，详见 docs/peer.md）
+nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
 nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
 nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -192,6 +197,9 @@ export const USAGE_EN = `Nyra ${VERSION} (Node runtime)
 Usage:
 nyra "task" [--provider name] [--mode readonly|auto|full|creator]   run one task
 nyra "task" --image <image path> [--image ...] [--video <video path or URL>]   run with images/video (PNG/JPEG/WebP/GIF; video is sampled into frames; model must support vision, see docs/vision.md)
+nyra --voice <audio path> ["task"]   voice command: transcribe first, then run it as the task (wav/mp3/m4a/ogg/flac; local whisper.cpp first, cloud STT fallback, see docs/voice.md)
+nyra "task" --speak   read the result aloud after the run (off by default; only the first 500 chars)
+nyra voice <status|speak <text>|enable-tts|disable-tts>   voice: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
 nyra                                                        interactive mode (REPL)
 nyra --help                    show help (no key, no network)
@@ -230,6 +238,7 @@ nyra slack <auth|status|channels|history|send|card>   native Slack connector: re
 nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra peer <status|enable|disable|list|auth|ask|handoff>   peer collaboration: ask another Nyra instance, hand off run context (off by default, see docs/peer.md)
+nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
 nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
 nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
@@ -314,6 +323,10 @@ export interface CliArgs {
   /** 缺口 16：本次运行附带的图片（--image，可重复）与视频（--video，可重复）。 */
   images: string[];
   videos: string[];
+  /** 缺口 15：本次运行附带的语音（--voice，单段音频；不填 = 纯文字任务）。 */
+  voice?: string | null;
+  /** 缺口 15：任务跑完后把结果读出来（--speak；默认关）。 */
+  speak: boolean;
   workdir: string; trust: boolean;
   sandbox?: string | null; sandboxId?: string | null; sandboxTemplate?: string | null; sandboxTimeout: number | null;
   doctor: boolean; setup: boolean; example: boolean; exampleFile?: string;
@@ -335,6 +348,7 @@ export function parseArgs(argv: string[]): CliArgs {
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
     maxTurns: null, contextWindow: null, channel: null, images: [], videos: [],
+    voice: null, speak: false,
     workdir: ".", trust: false, sandboxTimeout: null,
     doctor: false, setup: false, example: false,
   };
@@ -344,7 +358,7 @@ export function parseArgs(argv: string[]): CliArgs {
       "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
       "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
       "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
-      "--lang", "--channel", "--image", "--video",
+      "--lang", "--channel", "--image", "--video", "--voice",
     ]);
   const subcommands = subcommandSet();
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
@@ -381,6 +395,7 @@ export function parseArgs(argv: string[]): CliArgs {
     else if (a === "--fallback") args.fallback = true;
     else if (a === "--no-fallback") args.noFallback = true;
     else if (a === "--trust") args.trust = true;
+    else if (a === "--speak") args.speak = true;
     else if (a === "--example") args.example = true;
     else if (valueFlags.has(a)) {
       const value = argv[++i];
@@ -417,6 +432,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--channel": args.channel = value; break;
         case "--image": args.images.push(value); break;
         case "--video": args.videos.push(value); break;
+        case "--voice": args.voice = value; break;
       }
     } else if (a.startsWith("--") && a.includes("=")) {
       const [flag, value] = a.split("=", 2);
@@ -687,6 +703,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       })(),
       // 缺口 16：视觉输入的配置（上限等，describe_image 工具共用同一份）。
       visionConfig: resolveVisionConfig(config),
+      // 缺口 15：语音的配置（上限、模型、单价等）。
+      voiceConfig: resolveVoiceConfig(config),
       // 缺口 24：子 agent 独立推理档位（delegate_reasoning_effort）。
       delegateReasoningEffort: typeof config.delegate_reasoning_effort === "string" ? config.delegate_reasoning_effort : null,
       // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
@@ -755,7 +773,11 @@ function makeUsageFlusher(built: BuiltAgent): {
   let lastSpent: number | null = null;
   const recordOwn = (agent: Agent): void => {
     const snap = agent.usage.snapshot();
-    const spent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
+    // 缺口 15：语音花费（STT 按分钟、TTS 按字数，不走 token 账）同样进账本；
+    // token 未计价时只记语音部分，两边都没计价时记 null（不编数字）。
+    const tokenSpent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
+    const voiceSpent = agent.voiceSpentUsd ?? 0;
+    const spent = tokenSpent === null ? (voiceSpent > 0 ? voiceSpent : null) : tokenSpent + voiceSpent;
     const rec = ledger.recordDelta(snap, lastSnap, spent, lastSpent, agent.provider.model);
     // 只有主 agent 自己的已落盘花费才进 flushedUsd：月度口径 = 账本 - flushedUsd
     // + 本次运行进行中花费；子任务的花费已在账本里、但不在主 agent 快照里，
@@ -4015,10 +4037,13 @@ async function runJson(args: CliArgs): Promise<number> {
     if (args.planMode || args.executePlan || args.approvePlan) {
       return invalidArguments(process.stdout, "--json 与 --plan/--execute-plan 不能组合使用");
     }
-    if (!args.task) return invalidArguments(process.stdout, "--json 需要任务文本");
+    if (!args.task && !args.voice) return invalidArguments(process.stdout, "--json 需要任务文本");
     // 缺口 16：图片只跟单次正向运行走，组合不对直接报错。
     const visionComboError = validateVisionArgs(args);
     if (visionComboError) return invalidArguments(process.stdout, visionComboError);
+    // 缺口 15：语音只跟单次正向运行走，组合不对直接报错。
+    const voiceComboError = validateVoiceArgs(args);
+    if (voiceComboError) return invalidArguments(process.stdout, voiceComboError);
     const built = await buildAgent(args, {
         interactive: false,
         // 缺口 20：429 冷却以 JSON 事件报出（delay_ms 是本次计划等待的毫秒数）。
@@ -4027,6 +4052,8 @@ async function runJson(args: CliArgs): Promise<number> {
     const { agent, config, home } = built;
     // 缺口 16：--image/--video 先过模型门禁再读图/抽帧（失败走 lines.failed）。
     await attachVisionInputs(args, agent, config);
+    // 缺口 15：--voice 先读文件、校验格式（失败走 lines.failed；转写在首轮）。
+    await attachVoiceInput(args, agent, config);
     const workdir = resolve(args.workdir);
     const { command, skipReason } = verifySetup(args, config, workdir);
     const [timeout, retries] = resolveVerifySettings(args.verifyTimeout, args.verifyRetries, config);
@@ -4036,10 +4063,10 @@ async function runJson(args: CliArgs): Promise<number> {
     // 事件就再也进不了 events.jsonl，统计头只能写“未知”。
     const flusher = makeUsageFlusher(built);
     agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); lines.agentEvent(kind, data); };
-    const recorder = new RunRecorder(store, agent, args.task, {
+    const recorder = new RunRecorder(store, agent, args.task ?? "", {
         verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
       });
-    const result = await recorder.run(args.task);
+    const result = await recorder.run(args.task ?? "");
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
     lines.emit("run_completed", { run_id: recorder.runId, status: final.status });
@@ -4107,6 +4134,39 @@ async function attachVisionInputs(args: CliArgs, agent: Agent, config: Record<st
 /** 缺口 16：测试用——attachVisionInputs 的同款入口（runOneShot / runJson 共用）。 */
 export { attachVisionInputs };
 
+// ---- 缺口 15：语音指挥 ----
+/**
+ * --voice/--speak 与其他一次性模式的组合校验：语音只跟单次正向运行走。
+ * 返回错误文案（null = 组合合法）。
+ */
+export function validateVoiceArgs(args: CliArgs): string | null {
+  if (args.voice) {
+    if (args.resumeRun) return "--voice 不能与 --resume-run 组合使用（续跑沿用原运行的会话，语音已在其中）";
+    if (args.resume) return "--voice 不能与 --resume 组合使用（续会话沿用原会话，语音已在其中）";
+    if (args.planMode || args.executePlan || args.approvePlan) return "--voice 不能与 --plan/--execute-plan 组合使用";
+  }
+  if (args.speak) {
+    if (args.jsonMode) return "--speak 不能与 --json 组合使用（JSON 模式只出机器可读结果）";
+    if (args.resumeRun || args.resume || args.planMode || args.executePlan || args.approvePlan) {
+      return "--speak 只支持单次正向运行，不能与 --resume/--resume-run/--plan 组合使用";
+    }
+  }
+  return null;
+}
+
+/**
+ * --voice 的准备与挂接（runOneShot / runJson 共用）：只读文件、校验格式，
+ * 挂到 agent 上；转写发生在 runLoop 首轮（先转写再当任务文本）。
+ * 任一步失败抛错，调用方按各自的错误通道回报。
+ */
+async function attachVoiceInput(args: CliArgs, agent: Agent, config: Record<string, unknown>): Promise<void> {
+  if (!args.voice) return;
+  agent.voiceInputs = [loadAudioFile(args.voice, resolve(args.workdir), resolveVoiceConfig(config))];
+}
+
+/** 缺口 15：测试用——attachVoiceInput 的同款入口（runOneShot / runJson 共用）。 */
+export { attachVoiceInput };
+
 // ---- 一次性任务 ----
 async function runOneShot(args: CliArgs): Promise<number> {
   const home = resolveHome();
@@ -4115,6 +4175,9 @@ async function runOneShot(args: CliArgs): Promise<number> {
   // 缺口 16：图片只跟单次正向运行走，组合不对直接报错（不建 agent、不烧 token）。
   const visionComboError = validateVisionArgs(args);
   if (visionComboError) { process.stderr.write(`错误：${visionComboError}\n`); return 2; }
+  // 缺口 15：语音只跟单次正向运行走，组合不对直接报错（不建 agent、不烧 token）。
+  const voiceComboError = validateVoiceArgs(args);
+  if (voiceComboError) { process.stderr.write(`错误：${voiceComboError}\n`); return 2; }
   if (!existsSync(workdir) || !statSync(workdir).isDirectory()) {
     process.stderr.write(`错误：工作目录不存在：${workdir}\n`);
     return 1;
@@ -4208,7 +4271,7 @@ async function runOneShot(args: CliArgs): Promise<number> {
       }
     }
   }
-  if (!args.task) return 0; // 无任务时由 main 分派 REPL。
+  if (!args.task && !args.voice) return 0; // 无任务时由 main 分派 REPL（--voice 单独用时转写文本就是任务）。
   try {
     const built = await buildAgent(args, {
         interactive: true,
@@ -4216,8 +4279,10 @@ async function runOneShot(args: CliArgs): Promise<number> {
       });
     const { agent } = built;
     // 缺口 16：--image/--video 先过模型门禁再读图/抽帧，失败直接报错退出。
+    // 缺口 15：--voice 先读文件、校验格式（失败直接报错退出；转写在首轮）。
     try {
       await attachVisionInputs(args, agent, config);
+      await attachVoiceInput(args, agent, config);
     } catch (err: unknown) {
       process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
       return 1;
@@ -4239,10 +4304,10 @@ async function runOneShot(args: CliArgs): Promise<number> {
     const printer = new ToolPrinter();
     // 缺口 20 的前置修复：onEvent 先挂再建 recorder（同 runJson，见该处注释）。
     agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); printer.call(kind, data); };
-    const recorder = new RunRecorder(store, agent, args.task, {
+    const recorder = new RunRecorder(store, agent, args.task ?? "", {
         verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
       });
-    const result = await recorder.run(args.task);
+    const result = await recorder.run(args.task ?? "");
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
     // P1-1：未验证通过的运行，不得在输出里宣称"已完成"。
@@ -4252,6 +4317,18 @@ async function runOneShot(args: CliArgs): Promise<number> {
       final.status === "verify_failed" ? "验证命令未通过" : "未配置或未执行验证命令",
     );
     process.stdout.write(downgraded.text + "\n");
+    // 缺口 15：--speak 或 voice.tts_enabled 时，任务跑完后把结果读出来（只读
+    // 前 500 字）；回读失败只警告，不破坏已完成的运行。
+    if ((args.speak || resolveVoiceConfig(config).ttsEnabled) && final.status !== "verify_failed") {
+      try {
+        const spoken = await agent.speakResult(downgraded.text, args.speak);
+        if (spoken) {
+          process.stdout.write(`语音回读已保存：${spoken.path}（${spoken.chars} 字${spoken.costUsd !== null ? `，花费 $${spoken.costUsd.toFixed(4)}` : "，未计价"}）\n`);
+        }
+      } catch (err: unknown) {
+        process.stderr.write(`语音回读失败：${err instanceof Error ? err.message : String(err)}\n`);
+      }
+    }
     process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n");
     return final.status === "verify_failed" ? EXIT_VERIFY : EXIT_SUCCESS;
   } catch (err: unknown) {
@@ -5149,6 +5226,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "verifier") return handleVerifier(args.subArgs ?? [], home);
   if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);
   if (args.subcommand === "peer") return handlePeer(args.subArgs ?? [], home);
+  if (args.subcommand === "voice") return handleVoice(args.subArgs ?? [], home);
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
   if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
   if (args.subcommand === "market") return handleMarket(args.subArgs ?? [], home);
@@ -5218,6 +5296,7 @@ export async function main(argv: string[]): Promise<number> {
           changed_files: Array.isArray(state.changed_files) ? (state.changed_files as string[]) : [],
           spent_usd: us && typeof us.spent_usd === "number" ? (us.spent_usd as number) : null,
           delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
+          voice_spent_usd: us && typeof us.voice_spent_usd === "number" ? (us.voice_spent_usd as number) : null,
           error: typeof state.error === "string" ? state.error : null,
         };
       };
@@ -5251,6 +5330,7 @@ export async function main(argv: string[]): Promise<number> {
           changed_files: Array.isArray(state.changed_files) ? (state.changed_files as string[]) : [],
           spent_usd: us && typeof us.spent_usd === "number" ? (us.spent_usd as number) : null,
           delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
+          voice_spent_usd: us && typeof us.voice_spent_usd === "number" ? (us.voice_spent_usd as number) : null,
           error: typeof state.error === "string" ? state.error : null,
         });
       return emitVerdict(v, "run");
