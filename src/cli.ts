@@ -125,6 +125,16 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
   nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
   nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
+  nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
+  nyra verdict --run <ID>          单次运行打分；--recent N 看趋势（该修什么）
+  nyra guard [--strict]           门禁形态：red 时退出码 2（--strict 下 yellow 也拦）
+  nyra savings [任务] [--json]    省钱机制汇总 + 辅助模型实测节省 + 逐模型明细
+  nyra recall "任务" [--cross-dir]  查这个任务有哪些历史可复用（不必从零探索）
+  nyra features                   功能开关列表（CLI > config > 默认）
+  nyra tools                      工具集体检：每轮 schema 成本与裁剪建议
+  nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
+  nyra vault <...>                凭据保险箱（加密存储，权限 0600）
+  nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
   nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
   nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -180,6 +190,16 @@ Usage:
   nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
   nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
   nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
+  nyra verdict [task] [--json]   one conclusion: is this run worth it
+  nyra verdict --run <id>        score one run; --recent N: trend over the last N runs
+  nyra guard [--strict]          gate: exit 2 when verdict is red (yellow too with --strict)
+  nyra savings [task] [--json]   what is saving tokens + measured aux-model savings
+  nyra recall "task" [--cross-dir]   which past runs are reusable for this task
+  nyra features                  feature switches (CLI > config > default)
+  nyra tools                     tool-pool health: per-turn schema cost and trim advice
+  nyra config export|import|explain  settings export/import/explain (secrets stripped)
+  nyra vault <...>               credential vault (encrypted at rest, mode 0600)
+  nyra gmail <search|read|reply|draft|send>   native Gmail connector
   nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
