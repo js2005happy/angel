@@ -1,0 +1,8 @@
+# bun 配置
+#
+# [test].preload 让语言在**每个用例开始前**复位到中文：`src/i18n.ts` 的语言是模块级
+# 全局，而 bun 在同一进程跑多个测试文件——「A 文件切 en → B 文件断言中文」会随执行
+# 顺序/并发而红（CI 已真实发生过一次，见 tests/node/preload.ts 注释）。
+[test]
+preload = ["./tests/node/preload.ts"]
+timeout = 15000
