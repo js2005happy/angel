@@ -11,6 +11,7 @@ Design sources and reference shots for every Nyra surface.
 | `mobile/` | Phone page `/m` as implemented, Android and iOS, plus side-by-side comparisons with the mocks and the splash; liquid glass before/after in `m3-glass-cmp-light.png` / `m3-glass-cmp-dark.png` |
 | `splash/` | Opening animation: source, final frame, video |
 | `logo/` | Logo explorations and marks |
+| `video-call/` | Video call panel (design only, built by Muse): friends (a person + their agent), incoming / outgoing / offline, in-call with people and agent tiles paired by owner plus the shared-work panel and approval card, data vs tokens, first-collaboration permissions, recording consent, weak network, call summary. Desktop 1440×900 and phone 390×844, light and dark; boards `call-*.png`, single screens in `single/`, overview `call-overview.png`, sources in `source/`, spec in `SPEC.md`. All numbers are illustrative |
 
 ## Liquid glass
 
