@@ -1,3 +1,9 @@
+## 2026-11-20 — P0 所有权实现阻塞：静态核验
+
+- 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、ToolJournal 及相关测试；查询仓库近期提交、开放 Issue/PR 与开发分支上一提交状态。主分支近期主要是 TypeScript `src/` 运行时，开发分支 ToolJournal 是 Python `angel/`；尚不能确认该 Python 门禁覆盖主分支真实工具执行入口。
+- `begin()/finish()` 多次读取日志并不构成原子所有权；跨进程锁必须覆盖工具派发到结果落盘、异常退出后保持 unknown 并阻止自动重放。未证明 POSIX/Windows 锁、Windows ACL 和句柄绑定的完整安全语义。
+- 本轮未修改运行时代码；仅静态检查及文档更新。**未运行测试、解析器、CI、安装或实机验证**；GitHub 状态/PR 工作流为空不能解读为通过。
+
 ## 2026-11-20 静态核验：finish 写后竞争失败
 
 ### 2026-11-20 — ToolJournal post-commit counts（静态审查）
