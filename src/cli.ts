@@ -138,7 +138,7 @@ nyra features                   功能开关列表（CLI > config > 默认）
 nyra tools                      工具集体检：每轮 schema 成本与裁剪建议
 nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
 nyra vault <...>                凭据保险箱（加密存储，权限 0600）
-nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
+nyra gmail <status|auth|search|read|send|labels|label|mark-read|mark-unread|trash|attachment|revoke>   Gmail 原生连接器：读信 / 回复 / 代发草稿 / 附件 / 标签 / 已读 / 回收站
 nyra shopify <auth|status|products|product|orders|order|inventory>   Shopify 原生连接器（只读）：查商品 / 订单 / 库存（详见 docs/connectors.md）
 nyra slack <auth|status|channels|history|send|card>   Slack 原生连接器：读频道 / 消息、发消息（须显式批准）、发审批卡（详见 docs/connectors.md）
 nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
@@ -214,7 +214,7 @@ nyra features                  feature switches (CLI > config > default)
 nyra tools                     tool-pool health: per-turn schema cost and trim advice
 nyra config export|import|explain  settings export/import/explain (secrets stripped)
 nyra vault <...>               credential vault (encrypted at rest, mode 0600)
-nyra gmail <search|read|reply|draft|send>   native Gmail connector
+nyra gmail <status|auth|search|read|send|labels|label|mark-read|mark-unread|trash|attachment|revoke>   native Gmail connector: read / reply / draft / attachments / labels / read-state / trash
 nyra shopify <auth|status|products|product|orders|order|inventory>   native Shopify connector (read-only): products / orders / inventory (see docs/connectors.md)
 nyra slack <auth|status|channels|history|send|card>   native Slack connector: read channels / messages, send messages (explicit approval required), post approval cards (see docs/connectors.md)
 nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
@@ -3005,6 +3005,13 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
   + "  nyra gmail read <id>                           读一封邮件全文\n"
   + "  nyra gmail send --to <邮箱> --subject <主题> --body <正文> [--cc <邮箱>] [--bcc <邮箱>] [--thread <id>] [--draft] [--yes]\n"
   + "                                                 发一封邮件（默认先展示确认；--yes 跳过确认；--draft 只存草稿）\n"
+  + "  nyra gmail labels                              列出标签（只读）\n"
+  + "  nyra gmail label <id> <标签id> [--yes]         给邮件加标签（写操作，须显式确认）\n"
+  + "  nyra gmail unlabel <id> <标签id> [--yes]       给邮件去标签（写操作，须显式确认）\n"
+  + "  nyra gmail mark-read <id> [--yes]              标已读（写操作，须显式确认；read 子命令仍是读全文）\n"
+  + "  nyra gmail mark-unread <id> [--yes]            标未读（写操作，须显式确认）\n"
+  + "  nyra gmail trash <id> [--yes]                  移进回收站（写操作，须显式确认；永久删除本批不提供）\n"
+  + "  nyra gmail attachment <messageId> <attachmentId> [--out <路径>]  下载附件并校验（图片只记元信息、文本文档提取内容；--out 原样保存）\n"
   + "  nyra gmail revoke [--yes]                      吊销授权并删除本地 token\n"
   + "详见 docs/connectors-gmail.md";
   const {
@@ -3012,6 +3019,8 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
     startLoopbackCallbackServer, getGmailStatus, hasGmailTokensEntry, gmailAuthStateLabel,
     revokeRefreshToken, formatGmailSearchResults, formatGmailMessage,
     buildGmailSendEvidence, GmailApiTransport,
+    downloadGmailAttachment, formatGmailAttachmentOutcome, formatGmailLabels,
+    gmailWriteRefusal, GMAIL_WRITE_COMMANDS,
     GMAIL_VAULT_CLIENT_ENTRY, GMAIL_VAULT_TOKENS_ENTRY, GmailError,
   } = await import("./connectors/gmail.ts");
   const { EvidenceStore } = await import("./evidence.ts");
@@ -3060,11 +3069,23 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
     argv.forEach((a, i) => { if (a === name && argv[i + 1] !== undefined) out.push(argv[i + 1]); });
     return out;
   };
+  /** 写操作确认（改标签/标已读/进回收站，与 send/revoke 同款口径）：
+   * --yes 跳过确认，否则交互问一句 y/N；答非 y 即取消（返回 1）。 */
+  const confirmWrite = async (prompt: string): Promise<boolean> => {
+    if (argv.includes("--yes")) return true;
+    const ans = (await ask(`${prompt}[y/N] `)).trim().toLowerCase();
+    return ans === "y" || ans === "yes";
+  };
   const cmd = argv[0];
   try {
     if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
       process.stdout.write(GMAIL_USAGE + "\n");
       return 0;
+    }
+    // 写意图先拦：永久删除本批连入口都不提供，撞见写词直接回一句明确拒绝。
+    if ((GMAIL_WRITE_COMMANDS as readonly string[]).includes(cmd)) {
+      process.stderr.write(gmailWriteRefusal(cmd) + "\n");
+      return 1;
     }
     if (cmd === "status") {
       const status = getGmailStatus(home, loadConfig(home));
@@ -3154,6 +3175,83 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
       }
       const transport = createGmailTransport(home, loadConfig(home));
       process.stdout.write(formatGmailMessage(await transport.get(id)) + "\n");
+      return 0;
+    }
+    if (cmd === "labels") {
+      const transport = createGmailTransport(home, loadConfig(home));
+      process.stdout.write(formatGmailLabels(await transport.listLabels()) + "\n");
+      return 0;
+    }
+    if (cmd === "label" || cmd === "unlabel") {
+      const id = argv[1];
+      const labelId = argv[2];
+      if (!id || !labelId) {
+        process.stderr.write(`用法：nyra gmail ${cmd} <id> <标签id> [--yes]\n`);
+        return 2;
+      }
+      const transport = createGmailTransport(home, loadConfig(home));
+      const action = cmd === "label" ? "加标签" : "去标签";
+      if (!(await confirmWrite(`确认给邮件 ${id} ${action} ${labelId}？`))) {
+        process.stdout.write("已取消，未修改。\n");
+        return 1;
+      }
+      const result = cmd === "label"
+        ? await transport.modifyLabels(id, [labelId], [])
+        : await transport.modifyLabels(id, [], [labelId]);
+      process.stdout.write(`已给邮件 ${result.id} ${action} ${labelId}（当前标签：${result.labelIds.join("、") || "无"}）。\n`);
+      return 0;
+    }
+    if (cmd === "mark-read" || cmd === "mark-unread") {
+      const id = argv[1];
+      if (!id) {
+        process.stderr.write(`用法：nyra gmail ${cmd} <id> [--yes]\n`);
+        return 2;
+      }
+      const transport = createGmailTransport(home, loadConfig(home));
+      const action = cmd === "mark-read" ? "标已读" : "标未读";
+      if (!(await confirmWrite(`确认给邮件 ${id} ${action}？`))) {
+        process.stdout.write("已取消，未修改。\n");
+        return 1;
+      }
+      const result = cmd === "mark-read" ? await transport.markRead(id) : await transport.markUnread(id);
+      process.stdout.write(`已给邮件 ${result.id} ${action}（当前标签：${result.labelIds.join("、") || "无"}）。\n`);
+      return 0;
+    }
+    if (cmd === "trash") {
+      const id = argv[1];
+      if (!id) {
+        process.stderr.write("用法：nyra gmail trash <id> [--yes]\n");
+        return 2;
+      }
+      const transport = createGmailTransport(home, loadConfig(home));
+      if (!(await confirmWrite(`确认把邮件 ${id} 移进回收站？（可恢复，不是永久删除）`))) {
+        process.stdout.write("已取消，未删除。\n");
+        return 1;
+      }
+      const result = await transport.trash(id);
+      process.stdout.write(`已把邮件 ${result.id} 移进回收站（可在 Gmail 网页端恢复或永久删除）。\n`);
+      return 0;
+    }
+    if (cmd === "attachment") {
+      const messageId = argv[1];
+      const attachmentId = argv[2];
+      const outPath = flagValue("--out");
+      if (!messageId || !attachmentId) {
+        process.stderr.write("用法：nyra gmail attachment <messageId> <attachmentId> [--out <路径>]\n");
+        return 2;
+      }
+      const transport = createGmailTransport(home, loadConfig(home));
+      const outcome = await downloadGmailAttachment(transport, messageId, attachmentId);
+      if (outPath) {
+        try {
+          writeFileSync(outPath, outcome.bytes, { mode: 0o600 });
+          process.stdout.write(`已保存到：${outPath}\n`);
+        } catch (err: unknown) {
+          process.stderr.write(`保存失败：${err instanceof Error ? err.message : String(err)}\n`);
+          return 1;
+        }
+      }
+      process.stdout.write(formatGmailAttachmentOutcome(outcome) + "\n");
       return 0;
     }
     if (cmd === "send") {
