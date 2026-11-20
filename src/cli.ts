@@ -140,6 +140,7 @@ nyra config export|import|explain  设置导出/导入/解释（默认剔除密�
 nyra vault <...>                凭据保险箱（加密存储，权限 0600）
 nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
 nyra shopify <auth|status|products|product|orders|order|inventory>   Shopify 原生连接器（只读）：查商品 / 订单 / 库存（详见 docs/connectors.md）
+nyra slack <auth|status|channels|history|send|card>   Slack 原生连接器：读频道 / 消息、发消息（须显式批准）、发审批卡（详见 docs/connectors.md）
 nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
@@ -215,6 +216,7 @@ nyra config export|import|explain  settings export/import/explain (secrets strip
 nyra vault <...>               credential vault (encrypted at rest, mode 0600)
 nyra gmail <search|read|reply|draft|send>   native Gmail connector
 nyra shopify <auth|status|products|product|orders|order|inventory>   native Shopify connector (read-only): products / orders / inventory (see docs/connectors.md)
+nyra slack <auth|status|channels|history|send|card>   native Slack connector: read channels / messages, send messages (explicit approval required), post approval cards (see docs/connectors.md)
 nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
@@ -3246,11 +3248,12 @@ export async function handleConnector(argv: string[], home: string): Promise<num
   + "  nyra connector list                              列出全部连接器与授权状态\n"
   + "  nyra connector status [连接器]                   查看一个/全部连接器的授权状态与权限声明\n"
   + "  nyra connector approve <连接器>                  显式批准一次：批准后同应用同用户不再重复问\n"
-  + "  nyra connector revoke <连接器> [--yes]           撤销授权（立即失效；Gmail 吊销远端 token 并删除本地 token；Shopify 删除本地凭证）\n"
+  + "  nyra connector revoke <连接器> [--yes]           撤销授权（立即失效；Gmail 吊销远端 token 并删除本地 token；Shopify/Slack 删除本地凭证）\n"
   + "详见 docs/connectors.md";
   const reg = await import("./connectors/registry.ts");
   const gmailMod = await import("./connectors/gmail.ts");
   const shopifyMod = await import("./connectors/shopify.ts");
+  const slackMod = await import("./connectors/slack.ts");
   const userId = reg.resolveConnectorUserId(home);
   const cmd = argv[0];
   const knownIds = reg.listDeclarations().map((d) => d.id).join("、");
@@ -3259,6 +3262,7 @@ export async function handleConnector(argv: string[], home: string): Promise<num
   const hasTokensEvidence = (connectorId: string): boolean => {
     if (connectorId === "gmail") return gmailMod.hasGmailTokensEntry(home);
     if (connectorId === "shopify") return shopifyMod.hasShopifyCredentialsEntry(home);
+    if (connectorId === "slack") return slackMod.hasSlackCredentialsEntry(home);
     return false;
   };
 
@@ -3332,13 +3336,19 @@ export async function handleConnector(argv: string[], home: string): Promise<num
       }
       const tokens = target === "gmail" ? gmailMod.loadGmailTokens(home) : null;
       const shopifyCreds = target === "shopify" ? shopifyMod.loadShopifyCredentials(home) : null;
+      const slackCreds = target === "slack" ? slackMod.loadSlackCredentials(home) : null;
       if (target === "shopify" && !shopifyCreds) {
         process.stderr.write("Shopify 凭证损坏或缺失：请重新运行 nyra shopify auth。\n");
+        return 1;
+      }
+      if (target === "slack" && !slackCreds) {
+        process.stderr.write("Slack 凭证损坏或缺失：请重新运行 nyra slack auth。\n");
         return 1;
       }
       reg.markConnectorAuthorized(home, target, userId, {
         ...(tokens ? { tokenFingerprint: reg.tokenFingerprint(tokens.refresh_token) } : {}),
         ...(shopifyCreds ? { tokenFingerprint: reg.tokenFingerprint(shopifyCreds.accessToken), scopes: shopifyMod.SHOPIFY_READ_SCOPES.join(",") } : {}),
+        ...(slackCreds ? { tokenFingerprint: reg.tokenFingerprint(slackCreds.token), scopes: [...slackMod.SLACK_READ_SCOPES, ...slackMod.SLACK_WRITE_SCOPES].join(",") } : {}),
         ...(tokens?.scope ? { scopes: tokens.scope } : {}),
       });
       process.stdout.write(`已批准使用 ${decl.displayName}：之后同应用同用户不再重复问。\n`);
@@ -3406,6 +3416,23 @@ export async function handleConnector(argv: string[], home: string): Promise<num
         const cfg = loadConfig(home);
         saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), shopify: { enabled: false } } });
         process.stdout.write("注意：本地凭证已删，但 Shopify 后台的自定义应用仍在——想彻底作废 token，请去 Shopify 后台删除该自定义应用。\n");
+      }
+      if (target === "slack") {
+        // 只删本地凭证：Bot token 没有 CLI 可调的远端吊销接口，Slack 后台
+        // 的 app 仍在——想彻底作废 token，请去 Slack 后台撤销/删除该 app 的 token（见 docs）。
+        const vault = new Vault(join(home, "vault.json"));
+        if (vault.exists()) {
+          const password = process.env.NYRA_VAULT_PASSWORD ?? await new Promise<string>((resolvePromise) => {
+            const rl = createInterface({ input: process.stdin, output: process.stdout });
+            rl.question("主密码：", (a) => { rl.close(); resolvePromise(a); });
+          });
+          if (vault.unlock(password)) {
+            try { vault.remove(slackMod.SLACK_VAULT_CREDENTIALS_ENTRY); } catch { /* 条目已不在就当删过了 */ }
+          }
+        }
+        const cfg = loadConfig(home);
+        saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), slack: { enabled: false } } });
+        process.stdout.write("注意：本地凭证已删，但 Slack 后台的 app 仍在——想彻底作废 token，请去 Slack 后台撤销该 app 的 Bot token。\n");
       }
       process.stdout.write(`${decl.displayName} 的授权已撤销，立即失效。\n`);
       return 0;
@@ -3608,6 +3635,232 @@ export async function handleShopify(argv: string[], home: string, input?: Shopif
       return 0;
     }
     process.stderr.write(`未知命令：${cmd}\n${SHOPIFY_USAGE}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+/** 缺口 44 第二批：nyra slack —— Slack 连接器的终端入口（读频道/消息、发消息须批、发审批卡）。 */
+export interface SlackCliInput {
+  /** 测试注入：按顺序回答交互提问（主密码、workspace 名、token、发送确认）；fetchFn 供测试注入假 API。 */
+  secrets?: string[];
+  fetchFn?: (url: string, init?: RequestInit) => Promise<Response>;
+}
+
+export async function handleSlack(argv: string[], home: string, input?: SlackCliInput): Promise<number> {
+  const SLACK_USAGE = "用法：\n"
+  + "  nyra slack status                              查看 Slack 连接器状态（是否启用、是否已授权、workspace）\n"
+  + "  nyra slack auth                                授权 Slack：粘贴 app 的 Bot token（只存密码箱）\n"
+  + "  nyra slack channels [--limit N] [--cursor X]   列出频道（默认 50 条一页，上限 250）\n"
+  + "  nyra slack history --channel <id> [--limit N] [--cursor X]  读某频道的消息历史\n"
+  + "  nyra slack send --channel <id> --text <内容> [--yes]  发消息到指定频道（须显式批准：--yes 或交互确认）\n"
+  + "  nyra slack card --channel <id> --approval <id>  把一条挂起审批发成审批卡（带批准/拒绝按钮）\n"
+  + "删消息、改频道、管理成员一律拒绝；按钮回调本批只记审计，不回写审批桥。\n"
+  + "详见 docs/connectors.md 的 Slack 一节";
+  const {
+    createSlackClient, getSlackStatus, isSlackBotToken, isSlackChannelId,
+    formatSlackChannels, formatSlackMessages,
+    SLACK_VAULT_CREDENTIALS_ENTRY, SLACK_READ_SCOPES, SLACK_WRITE_SCOPES, SLACK_WRITE_COMMANDS,
+    slackWriteRefusal, SlackAuthError,
+  } = await import("./connectors/slack.ts");
+  const { CONNECTOR_AUTH_STATE_LABELS } = await import("./connectors/registry.ts");
+  const secretQueue = [...(input?.secrets ?? [])];
+  const askSecret = async (prompt: string): Promise<string> => {
+    if (secretQueue.length) return secretQueue.shift()!;
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise<string>((resolvePromise) => {
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
+    return answer;
+  };
+  const unlockVault = async (): Promise<Vault | null> => {
+    const vault = new Vault(join(home, "vault.json"));
+    if (!vault.exists()) {
+      process.stderr.write("密码箱不存在，先运行：nyra vault init\n");
+      return null;
+    }
+    if (!vault.unlock(await askSecret("主密码："))) {
+      const remaining = vault.lockoutRemainingMs();
+      if (remaining > 0) {
+        process.stderr.write(`尝试次数过多，请 ${Math.ceil(remaining / 1000)} 秒后再试\n`);
+      } else {
+        process.stderr.write("主密码错误或密码箱已损坏\n");
+      }
+      return null;
+    }
+    return vault;
+  };
+  const flagValue = (name: string): string | undefined => {
+    const idx = argv.indexOf(name);
+    return idx >= 0 && argv[idx + 1] !== undefined ? argv[idx + 1] : undefined;
+  };
+  const parseLimit = (): number | undefined => {
+    const raw = flagValue("--limit");
+    if (raw === undefined) return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 1) throw new Error("--limit 须为 ≥1 的数字");
+    return n;
+  };
+  const client = () => createSlackClient(home, loadConfig(home), { ...(input?.fetchFn ? { fetchFn: input.fetchFn } : {}) });
+  const cmd = argv[0];
+  try {
+    if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+      process.stdout.write(SLACK_USAGE + "\n");
+      return 0;
+    }
+    // 写意图先拦：删消息、改频道、管理成员本批连入口都不提供，撞见写词直接回一句明确拒绝。
+    if ((SLACK_WRITE_COMMANDS as readonly string[]).includes(cmd)) {
+      process.stderr.write(slackWriteRefusal(cmd) + "\n");
+      return 1;
+    }
+    if (cmd === "status") {
+      const status = getSlackStatus(home, loadConfig(home));
+      process.stdout.write(`Slack 连接器：${status.enabled ? "已启用" : "未启用（默认关闭）"}\n`);
+      process.stdout.write(`授权：${status.configured ? "已授权" : "未授权"}\n`);
+      process.stdout.write(`授权状态：${CONNECTOR_AUTH_STATE_LABELS[status.authState]}${status.authState === "authorized" || status.authState === "unauthorized" ? "" : "（请重新运行 nyra slack auth）"}\n`);
+      if (status.team) process.stdout.write(`workspace：${status.team}\n`);
+      if (!status.enabled || !status.configured) process.stdout.write("运行 nyra slack auth 完成授权（授权成功会自动启用）。\n");
+      return 0;
+    }
+    if (cmd === "auth") {
+      const vault = await unlockVault();
+      if (!vault) return 1;
+      process.stdout.write("授权 Slack 需要 app 的 Bot token：\n");
+      process.stdout.write("  在 Slack 后台建一个 app（或打开已有 app）→ OAuth & Permissions → 勾 channels:read、channels:history、chat:write → Install to Workspace，复制 Bot User OAuth Token 粘贴进来（只存密码箱，不进配置文件）。\n");
+      process.stdout.write("  注意：本批只读消息、发消息须显式批准；localhost 没有公网回调，做不了 Slack OAuth 回环，所以用 Bot token，不走授权码流程。\n");
+      const team = (await askSecret("workspace 名（可选，直接回车跳过）：")).trim();
+      const token = (await askSecret("Bot token（xoxb-…）：")).trim();
+      if (!token || !isSlackBotToken(token)) {
+        process.stderr.write("Bot token 不合法：Slack app 的 Bot token 以 xoxb- 开头\n");
+        return 1;
+      }
+      // 先拿 auth.test 探一下：invalid_auth 说明 token 不对，不存；
+      // 网络不通等其他错误只警告——token 本身可能没问题，下次调用再验。
+      try {
+        const { SlackApiClient } = await import("./connectors/slack.ts");
+        const { resolveConnectorUserId } = await import("./connectors/registry.ts");
+        const probe = new SlackApiClient({
+          credentials: { token, ...(team ? { team } : {}) },
+          home,
+          userId: resolveConnectorUserId(home),
+          ...(input?.fetchFn ? { fetchFn: input.fetchFn } : {}),
+        });
+        const who = await probe.probeAuth();
+        process.stdout.write(`已验证：workspace ${who.team || "（未知）"}，用户 ${who.user || "（未知）"}。\n`);
+      } catch (err: unknown) {
+        if (err instanceof SlackAuthError) {
+          process.stderr.write("token 验证失败（Slack 返回 invalid_auth）：请检查 app 的 Bot token 是否正确、是否已安装到 workspace。\n");
+          return 1;
+        }
+        process.stdout.write("（验证请求没通，token 先存下，下次调用时再验。）\n");
+      }
+      vault.add(SLACK_VAULT_CREDENTIALS_ENTRY, JSON.stringify({ token, ...(team ? { team } : {}) }), true);
+      const cfg = loadConfig(home);
+      saveConfig(home, { connectors: { ...((cfg.connectors as Record<string, unknown> | undefined) ?? {}), slack: { enabled: true } } });
+      const { markConnectorAuthorized, resolveConnectorUserId, tokenFingerprint } = await import("./connectors/registry.ts");
+      markConnectorAuthorized(home, "slack", resolveConnectorUserId(home), {
+        tokenFingerprint: tokenFingerprint(token),
+        scopes: [...SLACK_READ_SCOPES, ...SLACK_WRITE_SCOPES].join(","),
+      });
+      process.stdout.write("已授权 Slack：之后同应用同用户不再重复问。\n");
+      return 0;
+    }
+    if (cmd === "channels") {
+      const { channels, nextCursor } = await client().listChannels({
+        ...(parseLimit() !== undefined ? { limit: parseLimit() } : {}),
+        ...(flagValue("--cursor") ? { cursor: flagValue("--cursor")! } : {}),
+      });
+      process.stdout.write(formatSlackChannels(channels, nextCursor) + "\n");
+      return 0;
+    }
+    if (cmd === "history") {
+      const channelId = flagValue("--channel");
+      if (!channelId) {
+        process.stderr.write("用法：nyra slack history --channel <id> [--limit N] [--cursor X]\n");
+        return 2;
+      }
+      const { messages, nextCursor } = await client().getHistory(channelId, {
+        ...(parseLimit() !== undefined ? { limit: parseLimit() } : {}),
+        ...(flagValue("--cursor") ? { cursor: flagValue("--cursor")! } : {}),
+      });
+      process.stdout.write(formatSlackMessages(messages, nextCursor) + "\n");
+      return 0;
+    }
+    if (cmd === "send") {
+      const channelId = flagValue("--channel");
+      const text = flagValue("--text");
+      if (!channelId || text === undefined) {
+        process.stderr.write("用法：nyra slack send --channel <id> --text <内容> [--yes]\n");
+        return 2;
+      }
+      // 发消息是本批唯一的写操作：须显式批准（--yes 或交互确认），默认不发。
+      if (!argv.includes("--yes")) {
+        const preview = text.length > 200 ? `${text.slice(0, 200)}…` : text;
+        const ans = (await askSecret(`确认发送到频道 ${channelId}？内容：${preview} [y/N] `)).trim().toLowerCase();
+        if (ans !== "y" && ans !== "yes") {
+          process.stderr.write("未批准：消息没有发送（发消息须显式批准，加 --yes 或在确认里答 y）。\n");
+          return 1;
+        }
+      }
+      const { ts } = await client().postMessage(channelId, text);
+      process.stdout.write(`已发送到频道 ${channelId}（消息 ts=${ts}）。\n`);
+      return 0;
+    }
+    if (cmd === "card") {
+      const channelId = flagValue("--channel");
+      const approvalId = flagValue("--approval");
+      if (!channelId || !approvalId) {
+        process.stderr.write("用法：nyra slack card --channel <id> --approval <id>\n");
+        return 2;
+      }
+      // 只读 Bot Phase 2 的挂起审批账本（bot-approvals.json），不改它：
+      // 账本没有、损坏、找不到这条、已处理、已过期都直接报错，不发卡。
+      const { BOT_APPROVALS_FILE } = await import("./bot/approvalBridge.ts");
+      const { resolveNyraHome } = await import("./memory.ts");
+      let approvals: Record<string, Record<string, unknown>> = {};
+      try {
+        const raw = readFileSync(join(resolveNyraHome(home), BOT_APPROVALS_FILE), "utf-8");
+        const data = JSON.parse(raw) as { approvals?: unknown };
+        if (data && typeof data === "object" && data.approvals && typeof data.approvals === "object") {
+          approvals = data.approvals as Record<string, Record<string, unknown>>;
+        }
+      } catch {
+        process.stderr.write("找不到挂起审批：bot-approvals.json 不存在或损坏（先在 Bot 里等一条审批挂起）。\n");
+        return 1;
+      }
+      const item = approvals[approvalId];
+      if (!item || typeof item !== "object") {
+        process.stderr.write(`找不到审批 ${approvalId}（不在挂起账本里）。\n`);
+        return 1;
+      }
+      if (item.status !== "pending") {
+        process.stderr.write(`审批 ${approvalId} 已不是挂起状态（${String(item.status ?? "未知")}），不发卡。\n`);
+        return 1;
+      }
+      if (typeof item.tool !== "string" || typeof item.summary !== "string" || typeof item.argsHash !== "string"
+        || typeof item.requestedBy !== "string" || typeof item.expiresAt !== "number") {
+        process.stderr.write(`审批 ${approvalId} 的记录不完整，无法发卡。\n`);
+        return 1;
+      }
+      if (item.expiresAt <= Date.now()) {
+        process.stderr.write(`审批 ${approvalId} 已过期，不发卡。\n`);
+        return 1;
+      }
+      const { ts } = await client().postApprovalCard(channelId, {
+        id: approvalId,
+        tool: item.tool,
+        summary: item.summary,
+        argsHash: item.argsHash,
+        requestedBy: item.requestedBy,
+        expiresAt: item.expiresAt,
+      });
+      process.stdout.write(`已发审批卡到频道 ${channelId}（消息 ts=${ts}）。\n`);
+      process.stdout.write("注意：按钮回调本批只记审计，不回写审批桥——审批本身仍是挂起状态，点了按钮也不会自动放行。\n");
+      return 0;
+    }
+    process.stderr.write(`未知命令：${cmd}\n${SLACK_USAGE}\n`);
     return 2;
   } catch (err: unknown) {
     process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
@@ -4681,6 +4934,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "vault") return handleVault(args.subArgs ?? [], home);
   if (args.subcommand === "gmail") return handleGmail(args.subArgs ?? [], home);
   if (args.subcommand === "shopify") return handleShopify(args.subArgs ?? [], home);
+  if (args.subcommand === "slack") return handleSlack(args.subArgs ?? [], home);
   if (args.subcommand === "connector") return handleConnector(args.subArgs ?? [], home);
   if (args.subcommand === "hooks") return handleHooks(args.subArgs ?? [], home);
   if (args.subcommand === "guard") {
