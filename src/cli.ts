@@ -25,7 +25,7 @@ import { handleModels } from "./modelsCli.ts";
 import { loadModelCache, manualWindowFromConfig, resolveContextWindow } from "./modelCatalog.ts";
 import { classifyFailure, formatFailureLine } from "./failures.ts";
 import { parseRules } from "./permissionRules.ts";
-import { checkRedlines, formatRedlines } from "./redlines.ts";
+import { checkRedlines, formatRedlines, toRedlinesJson } from "./redlines.ts";
 import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
@@ -124,6 +124,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra --resume-run <运行 ID>    从运行记录断点续跑
   nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
   nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
+  nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
   nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
   nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -178,6 +179,7 @@ Usage:
   nyra --resume-run <run id>     resume a run from its record
   nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
   nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
+  nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
   nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
   nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
   nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
@@ -3653,6 +3655,11 @@ export async function main(argv: string[]): Promise<number> {
       toolSearchEnabled: featureOn(resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
       turns: typeof cfgRed.max_turns === "number" ? cfgRed.max_turns : 20,
     });
+      // --json：CI 按 code 白名单放行 / 统计哪条红线最常被踩（code 本来就是稳定短码）
+      if ((args.subArgs ?? []).includes("--json")) {
+        process.stdout.write(JSON.stringify(toRedlinesJson(result)) + "\n");
+        return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
+      }
     process.stdout.write(formatRedlinesWithSavings(formatRedlines(result), savingsForRedlines) + "\n");
     return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
   }

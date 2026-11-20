@@ -12,7 +12,7 @@
 | `nyra verdict --run <id>` | 给单次运行打分 |
 | `nyra verdict --recent N` | 最近 N 次的趋势：该修什么 |
 | `nyra guard [--strict]` | 门禁形态：red 时退出码 2（`--strict` 下 yellow 也拦） |
-| `nyra redlines` | 上线红线自检（含工具集体检与管理员锁定） |
+| `nyra redlines [--json]` | 上线红线自检（证据/权限/沙箱/成本/钩子）；`--json` 给 CI 按 `code` 判定 |
 | `nyra evidence verify <运行 ID>` | 独立复核运行的证据链 |
 | `nyra restore [检查点]` | 从影子快照恢复文件与会话 |
 
@@ -85,3 +85,11 @@
 - CI 无法发现「代码有、文档没有」或「文档有、代码没有」
 
 这一页 + 那条测试就是兜住这件事的机械手段。
+
+## 事件与常驻（本轮补齐）
+
+| 命令 | 作用 |
+|---|---|
+| `nyra events <list\|add\|remove\|enable\|disable\|test\|poll>` | 事件触发任务：webhook 与新邮件触发进任务队列（详见 [events.md](./events.md)） |
+| `nyra mail-inbox <status\|enable\|disable\|allowlist\|set\|poll>` | 邮件即任务入口：白名单发件人的邮件直接进队列，跑完回信 |
+| `nyra responsibility <list\|add\|remove\|enable\|disable\|check>` | 常驻责任巡查：自己定复查节奏，无人值守时强制只读 |
