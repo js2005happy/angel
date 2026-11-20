@@ -63,6 +63,10 @@ import { buildPlan, renderPlan, savePlan, readApprovedPlan, approvedExecutionTas
 import { handleTask } from "./tasks.ts";
 import { handleReview } from "./reviewQueue.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
+import {
+  loadEventTriggers, saveEventTriggers, addEventTrigger, removeEventTrigger, setEventTriggerEnabled,
+  listEventTriggers, matchEventTrigger, buildTriggerPrompt, pollGmailTriggers, EventTriggerError,
+} from "./eventTriggers.ts";
 import { knowledgeMain } from "./knowledge.ts";
 import { PermissionLedger, PermissionConflict } from "./poppy.ts";
 import { doctor as eigenfluxDoctor, onboardingSteps as eigenfluxOnboarding, doctorExitCode as eigenfluxDoctorExitCode } from "./eigenflux.ts";
@@ -126,6 +130,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra schedule <list|add|remove|run|daemon>   管理定时任务
   nyra task <add|list|show|cancel|worker|approve>   管理后台任务队列
   nyra review <list|show|approve|reject|apply|verify|enqueue>   审阅队列：并行线程与定时任务结果逐项批（详见 docs/review-queue.md）
+  nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -180,6 +185,7 @@ Usage:
   nyra schedule <list|add|remove|run|daemon>   manage scheduled tasks
   nyra task <add|list|show|cancel|worker|approve>   manage the background task queue
   nyra review <list|show|approve|reject|apply|verify|enqueue>   review queue: approve parallel threads and scheduled-task results one by one (see docs/review-queue.md)
+  nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
   nyra kb <create|list|add|search|ask|remove>  local knowledge base
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -903,7 +909,29 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
         const { agent } = await buildAgent({ ...parseArgs([]), workdir: task.workdir ?? workdir, mode: task.mode }, { interactive: false });
         return agent.run(task.prompt);
       };
-      const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds });
+      // 缺口 7：守护进程每轮顺带跑应用事件源轮询（本批先做 Gmail 新邮件）。
+      // 只有存在启用的 gmail 触发器且 Gmail 已启用+已授权时才轮询；轮询器自己按
+      // 5 分钟间隔跳过，不到间隔不打 API。轮询只入队，执行靠 `nyra task worker`。
+      const pollers: Array<() => Promise<void>> = [];
+      try {
+        const { loadEventTriggers: loadTriggers, eventTriggersPath } = await import("./eventTriggers.ts");
+        const { getGmailStatus, createGmailTransport } = await import("./connectors/gmail.ts");
+        const cfg0 = loadConfig(home);
+        const gmailTriggers = loadTriggers(eventTriggersPath(home)).triggers
+          .filter((t) => t.enabled !== false && t.source === "gmail");
+        const st = getGmailStatus(home, cfg0);
+        if (gmailTriggers.length && st.enabled && st.configured) {
+          pollers.push(async () => {
+            const transport = createGmailTransport(home, loadConfig(home));
+            const r = await pollGmailTriggers(transport, { home });
+            if (r.dispatched) process.stdout.write(`[事件触发] Gmail 新邮件 ${r.newMail} 封，触发 ${r.dispatched} 个任务\n`);
+            else if (r.skipped && r.skipped !== "not-due" && r.skipped !== "no-enabled-gmail-trigger") {
+              process.stdout.write(`[事件触发] Gmail 轮询跳过：${r.skipped}\n`);
+            }
+          });
+        }
+      } catch { /* 轮询器建不起来就不轮询，不破坏定时任务 */ }
+      const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds, pollers });
       void done;
       return 0;
     }
@@ -911,6 +939,122 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
     return 2;
   } catch (err: unknown) {
     process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+// ---- 子命令：events（缺口 7：事件触发任务） ----
+async function handleEvents(argv: string[], workdir: string): Promise<number> {
+  const action = argv[0];
+  const home = resolveHome();
+  if (!action) {
+    process.stdout.write("用法：nyra events <list|add|remove|enable|disable|test|poll> [选项]\n");
+    return 2;
+  }
+  const get = (flag: string): string | undefined => {
+    const i = argv.indexOf(flag);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  try {
+    const data = loadEventTriggers();
+    if (action === "list") {
+      for (const t of listEventTriggers(home)) {
+        process.stdout.write(`${t.name}\t${t.enabled === false ? "禁用" : "启用"}\t${t.source}\t${t.event}\t${t.mode}\n`);
+      }
+      return 0;
+    }
+    if (action === "add") {
+      const name = get("--name");
+      const source = get("--source") ?? "webhook";
+      const event = get("--event") ?? (source === "gmail" ? "gmail.new_mail" : undefined);
+      const task = get("--task");
+      if (!name || !event || !task) {
+        process.stderr.write("错误：events add 需要 --name、--event 与 --task（--source 默认 webhook；gmail 来源的 --event 默认 gmail.new_mail）\n");
+        return 2;
+      }
+      const match: Record<string, string> = {};
+      if (get("--match-from")) match.from_contains = get("--match-from")!;
+      if (get("--match-subject")) match.subject_contains = get("--match-subject")!;
+      if (get("--match-text")) match.text_contains = get("--match-text")!;
+      const mode = get("--mode") ?? "auto";
+      const maxTurns = get("--max-turns") ? parseInt(get("--max-turns")!, 10) : 20;
+      const added = addEventTrigger(data, {
+        name, source, event, task,
+        ...(Object.keys(match).length ? { match } : {}),
+        mode, enabled: !argv.includes("--disable"),
+        workdir: get("--workdir") ?? workdir, max_turns: maxTurns,
+      });
+      saveEventTriggers(data);
+      process.stdout.write(`已添加事件触发器：${added.name}（${added.source} / ${added.event}，${added.mode}）\n`);
+      return 0;
+    }
+    if (action === "remove") {
+      const name = get("--name") ?? argv[1];
+      if (!name) { process.stderr.write("错误：events remove 需要 --name\n"); return 2; }
+      if (!removeEventTrigger(data, name)) { process.stderr.write(`错误：没有名为 ${name} 的事件触发器\n`); return 2; }
+      saveEventTriggers(data);
+      process.stdout.write(`已删除事件触发器：${name}\n`);
+      return 0;
+    }
+    if (action === "enable" || action === "disable") {
+      const name = get("--name") ?? argv[1];
+      if (!name) { process.stderr.write(`错误：events ${action} 需要 --name\n`); return 2; }
+      if (!setEventTriggerEnabled(data, name, action === "enable")) { process.stderr.write(`错误：没有名为 ${name} 的事件触发器\n`); return 2; }
+      saveEventTriggers(data);
+      process.stdout.write(`已${action === "enable" ? "启用" : "禁用"}事件触发器：${name}\n`);
+      return 0;
+    }
+    if (action === "test") {
+      const name = get("--name");
+      const payloadRaw = get("--payload") ?? "{}";
+      if (!name) { process.stderr.write("错误：events test 需要 --name 与 --payload '<JSON>'\n"); return 2; }
+      const trigger = data.triggers.find((t) => t.name === name);
+      if (!trigger) { process.stderr.write(`错误：没有名为 ${name} 的事件触发器\n`); return 2; }
+      let payload: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(payloadRaw) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("payload 必须是 JSON 对象");
+        payload = parsed as Record<string, unknown>;
+      } catch (err: unknown) {
+        process.stderr.write(`错误：--payload 解析失败：${err instanceof Error ? err.message : String(err)}\n`);
+        return 2;
+      }
+      const event = {
+        source: trigger.source,
+        eventType: trigger.event,
+        eventId: "test",
+        receivedAt: new Date().toISOString(),
+        actor: typeof payload.actor === "string" ? payload.actor : null,
+        summary: typeof payload.summary === "string" ? payload.summary : "",
+        payload,
+        auth: "none",
+      };
+      const matched = matchEventTrigger(trigger, event);
+      process.stdout.write(`匹配：${matched ? "是" : "否"}\n`);
+      if (matched) {
+        const prompt = buildTriggerPrompt(trigger, event);
+        process.stdout.write(`任务提示词（前 800 字）：\n${prompt.slice(0, 800)}\n`);
+      }
+      return 0;
+    }
+    if (action === "poll") {
+      const { getGmailStatus, createGmailTransport } = await import("./connectors/gmail.ts");
+      const cfg = loadConfig(home);
+      const st = getGmailStatus(home, cfg);
+      if (!st.enabled || !st.configured) {
+        process.stderr.write("错误：Gmail 未启用或未授权（先运行 nyra gmail auth），轮询需要 Gmail 连接器\n");
+        return 1;
+      }
+      const transport = createGmailTransport(home, cfg);
+      const r = await pollGmailTriggers(transport, { home, force: true });
+      process.stdout.write(`检查 ${r.checked} 封，新邮件 ${r.newMail} 封，触发 ${r.dispatched} 个任务${r.skipped ? `（跳过：${r.skipped}）` : ""}\n`);
+      return 0;
+    }
+    process.stderr.write(`错误：未知子命令 events ${action}\n`);
+    return 2;
+  } catch (err: unknown) {
+    if (err instanceof EventTriggerError) process.stderr.write(`错误：${err.message}\n`);
+    else process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
@@ -2963,6 +3107,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "stats") return handleStats(args.subArgs ?? [], home);
   if (args.subcommand === "models") return handleModels(args.subArgs ?? [], home);
   if (args.subcommand === "schedule") return handleSchedule(args.subArgs ?? [], resolve(args.workdir));
+  if (args.subcommand === "events") return handleEvents(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);

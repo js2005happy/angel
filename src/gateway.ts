@@ -26,6 +26,10 @@ import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
 import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFont } from "./webuiMobile.ts";
 import { runHooks } from "./hooks.ts";
 import { getGmailStatus } from "./connectors/gmail.ts";
+import {
+  dispatchEvent, listEventTriggersPublic, normalizeWebhookEvent, verifyWebhookSignature,
+  EventTriggerError, WebhookError, WEBHOOK_SOURCES, type WebhookSource,
+} from "./eventTriggers.ts";
   // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
@@ -1233,6 +1237,19 @@ export class Gateway {
     return data as Record<string, unknown>;
   }
 
+  /** 缺口 7：webhook 验签要原始字节（HMAC 算在原文上），先读 raw 再解析 JSON。 */
+  private async readRawBody(req: IncomingMessage): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of req) {
+      const buf = chunk as Buffer;
+      size += buf.length;
+      if (size > MAX_BODY) throw new Error("请求体过大");
+      chunks.push(buf);
+    }
+    return Buffer.concat(chunks);
+  }
+
   private route(req: IncomingMessage): { path: string; query: URLSearchParams } {
     const url = new URL(req.url ?? "/", "http://x");
     return { path: url.pathname, query: url.searchParams };
@@ -1352,6 +1369,45 @@ export class Gateway {
       return;
     }
 
+    // 缺口 7：webhook 入口（事件触发任务）。放在通用 token 鉴权之前：generic 用
+    // 网关 token（x-nyra-token），github/slack 用各自的 HMAC 签名（密钥只存密码箱）。
+    // 鉴权失败直接 4xx，不进队列；验签通过才解析 body、归一化、派发进任务队列。
+    const webhookMatch = /^\/api\/webhooks\/([A-Za-z]+)$/.exec(path);
+    if (method === "POST" && webhookMatch) {
+      const source = webhookMatch[1] as WebhookSource;
+      if (!WEBHOOK_SOURCES.includes(source)) { this.sendError(res, 400, "webhook 来源只允许 generic|github|slack"); return; }
+      let raw: Buffer;
+      try { raw = await this.readRawBody(req); } catch (err) { this.sendError(res, 400, `请求无效：${err instanceof Error ? err.message : String(err)}`); return; }
+      let body: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(raw.toString("utf-8") || "{}") as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("请求体必须是 JSON 对象");
+        body = parsed as Record<string, unknown>;
+      } catch (err) { this.sendError(res, 400, `请求无效：${err instanceof Error ? err.message : String(err)}`); return; }
+      const headers = req.headers as Record<string, string | string[] | undefined>;
+      let auth = "gateway-token";
+      try {
+        if (source === "generic") {
+          if (this.apiAuth(req) === null) { this.sendError(res, 403, "token 无效"); return; }
+        } else {
+          auth = verifyWebhookSignature(source, raw, headers, this.home).auth;
+        }
+        const normalized = normalizeWebhookEvent(source, body, headers, raw);
+        if ("challenge" in normalized) { this.sendJson(res, 200, { challenge: normalized.challenge }); return; }
+        const result = dispatchEvent({ ...normalized.event, auth }, { home: this.home });
+        this.sendJson(res, 202, { accepted: true, ...result });
+      } catch (err) {
+        if (err instanceof WebhookError) this.sendError(res, err.status, err.message);
+        else if (err instanceof EventTriggerError) this.sendError(res, 400, err.message);
+        else this.sendError(res, 500, err instanceof Error ? err.message : String(err));
+      }
+      return;
+    }
+    if (method === "POST" && path.startsWith("/api/webhooks/")) {
+      this.sendError(res, 400, "webhook 来源只允许 generic|github|slack");
+      return;
+    }
+
     const who = this.apiAuth(req);
     if (who === null) { this.sendError(res, 403, "token 无效"); return; }
     const isOwner = who === "owner";
@@ -1424,6 +1480,12 @@ export class Gateway {
     if (method === "GET" && path === "/api/schedule") {
       try { this.sendJson(res, 200, { tasks: this.scheduleList() }); }
       catch (err) { this.sendError(res, 400, `定时任务读取失败：${err instanceof Error ? err.message : String(err)}`); }
+      return;
+    }
+    // 缺口 7：事件触发器清单（供桌面端/手机 PWA 消费；只给元数据，不含任务提示词）。
+    if (method === "GET" && path === "/api/event-triggers") {
+      try { this.sendJson(res, 200, { triggers: listEventTriggersPublic(this.home) }); }
+      catch (err) { this.sendError(res, 400, `事件触发器读取失败：${err instanceof Error ? err.message : String(err)}`); }
       return;
     }
     if (method === "GET" && path === "/api/memory/scopes") {

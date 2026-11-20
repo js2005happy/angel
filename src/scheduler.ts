@@ -191,11 +191,12 @@ export async function runDueTasks(
 
 export async function runDaemon(
   agentFactory: (task: ScheduleTask) => Promise<string>,
-  opts?: { interval?: number; path?: string; stopAfter?: number | null },
+  opts?: { interval?: number; path?: string; stopAfter?: number | null; pollers?: Array<() => Promise<void>> },
 ): Promise<number> {
   const interval = opts?.interval ?? 60.0;
   let rounds = 0;
   const stopAfter = opts?.stopAfter ?? null;
+  const pollers = opts?.pollers ?? [];
   try {
     while (stopAfter === null || rounds < stopAfter) {
       let data: ScheduleData;
@@ -219,6 +220,14 @@ export async function runDaemon(
       }
       for (const r of results) {
         process.stdout.write(`[定时任务] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
+      }
+      // 缺口 7：应用事件源轮询（本批先做 Gmail 新邮件）。每轮都跑，轮询器自己按
+      // 间隔跳过（不到 5 分钟直接返回 not-due，不打 API）；轮询失败只记 stderr，
+      // 不破坏守护进程。轮询只入队不执行，执行靠 `nyra task worker`。
+      for (const poller of pollers) {
+        try { await poller(); } catch (err: unknown) {
+          process.stderr.write(`事件源轮询失败：${err instanceof Error ? err.message : String(err)}\n`);
+        }
       }
       rounds += 1;
       if (stopAfter !== null && rounds >= stopAfter) break;

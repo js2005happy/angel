@@ -18,7 +18,7 @@ export const SUBCOMMANDS: readonly string[] = [
   // 记忆与复用
   "recall", "memory", "style",
   // 后台与协作
-  "ui", "gw", "schedule", "task", "review",
+  "ui", "gw", "schedule", "events", "task", "review",
   // 扩展与集成
   "plugin", "creator", "kb", "hooks", "permissions", "eigenflux", "gmail",
   // 自检与运维

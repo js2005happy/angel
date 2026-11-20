@@ -53,6 +53,10 @@ review_applied: ["item_id", "files"],
 // 缺口 19：钩子拦截进证据链——审查 fail-closed 要留痕：哪个事件、哪个工具、
 // 哪个钩子、为什么拦。只记拦截（blocked），放行不记（钩子默认不装，记了全是噪音）。
 hook_blocked: ["event", "tool", "hook", "reason"],
+// 缺口 7：事件触发进证据链——哪个触发器、什么事件、谁发的、进了哪个任务、
+// 什么模式、什么鉴权。event_id 过长时只记指纹（见 eventTriggers.ts 的 shortEventId），
+// 完整 id 在 ~/.nyra/event-deliveries.json。
+event_triggered: ["trigger_id", "trigger_name", "source", "event_id", "event_type", "run_id", "mode", "auth"],
 final: [],
 max_turns: [],
 error: ["error_type"],
