@@ -107,7 +107,8 @@ function renderTop(){
   }
 }
 function sessionById(id){ return S.sessions && (S.sessions.sessions || []).find(x => x.id === id); }
-function titleOf(s){ const raw = s ? String(s.preview || '') : ''; const txt = raw || ((!s || s.id === S.session) ? S.title || '' : ''); return txt.split('\n')[0].slice(0, 80); }
+function titleOf(s){ let raw = s ? String(s.preview || '') : ''; if (raw.length >= 60 && !raw.includes('\n')) raw += '…'; // 网关列表的 preview 截在 60 字
+  const txt = raw || ((!s || s.id === S.session) ? S.title || '' : ''); const line = txt.split('\n')[0]; return line.length > 80 ? line.slice(0, 79) + '…' : line; }
 
 // ---------------------------------------------------------------- 侧栏 ---
 function renderThreads(){
@@ -345,7 +346,8 @@ function renderFeed(v){
       const lg = el('div', 'log' + (last ? '' : ' closed'));
       const h = el('button', 'h'); const dur = last ? turnDuration(v) : null;
       h.appendChild(el('span', 'car', last ? '▾' : '▸'));
-      h.appendChild(document.createTextNode(dur ? t('d.workedFor', { s: dur, n: steps.length }) : t('m.worked', { n: steps.length })));
+      const one = steps.length === 1;
+      h.appendChild(document.createTextNode(dur ? t(one ? 'd.workedFor1' : 'd.workedFor', { s: dur, n: steps.length }) : t(one ? 'd.worked1' : 'm.worked', { n: steps.length })));
       h.onclick = () => { lg.classList.toggle('closed'); h.firstChild.textContent = lg.classList.contains('closed') ? '▸' : '▾'; };
       lg.appendChild(h); steps.forEach(s => lg.appendChild(s)); col.appendChild(lg);
     }
@@ -440,7 +442,7 @@ function approvalCard(a, fbText){
   const st = S.card[a.id] || (S.card[a.id] = { open: null, scope: 'session' });
   const isEdit = EDIT_TOOLS.includes(a.tool);
   const isShell = a.tool === 'shell' && a.command;
-  const box = el('div', 'appr'); box.dataset.id = a.id; box.dataset.tool = a.tool;
+  const box = el('div', 'appr glass'); box.dataset.id = a.id; box.dataset.tool = a.tool;
   const fr = el('div', 'fr');
   fr.appendChild(icon(isEdit ? 'pencil' : 'play'));
   const ttl = el('div', 'ttl'); const line = el('div', 'a');

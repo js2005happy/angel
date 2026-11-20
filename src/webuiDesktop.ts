@@ -64,33 +64,33 @@ export const DESKTOP_HTML = `<!doctype html><html lang="en"><head><meta charset=
 ${TEMPLATES}
 <div id="splash" class="splash hidden" aria-hidden="true"></div>
 <div class="app">
-<aside class="side" aria-label="Nyra">
+<aside class="side glass" aria-label="Nyra">
 ${NAV}
 <div class="sh"><span data-i="d.projects"></span></div>
 <nav class="tree" id="threads"></nav>
 <button class="si" id="nav-settings"><i>${ICONS.gear}</i><span data-i="d.settings"></span></button>
 </aside>
 <main class="main">
-<header class="top" id="top"></header>
+<header class="top glass" id="top"></header>
 <div class="cols">
 <section class="view" id="v-home"><div class="home">
 <div class="hero"><div class="mk">${SVG(STAR, "", "0 0 16 16").replace("<svg", '<svg fill="currentColor"')}</div>
 <h1><span data-i="d.home.before"></span> <span class="proj" id="home-proj"></span><span id="home-after" data-i="d.home.after"></span></h1></div>
-<div class="comp"><textarea id="home-input" rows="1" data-ip="d.home.placeholder"></textarea><div class="rw" id="home-pills"></div></div>
+<div class="comp glass"><textarea id="home-input" rows="1" data-ip="d.home.placeholder"></textarea><div class="rw" id="home-pills"></div></div>
 <div class="cards" id="cards"></div>
 <div class="autos"><div class="lbl" data-i="d.automations"></div><div id="home-autos"></div></div>
 </div></section>
 <section class="view hidden" id="v-thread">
 <div class="feed" id="feed"><div class="col" id="col"></div></div>
-<div class="comp"><textarea id="input" rows="1" data-ip="d.followUp"></textarea><div class="rw" id="thread-pills"></div></div>
+<div class="comp glass"><textarea id="input" rows="1" data-ip="d.followUp"></textarea><div class="rw" id="thread-pills"></div></div>
 </section>
 <section class="view page hidden" id="v-automations"><div class="pagein"><h2 data-i="d.automations"></h2><p class="desc" data-i="d.auto.desc"></p><div id="auto-list"></div></div></section>
 <section class="view page hidden" id="v-skills"><div class="pagein"><h2 data-i="d.skills"></h2><p class="desc" data-i="d.skills.desc"></p><div id="skill-list"></div></div></section>
 <section class="view page hidden" id="v-mcp"><div class="pagein"><h2 data-i="d.mcp"></h2><p class="desc" data-i="d.set.mcp.desc"></p><div id="mcp-list"></div></div></section>
 <section class="view settings hidden" id="v-settings"><nav class="setnav" id="set-nav"></nav><div class="setbody" id="set-body"></div></section>
-<aside class="review hidden" id="review"><div class="rt" id="rtabs"></div><div class="rbody" id="rbody"></div><div class="term hidden" id="term"></div></aside>
+<aside class="review glass hidden" id="review"><div class="rt" id="rtabs"></div><div class="rbody" id="rbody"></div><div class="term hidden" id="term"></div></aside>
 </div>
-<footer class="status" id="status"></footer>
+<footer class="status glass" id="status"></footer>
 </main>
 </div>
 <div class="overlay hidden" id="search-dlg"><div class="dlg"><input class="srch" id="search-q" data-ip="d.searchPh" autocomplete="off"><div class="res" id="search-res"></div></div></div>
