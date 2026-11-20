@@ -1,3 +1,9 @@
+## 2026-11-20 — 静态审计 v2（源码审阅，未执行）
+
+- 已核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Python Agent/ToolJournal 与原审计脚本；主分支 package.json、src/cli.ts、src/agent.ts、src/tools.ts；查询最近提交、开放 Issue/PR 和上一提交状态。
+- 本轮只修改审计脚本：行号证据、有限大小读取、明确不可读/链接/超限状态、JSON schema v2、失败关闭退出码。没有执行脚本、测试、类型检查或 CI；静态审阅不能证明运行时安全。
+- 上一提交 `da7a7ff` 的 combined status 和 PR workflow runs 均返回空列表，不能推断 CI 通过。开发分支仍无 Node 主运行时源码，原子所有权未实现。
+
 ## 2026-11-20 — 跨运行时静态审计脚本（未执行）
 
 - 静态核对开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python ToolJournal，主分支 README 与 `src/agent.ts`、`src/tools.ts`；查询开放 Issues/PR、近期提交和开发分支 CI 状态。
