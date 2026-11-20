@@ -4,12 +4,18 @@
 // tools/list 分页；tools/call 遇多轮往返（input_required）直接报错，不假装完成。
 // 服务器主动发来的请求一律回 -32601（不支持）。超时放弃的旧响应按 id 丢弃。
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { loadConfig, resolveHome, saveConfig, VERSION } from "./config.ts";
+import { appendMemory, deleteMemoryEntries, formatMemorySearchResults, listMemoryEntries, resolveNyraHome, searchMemoryEntries } from "./memory.ts";
 import { DEFAULT_MCP_PRESETS, resolvePreset } from "./mcpPresets.ts";
+import { buildReviewerRunner, reviewToolCall, reviewerEnabled, resolveReviewerModel, type ReviewerLike, type ReviewVerdict } from "./reviewer.ts";
+import { RunStore } from "./runs.ts";
 import { buildBwrapArgv, resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
 import { buildSeatbeltProfile } from "./seatbelt.ts";
+import { addTask } from "./tasks.ts";
 
 export const LATEST_PROTOCOL_VERSION = "2026-07-28";
 export const MODERN_PROTOCOL_VERSIONS = ["2026-07-28"];
@@ -49,21 +55,52 @@ export interface MCPServerConfigLike {
   inherit_env: string[];
 }
 
+/** 缺口 17：MCP 服务器传输。stdio = 启子进程（原有）；http = Streamable HTTP
+ *（POST JSON-RPC 到 url，响应 JSON 或 SSE；不启子进程、不走沙箱）。 */
+export type MCPTransportKind = "stdio" | "http";
+
 export class MCPServerConfig implements MCPServerConfigLike {
   name: string;
   command: string;
   args: string[];
   env: Record<string, string>;
   inherit_env: string[];
-  constructor(name: string, command: string, args: string[] = [], env: Record<string, string> = {}, inheritEnv: string[] = []) {
+  /** 缺口 17：传输，默认 stdio；http 时 command 可为空（不启子进程）。 */
+  transport: MCPTransportKind;
+  /** 缺口 17：http 传输的端点（只接受 http:// 或 https://）。 */
+  url: string | null;
+  /** 缺口 17：http 传输的请求头（可放 Authorization 等；绝不写进日志与事件）。 */
+  headers: Record<string, string>;
+  constructor(name: string, command: string, args: string[] = [], env: Record<string, string> = {}, inheritEnv: string[] = [], transport: MCPTransportKind = "stdio", url: string | null = null, headers: Record<string, string> = {}) {
     this.name = name; this.command = command; this.args = args; this.env = env; this.inherit_env = inheritEnv;
+    this.transport = transport; this.url = url; this.headers = headers;
   }
 
   static fromDict(name: string, raw: unknown): MCPServerConfig {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new MCPError("服务器配置必须是字典");
     const r = raw as Record<string, unknown>;
-    const command = r.command;
-    if (typeof command !== "string" || !command.trim()) throw new MCPError("command 必须是非空字符串");
+    const transport = r.transport ?? "stdio";
+    if (transport !== "stdio" && transport !== "http") throw new MCPError("transport 必须是 stdio 或 http");
+    let url: string | null = null;
+    if (transport === "http") {
+      if (typeof r.url !== "string" || !r.url.trim()) throw new MCPError("http 传输须配 url");
+      try {
+        const u = new URL(r.url.trim());
+        if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("只支持 http/https");
+      } catch { throw new MCPError("url 必须是 http:// 或 https:// 开头的地址"); }
+      url = r.url.trim();
+    }
+    const headers = r.headers ?? {};
+    if (!headers || typeof headers !== "object" || Array.isArray(headers) ||
+      Object.entries(headers as Record<string, unknown>).some(([k, v]) => typeof k !== "string" || typeof v !== "string" || !k.trim())) {
+      throw new MCPError("headers 必须是字符串字典");
+    }
+    const command = r.command ?? "";
+    if (transport === "stdio") {
+      if (typeof command !== "string" || !command.trim()) throw new MCPError("command 必须是非空字符串");
+    } else if (typeof command !== "string") {
+      throw new MCPError("command 必须是字符串");
+    }
     const args = r.args ?? [];
     if (!Array.isArray(args) || args.some((a) => typeof a !== "string")) throw new MCPError("args 必须是列表，且每一项必须是字符串");
     const env = r.env ?? {};
@@ -75,7 +112,7 @@ export class MCPServerConfig implements MCPServerConfigLike {
     if (!Array.isArray(inheritEnv) || inheritEnv.some((k) => typeof k !== "string" || !ENV_NAME_RE.test(k))) {
       throw new MCPError("inherit_env 必须是合法环境变量名称列表");
     }
-    return new MCPServerConfig(name, command, [...(args as string[])], { ...(env as Record<string, string>) }, [...(inheritEnv as string[])]);
+    return new MCPServerConfig(name, command, [...(args as string[])], { ...(env as Record<string, string>) }, [...(inheritEnv as string[])], transport, url, { ...(headers as Record<string, string>) });
   }
 }
 
@@ -201,7 +238,57 @@ export function sandboxedMcpSpawnArgs(
   throw new MCPError(`MCP 服务器 ${config.name} 的沙箱后端 ${resolved.backend} 未知，拒绝启动`);
 }
 
-export class MCPClient {
+/**
+ * 缺口 17：MCP 传输公共面——stdio 客户端（MCPClient）与 HTTP 客户端
+ *（MCPHttpClient）都实现它，MCPToolManager 按配置的 transport 选客户端，
+ * 其余逻辑（工具名、成本、沙箱、路由）不变。
+ */
+export interface MCPTransportLike {
+  config: MCPServerConfig;
+  tools: McpTool[];
+  era: "modern" | "legacy" | null;
+  negotiatedVersion: string | null;
+  serverInfo: Record<string, unknown> | null;
+  start(): void;
+  ensureNegotiated(): Promise<void>;
+  listTools(): Promise<McpTool[]>;
+  callTool(name: string, args: Record<string, unknown>): Promise<string>;
+  stop(): void;
+}
+
+/**
+ * 把 tools/call 的 result 拼成文本（stdio 与 HTTP 客户端共用）。
+ * input_required 仍抛错（Nyra 不做多轮往返）；isError 前缀保持与 stdio
+ * 客户端原有行为一致。
+ */
+export function extractToolText(result: Record<string, unknown>): string {
+  if (result.resultType === "input_required") {
+    const requests = result.inputRequests;
+    let detail = "";
+    if (requests && typeof requests === "object" && !Array.isArray(requests) && Object.keys(requests).length) {
+      detail = "（需要：" + Object.keys(requests).sort().join("、") + "）";
+    } else if (Array.isArray(requests) && requests.length) {
+      detail = `（需要 ${requests.length} 项输入）`;
+    }
+    throw new MCPError(`MCP 服务器要求补充输入后重试（多轮往返），Nyra 暂不支持${detail}`);
+  }
+  const content = result.content ?? [];
+  if (!Array.isArray(content)) throw new MCPError("MCP 工具响应格式无效：content 必须是列表");
+  const texts: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") throw new MCPError("MCP 工具响应格式无效：内容项必须是字典");
+    const it = item as Record<string, unknown>;
+    if (it.type === "text") {
+      if (typeof it.text !== "string") throw new MCPError("MCP 工具响应格式无效：text 必须是字符串");
+      texts.push(it.text);
+    }
+  }
+  let output = texts.length ? texts.join("\n") : JSON.stringify(result);
+  if (result.isError) output = "MCP 工具返回错误：\n" + output;
+  return output;
+}
+
+export class MCPClient implements MCPTransportLike {
   config: MCPServerConfig;
   timeout: number;
   /** 已解析的沙箱配置；为 null 时原样 spawn（0.5.1 前行为）。 */
@@ -577,30 +664,7 @@ export class MCPClient {
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
     await this.ensureNegotiated();
     const result = await this.sendRequest("tools/call", { name, arguments: args });
-    if (result.resultType === "input_required") {
-      const requests = result.inputRequests;
-      let detail = "";
-      if (requests && typeof requests === "object" && !Array.isArray(requests) && Object.keys(requests).length) {
-        detail = "（需要：" + Object.keys(requests).sort().join("、") + "）";
-      } else if (Array.isArray(requests) && requests.length) {
-        detail = `（需要 ${requests.length} 项输入）`;
-      }
-      throw new MCPError(`MCP 服务器要求补充输入后重试（多轮往返），Nyra 暂不支持${detail}`);
-    }
-    const content = result.content ?? [];
-    if (!Array.isArray(content)) throw new MCPError("MCP 工具响应格式无效：content 必须是列表");
-    const texts: string[] = [];
-    for (const item of content) {
-      if (!item || typeof item !== "object") throw new MCPError("MCP 工具响应格式无效：内容项必须是字典");
-      const it = item as Record<string, unknown>;
-      if (it.type === "text") {
-        if (typeof it.text !== "string") throw new MCPError("MCP 工具响应格式无效：text 必须是字符串");
-        texts.push(it.text);
-      }
-    }
-    let output = texts.length ? texts.join("\n") : JSON.stringify(result);
-    if (result.isError) output = "MCP 工具返回错误：\n" + output;
-    return output;
+    return extractToolText(result);
   }
 
   stop(): void {
@@ -622,6 +686,251 @@ export class MCPClient {
         }, 50);
       }
     } catch { /* ignore */ }
+  }
+}
+
+/** 缺口 17：现代握手用的 _meta（与 MCPClient.modernMeta 同形，HTTP 客户端用）。 */
+function buildModernMeta(version: string): Record<string, unknown> {
+  return {
+    [META_PROTOCOL_VERSION]: version,
+    [META_CLIENT_CAPABILITIES]: {},
+    [META_CLIENT_INFO]: { name: "Nyra", version: CLIENT_VERSION },
+  };
+}
+
+/**
+ * 缺口 17：MCP Streamable HTTP 客户端（与 MCPClient 同公共面）。
+ * - 每个请求都是独立的 HTTP POST（JSON-RPC 2.0），响应是 JSON 或 SSE；
+ *   有状态的服务器回 Mcp-Session-Id 时，后续请求带上它。
+ * - 协商与 stdio 客户端同款：先 server/discover 探现代版，失败回退旧版
+ *   initialize；tools/list 分页、tools/call 结果拼文本都与 stdio 一致。
+ * - 不启子进程、不走沙箱（沙箱只约束本地子进程）；url 只接受 http/https；
+ *   请求头（含 Authorization）绝不写进日志与事件。
+ * - 超时用 AbortController 掐断；HTTP 非 2xx 按状态码报 MCPRequestError。
+ */
+export class MCPHttpClient implements MCPTransportLike {
+  config: MCPServerConfig;
+  timeout: number;
+  tools: McpTool[] = [];
+  era: "modern" | "legacy" | null = null;
+  negotiatedVersion: string | null = null;
+  serverInfo: Record<string, unknown> | null = null;
+  private nextId = 1;
+  private negotiatePromise: Promise<void> | null = null;
+  private sessionId: string | null = null;
+
+  constructor(config: MCPServerConfig, timeout = 30.0) {
+    if (!config.url) throw new MCPError(`MCP 服务器 ${config.name} 用 http 传输却未配 url`);
+    this.config = config;
+    this.timeout = timeout;
+  }
+
+  /** 无状态传输：start 是空操作，协商在首次请求时懒完成（与 MCPClient 同款）。 */
+  start(): void {}
+
+  private async postJsonRpc(payload: Record<string, unknown>, timeout?: number): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), (timeout ?? this.timeout) * 1000);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      ...this.config.headers,
+    };
+    if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
+    let res: Response;
+    try {
+      res = await fetch(this.config.url!, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new MCPError(`MCP HTTP 请求超时：${this.config.name}（${timeout ?? this.timeout} 秒未回）`);
+      }
+      throw new MCPError(`MCP HTTP 请求失败：${this.config.name}（${err instanceof Error ? err.message : String(err)}）`);
+    } finally {
+      clearTimeout(timer);
+    }
+    const sid = res.headers.get("mcp-session-id");
+    if (sid) this.sessionId = sid;
+    const text = await res.text();
+    if (!res.ok) {
+      throw new MCPRequestError(`MCP HTTP 服务器返回 ${res.status}：${text.slice(0, 200)}`, res.status);
+    }
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("text/event-stream")) return this.parseSse(text);
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new MCPError(`MCP HTTP 响应不是合法 JSON：${this.config.name}`);
+    }
+  }
+
+  /** 解析 SSE 响应：取 data: 行拼成的 JSON-RPC 消息（可能多条）。 */
+  private parseSse(text: string): unknown[] {
+    const messages: unknown[] = [];
+    for (const block of text.split(/\r?\n\r?\n/)) {
+      for (const line of block.split(/\r?\n/)) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+        try { messages.push(JSON.parse(data)); } catch { /* 非 JSON 的 data 行忽略 */ }
+      }
+    }
+    return messages;
+  }
+
+  private async sendRequest(method: string, params: Record<string, unknown> = {}, meta?: Record<string, unknown> | null, timeout?: number): Promise<Record<string, unknown>> {
+    const id = this.nextId++;
+    const body: Record<string, unknown> = { ...params };
+    if (meta !== undefined && meta !== null) body._meta = meta;
+    else if (this.era === "modern") body._meta = buildModernMeta(this.negotiatedVersion ?? LATEST_PROTOCOL_VERSION);
+    const raw = await this.postJsonRpc({ jsonrpc: "2.0", id, method, params: body }, timeout);
+    const msg = this.pickResponse(raw, id);
+    if (msg === null) throw new MCPError(`MCP HTTP 服务器未回应该请求：${method}（id ${id}）`);
+    if (msg.error && typeof msg.error === "object") {
+      const e = msg.error as Record<string, unknown>;
+      const code = typeof e.code === "number" ? e.code : -32603;
+      throw new MCPRequestError(typeof e.message === "string" ? e.message : "MCP 服务器返回错误", code, e.data);
+    }
+    const result = msg.result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      throw new MCPError(`MCP HTTP 响应格式无效：${method} 的 result 必须是字典`);
+    }
+    return result as Record<string, unknown>;
+  }
+
+  /** 从 JSON 直回或 SSE 消息列表里挑出与本次 id 对应的那条。 */
+  private pickResponse(raw: unknown, id: number): { error?: unknown; result?: unknown } | null {
+    if (Array.isArray(raw)) {
+      for (const m of raw) {
+        if (m && typeof m === "object" && (m as Record<string, unknown>).id === id) {
+          return m as { error?: unknown; result?: unknown };
+        }
+      }
+      return null;
+    }
+    if (raw && typeof raw === "object" && (raw as Record<string, unknown>).id === id) {
+      return raw as { error?: unknown; result?: unknown };
+    }
+    return null;
+  }
+
+  private async sendNotification(method: string, params: Record<string, unknown> = {}): Promise<void> {
+    try {
+      await this.postJsonRpc({ jsonrpc: "2.0", method, params }, Math.min(this.timeout, 10));
+    } catch { /* 通知发不发得出去不影响后续请求 */ }
+  }
+
+  private pickModernVersion(data: unknown): string | null {
+    if (!data || typeof data !== "object") return null;
+    const supported = (data as Record<string, unknown>).supported;
+    if (!Array.isArray(supported)) return null;
+    for (const v of MODERN_PROTOCOL_VERSIONS) if (supported.includes(v)) return v;
+    return null;
+  }
+
+  private useModern(result: Record<string, unknown>, requested: string): void {
+    const supported = result.supportedVersions;
+    if (!Array.isArray(supported) || !supported.length) throw new MCPError("MCP 发现结果格式无效：supportedVersions 必须是列表");
+    let version: string | null = null;
+    if (supported.includes(requested)) version = requested;
+    else version = MODERN_PROTOCOL_VERSIONS.find((v) => supported.includes(v)) ?? null;
+    if (!version) throw new MCPError("MCP 服务器不支持任何 Nyra 能用的现代协议版本：" + supported.map(String).join("、"));
+    this.negotiatedVersion = version;
+    this.era = "modern";
+    const meta = result._meta;
+    if (meta && typeof meta === "object") {
+      const info = (meta as Record<string, unknown>)[META_SERVER_INFO];
+      if (info && typeof info === "object") this.serverInfo = info as Record<string, unknown>;
+    }
+  }
+
+  private async initializeLegacy(): Promise<void> {
+    const result = await this.sendRequest("initialize", {
+      protocolVersion: LEGACY_HANDSHAKE_VERSION,
+      capabilities: {},
+      clientInfo: { name: "Nyra", version: CLIENT_VERSION },
+    });
+    const serverVersion = result.protocolVersion;
+    if (typeof serverVersion === "string" && !LEGACY_PROTOCOL_VERSIONS.includes(serverVersion)) {
+      this.negotiatedVersion = serverVersion;
+    } else {
+      this.negotiatedVersion = typeof serverVersion === "string" ? serverVersion : LEGACY_HANDSHAKE_VERSION;
+    }
+    this.era = "legacy";
+    const info = result.serverInfo;
+    if (info && typeof info === "object") this.serverInfo = info as Record<string, unknown>;
+    await this.sendNotification("notifications/initialized");
+  }
+
+  private async doNegotiate(): Promise<void> {
+    try {
+      const result = await this.sendRequest("server/discover", {}, buildModernMeta(LATEST_PROTOCOL_VERSION), Math.min(this.timeout, PROBE_TIMEOUT));
+      this.useModern(result, LATEST_PROTOCOL_VERSION);
+      return;
+    } catch (err) {
+      if (err instanceof MCPRequestError && err.code === UNSUPPORTED_PROTOCOL_VERSION_CODE) {
+        const picked = this.pickModernVersion(err.data);
+        if (picked) {
+          try {
+            const result = await this.sendRequest("server/discover", {}, buildModernMeta(picked), Math.min(this.timeout, PROBE_TIMEOUT));
+            this.useModern(result, picked);
+            return;
+          } catch { /* 挑版本重试失败，落到旧版握手 */ }
+        }
+      }
+      // 其他 discover 失败（方法不存在、超时等）→ 旧版握手。
+      await this.initializeLegacy();
+    }
+  }
+
+  async ensureNegotiated(): Promise<void> {
+    if (!this.negotiatePromise) this.negotiatePromise = this.doNegotiate();
+    await this.negotiatePromise;
+  }
+
+  async listTools(): Promise<McpTool[]> {
+    await this.ensureNegotiated();
+    const tools: McpTool[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const params: Record<string, unknown> = {};
+      if (cursor !== null) params.cursor = cursor;
+      const result = await this.sendRequest("tools/list", params);
+      const rawTools = result.tools;
+      if (!Array.isArray(rawTools)) throw new MCPError("MCP 工具列表格式无效：tools 必须是列表");
+      for (const tool of rawTools) {
+        if (!tool || typeof tool !== "object") throw new MCPError("MCP 工具格式无效：工具必须是字典");
+        const t = tool as Record<string, unknown>;
+        if (typeof t.name !== "string" || !t.name) throw new MCPError("MCP 工具格式无效：name 必须是非空字符串");
+        tools.push({
+          name: t.name,
+          description: typeof t.description === "string" ? t.description : "",
+          inputSchema: (t.inputSchema && typeof t.inputSchema === "object"
+            ? t.inputSchema : { type: "object", properties: {} }) as Record<string, unknown>,
+        });
+      }
+      const next = result.nextCursor;
+      if (typeof next !== "string" || !next) break;
+      cursor = next;
+    }
+    this.tools = tools;
+    return tools;
+  }
+
+  async callTool(name: string, args: Record<string, unknown>): Promise<string> {
+    await this.ensureNegotiated();
+    const result = await this.sendRequest("tools/call", { name, arguments: args });
+    return extractToolText(result);
+  }
+
+  /** 无状态传输：无子进程可停，只清协商状态。 */
+  stop(): void {
+    this.tools = [];
+    this.negotiatePromise = null;
   }
 }
 
@@ -658,7 +967,7 @@ export interface McpToolSchema { type: string; function: { name: string; descrip
 export class MCPToolManager {
   servers: Record<string, MCPServerConfig>;
   timeout: number;
-  clients: Record<string, MCPClient> = {};
+  clients: Record<string, MCPTransportLike> = {};
   toolSchemas: McpToolSchema[] = [];
   private toolRoutes: Record<string, [string, string]> = {};
   /** 未解析的沙箱配置（startAll 里解析一次）；为 null 时不进沙箱。 */
@@ -679,8 +988,11 @@ export class MCPToolManager {
   async startAll(): Promise<void> {
     // 沙箱配置只解析一次：显式后端不可用时整批拒绝启动（不逐个服务器重复
     // 报错，也不让任何服务器裸奔）；解析失败直接抛 MCPError。
+    // 缺口 17：沙箱只约束 stdio 子进程——全是 http 服务器时不解析沙箱，
+    // 免得一个与 HTTP 无关的沙箱配置拦住整批启动。
+    const hasStdio = Object.values(this.servers).some((c) => c.transport !== "http");
     let resolved: ResolvedMcpSandbox | null = null;
-    if (this.sandbox) {
+    if (this.sandbox && hasStdio) {
       try {
         const r = resolveSandboxBackend({
           sandbox: this.sandbox.backend ?? null,
@@ -694,7 +1006,11 @@ export class MCPToolManager {
     }
     for (const [serverName, config] of Object.entries(this.servers)) {
       if (this.clients[serverName]) continue;
-      const client = new MCPClient(config, this.timeout, resolved);
+      // 缺口 17：按配置的 transport 选客户端——http 走 Streamable HTTP，
+      // stdio 走子进程；两者的 listTools/callTool 公共面一致。
+      const client: MCPTransportLike = config.transport === "http"
+        ? new MCPHttpClient(config, this.timeout)
+        : new MCPClient(config, this.timeout, resolved);
       try {
         client.start();
         const tools = await client.listTools();
@@ -789,4 +1105,480 @@ export async function buildMcpManager(
   await manager.startAll();
   if (!manager.hasTools()) { manager.stopAll(); return null; }
   return manager;
+}
+
+// ============================================================================
+// 缺口 17：对外 MCP 服务——Nyra 当 MCP 服务器（Streamable HTTP，JSON-RPC）
+// ============================================================================
+// 动机（总报告 §3 缺口 17）：Nyra 只有 MCP 客户端（stdio），别的 agent 接
+// 不进 Nyra 的记忆；Devin 双向 MCP、EverOS everos-mcp（7 个工具，含
+// forget_session）、Turnstone MCP 服务器都已对外提供服务。
+// Nyra 怎么做得更好：
+// - 工具：记忆读写（search_memory / add_memory / forget_session，与缺口 2
+//   的删除 API 同口径——进行中会话拒绝删除、revision 冲突拒绝）+ 任务派发
+//   （dispatch_task）+ 证据查询（query_evidence），共 5 个；
+// - 鉴权：走网关已有的 token（owner 或设备 token），不学 EverOS 本地无鉴权；
+// - 审批：写操作须显式开 allow_writes，且每次都要过独立审查层（缺口 10）；
+//   审查层未开启时写操作直接拒绝（fail-closed），不像市场那道门那样放行；
+// - 证据：带 id 的每次调用都记一条 mcp_server_call 事件进运行记录（网关
+//   每次对外服务调用复用一个“对外服务”运行，见 servingRunId），写操作的
+//   审查结论另记一条 reviewer_verdict；每次调用另写一行审计
+//   ~/.nyra/mcp-server-audit.jsonl；ping 与 notifications/* 是协议噪声，
+//   只进审计、不进运行记录；
+// - 默认：服务关闭、写操作关闭；端点关闭时当不存在（404），不泄露端点。
+// 协议：无状态 Streamable HTTP——只回 JSON（暂不支持 SSE 流式回包），不要求
+// Mcp-Session-Id；批量请求（数组）不支持；通知（无 id）不执行、不回包。
+
+/** 对外 MCP 服务的审计文件（~/.nyra/mcp-server-audit.jsonl，一行一次调用）。 */
+export const MCP_SERVER_AUDIT_FILE = "mcp-server-audit.jsonl";
+
+/** 对外 MCP 服务配置（config.json 的 mcp_server 一节，默认全关）。 */
+export interface McpServerConfig {
+  enabled: boolean;
+  allow_writes: boolean;
+}
+
+export function mcpServerConfig(config: Record<string, unknown>): McpServerConfig {
+  const raw = (config.mcp_server ?? {}) as Record<string, unknown>;
+  return { enabled: raw.enabled === true, allow_writes: raw.allow_writes === true };
+}
+
+/** 对外 MCP 服务的写操作对应的虚拟敏感动作（与 DEFAULT_REVIEWED_TOOLS 同名）。 */
+export type McpServerWriteAction = "mcp_server_add_memory" | "mcp_server_forget_session" | "mcp_server_dispatch_task";
+
+/** 对外 MCP 服务的工具定义（write=true 的只在 allow_writes 开启时出现）。 */
+export interface McpServerToolDef {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  /** 写操作（须 allow_writes + 审查层放行）。 */
+  write: boolean;
+  /** 审查层用的虚拟动作名（写操作才有）。 */
+  action: McpServerWriteAction | null;
+}
+
+export const MCP_SERVER_TOOLS: McpServerToolDef[] = [
+  {
+    name: "search_memory",
+    description: "BM25 检索 Nyra 的长期记忆（只读）。参数：query（必填），limit（默认 5，最多 20）。",
+    inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] },
+    write: false, action: null,
+  },
+  {
+    name: "query_evidence",
+    description: "读某次运行的事件记录（证据链，只读）。参数：run_id（必填，格式如 20261120-120000-abcdef），limit（默认 20，最多 100）。",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" }, limit: { type: "number" } }, required: ["run_id"] },
+    write: false, action: null,
+  },
+  {
+    name: "add_memory",
+    description: "往 Nyra 的长期记忆追加一条（写操作：须开启 allow_writes 且过独立审查）。参数：text（必填，最多 2000 字）。",
+    inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    write: true, action: "mcp_server_add_memory",
+  },
+  {
+    name: "forget_session",
+    description: "删除某个会话在长期记忆里的全部条目（写操作：须开启 allow_writes 且过独立审查；进行中的会话拒绝删除）。参数：session_id（必填）。",
+    inputSchema: { type: "object", properties: { session_id: { type: "string" } }, required: ["session_id"] },
+    write: true, action: "mcp_server_forget_session",
+  },
+  {
+    name: "dispatch_task",
+    description: "给 Nyra 派一个任务（写操作：须开启 allow_writes 且过独立审查；任务进队列后按 readonly/auto 模式跑）。参数：task（必填，最多 8000 字），mode（readonly 或 auto，默认 readonly）。",
+    inputSchema: { type: "object", properties: { task: { type: "string" }, mode: { type: "string", enum: ["readonly", "auto"] } }, required: ["task"] },
+    write: true, action: "mcp_server_dispatch_task",
+  },
+];
+
+/**
+ * 对外 MCP 服务的写操作审查门（与 reviewMarketplaceAction 同款：把虚拟动作
+ * 名合并进 reviewer.tools 再调 reviewToolCall，用户收窄 tools 也不影响这道门）。
+ * 唯一不同：审查层未开启时直接 BLOCK（fail-closed）——对外服务面对的是外
+ * 部客户端，默认不信任；市场那道门未开启时是放行（skipped）。
+ */
+export async function reviewMcpServerAction(opts: {
+  config: Record<string, unknown>;
+  home: string;
+  action: McpServerWriteAction;
+  args: Record<string, unknown>;
+  task?: string;
+  runner?: ReviewerLike | null;
+}): Promise<ReviewVerdict> {
+  if (reviewerEnabled(opts.config) !== true) {
+    return {
+      decision: "BLOCK",
+      reason: "对外 MCP 服务的写操作须开启独立审查层（reviewer.enabled）：审查层未开启时写操作直接拒绝；请先用 nyra reviewer enable 开启审查层",
+      reviewerModel: null,
+      source: "unavailable",
+    };
+  }
+  const reviewer = (opts.config.reviewer ?? {}) as Record<string, unknown>;
+  const merged: Record<string, unknown> = {
+    ...opts.config,
+    reviewer: {
+      ...reviewer,
+      tools: [...new Set([...(Array.isArray(reviewer.tools) ? (reviewer.tools as string[]) : []), opts.action])],
+    },
+  };
+  const runner = opts.runner !== undefined ? opts.runner : buildReviewerRunner(opts.config, opts.home);
+  return reviewToolCall({
+    config: merged,
+    tool: opts.action,
+    args: opts.args,
+    task: opts.task ?? "",
+    runner,
+  });
+}
+
+/** 对外 MCP 服务审计行：每次调用（包括鉴权失败）都写一行（时间戳自动加）。 */
+export function appendMcpServerAudit(home: string, entry: Record<string, unknown>): void {
+  const dir = resolveNyraHome(home);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  appendFileSync(join(dir, MCP_SERVER_AUDIT_FILE), JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n", "utf-8");
+}
+
+/** 参数指纹：键排序后 JSON 的 SHA-256（单向，不可还原原文；事件里记它）。 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
+  const obj = value as Record<string, unknown>;
+  return "{" + Object.keys(obj).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+
+export function mcpArgsHash(args: unknown): string {
+  return createHash("sha256").update(stableStringify(args ?? {}), "utf-8").digest("hex");
+}
+
+/** 协议层错误（JSON-RPC 错误码直回客户端；执行层失败走 isError 结果）。 */
+class McpProtocolError extends Error {
+  code: number;
+  constructor(code: number, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+export interface McpServerContext {
+  home: string;
+  config: Record<string, unknown>;
+  workdir?: string;
+  /** 审查模型 runner 的解析器；不传时 reviewMcpServerAction 现场建一个。 */
+  reviewerRunner?: () => ReviewerLike | null;
+  /** 进行中会话 id 集合（forget_session 的 session_running 保护用）。 */
+  activeSessionIds?: () => Iterable<string>;
+}
+
+/**
+ * 对外 MCP 服务器（无状态 JSON-RPC over HTTP，由网关 POST /mcp 接线）。
+ * 一个实例对应一个网关进程：所有调用记进同一个“对外服务”运行（懒创建），
+ * 这样每次调用都有运行记录可查，又不会每次调用都新建一个运行目录。
+ */
+export class NyraMcpServer {
+  private ctx: McpServerContext;
+  private runId: string | null = null;
+
+  constructor(ctx: McpServerContext) {
+    this.ctx = ctx;
+  }
+
+  tools(): McpServerToolDef[] {
+    const cfg = mcpServerConfig(this.ctx.config);
+    return MCP_SERVER_TOOLS.filter((t) => !t.write || cfg.allow_writes);
+  }
+
+  private memoryPath(): string {
+    return join(resolveNyraHome(this.ctx.home), "MEMORY.md");
+  }
+
+  private servingRunId(): string {
+    if (this.runId) return this.runId;
+    const store = new RunStore(join(resolveNyraHome(this.ctx.home), "runs"));
+    const state = store.create("MCP server（对外服务）", "mcp-server", this.ctx.workdir ?? process.cwd(), "readonly", 1, "running");
+    this.runId = state.run_id;
+    return this.runId;
+  }
+
+  private appendRunEvent(type: string, fields: Record<string, unknown>): void {
+    const store = new RunStore(join(resolveNyraHome(this.ctx.home), "runs"));
+    store.appendEvent(this.servingRunId(), type, fields);
+  }
+
+  /** 每次带 id 的调用都记一条 mcp_server_call 事件 + 一行审计（失败也记）。 */
+  private recordCall(fields: {
+    tool: string;
+    caller: string;
+    args: unknown;
+    ok: boolean;
+    reviewer_decision?: string;
+    run_id?: string;
+    error?: string;
+  }): void {
+    const eventFields: Record<string, unknown> = {
+      tool: fields.tool,
+      caller: fields.caller,
+      args_hash: mcpArgsHash(fields.args),
+      ok: fields.ok,
+    };
+    if (fields.reviewer_decision) eventFields.reviewer_decision = fields.reviewer_decision;
+    if (fields.run_id) eventFields.run_id = fields.run_id;
+    if (fields.error) eventFields.error = fields.error.slice(0, 300);
+    try { this.appendRunEvent("mcp_server_call", eventFields); } catch { /* 证据写失败不破坏调用 */ }
+    try { appendMcpServerAudit(this.ctx.home, eventFields); } catch { /* 审计写失败不破坏调用 */ }
+  }
+
+  private errorResponse(id: string | number | null, code: number, message: string): Record<string, unknown> {
+    return { jsonrpc: "2.0", id, error: { code, message } };
+  }
+
+  private doInitialize(params: unknown): Record<string, unknown> {
+    let version = LATEST_PROTOCOL_VERSION;
+    if (params && typeof params === "object" && !Array.isArray(params)) {
+      const asked = (params as Record<string, unknown>).protocolVersion;
+      if (typeof asked === "string" && (MODERN_PROTOCOL_VERSIONS.includes(asked) || LEGACY_PROTOCOL_VERSIONS.includes(asked))) {
+        version = asked;
+      }
+    }
+    return {
+      protocolVersion: version,
+      capabilities: { tools: {} },
+      serverInfo: { name: "Nyra", version: VERSION },
+    };
+  }
+
+  /** 写操作审查门：结论（放行与拦截都）另记一条 reviewer_verdict 事件。 */
+  private async reviewWrite(action: McpServerWriteAction, args: Record<string, unknown>, task: string): Promise<ReviewVerdict> {
+    const verdict = await reviewMcpServerAction({
+      config: this.ctx.config,
+      home: this.ctx.home,
+      action,
+      args,
+      task,
+      runner: this.ctx.reviewerRunner ? this.ctx.reviewerRunner() : undefined,
+    });
+    try {
+      this.appendRunEvent("reviewer_verdict", {
+        tool: action,
+        decision: verdict.decision,
+        reason: verdict.reason,
+        reviewer_model: verdict.reviewerModel ?? "",
+        rule: verdict.rule ?? "",
+      });
+    } catch { /* 证据写失败不破坏调用 */ }
+    return verdict;
+  }
+
+  private doSearchMemory(args: Record<string, unknown>): string {
+    const query = args.query;
+    if (typeof query !== "string" || !query.trim()) throw new McpProtocolError(-32602, "search_memory 须给 query（非空字符串）");
+    const limitRaw = args.limit;
+    const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.min(20, Math.max(1, Math.floor(limitRaw))) : 5;
+    const hits = searchMemoryEntries(this.memoryPath(), query.trim(), { limit, home: this.ctx.home });
+    if (!hits.length) return "未找到相关记忆。";
+    return formatMemorySearchResults(hits);
+  }
+
+  private doQueryEvidence(args: Record<string, unknown>): string {
+    const runId = args.run_id;
+    if (typeof runId !== "string" || !/^[0-9]{8}-[0-9]{6}-[0-9a-f]{6}$/.test(runId)) {
+      throw new McpProtocolError(-32602, "query_evidence 须给 run_id（格式如 20261120-120000-abcdef）");
+    }
+    const limitRaw = args.limit;
+    const limit = typeof limitRaw === "number" && Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, Math.floor(limitRaw))) : 20;
+    let events: Record<string, unknown>[] = [];
+    for (const dir of ["runs", "tasks"]) {
+      try {
+        events = new RunStore(join(resolveNyraHome(this.ctx.home), dir)).readEvents(runId);
+        if (events.length) break;
+      } catch { /* 目录不存在时换下一个目录试 */ }
+    }
+    if (!events.length) return `未找到运行 ${runId} 的事件（可能不存在或尚未记录）。`;
+    const tail = events.slice(-limit);
+    const lines = tail.map((ev) => {
+      const at = typeof ev.at === "string" ? ev.at : "";
+      const type = typeof ev.type === "string" ? ev.type : "event";
+      const rest = Object.entries(ev).filter(([k]) => k !== "at" && k !== "type")
+        .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`).join(" ");
+      return `${at} ${type}${rest ? " " + rest : ""}`;
+    });
+    return `运行 ${runId} 最近 ${tail.length} 条事件（共 ${events.length} 条）：\n` + lines.join("\n");
+  }
+
+  private async doAddMemory(args: Record<string, unknown>): Promise<{ text: string; reviewerDecision: string }> {
+    const text = args.text;
+    if (typeof text !== "string" || !text.trim()) throw new McpProtocolError(-32602, "add_memory 须给 text（非空字符串）");
+    if (text.length > 2000) throw new McpProtocolError(-32602, "add_memory 的 text 最多 2000 字");
+    const verdict = await this.reviewWrite("mcp_server_add_memory", args, text.trim().slice(0, 200));
+    if (verdict.decision === "BLOCK") {
+      return { text: `独立审查拦截了本次写入：${verdict.reason}`, reviewerDecision: "BLOCK" };
+    }
+    const before = new Set(listMemoryEntries(this.memoryPath(), this.ctx.home).map((e) => e.id));
+    appendMemory(text.trim(), undefined, this.ctx.home, undefined, "mcp-server");
+    const after = listMemoryEntries(this.memoryPath(), this.ctx.home);
+    const created = after.find((e) => !before.has(e.id));
+    return { text: `已记入长期记忆${created ? ` [${created.id}]` : ""}：${text.trim().slice(0, 200)}`, reviewerDecision: "ALLOW" };
+  }
+
+  private async doForgetSession(args: Record<string, unknown>): Promise<{ text: string; reviewerDecision: string }> {
+    const sessionId = args.session_id;
+    if (typeof sessionId !== "string" || !sessionId.trim()) throw new McpProtocolError(-32602, "forget_session 须给 session_id（非空字符串）");
+    const verdict = await this.reviewWrite("mcp_server_forget_session", args, `删除会话 ${sessionId.trim()} 的记忆`);
+    if (verdict.decision === "BLOCK") {
+      return { text: `独立审查拦截了本次删除：${verdict.reason}`, reviewerDecision: "BLOCK" };
+    }
+    const result = deleteMemoryEntries(this.memoryPath(), {
+      session_id: sessionId.trim(),
+      home: this.ctx.home,
+      activeSessionIds: this.ctx.activeSessionIds ? this.ctx.activeSessionIds() : [],
+    });
+    return { text: `已删除会话 ${sessionId.trim()} 的 ${result.deleted.length} 条记忆，还剩 ${result.remaining} 条。`, reviewerDecision: "ALLOW" };
+  }
+
+  private async doDispatchTask(args: Record<string, unknown>): Promise<{ text: string; reviewerDecision: string; runId: string }> {
+    const task = args.task;
+    if (typeof task !== "string" || !task.trim()) throw new McpProtocolError(-32602, "dispatch_task 须给 task（非空字符串）");
+    const modeRaw = args.mode ?? "readonly";
+    if (modeRaw !== "readonly" && modeRaw !== "auto") throw new McpProtocolError(-32602, "dispatch_task 的 mode 只能是 readonly 或 auto");
+    const verdict = await this.reviewWrite("mcp_server_dispatch_task", args, task.trim().slice(0, 200));
+    if (verdict.decision === "BLOCK") {
+      return { text: `独立审查拦截了本次派发：${verdict.reason}`, reviewerDecision: "BLOCK", runId: "" };
+    }
+    const created = await addTask(task.trim(), { mode: modeRaw, home: this.ctx.home, config: this.ctx.config });
+    return { text: `任务已入队：run_id ${created.run_id}（模式 ${modeRaw}，状态 queued）`, reviewerDecision: "ALLOW", runId: created.run_id };
+  }
+
+  /**
+   * 处理一次 JSON-RPC 请求。返回 HTTP 状态与响应体（body 为 null 时回 202 空体，
+   * 用于通知）。协议层错误（未知方法、参数无效）回 JSON-RPC 错误码；工具执
+   * 行层失败（审查拦截、删除冲突等）回 isError 结果，不走 JSON-RPC 错误。
+   */
+  async handle(body: unknown, caller: string): Promise<{ status: number; body: Record<string, unknown> | null }> {
+    if (!mcpServerConfig(this.ctx.config).enabled) {
+      return { status: 200, body: this.errorResponse(null, -32603, "对外 MCP 服务未开启") };
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return { status: 200, body: this.errorResponse(null, -32600, "Invalid Request：请求体必须是 JSON-RPC 对象") };
+    }
+    const msg = body as Record<string, unknown>;
+    const id = (typeof msg.id === "string" || typeof msg.id === "number") ? msg.id : null;
+    const method = msg.method;
+    if (typeof method !== "string" || !method) {
+      return { status: 200, body: this.errorResponse(id, -32600, "Invalid Request：缺少 method") };
+    }
+    // 通知（无 id）不执行、不回包：notifications/* 是协议握手噪声，连审计都不记。
+    if (id === null) {
+      if (!method.startsWith("notifications/")) {
+        try { appendMcpServerAudit(this.ctx.home, { tool: method, caller, ok: false, error: "无 id 的通知不执行" }); } catch { /* ignore */ }
+      }
+      return { status: 202, body: null };
+    }
+    const params = msg.params ?? {};
+    try {
+      let result: Record<string, unknown>;
+      let toolName = method;
+      let reviewerDecision: string | undefined;
+      let runId: string | undefined;
+      let ok = true;
+      let errorText: string | undefined;
+      if (method === "initialize") {
+        result = this.doInitialize(params);
+      } else if (method === "ping") {
+        result = {};
+      } else if (method === "tools/list") {
+        result = { tools: this.tools().map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) };
+      } else if (method === "tools/call") {
+        if (!params || typeof params !== "object" || Array.isArray(params)) {
+          throw new McpProtocolError(-32602, "tools/call 的 params 必须是字典（含 name 与 arguments）");
+        }
+        const name = (params as Record<string, unknown>).name;
+        if (typeof name !== "string" || !name) throw new McpProtocolError(-32602, "tools/call 须给 name（字符串）");
+        const def = this.tools().find((t) => t.name === name);
+        if (!def) throw new McpProtocolError(-32602, `未知工具：${name}`);
+        const args = (params as Record<string, unknown>).arguments;
+        const argsObj: Record<string, unknown> = args && typeof args === "object" && !Array.isArray(args)
+          ? args as Record<string, unknown> : {};
+        toolName = name;
+        let text: string;
+        let isError = false;
+        try {
+          if (name === "search_memory") {
+            text = this.doSearchMemory(argsObj);
+          } else if (name === "query_evidence") {
+            text = this.doQueryEvidence(argsObj);
+          } else if (name === "add_memory") {
+            const out = await this.doAddMemory(argsObj);
+            text = out.text; isError = out.reviewerDecision === "BLOCK"; reviewerDecision = out.reviewerDecision;
+          } else if (name === "forget_session") {
+            const out = await this.doForgetSession(argsObj);
+            text = out.text; isError = out.reviewerDecision === "BLOCK"; reviewerDecision = out.reviewerDecision;
+          } else {
+            const out = await this.doDispatchTask(argsObj);
+            text = out.text; isError = out.reviewerDecision === "BLOCK"; reviewerDecision = out.reviewerDecision;
+            if (out.runId) runId = out.runId;
+          }
+        } catch (err) {
+          // 执行层失败（审查拦截已在上面回 isError；这里是删除冲突、入队失败
+          // 等）——按 MCP 口径回 isError 结果，不走 JSON-RPC 错误；参数无效
+          //（McpProtocolError）继续向上抛，走 -32602。
+          if (err instanceof McpProtocolError) throw err;
+          text = `工具执行失败：${err instanceof Error ? err.message : String(err)}`;
+          isError = true;
+          errorText = err instanceof Error ? err.message : String(err);
+        }
+        if (isError) { ok = false; errorText = errorText ?? text; }
+        result = { content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) };
+      } else {
+        return { status: 200, body: this.errorResponse(id, -32601, `Method not found：${method}`) };
+      }
+      this.recordCall({ tool: toolName, caller, args: params, ok, reviewer_decision: reviewerDecision, run_id: runId, error: errorText });
+      return { status: 200, body: { jsonrpc: "2.0", id, result } };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.recordCall({ tool: method, caller, args: params, ok: false, error: message });
+      if (err instanceof McpProtocolError) {
+        return { status: 200, body: this.errorResponse(id, err.code, message) };
+      }
+      return { status: 200, body: this.errorResponse(id, -32603, message) };
+    }
+  }
+}
+
+/**
+ * CLI：nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>。
+ * 与 nyra reviewer/verifier 同款退出码：0 成功、2 用法错误。
+ */
+export async function handleMcpServer(argv: string[], home: string): Promise<number> {
+  const resolvedHome = home || resolveHome();
+  if (argv[0] !== "server") {
+    process.stdout.write("用法：nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>\n");
+    return 2;
+  }
+  const action = argv[1];
+  if (!action) {
+    process.stdout.write("用法：nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>\n");
+    return 2;
+  }
+  const config = loadConfig(resolvedHome);
+  const cfg = mcpServerConfig(config);
+  if (action === "status") {
+    const reviewer = reviewerEnabled(config);
+    const model = resolveReviewerModel(config);
+    process.stdout.write(`对外 MCP 服务：${cfg.enabled ? "启用" : "禁用（默认关闭）"}\n`);
+    process.stdout.write(`写操作：${cfg.allow_writes ? "允许（每次写操作仍须过独立审查层）" : "不允许（默认只读）"}\n`);
+    process.stdout.write(`独立审查层：${reviewer ? `已开启（${model.provider}:${model.model}）` : "未开启（写操作将直接拒绝）"}\n`);
+    process.stdout.write(`工具：${cfg.enabled ? (cfg.allow_writes ? "search_memory、query_evidence、add_memory、forget_session、dispatch_task" : "search_memory、query_evidence（只读）") : "（服务未开启）"}\n`);
+    process.stdout.write("端点：POST /mcp（网关 token 鉴权，见 docs/mcp.md）\n");
+    return 0;
+  }
+  if (action === "enable" || action === "disable") {
+    saveConfig(resolvedHome, { mcp_server: { ...cfg, enabled: action === "enable" } });
+    process.stdout.write(`对外 MCP 服务已${action === "enable" ? "启用（POST /mcp，网关 token 鉴权；默认只读）" : "禁用"}\n`);
+    return 0;
+  }
+  if (action === "allow-writes-on" || action === "allow-writes-off") {
+    saveConfig(resolvedHome, { mcp_server: { ...cfg, allow_writes: action === "allow-writes-on" } });
+    process.stdout.write(`对外 MCP 服务写操作已${action === "allow-writes-on" ? "允许（每次写操作仍须过独立审查层；审查层未开启时写操作直接拒绝）" : "关闭（只读）"}\n`);
+    return 0;
+  }
+  process.stderr.write(`错误：未知动作 ${action}，用法：nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>\n`);
+  return 2;
 }

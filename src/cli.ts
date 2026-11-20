@@ -96,7 +96,7 @@ import { GatewayClient } from "./gatewayClient.ts";
 import { ConversationStore } from "./conversations.ts";
 import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from "./rewind.ts";
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
-import { loadMcpServers } from "./mcp.ts";
+import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { listPresets } from "./mcpPresets.ts";
 import {
   PluginError, installPlugin, uninstallPlugin, listPlugins, verifyPlugin,
@@ -138,6 +138,7 @@ nyra tools                      工具集体检：每轮 schema 成本与裁剪�
 nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
 nyra vault <...>                凭据保险箱（加密存储，权限 0600）
 nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
+nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
 nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
 nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -209,6 +210,7 @@ nyra tools                     tool-pool health: per-turn schema cost and trim a
 nyra config export|import|explain  settings export/import/explain (secrets stripped)
 nyra vault <...>               credential vault (encrypted at rest, mode 0600)
 nyra gmail <search|read|reply|draft|send>   native Gmail connector
+nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
 nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
 nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
@@ -4237,6 +4239,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "responsibility") return handleResponsibility(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "verifier") return handleVerifier(args.subArgs ?? [], home);
+  if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
   if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
   if (args.subcommand === "market") return handleMarket(args.subArgs ?? [], home);

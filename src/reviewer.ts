@@ -84,6 +84,12 @@ export const DEFAULT_REVIEWED_TOOLS: readonly string[] = [
   // 审查集（市场那道门用合并后的配置调 reviewToolCall，用户收窄 tools
   // 也不影响市场审查）。
   "marketplace_install", "marketplace_publish",
+  // mcp_server_add_memory / mcp_server_forget_session /
+  // mcp_server_dispatch_task 是虚拟敏感动作（不是 tools.ts 里的工具）：
+  // 对外 MCP 服务的写操作过审查，见 src/mcp.ts 的 reviewMcpServerAction；
+  // executeTool 不会遇到这三个名字，加进来只影响审查集（对外服务那道门
+  // 用合并后的配置调 reviewToolCall，用户收窄 tools 也不影响对外服务审查）。
+  "mcp_server_add_memory", "mcp_server_forget_session", "mcp_server_dispatch_task",
 ];
 
 export function reviewerConfig(config: Record<string, unknown>): ReviewerConfig {
