@@ -1,3 +1,10 @@
+## 2026-11-20 — P0 Windows claim reparse 安全边界（单项增量）
+
+- **仓库事实**：`scripts/node_tool_claim.ts` 原先在 Windows 上使用 `lstatSync` 路径预检，但未建立稳定目录句柄，无法可靠排除 junction/reparse 重定向。2026-11-20 主分支近期 [0b79890](https://github.com/js2005happy/nyra/commit/0b79890c72030517a18c64f8ed5bcf2860055f17) 增加 Shopify 只读连接器，不涉及 claim 安全；本轮 GitHub 搜索开放 Issues/PR 均为空。
+- **本轮 P0**（价值高／难度低／安全风险低／依赖 Windows 原生目录句柄能力）：在 Windows 上直接拒绝 claim，避免把不完整路径预检当成可信原子所有权；POSIX 原行为不变，仍未接入执行器。
+- **外部需求证据**：[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07，重复投递个案）和 [Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19，安全等待/恢复请求）。**事实**：外部用户反馈；**推断**：可信持久 claim 应先于自动恢复，不能据此证明 Angel 复现问题。
+- **后续排序（价值／难度／风险／依赖）**：P0 Windows 句柄级 reparse 检查（高／高／高／Windows API）；P0 POSIX 目录句柄及祖先竞态约束（高／高／高／文件系统语义）；P0 真实 Node 工具派发集成（高／高／高／前两项）；P1 MCP 目录变化检测（中高／中／中／MCP）；P1 可信副作用回执（高／高／高／适配器）。仅静态审阅，未运行测试或 CI。
+
 ## 2026-11-20 — P0 claim 存储目录预检（静态，未接入执行器）
 
 - **事实**：当前开发分支 `scripts/node_tool_claim.ts` 原先只检查叶目录不是符号链接，未拒绝可解析的符号链接祖先或 POSIX 共享目录。main 最近提交 [0856b0d](https://github.com/js2005happy/nyra/commit/0856b0d8c3f4ffcb7059b793d731a6785bae3dc9)（2026-11-20 11:37 UTC）涉及 Bot 通知及附件处理，不是跨进程工具 claim；开放 Issues/PR 搜索为空。
