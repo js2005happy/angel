@@ -1,3 +1,10 @@
+## 2026-11-20 — P0 claim 目录句柄与路径身份复核（单项增量）
+
+- **仓库事实**：开发分支 Node claim 仅在创建前预检目录，写入后对目录路径直接重新打开并 fsync，缺少打开句柄与路径对象身份对照。main 最新检索提交 [b53a9c5](https://github.com/js2005happy/nyra/commit/b53a9c5beace9c2d048a5809a247bf2bc1b7916f)（2026-11-20 14:17 UTC）为多 Agent 时间线/回放，不重复本项；开放 Issues/PR 查询为空。
+- **本轮 P0（价值高／难度低／风险中／依赖 POSIX 目录 fd）**：目录 fsync 阶段以 O_DIRECTORY|O_NOFOLLOW 打开，fstat 与路径 lstat 比较设备/ inode、所有者和私有权限，并在 fsync 后再次检查路径身份；任何失败拒绝报告 claim 成功。未改变 Windows 默认拒绝行为。仍无法消除祖先目录替换、预检与创建间竞态，且不支持网络文件系统的强保证。
+- **外部事实**：[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07）用户报告重复投递；[Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19）请求安全等待与恢复。**工程推断**：应在真实派发前建立可信操作身份，外部报告不证明本仓库复现。
+- **后续排序（价值／难度／安全风险／依赖）**：P0 POSIX 目录创建时稳定 fd 绑定（高／高／高／文件系统）；P0 Windows reparse 句柄级支持（高／高／高／原生 API）；P0 Node 派发集成（高／高／高／可信 claim）；P1 MCP 工具目录版本（中高／中／中／协议）；P1 可信副作用回执（高／高／高／适配器）。仅静态审阅，未运行测试、编译或 CI。
+
 ## 2026-11-20 — P0 Windows claim 门禁源码修复（单项增量）
 
 - **仓库事实**：前次 Windows fail-closed 改动把换行写成字面量 `\\n`，导致 `if (process.platform === "win32")` 与绝对路径校验落在 `//` 注释同一源码行，未实际生效；本轮修复为真实换行。此为静态源码缺陷，不是运行时复现。
