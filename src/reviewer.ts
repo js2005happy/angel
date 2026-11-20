@@ -68,10 +68,16 @@ export interface ReviewerConfig {
 * （memory_forget/memory_delete）、对外发信（gmail_send）、对外发请求
 * （http_post）——缺口 10 规格里的“对外发送、支付、删改关键文件”全覆盖
 * （支付工具目前没有，未来加支付工具时把它也放进默认集）。
+* 另有 submit_bughunt_report：虚拟敏感动作（不是 tools.ts 里的工具），
+* 候选提案 1 的提交前核对把它当敏感动作过审查。
 */
 export const DEFAULT_REVIEWED_TOOLS: readonly string[] = [
   "write_file", "edit_file", "apply_patch", "shell",
   "memory_forget", "memory_delete", "gmail_send", "http_post",
+  // submit_bughunt_report 是虚拟敏感动作（不是 tools.ts 里的工具）：bughunt
+  // 提交前核对把“提交漏洞报告”当敏感动作过审查，见 src/bughunt.ts 的
+  // reviewSubmitReport；executeTool 不会遇到这个名字，加进来只影响审查集。
+  "submit_bughunt_report",
 ];
 
 export function reviewerConfig(config: Record<string, unknown>): ReviewerConfig {

@@ -105,65 +105,66 @@ import {
 export const USAGE = `Nyra ${VERSION}（Node 运行时）
 
 用法：
-  nyra "任务" [--provider 名字] [--mode readonly|auto|full|creator]   一次性执行任务
-  --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
-  nyra                                                        进入交互模式（REPL）
-  nyra --help                    显示帮助（不用 Key、不联网）
-  nyra --version                 显示版本
-  nyra --list-providers          列出所有可用 provider（内置预设 + 自定义）
-  nyra --list-models [--provider 名字]   列出该来源的已知模型
-  nyra --list-profiles           列出已配置的 provider 档案
-  nyra --list-skills             列出已加载的技能
-  nyra --list-sessions           列出历史会话
-  nyra --list-mcp                列出已配置的 MCP 服务器与预置（第 3 阶段原生）
-  nyra ui [--host 127.0.0.1] [--port 8765] [--pair] [--open]   启动 gateway 网页界面
-  nyra ui --print-url-json --exit-on-stdin-close   桌面外壳模式：stdout 首行一行 JSON，stdin 关闭即退出
-  nyra gw <sessions|send|view|approve|rewind|info|schedule>   连正在跑的 gateway 当客户端
-  nyra --compact <会话 ID>       压缩指定会话后退出
-  REPL：/context 查看上下文占用；/compact focus <关键词> 按重点压缩会话（详见 docs/context.md）
-  nyra --resume <会话 ID>        继续指定会话
-  nyra --resume-run <运行 ID>    从运行记录断点续跑
-  nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
-  nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
-  nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
-  nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
-  nyra verdict --run <ID>          单次运行打分；--recent N 看趋势（该修什么）
-  nyra guard [--strict]           门禁形态：red 时退出码 2（--strict 下 yellow 也拦）
-  nyra savings [任务] [--json]    省钱机制汇总 + 辅助模型实测节省 + 逐模型明细
-  nyra recall "任务" [--cross-dir]  查这个任务有哪些历史可复用（不必从零探索）
-  nyra features                   功能开关列表（CLI > config > 默认）
-  nyra tools                      工具集体检：每轮 schema 成本与裁剪建议
-  nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
-  nyra vault <...>                凭据保险箱（加密存储，权限 0600）
-  nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
-  nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
-  nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
-  nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
-  nyra --execute-plan --approve-plan <SHA256>   执行经校验值批准的 plan.md
-  nyra --verify "<命令>"         任务完成后运行验证命令（退出码 0 才算验证通过）
-  nyra --json "任务"             单次非交互任务，输出 JSON Lines
-  nyra schedule <list|add|remove|run|daemon>   管理定时任务
-  nyra task <add|list|show|cancel|worker|approve>   管理后台任务队列
-  nyra review <list|show|approve|reject|apply|verify|enqueue>   审阅队列：并行线程与定时任务结果逐项批（详见 docs/review-queue.md）
-  nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
-  nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
-  nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
-  nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
-  nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
-  nyra kb <create|list|add|search|ask|remove>  本地知识库
-  nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
-  nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
-  nyra status                    诊断清单：损坏的配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher（只读，详见 docs/status.md）
-  nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
-  nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
-  nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
-  nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
-  nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
-  nyra setup                     首次启动向导
-  nyra --example [文件]          本地示例任务（不调模型、不花钱）
-  nyra ui                        网页界面（本地网页，含模式切换与创造模式）
-  nyra permissions ...           Poppy 站点授权意向（本地账本，只记录不授权）
-  nyra eigenflux ...             EigenFlux 接入检测与本地网络限制（第 4 阶段已原生化）
+nyra "任务" [--provider 名字] [--mode readonly|auto|full|creator]   一次性执行任务
+--max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
+nyra                                                        进入交互模式（REPL）
+nyra --help                    显示帮助（不用 Key、不联网）
+nyra --version                 显示版本
+nyra --list-providers          列出所有可用 provider（内置预设 + 自定义）
+nyra --list-models [--provider 名字]   列出该来源的已知模型
+nyra --list-profiles           列出已配置的 provider 档案
+nyra --list-skills             列出已加载的技能
+nyra --list-sessions           列出历史会话
+nyra --list-mcp                列出已配置的 MCP 服务器与预置（第 3 阶段原生）
+nyra ui [--host 127.0.0.1] [--port 8765] [--pair] [--open]   启动 gateway 网页界面
+nyra ui --print-url-json --exit-on-stdin-close   桌面外壳模式：stdout 首行一行 JSON，stdin 关闭即退出
+nyra gw <sessions|send|view|approve|rewind|info|schedule>   连正在跑的 gateway 当客户端
+nyra --compact <会话 ID>       压缩指定会话后退出
+REPL：/context 查看上下文占用；/compact focus <关键词> 按重点压缩会话（详见 docs/context.md）
+nyra --resume <会话 ID>        继续指定会话
+nyra --resume-run <运行 ID>    从运行记录断点续跑
+nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
+nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
+nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
+nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
+nyra verdict --run <ID>          单次运行打分；--recent N 看趋势（该修什么）
+nyra guard [--strict]           门禁形态：red 时退出码 2（--strict 下 yellow 也拦）
+nyra savings [任务] [--json]    省钱机制汇总 + 辅助模型实测节省 + 逐模型明细
+nyra recall "任务" [--cross-dir]  查这个任务有哪些历史可复用（不必从零探索）
+nyra features                   功能开关列表（CLI > config > 默认）
+nyra tools                      工具集体检：每轮 schema 成本与裁剪建议
+nyra config export|import|explain  设置导出/导入/解释（默认剔除密钥）
+nyra vault <...>                凭据保险箱（加密存储，权限 0600）
+nyra gmail <search|read|reply|draft|send>   Gmail 原生连接器：读信 / 按 thread 回复 / 代发草稿
+nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
+nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
+nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
+nyra --execute-plan --approve-plan <SHA256>   执行经校验值批准的 plan.md
+nyra --verify "<命令>"         任务完成后运行验证命令（退出码 0 才算验证通过）
+nyra --json "任务"             单次非交互任务，输出 JSON Lines
+nyra schedule <list|add|remove|run|daemon>   管理定时任务
+nyra task <add|list|show|cancel|worker|approve>   管理后台任务队列
+nyra review <list|show|approve|reject|apply|verify|enqueue>   审阅队列：并行线程与定时任务结果逐项批（详见 docs/review-queue.md）
+nyra events <list|add|remove|enable|disable|test|poll>   事件触发任务：webhook 与新邮件触发进任务队列（详见 docs/event-triggers.md）
+nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
+nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
+nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
+nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
+nyra bughunt <install|status|scope|template|check>   授权漏洞挖掘技能包：范围卡 + 证伪验证 + 提交前七问 + 证据卫生，提交前核对（详见 docs/bughunt.md）
+nyra kb <create|list|add|search|ask|remove>  本地知识库
+nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
+nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
+nyra status                    诊断清单：损坏的配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher（只读，详见 docs/status.md）
+nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
+nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
+nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
+nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
+nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
+nyra setup                     首次启动向导
+nyra --example [文件]          本地示例任务（不调模型、不花钱）
+nyra ui                        网页界面（本地网页，含模式切换与创造模式）
+nyra permissions ...           Poppy 站点授权意向（本地账本，只记录不授权）
+nyra eigenflux ...             EigenFlux 接入检测与本地网络限制（第 4 阶段已原生化）
 
 模型兜底默认关闭（只用户开启、只切允许列表内服务商）。
 界面语言：--lang zh|en（或 NYRA_LANG、config.json 的 language、系统语言；REPL 里 /lang 切换）。`;
@@ -171,68 +172,69 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
 export const USAGE_EN = `Nyra ${VERSION} (Node runtime)
 
 Usage:
-  nyra "task" [--provider name] [--mode readonly|auto|full|creator]   run one task
-  --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
-  nyra                                                        interactive mode (REPL)
-  nyra --help                    show help (no key, no network)
-  nyra --version                 show version
-  nyra --lang zh|en              UI language (also NYRA_LANG, config "language", system locale; /lang in the REPL)
-  nyra --list-providers          list providers (built-in presets + custom)
-  nyra --list-models [--provider name]   list known models for a provider
-  nyra --list-profiles           list configured provider profiles
-  nyra --list-skills             list loaded skills
-  nyra --list-sessions           list past sessions
-  nyra --list-mcp                list configured MCP servers and presets
-  nyra ui [--host 127.0.0.1] [--port 8765] [--pair] [--open]   start the gateway web UI
-  nyra ui --print-url-json --exit-on-stdin-close   desktop shell mode: one JSON line on stdout, exits when stdin closes
-  nyra gw <sessions|send|view|approve|rewind|info|schedule>   talk to a running gateway as a client
-  nyra --compact <session id>    compact a session and exit
-  REPL: /context shows context usage; /compact focus <keyword> compacts around a topic (see docs/context.md)
-  nyra --resume <session id>     continue a session
-  nyra --resume-run <run id>     resume a run from its record
-  nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
-  nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
-  nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
-  nyra verdict [task] [--json]   one conclusion: is this run worth it
-  nyra verdict --run <id>        score one run; --recent N: trend over the last N runs
-  nyra guard [--strict]          gate: exit 2 when verdict is red (yellow too with --strict)
-  nyra savings [task] [--json]   what is saving tokens + measured aux-model savings
-  nyra recall "task" [--cross-dir]   which past runs are reusable for this task
-  nyra features                  feature switches (CLI > config > default)
-  nyra tools                     tool-pool health: per-turn schema cost and trim advice
-  nyra config export|import|explain  settings export/import/explain (secrets stripped)
-  nyra vault <...>               credential vault (encrypted at rest, mode 0600)
-  nyra gmail <search|read|reply|draft|send>   native Gmail connector
-  nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
-  nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
-  nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
-  nyra verdict --run <id>         score one run; --recent N: trend over the last N runs; --json: machine-readable
-  nyra guard [--strict]          gate: exit 2 when verdict is red (yellow too with --strict)
-  nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
-  nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
-  nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
-  nyra --json "task"             one non-interactive task, JSON Lines output
-  nyra schedule <list|add|remove|run|daemon>   manage scheduled tasks
-  nyra task <add|list|show|cancel|worker|approve>   manage the background task queue
-  nyra review <list|show|approve|reject|apply|verify|enqueue>   review queue: approve parallel threads and scheduled-task results one by one (see docs/review-queue.md)
-  nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
-  nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
-  nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
-  nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
-  nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
-  nyra kb <create|list|add|search|ask|remove>  local knowledge base
-  nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
-  nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
-  nyra status                    diagnose broken configs, unavailable sandbox, ignored permission rules, never-matching hook matchers (read-only, see docs/status.md)
-  nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
-  nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
-  nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
-  nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
-  nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
-  nyra setup                     first-run wizard
-  nyra --example [file]          local example task (no model calls, no cost)
-  nyra permissions ...           Poppy site permission intents (local ledger; records, never grants)
-  nyra eigenflux ...             EigenFlux checks and local network limits
+nyra "task" [--provider name] [--mode readonly|auto|full|creator]   run one task
+--max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
+nyra                                                        interactive mode (REPL)
+nyra --help                    show help (no key, no network)
+nyra --version                 show version
+nyra --lang zh|en              UI language (also NYRA_LANG, config "language", system locale; /lang in the REPL)
+nyra --list-providers          list providers (built-in presets + custom)
+nyra --list-models [--provider name]   list known models for a provider
+nyra --list-profiles           list configured provider profiles
+nyra --list-skills             list loaded skills
+nyra --list-sessions           list past sessions
+nyra --list-mcp                list configured MCP servers and presets
+nyra ui [--host 127.0.0.1] [--port 8765] [--pair] [--open]   start the gateway web UI
+nyra ui --print-url-json --exit-on-stdin-close   desktop shell mode: one JSON line on stdout, exits when stdin closes
+nyra gw <sessions|send|view|approve|rewind|info|schedule>   talk to a running gateway as a client
+nyra --compact <session id>    compact a session and exit
+REPL: /context shows context usage; /compact focus <keyword> compacts around a topic (see docs/context.md)
+nyra --resume <session id>     continue a session
+nyra --resume-run <run id>     resume a run from its record
+nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
+nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
+nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
+nyra verdict [task] [--json]   one conclusion: is this run worth it
+nyra verdict --run <id>        score one run; --recent N: trend over the last N runs
+nyra guard [--strict]          gate: exit 2 when verdict is red (yellow too with --strict)
+nyra savings [task] [--json]   what is saving tokens + measured aux-model savings
+nyra recall "task" [--cross-dir]   which past runs are reusable for this task
+nyra features                  feature switches (CLI > config > default)
+nyra tools                     tool-pool health: per-turn schema cost and trim advice
+nyra config export|import|explain  settings export/import/explain (secrets stripped)
+nyra vault <...>               credential vault (encrypted at rest, mode 0600)
+nyra gmail <search|read|reply|draft|send>   native Gmail connector
+nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
+nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
+nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
+nyra verdict --run <id>         score one run; --recent N: trend over the last N runs; --json: machine-readable
+nyra guard [--strict]          gate: exit 2 when verdict is red (yellow too with --strict)
+nyra --plan "task"             read-only analysis; writes plan.md in the workdir, runs nothing
+nyra --execute-plan --approve-plan <SHA256>   run a plan.md approved by its checksum
+nyra --verify "<command>"      run a verify command after the task (exit code 0 = verified)
+nyra --json "task"             one non-interactive task, JSON Lines output
+nyra schedule <list|add|remove|run|daemon>   manage scheduled tasks
+nyra task <add|list|show|cancel|worker|approve>   manage the background task queue
+nyra review <list|show|approve|reject|apply|verify|enqueue>   review queue: approve parallel threads and scheduled-task results one by one (see docs/review-queue.md)
+nyra events <list|add|remove|enable|disable|test|poll>   event-triggered tasks: webhooks and new mail enqueue tasks (see docs/event-triggers.md)
+nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
+nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
+nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
+nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
+nyra bughunt <install|status|scope|template|check>   authorized bug-hunting skill pack: scope card + falsification + pre-submit seven questions + evidence hygiene, pre-submit gate (see docs/bughunt.md)
+nyra kb <create|list|add|search|ask|remove>  local knowledge base
+nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
+nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
+nyra status                    diagnose broken configs, unavailable sandbox, ignored permission rules, never-matching hook matchers (read-only, see docs/status.md)
+nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
+nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
+nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
+nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
+nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
+nyra setup                     first-run wizard
+nyra --example [file]          local example task (no model calls, no cost)
+nyra permissions ...           Poppy site permission intents (local ledger; records, never grants)
+nyra eigenflux ...             EigenFlux checks and local network limits
 
 Model fallback is off by default (only when you turn it on, only to allowed providers).`;
 
@@ -240,9 +242,9 @@ Model fallback is off by default (only when you turn it on, only to allowed prov
 export function usageText(): string { return getLang() === "en" ? USAGE_EN : USAGE; }
 
 /**
- * CLI 入口的语言初始化：--lang > NYRA_LANG > config.language > 系统语言 > en。
- * 返回去掉 --lang 后的 argv；--lang 值非法时 error 有值。
- */
+* CLI 入口的语言初始化：--lang > NYRA_LANG > config.language > 系统语言 > en。
+* 返回去掉 --lang 后的 argv；--lang 值非法时 error 有值。
+*/
 export function initLang(argv: string[], config: Record<string, unknown> | null): { argv: string[]; error?: string } {
   const flag = extractLangFlag(argv);
   if (flag.value !== undefined && flag.lang === null) {
@@ -305,12 +307,12 @@ export function parseArgs(argv: string[]): CliArgs {
   };
   const positional: string[] = [];
   const valueFlags = new Set([
-    "--provider", "--model", "--profile", "--mode", "--max-turns", "--context-window",
-    "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
-    "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
-    "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
-    "--lang", "--channel",
-  ]);
+      "--provider", "--model", "--profile", "--mode", "--max-turns", "--context-window",
+      "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
+      "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
+      "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
+      "--lang", "--channel",
+    ]);
   const subcommands = subcommandSet();
   // 子命令 early-return 之前先扫一遍 --provider/--model：setup/--example/doctor
   // 从 args.provider 取值，否则子命令后的 flag 永远填不进来（setup --provider nope
@@ -428,9 +430,9 @@ function normalizeTrustPath(p: string): string {
 }
 
 /**
- * 读信任列表，双格式兼容：Node 数组格式 ["<路径>", ...] 与 Python 字典格式
- * {"version": 1, "folders": {"<路径>": {"trusted_at": ...}}}。损坏文件按全不信任。
- */
+* 读信任列表，双格式兼容：Node 数组格式 ["<路径>", ...] 与 Python 字典格式
+* {"version": 1, "folders": {"<路径>": {"trusted_at": ...}}}。损坏文件按全不信任。
+*/
 function readTrustedList(home: string): string[] {
   let data: unknown;
   try { data = JSON.parse(readFileSync(trustedPath(home), "utf-8")); } catch { return []; }
@@ -477,14 +479,14 @@ async function ensureWorkspaceTrusted(workdir: string, args: CliArgs, config: Re
   if (!(process.stdin.isTTY && process.stdout.isTTY)) return null;
   if (isTrusted(workdir, home)) return null;
   const trust = renderTrustPrompt(resolve(workdir), {
-    width: process.stdout.columns || 80, color: useColor(process.stdout),
-    level: useColor(process.stdout) ? detectColorLevel(process.env, true) : 0, unicode: supportsBoxDrawing(),
-  });
+      width: process.stdout.columns || 80, color: useColor(process.stdout),
+      level: useColor(process.stdout) ? detectColorLevel(process.env, true) : 0, unicode: supportsBoxDrawing(),
+    });
   process.stdout.write(trust.lines.join("\n") + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise<string>((resolvePromise) => {
-    rl.question(trust.question, (a) => { rl.close(); resolvePromise(a); });
-  });
+      rl.question(trust.question, (a) => { rl.close(); resolvePromise(a); });
+    });
   if (answer.trim().toLowerCase() !== "y" && answer.trim().toLowerCase() !== "yes") {
     process.stdout.write(t("trust.denied") + "\n");
     return 1;
@@ -503,9 +505,9 @@ interface BuiltAgent {
   /** 缺口 20/29：用量账本与本次运行已落盘的 LLM 花费 holder（月度口径要扣掉它，避免重复计）。 */
   monthly: { ledger: UsageLedger; flushed: { flushedUsd: number } };
   /**
-   * 缺口 5：兜底切换回调（stderr 提示 + 经 Agent 发 model_switch 事件进
-   * 证据链）。REPL `/model` 建新链时复用同一回调，之后自动切换照样留痕。
-   */
+  * 缺口 5：兜底切换回调（stderr 提示 + 经 Agent 发 model_switch 事件进
+  * 证据链）。REPL `/model` 建新链时复用同一回调，之后自动切换照样留痕。
+  */
   onModelSwitch: (record: SwitchRecord) => void;
 }
 
@@ -514,10 +516,10 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   const config = loadConfig(home);
   const profile = resolveProfile(args.profile ?? null, config);
   const primaryCfg = resolveProvider({
-    home, config,
-    providerName: args.provider ?? profile.provider,
-    model: args.model ?? profile.model ?? undefined,
-  });
+      home, config,
+      providerName: args.provider ?? profile.provider,
+      model: args.model ?? profile.model ?? undefined,
+    });
   const chain = resolveFallbackChain(config, primaryCfg.name, fallbackEnabled(args) ?? undefined);
   // 缺口 5：兜底切换的事件落点——provider 在 Agent 之前建成，先用 holder
   // 占位；Agent 建好后挂上去，之后每次自动切换都经 agent.emit 发
@@ -530,11 +532,11 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     if (!a) return;
     const spent = a.lastCost?.status === "priced" ? a.lastCost.spentUsd : null;
     a.emit("model_switch", {
-      from: r.from, to: r.to, reason: r.error,
-      kind: r.kind, status: r.status,
-      trigger: r.trigger ?? switchTriggerFor(r.kind),
-      spent_usd: spent,
-    });
+        from: r.from, to: r.to, reason: r.error,
+        kind: r.kind, status: r.status,
+        trigger: r.trigger ?? switchTriggerFor(r.kind),
+        spent_usd: spent,
+      });
   };
   const provider = buildProviderChain(
     primaryCfg, chain,
@@ -571,10 +573,10 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   // 现在统一走 manualWindowFromConfig（context_window_tokens 优先，旧键兼容）。
   const manualWindow = manualWindowFromConfig(config);
   const windowResolved = resolveContextWindow({
-    model: provider.model, provider: primaryCfg.name,
-    cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
-    cache: loadModelCache(home),
-  });
+      model: provider.model, provider: primaryCfg.name,
+      cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
+      cache: loadModelCache(home),
+    });
   // 缺口 29：月度硬顶的“本月已花（不含本次运行）”——账本里的本月 LLM 花费
   // + 本月 MCP 花费，减去本次运行已经落盘的部分（账本里有、但本次运行的
   // 进行中花费还没算进去，扣掉才不重复计）。账本读失败返回 null：算不出
@@ -592,85 +594,85 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
     }
   };
   const agent = new Agent(provider, {
-    workdir: resolve(args.workdir),
-    mode,
-    maxTurns,
-    interactive: opts?.interactive ?? true,
-    skillsDirs: opts?.skillsDirs,
+      workdir: resolve(args.workdir),
+      mode,
+      maxTurns,
+      interactive: opts?.interactive ?? true,
+      skillsDirs: opts?.skillsDirs,
       // 单技能启停（对齐 Codex `[[skills.config]] enabled=false`）：config.skills.disabled
       skillsDisabled: (() => {
-        const sk = (config as Record<string, unknown>).skills;
-        if (!sk || typeof sk !== "object") return [];
-        const d = (sk as Record<string, unknown>).disabled;
-        return Array.isArray(d) ? d.filter((x): x is string => typeof x === "string") : [];
-      })(),
-    contextWindowTokens: windowResolved.window,
-    contextWindowSource: windowResolved.source,
-    contextWindowModel: windowResolved.model,
-    autoCompactEnabled: args.autoCompact,
-    // 缺口 4：分应用文风学习——--channel 指定本次运行的代笔渠道，按画像注入提示词。
-    channel: args.channel ?? null,
-    autoCompactThreshold: args.autoCompactThreshold ?? undefined,
-    poppyEnabled: args.poppy,
-    home,
-    // P2-2：成本硬顶。单价从 config.pricing 按模型名解析；未配置时金额未知（不编造）。
-    // 管理员锁定（config.enforced）优先于 CLI 与 config：被锁的键改不动。
-    maxCostUsd: (() => {
-      const enf = resolveEnforced(config).values;
-      if (typeof enf.max_cost_usd === "number") return enf.max_cost_usd;
-      return args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null);
-    })(),
-    pricing: resolvePricing(config.pricing, provider.model),
-    // 缺口 29：月度支出硬顶（与 --max-cost 同级硬停；默认不设上限，见 docs/cost.md）。
-    monthlyCostLimitUsd: monthlyLimit,
-    monthlySpentBeforeUsd,
-    // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
-    auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
-    // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
-    // reviewer_model / 默认 deepseek-flash，见 reviewer.ts）。
-    reviewerModel: resolveReviewerModel(config).model,
-    // 缺口 5：对话中途手动换模型的允许列表（primary + fallback_providers，
-    // 与兜底链同一份名单；不受 fallback_enabled 开关影响，见 config.ts）。
-    modelSwitchAllowlist: resolveSwitchAllowlist(config, primaryCfg.name),
-    // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
-    disabledTools: [...(Array.isArray(effectiveValue(config, "disabled_tools")) ? effectiveStringList(config, "disabled_tools").filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
-    // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
-    // 跨会话回忆（features.run_recall 默认开）：上次同类任务的结论注入系统提示。
-    recallNote: (() => {
-      const feats = resolveFeatures(config, { enable: args.enableFeatures, disable: args.disableFeatures });
-      if (!featureOn(feats, "run_recall")) return null;
-      try {
-        const store = new RunStore(join(home, "runs"));
-        return buildRecallNote(store.list(), args.task ?? "", { workdir: resolve(args.workdir), limit: 3 });
-      } catch {
-        return null; // 历史读不了不该挡住本次运行
-      }
-    })(),    // --add-dir / config.extra_writable_dirs：显式放开工作目录之外的可写根。
-    extraDirs: (() => {
-      const cfgDirs = Array.isArray(config.extra_writable_dirs)
-        ? config.extra_writable_dirs.filter((x): x is string => typeof x === "string")
-        : [];
-      const { ok, rejected } = resolveExtraDirs([...cfgDirs, ...args.addDirs], { workdir: resolve(args.workdir) });
-      for (const r of rejected) process.stderr.write(`忽略 --add-dir ${r.input}：${r.reason}\n`);
-      return ok;
-    })(),
-    toolSearch: (() => {
-      const ts = config.tool_search;
-      if (!ts || typeof ts !== "object") return { enabled: false };
-      const o = ts as Record<string, unknown>;
-      return {
-        // 两条路都算数：显式 config.tool_search.enabled，或 features.tool_search 开关。
-        enabled: o.enabled === true || featureOn(resolveFeatures(config, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
-        topK: typeof o.top_k === "number" ? o.top_k : undefined,
-        always: Array.isArray(o.always) ? o.always.filter((x): x is string => typeof x === "string") : undefined,
-      };
-    })(),
-    sandbox: {
-      backend: sandboxSettings.backend,
-      mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",
-      allowNet: sandboxSettings.allowNet,
-    },
-  });
+          const sk = (config as Record<string, unknown>).skills;
+          if (!sk || typeof sk !== "object") return [];
+          const d = (sk as Record<string, unknown>).disabled;
+          return Array.isArray(d) ? d.filter((x): x is string => typeof x === "string") : [];
+        })(),
+      contextWindowTokens: windowResolved.window,
+      contextWindowSource: windowResolved.source,
+      contextWindowModel: windowResolved.model,
+      autoCompactEnabled: args.autoCompact,
+      // 缺口 4：分应用文风学习——--channel 指定本次运行的代笔渠道，按画像注入提示词。
+      channel: args.channel ?? null,
+      autoCompactThreshold: args.autoCompactThreshold ?? undefined,
+      poppyEnabled: args.poppy,
+      home,
+      // P2-2：成本硬顶。单价从 config.pricing 按模型名解析；未配置时金额未知（不编造）。
+      // 管理员锁定（config.enforced）优先于 CLI 与 config：被锁的键改不动。
+      maxCostUsd: (() => {
+          const enf = resolveEnforced(config).values;
+          if (typeof enf.max_cost_usd === "number") return enf.max_cost_usd;
+          return args.maxCost ?? (typeof config.max_cost_usd === "number" ? config.max_cost_usd : null);
+        })(),
+      pricing: resolvePricing(config.pricing, provider.model),
+      // 缺口 29：月度支出硬顶（与 --max-cost 同级硬停；默认不设上限，见 docs/cost.md）。
+      monthlyCostLimitUsd: monthlyLimit,
+      monthlySpentBeforeUsd,
+      // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
+      auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
+      // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
+      // reviewer_model / 默认 deepseek-flash，见 reviewer.ts）。
+      reviewerModel: resolveReviewerModel(config).model,
+      // 缺口 5：对话中途手动换模型的允许列表（primary + fallback_providers，
+      // 与兜底链同一份名单；不受 fallback_enabled 开关影响，见 config.ts）。
+      modelSwitchAllowlist: resolveSwitchAllowlist(config, primaryCfg.name),
+      // 工具集裁剪（config.disabled_tools + --disable-tool）：每轮少发 schema = 每轮省钱。
+      disabledTools: [...(Array.isArray(effectiveValue(config, "disabled_tools")) ? effectiveStringList(config, "disabled_tools").filter((t): t is string => typeof t === "string") : []), ...args.disableTools],
+      // 工具检索（延迟加载）：config.tool_search.enabled 打开后只发核心工具 + 已揭示的。
+      // 跨会话回忆（features.run_recall 默认开）：上次同类任务的结论注入系统提示。
+      recallNote: (() => {
+          const feats = resolveFeatures(config, { enable: args.enableFeatures, disable: args.disableFeatures });
+          if (!featureOn(feats, "run_recall")) return null;
+          try {
+            const store = new RunStore(join(home, "runs"));
+            return buildRecallNote(store.list(), args.task ?? "", { workdir: resolve(args.workdir), limit: 3 });
+          } catch {
+            return null; // 历史读不了不该挡住本次运行
+          }
+        })(),    // --add-dir / config.extra_writable_dirs：显式放开工作目录之外的可写根。
+      extraDirs: (() => {
+          const cfgDirs = Array.isArray(config.extra_writable_dirs)
+          ? config.extra_writable_dirs.filter((x): x is string => typeof x === "string")
+          : [];
+          const { ok, rejected } = resolveExtraDirs([...cfgDirs, ...args.addDirs], { workdir: resolve(args.workdir) });
+          for (const r of rejected) process.stderr.write(`忽略 --add-dir ${r.input}：${r.reason}\n`);
+          return ok;
+        })(),
+      toolSearch: (() => {
+          const ts = config.tool_search;
+          if (!ts || typeof ts !== "object") return { enabled: false };
+          const o = ts as Record<string, unknown>;
+          return {
+            // 两条路都算数：显式 config.tool_search.enabled，或 features.tool_search 开关。
+            enabled: o.enabled === true || featureOn(resolveFeatures(config, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
+            topK: typeof o.top_k === "number" ? o.top_k : undefined,
+            always: Array.isArray(o.always) ? o.always.filter((x): x is string => typeof x === "string") : undefined,
+          };
+        })(),
+      sandbox: {
+        backend: sandboxSettings.backend,
+        mode: sandboxSettings.mode as "read-only" | "workspace-write" | "danger-full-access",
+        allowNet: sandboxSettings.allowNet,
+      },
+    });
   switchAgent.current = agent;
   return { agent, providerName: primaryCfg.name, config, home, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed }, onModelSwitch };
 }
@@ -721,9 +723,9 @@ function verifySetup(args: CliArgs, config: Record<string, unknown>, workdir: st
   const [command, source] = resolveVerifyOrigin(args.verify, config, workdir);
   if (!command) return { command: null, skipReason: null };
   const [accepted, reason] = acceptVerifyCommand(command, source, {
-    trustAgents: args.trustAgentsVerify,
-    interactive: process.stdin.isTTY,
-  });
+      trustAgents: args.trustAgentsVerify,
+      interactive: process.stdin.isTTY,
+    });
   return { command: accepted, skipReason: reason };
 }
 
@@ -746,16 +748,16 @@ async function handleUi(argv: string[], workdir: string, home: string): Promise<
   const pair = has("--pair");
   const config = loadConfig(home);
   const gateway = new Gateway({
-    home, workdir,
-    host: pair && host === "127.0.0.1" ? "0.0.0.0" : host,
-    port,
-    mode: get("--mode") ?? undefined,
-    providerName: get("--provider") ?? null,
-    model: get("--model") ?? null,
-    profile: get("--profile") ?? null,
-    verbose: has("--verbose"),
-    config,
-  });
+      home, workdir,
+      host: pair && host === "127.0.0.1" ? "0.0.0.0" : host,
+      port,
+      mode: get("--mode") ?? undefined,
+      providerName: get("--provider") ?? null,
+      model: get("--model") ?? null,
+      profile: get("--profile") ?? null,
+      verbose: has("--verbose"),
+      config,
+    });
   let info: { host: string; port: number; url: string };
   try {
     info = await gateway.start();
@@ -807,14 +809,14 @@ async function handleUi(argv: string[], workdir: string, home: string): Promise<
     await gateway.stop();
   };
   const done = new Promise<number>((resolvePromise) => {
-    process.once("SIGINT", () => { void stop().then(() => resolvePromise(0)); });
-    process.once("SIGTERM", () => { void stop().then(() => resolvePromise(0)); });
-    if (exitOnStdinClose) {
-      process.stdin.resume();
-      process.stdin.once("end", () => { void stop().then(() => resolvePromise(0)); });
-      process.stdin.once("close", () => { void stop().then(() => resolvePromise(0)); });
-    }
-  });
+      process.once("SIGINT", () => { void stop().then(() => resolvePromise(0)); });
+      process.once("SIGTERM", () => { void stop().then(() => resolvePromise(0)); });
+      if (exitOnStdinClose) {
+        process.stdin.resume();
+        process.stdin.once("end", () => { void stop().then(() => resolvePromise(0)); });
+        process.stdin.once("close", () => { void stop().then(() => resolvePromise(0)); });
+      }
+    });
   return done;
 }
 
@@ -955,17 +957,17 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
         const { getGmailStatus, createGmailTransport } = await import("./connectors/gmail.ts");
         const cfg0 = loadConfig(home);
         const gmailTriggers = loadTriggers(eventTriggersPath(home)).triggers
-          .filter((t) => t.enabled !== false && t.source === "gmail");
+        .filter((t) => t.enabled !== false && t.source === "gmail");
         const st = getGmailStatus(home, cfg0);
         if (gmailTriggers.length && st.enabled && st.configured) {
           pollers.push(async () => {
-            const transport = createGmailTransport(home, loadConfig(home));
-            const r = await pollGmailTriggers(transport, { home });
-            if (r.dispatched) process.stdout.write(`[事件触发] Gmail 新邮件 ${r.newMail} 封，触发 ${r.dispatched} 个任务\n`);
-            else if (r.skipped && r.skipped !== "not-due" && r.skipped !== "no-enabled-gmail-trigger") {
-              process.stdout.write(`[事件触发] Gmail 轮询跳过：${r.skipped}\n`);
-            }
-          });
+              const transport = createGmailTransport(home, loadConfig(home));
+              const r = await pollGmailTriggers(transport, { home });
+              if (r.dispatched) process.stdout.write(`[事件触发] Gmail 新邮件 ${r.newMail} 封，触发 ${r.dispatched} 个任务\n`);
+              else if (r.skipped && r.skipped !== "not-due" && r.skipped !== "no-enabled-gmail-trigger") {
+                process.stdout.write(`[事件触发] Gmail 轮询跳过：${r.skipped}\n`);
+              }
+            });
         }
       } catch { /* 轮询器建不起来就不轮询，不破坏定时任务 */ }
       // 缺口 22：守护进程每轮顺带跑邮件入口轮询（白名单邮件直接进任务队列）。
@@ -979,25 +981,25 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
         const st1 = getGmailStatus(home, cfg1);
         if (inbox.enabled && inbox.allowlist.length && st1.enabled && st1.configured) {
           pollers.push(async () => {
-            const transport = createGmailTransport(home, loadConfig(home));
-            const r = await pollMailInbox(transport, { home });
-            if (r.enqueued) process.stdout.write(`[邮件入口] Gmail 新邮件 ${r.newMail} 封，入队 ${r.enqueued} 个任务\n`);
-            else if (r.skipped && !["not-due", "disabled", "no-allowlist", "first-run-baseline"].includes(r.skipped)) {
-              process.stdout.write(`[邮件入口] Gmail 轮询跳过：${r.skipped}\n`);
-            }
-          });
+              const transport = createGmailTransport(home, loadConfig(home));
+              const r = await pollMailInbox(transport, { home });
+              if (r.enqueued) process.stdout.write(`[邮件入口] Gmail 新邮件 ${r.newMail} 封，入队 ${r.enqueued} 个任务\n`);
+              else if (r.skipped && !["not-due", "disabled", "no-allowlist", "first-run-baseline"].includes(r.skipped)) {
+                process.stdout.write(`[邮件入口] Gmail 轮询跳过：${r.skipped}\n`);
+              }
+            });
         }
       } catch { /* 轮询器建不起来就不轮询，不破坏定时任务 */ }
       // 缺口 8：常驻责任巡查（只读、无人值守）。每轮跑一次到期的责任；巡查
       // 经任务队列落盘（run 记录 + 证据链），只读硬约束见 responsibilities.ts；
       // 汇报条件只控制收件箱通知，证据链里每轮都留报告事件。
       pollers.push(async () => {
-        const { loadResponsibilities, saveResponsibilities, responsibilitiesPath, runDueResponsibilities } = await import("./responsibilities.ts");
-        const data = loadResponsibilities(responsibilitiesPath(home));
-        const results = await runDueResponsibilities(data, { home, workdir });
-        saveResponsibilities(data, responsibilitiesPath(home));
-        for (const r of results) process.stdout.write(`[巡查] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
-      });
+          const { loadResponsibilities, saveResponsibilities, responsibilitiesPath, runDueResponsibilities } = await import("./responsibilities.ts");
+          const data = loadResponsibilities(responsibilitiesPath(home));
+          const results = await runDueResponsibilities(data, { home, workdir });
+          saveResponsibilities(data, responsibilitiesPath(home));
+          for (const r of results) process.stdout.write(`[巡查] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
+        });
       const done = await runDaemon(factory, { interval, path: undefined, stopAfter: action === "run" ? 1 : rounds, pollers });
       void done;
       return 0;
@@ -1046,11 +1048,11 @@ async function handleEvents(argv: string[], workdir: string): Promise<number> {
       const mode = get("--mode") ?? "auto";
       const maxTurns = get("--max-turns") ? parseInt(get("--max-turns")!, 10) : 20;
       const added = addEventTrigger(data, {
-        name, source, event, task,
-        ...(Object.keys(match).length ? { match } : {}),
-        mode, enabled: !argv.includes("--disable"),
-        workdir: get("--workdir") ?? workdir, max_turns: maxTurns,
-      });
+          name, source, event, task,
+          ...(Object.keys(match).length ? { match } : {}),
+          mode, enabled: !argv.includes("--disable"),
+          workdir: get("--workdir") ?? workdir, max_turns: maxTurns,
+        });
       saveEventTriggers(data);
       process.stdout.write(`已添加事件触发器：${added.name}（${added.source} / ${added.event}，${added.mode}）\n`);
       return 0;
@@ -1251,10 +1253,10 @@ async function handleResponsibility(argv: string[], workdir: string): Promise<nu
       }
       const maxTurns = get("--max-turns") ? parseInt(get("--max-turns")!, 10) : 20;
       const added = addResponsibility(data, {
-        name, goal, every_seconds: every, report,
-        enabled: !argv.includes("--disable"),
-        workdir: get("--workdir") ?? workdir, max_turns: maxTurns,
-      });
+          name, goal, every_seconds: every, report,
+          enabled: !argv.includes("--disable"),
+          workdir: get("--workdir") ?? workdir, max_turns: maxTurns,
+        });
       saveResponsibilities(data, responsibilitiesPath(home));
       process.stdout.write(`已添加常驻责任：${added.name}（每 ${added.every_seconds} 秒巡查一次，只读，${added.report === "always" ? "每次汇报" : "有发现才汇报"}）\n`);
       return 0;
@@ -1385,10 +1387,10 @@ async function handleReviewer(argv: string[], workdir: string): Promise<number> 
       const cfg = reviewerConfig(config);
       // 试运行：即使审查层未开启也按开启后的口径审一次（生产上未开启时不审）。
       const verdict = await reviewToolCall({
-        config: { ...config, reviewer: { ...cfg, enabled: true } },
-        tool, args, task: get("--task") ?? "", recentMessages: [],
-        runner: buildReviewerRunner(config, home),
-      });
+          config: { ...config, reviewer: { ...cfg, enabled: true } },
+          tool, args, task: get("--task") ?? "", recentMessages: [],
+          runner: buildReviewerRunner(config, home),
+        });
       if (!cfg.enabled) process.stdout.write("（审查层当前未开启，以下是开启后的试运行结果）\n");
       process.stdout.write(`审查结论：${verdict.decision}（${verdict.source}）\n原因：${verdict.reason}\n审查模型：${verdict.reviewerModel ?? "—"}\n`);
       return verdict.decision === "BLOCK" ? 3 : 0;
@@ -1512,107 +1514,278 @@ async function handleSkills(argv: string[], home: string): Promise<number> {
   }
 }
 
+// ---- 子命令：bughunt（候选提案 1：授权漏洞挖掘技能包） ----
+async function handleBughunt(argv: string[], home: string): Promise<number> {
+  const action = argv[0];
+  if (!action) {
+    process.stdout.write("用法：nyra bughunt <install|status|scope|template|check> [选项]\n");
+    return 2;
+  }
+  try {
+    const mod = await import("./bughunt.ts");
+    const config = loadConfig(home);
+    if (action === "install") {
+      const force = argv.includes("--force");
+      const { path, overwritten } = mod.installBughuntSkill(home, { force });
+      process.stdout.write(`已${overwritten ? "覆盖安装" : "安装"}授权漏洞挖掘技能包：${path}\n`);
+      process.stdout.write("技能只在授权目标上用：先建范围卡（nyra bughunt scope add），再动手。\n");
+      return 0;
+    }
+    if (action === "status") {
+      const scopes = mod.listScopes(home);
+      const { reviewerEnabled } = await import("./reviewer.ts");
+      process.stdout.write(`技能包：${mod.bughuntSkillInstalled(home) ? "已安装（~/.nyra/skills/authorized-bughunt.md）" : "未安装（nyra bughunt install）"}\n`);
+      process.stdout.write(`范围卡：${scopes.length} 个${scopes.length ? `（${scopes.map((s: { name: string }) => s.name).join("、")}）` : "（先建卡再动手）"}\n`);
+      process.stdout.write(`独立审查层：${reviewerEnabled(config) ? "已开启（提交前核对最后过一遍审查）" : "未开启（只走五道确定性门；nyra reviewer enable 开启）"}\n`);
+      return 0;
+    }
+    if (action === "scope") {
+      const sub = argv[1];
+      if (sub === "list") {
+        const scopes = mod.listScopes(home);
+        if (!scopes.length) { process.stdout.write("还没有范围卡（nyra bughunt template scope 取模板，建好后 scope add）\n"); return 0; }
+        for (const s of scopes) {
+          process.stdout.write(`- ${s.name}：${s.platform}，目标 ${s.targets.length} 个，速率上限 ${s.max_requests_per_second}/秒${s.expires_at ? `，到期 ${s.expires_at}` : ""}\n`);
+        }
+        return 0;
+      }
+      if (sub === "add") {
+        const file = argv[2];
+        if (!file) { process.stderr.write("错误：用法：nyra bughunt scope add <范围卡.json>\n"); return 2; }
+        const card = mod.parseScopeCard(readFileSync(file, "utf-8"));
+        mod.addScope(home, card);
+        process.stdout.write(`已建范围卡 ${card.name}（${card.platform}，目标 ${card.targets.join("、")}，速率上限 ${card.max_requests_per_second}/秒）\n`);
+        return 0;
+      }
+      if (sub === "remove") {
+        const name = argv[2];
+        if (!name) { process.stderr.write("错误：用法：nyra bughunt scope remove <范围卡名>\n"); return 2; }
+        if (!mod.removeScope(home, name)) { process.stderr.write(`错误：没有叫 ${name} 的范围卡\n`); return 1; }
+        process.stdout.write(`已删范围卡 ${name}\n`);
+        return 0;
+      }
+      if (sub === "show") {
+        const name = argv[2];
+        if (!name) { process.stderr.write("错误：用法：nyra bughunt scope show <范围卡名>\n"); return 2; }
+        const card = mod.findScope(home, name);
+        if (!card) { process.stderr.write(`错误：没有叫 ${name} 的范围卡\n`); return 1; }
+        process.stdout.write(JSON.stringify(card, null, 2) + "\n");
+        return 0;
+      }
+      if (sub === "check") {
+        const url = argv[2];
+        if (!url) { process.stderr.write("错误：用法：nyra bughunt scope check <URL> [--scope <范围卡名>]\n"); return 2; }
+        const scopeIdx = argv.indexOf("--scope");
+        const scopeName = scopeIdx !== -1 ? argv[scopeIdx + 1] : undefined;
+        let card = scopeName ? mod.findScope(home, scopeName) : null;
+        if (scopeName && !card) { process.stderr.write(`错误：没有叫 ${scopeName} 的范围卡\n`); return 1; }
+        if (!card) {
+          const scopes = mod.listScopes(home);
+          if (scopes.length === 0) { process.stderr.write("错误：还没有范围卡（先建卡再查目标）\n"); return 1; }
+          if (scopes.length > 1) { process.stderr.write("错误：有多张范围卡，请用 --scope 指定一张\n"); return 2; }
+          card = scopes[0];
+        }
+        const result = mod.checkTarget(card, url);
+        process.stdout.write(`${result.inScope ? "在范围内" : "不在范围内"}：${result.reason}\n`);
+        return result.inScope ? 0 : 3;
+      }
+      process.stdout.write("用法：nyra bughunt scope <list|add <文件>|remove <名>|show <名>|check <URL> [--scope <名>]>\n");
+      return 2;
+    }
+    if (action === "template") {
+      const kind = argv[1];
+      if (kind === "scope") { process.stdout.write(mod.scopeCardTemplate()); return 0; }
+      if (kind === "finding") { process.stdout.write(mod.findingTemplate()); return 0; }
+      if (kind === "report") { process.stdout.write(mod.reportTemplate()); return 0; }
+      process.stdout.write("用法：nyra bughunt template <scope|finding|report>\n");
+      return 2;
+    }
+    if (action === "check") {
+      const findingIdx = argv.indexOf("--finding");
+      const findingFile = findingIdx !== -1 ? argv[findingIdx + 1] : undefined;
+      if (!findingFile) { process.stderr.write("错误：用法：nyra bughunt check --finding <发现.json> [--report <报告.md>]\n"); return 2; }
+      const finding = mod.parseFinding(readFileSync(findingFile, "utf-8"));
+      const reportIdx = argv.indexOf("--report");
+      const reportFile = reportIdx !== -1 ? argv[reportIdx + 1] : undefined;
+      const reportText = reportFile ? readFileSync(reportFile, "utf-8") : finding.report_text;
+      const card = mod.findScope(home, finding.scope);
+      if (!card) { process.stderr.write(`错误：没有叫 ${finding.scope} 的范围卡（先建卡）\n`); return 1; }
+      const gate = mod.evaluateSubmitGate({
+          scope: card,
+          target: finding.target,
+          vulnClass: finding.vuln_class,
+          severity: finding.severity,
+          falsification: finding.falsification,
+          seven: finding.seven,
+          reportText,
+        });
+      const c = gate.checks;
+      process.stdout.write(`范围门：${c.scope.inScope ? "通过" : "拦截"}（${c.scope.reason}）\n`);
+      process.stdout.write(`证伪门：${c.falsification.verdict}${c.falsification.verdict === "pending" ? `（${c.falsification.blocker ?? ""}）` : ""}${c.falsification.verdict === "rejected" ? `（${c.falsification.refutation ?? ""}）` : ""}\n`);
+      process.stdout.write(`七问门：${c.seven.passed ? "通过" : `拦截（${[...c.seven.failed, ...c.seven.unanswered].join("、")} 没过）`}\n`);
+      if (c.hygiene === null) {
+        process.stdout.write("卫生门：拦截（未提供报告文本，无法检查）\n");
+      } else {
+        process.stdout.write(`卫生门：${c.hygiene.clean ? "通过" : `拦截（${[...c.hygiene.hits.map((h: { label: string }) => h.label), ...c.hygiene.missingSections.map((s: string) => `缺${s}`)].join("、")}）`}\n`);
+      }
+      process.stdout.write(`严重度门：${c.severity.ok ? "通过" : "拦截"}（${c.severity.reason}）\n`);
+      let targetHost = "";
+      try { targetHost = new URL(finding.target).hostname; } catch { /* gate 已拦过，审计里留空 */ }
+      const failing: string[] = [];
+      if (!c.scope.inScope) failing.push("scope");
+      if (c.falsification.verdict !== "confirmed") failing.push("falsification");
+      if (!c.seven.passed) failing.push("seven");
+      if (c.hygiene === null || !c.hygiene.clean) failing.push("hygiene");
+      if (!c.severity.ok) failing.push("severity");
+      let reviewerSource = "skipped";
+      if (gate.decision === "allow") {
+        const verdict = await mod.reviewSubmitReport({
+            config,
+            home,
+            summary: `提交漏洞报告：范围卡 ${card.name}，目标 ${targetHost}，类别 ${finding.vuln_class}，严重度 ${finding.severity ?? "未声明"}，证伪 confirmed`,
+            scope: card.name,
+            targetHost,
+            severity: finding.severity ?? "",
+          });
+        reviewerSource = verdict.source;
+        if (verdict.source === "skipped") {
+          process.stdout.write("审查层：已跳过（审查层未开启；只走了五道确定性门）\n");
+        } else {
+          process.stdout.write(`审查层：${verdict.decision === "ALLOW" ? "通过" : "拦截"}（${verdict.reviewerModel ?? ""}，${verdict.reason}）\n`);
+        }
+        if (verdict.decision === "BLOCK") {
+          failing.push("reviewer");
+          mod.appendBughuntAudit(home, {
+              at: new Date().toISOString(), action: "submit_gate", scope: card.name, target_host: targetHost,
+              decision: "block", failing, severity: finding.severity,
+              falsification_verdict: c.falsification.verdict, reviewer_source: reviewerSource,
+            });
+          process.stdout.write(`结论：拦截（审查层拦住了：${verdict.reason}）\n`);
+          return 3;
+        }
+      }
+      mod.appendBughuntAudit(home, {
+          at: new Date().toISOString(), action: "submit_gate", scope: card.name, target_host: targetHost,
+          decision: gate.decision, failing, severity: finding.severity,
+          falsification_verdict: c.falsification.verdict, reviewer_source: reviewerSource,
+        });
+      if (gate.decision === "block") {
+        for (const r of gate.reasons) process.stdout.write(`拦截原因：${r}\n`);
+        process.stdout.write("结论：拦截（先按上面的原因修好，再重新核对）\n");
+        return 3;
+      }
+      process.stdout.write("结论：可提交（仍须由人提交，Nyra 不代提交）\n");
+      return 0;
+    }
+    process.stderr.write(`错误：未知子命令 bughunt ${action}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
 // ---- 子命令：memory ----
 const PLUGIN_USAGE = `用法：
   nyra plugin list                    列出已安装插件
-  nyra plugin search [关键词]         在登记表里找插件
-  nyra plugin install <本地目录|git URL>  安装插件（只装显式指定的来源）
-  nyra plugin uninstall <名字>        卸载插件（用户改过的文件保留并报告）
-  nyra plugin enable <名字>           启用插件
-  nyra plugin disable <名字>          停用插件
-  nyra plugin verify [名字]           按锁定文件验哈希（不给名字则验全部）
-  nyra plugin audit                   生命周期 + 全部验哈希
-  nyra plugin pin <名字>              固定插件（不豁免 stale，只是不自动归档）
-  nyra plugin unpin <名字>            取消固定`;
+nyra plugin search [关键词]         在登记表里找插件
+nyra plugin install <本地目录|git URL>  安装插件（只装显式指定的来源）
+nyra plugin uninstall <名字>        卸载插件（用户改过的文件保留并报告）
+nyra plugin enable <名字>           启用插件
+nyra plugin disable <名字>          停用插件
+nyra plugin verify [名字]           按锁定文件验哈希（不给名字则验全部）
+nyra plugin audit                   生命周期 + 全部验哈希
+nyra plugin pin <名字>              固定插件（不豁免 stale，只是不自动归档）
+nyra plugin unpin <名字>            取消固定`;
 
 async function handlePlugin(argv: string[], home: string): Promise<number> {
-  const [cmd, arg] = argv;
-  try {
-    if (cmd === "list" || cmd === undefined) {
-      const plugins = listPlugins(home);
-      if (!plugins.length) { process.stdout.write("未安装插件\n"); return 0; }
-      for (const p of plugins) {
-        process.stdout.write(`- ${p.name} ${p.version}（${p.status}${p.pinned ? "，pinned" : ""}，来源：${p.source}）\n`);
-      }
-      return 0;
+const [cmd, arg] = argv;
+try {
+  if (cmd === "list" || cmd === undefined) {
+    const plugins = listPlugins(home);
+    if (!plugins.length) { process.stdout.write("未安装插件\n"); return 0; }
+    for (const p of plugins) {
+      process.stdout.write(`- ${p.name} ${p.version}（${p.status}${p.pinned ? "，pinned" : ""}，来源：${p.source}）\n`);
     }
-    if (cmd === "search") {
-      const found = searchRegistry(home, arg);
-      if (!found.length) { process.stdout.write("登记表里没有匹配的插件\n"); return 0; }
-      for (const e of found) {
-        process.stdout.write(`- ${e.name} ${e.version}${e.description ? `：${e.description}` : ""}（来源：${e.source}）\n`);
-      }
-      return 0;
-    }
-    if (cmd === "install") {
-      if (!arg) { process.stderr.write("缺少来源：nyra plugin install <本地目录|git URL>\n"); return 2; }
-      const res = installPlugin(home, arg);
-      process.stdout.write(`已安装 ${res.name} ${res.version}${res.upgraded ? "（升级）" : ""}\n`);
-      if (res.keptModified.length) {
-        process.stdout.write(`以下文件你改过，已保留未覆盖：${res.keptModified.join("、")}\n`);
-      }
-      return 0;
-    }
-    if (cmd === "uninstall") {
-      if (!arg) { process.stderr.write("缺少插件名：nyra plugin uninstall <名字>\n"); return 2; }
-      const res = uninstallPlugin(home, arg);
-      process.stdout.write(`已卸载 ${res.name}（删除 ${res.removed.length} 个文件）\n`);
-      if (res.keptModified.length) {
-        process.stdout.write(`以下文件你改过，已保留：${res.keptModified.join("、")}\n`);
-      }
-      return 0;
-    }
-    if (cmd === "enable" || cmd === "disable") {
-      if (!arg) { process.stderr.write(`缺少插件名：nyra plugin ${cmd} <名字>\n`); return 2; }
-      const rec = setPluginStatus(home, arg, cmd === "enable" ? "active" : "disabled");
-      process.stdout.write(`已${cmd === "enable" ? "启用" : "停用"} ${rec.name}\n`);
-      return 0;
-    }
-    if (cmd === "pin" || cmd === "unpin") {
-      if (!arg) { process.stderr.write(`缺少插件名：nyra plugin ${cmd} <名字>\n`); return 2; }
-      const rec = setPluginPinned(home, arg, cmd === "pin");
-      process.stdout.write(`已${cmd === "pin" ? "固定" : "取消固定"} ${rec.name}\n`);
-      return 0;
-    }
-    if (cmd === "verify") {
-      const targets = arg ? [arg] : listPlugins(home).map((p) => p.name);
-      if (!targets.length) { process.stdout.write("未安装插件\n"); return 0; }
-      let allOk = true;
-      for (const name of targets) {
-        const v = verifyPlugin(home, name);
-        if (!v.ok) allOk = false;
-        const bad = v.files.filter((f) => f.state === "modified" || f.state === "missing");
-        const held = v.files.filter((f) => f.state === "held");
-        process.stdout.write(`${name}：${v.ok ? "通过" : "有问题"}${bad.length ? `（${bad.map((f) => `${f.rel}:${f.state === "modified" ? "被改过" : "缺失"}`).join("、")}）` : ""}${held.length ? `（保留用户改过的文件 ${held.length} 个）` : ""}\n`);
-      }
-      return allOk ? 0 : 1;
-    }
-    if (cmd === "audit") {
-      const { staleNow, verified } = auditPlugins(home);
-      if (staleNow.length) process.stdout.write(`已降级为 stale（超过 ${STALE_AFTER_DAYS} 天没用过）：${staleNow.join("、")}\n`);
-      else process.stdout.write("没有新降级的插件\n");
-      for (const v of verified) {
-        process.stdout.write(`${v.name}：${v.ok ? "通过" : "有问题"}\n`);
-      }
-      return verified.every((v) => v.ok) ? 0 : 1;
-    }
-    process.stderr.write(`未知插件子命令：${cmd ?? ""}\n${PLUGIN_USAGE}\n`);
-    return 2;
-  } catch (err: unknown) {
-    if (err instanceof PluginError) {
-      process.stderr.write(`插件操作失败：${err.message}\n`);
-      return 1;
-    }
-    throw err;
+    return 0;
   }
+  if (cmd === "search") {
+    const found = searchRegistry(home, arg);
+    if (!found.length) { process.stdout.write("登记表里没有匹配的插件\n"); return 0; }
+    for (const e of found) {
+      process.stdout.write(`- ${e.name} ${e.version}${e.description ? `：${e.description}` : ""}（来源：${e.source}）\n`);
+    }
+    return 0;
+  }
+  if (cmd === "install") {
+    if (!arg) { process.stderr.write("缺少来源：nyra plugin install <本地目录|git URL>\n"); return 2; }
+    const res = installPlugin(home, arg);
+    process.stdout.write(`已安装 ${res.name} ${res.version}${res.upgraded ? "（升级）" : ""}\n`);
+    if (res.keptModified.length) {
+      process.stdout.write(`以下文件你改过，已保留未覆盖：${res.keptModified.join("、")}\n`);
+    }
+    return 0;
+  }
+  if (cmd === "uninstall") {
+    if (!arg) { process.stderr.write("缺少插件名：nyra plugin uninstall <名字>\n"); return 2; }
+    const res = uninstallPlugin(home, arg);
+    process.stdout.write(`已卸载 ${res.name}（删除 ${res.removed.length} 个文件）\n`);
+    if (res.keptModified.length) {
+      process.stdout.write(`以下文件你改过，已保留：${res.keptModified.join("、")}\n`);
+    }
+    return 0;
+  }
+  if (cmd === "enable" || cmd === "disable") {
+    if (!arg) { process.stderr.write(`缺少插件名：nyra plugin ${cmd} <名字>\n`); return 2; }
+    const rec = setPluginStatus(home, arg, cmd === "enable" ? "active" : "disabled");
+    process.stdout.write(`已${cmd === "enable" ? "启用" : "停用"} ${rec.name}\n`);
+    return 0;
+  }
+  if (cmd === "pin" || cmd === "unpin") {
+    if (!arg) { process.stderr.write(`缺少插件名：nyra plugin ${cmd} <名字>\n`); return 2; }
+    const rec = setPluginPinned(home, arg, cmd === "pin");
+    process.stdout.write(`已${cmd === "pin" ? "固定" : "取消固定"} ${rec.name}\n`);
+    return 0;
+  }
+  if (cmd === "verify") {
+    const targets = arg ? [arg] : listPlugins(home).map((p) => p.name);
+    if (!targets.length) { process.stdout.write("未安装插件\n"); return 0; }
+    let allOk = true;
+    for (const name of targets) {
+      const v = verifyPlugin(home, name);
+      if (!v.ok) allOk = false;
+      const bad = v.files.filter((f) => f.state === "modified" || f.state === "missing");
+      const held = v.files.filter((f) => f.state === "held");
+      process.stdout.write(`${name}：${v.ok ? "通过" : "有问题"}${bad.length ? `（${bad.map((f) => `${f.rel}:${f.state === "modified" ? "被改过" : "缺失"}`).join("、")}）` : ""}${held.length ? `（保留用户改过的文件 ${held.length} 个）` : ""}\n`);
+    }
+    return allOk ? 0 : 1;
+  }
+  if (cmd === "audit") {
+    const { staleNow, verified } = auditPlugins(home);
+    if (staleNow.length) process.stdout.write(`已降级为 stale（超过 ${STALE_AFTER_DAYS} 天没用过）：${staleNow.join("、")}\n`);
+    else process.stdout.write("没有新降级的插件\n");
+    for (const v of verified) {
+      process.stdout.write(`${v.name}：${v.ok ? "通过" : "有问题"}\n`);
+    }
+    return verified.every((v) => v.ok) ? 0 : 1;
+  }
+  process.stderr.write(`未知插件子命令：${cmd ?? ""}\n${PLUGIN_USAGE}\n`);
+  return 2;
+} catch (err: unknown) {
+  if (err instanceof PluginError) {
+    process.stderr.write(`插件操作失败：${err.message}\n`);
+    return 1;
+  }
+  throw err;
+}
 }
 
 async function handleCreator(argv: string[], home: string, workdir: string): Promise<number> {
   const CREATOR_USAGE = "用法：\n"
-    + "  nyra creator \"<一句话需求>\" [--yes]   对齐 spec → 生成插件 → 验证 → 确认后安装\n"
-    + "  nyra creator verify <staging 目录>     只验证 staging 插件（不安装）\n"
-    + "  nyra creator install <staging 目录> [--yes]  验证后安装 staging 插件\n"
-    + "例子：nyra creator \"做个番茄钟\" --yes；nyra creator \"扫描 TODO\" --yes";
+  + "  nyra creator \"<一句话需求>\" [--yes]   对齐 spec → 生成插件 → 验证 → 确认后安装\n"
+  + "  nyra creator verify <staging 目录>     只验证 staging 插件（不安装）\n"
+  + "  nyra creator install <staging 目录> [--yes]  验证后安装 staging 插件\n"
+  + "例子：nyra creator \"做个番茄钟\" --yes；nyra creator \"扫描 TODO\" --yes";
   try {
     const cmd = argv[0];
     if (cmd === "verify") {
@@ -1763,11 +1936,11 @@ async function handleMemory(argv: string[], home: string): Promise<number> {
   if (cmd === "import") {
     const { readFileSync } = await import("node:fs");
     const text = argv[1] ? readFileSync(argv[1], "utf-8") : await new Promise<string>((res) => {
-      let data = "";
-      process.stdin.setEncoding("utf-8");
-      process.stdin.on("data", (c: string) => { data += c; });
-      process.stdin.on("end", () => res(data));
-    });
+        let data = "";
+        process.stdin.setEncoding("utf-8");
+        process.stdin.on("data", (c: string) => { data += c; });
+        process.stdin.on("end", () => res(data));
+      });
     const result = importSnapshot(text, join(home, "MEMORY.md"));
     process.stdout.write(`已导入 ${result.added} 条，跳过 ${result.skipped} 条（已存在），删掉 ${result.removed} 行含凭据的内容。\n`);
     return 0;
@@ -1809,13 +1982,13 @@ async function handleMemory(argv: string[], home: string): Promise<number> {
 // ---- 子命令：style（缺口 4：分应用文风学习） ----
 async function handleStyle(argv: string[], home: string): Promise<number> {
   const STYLE_USAGE = "用法：\n"
-    + "  nyra style learn <渠道> <样本文件|-> [--yes]   从已发送消息样本提炼文风画像（先展示、确认后才保存；样本原文不保存）\n"
-    + "  nyra style show [渠道]                        查看画像（不给渠道列出全部）\n"
-    + "  nyra style list                               列出已有画像的渠道\n"
-    + "  nyra style delete <渠道> [--yes]              删除画像\n"
-    + "  nyra style export                             导出全部画像（Markdown，可随记忆快照走）\n"
-    + "  nyra style import [文件]                      导入画像（只追加不覆盖；不给文件读 stdin）\n"
-    + "渠道：gmail、outlook、slack、imessage、whatsapp 等小写名；详见 docs/style.md";
+  + "  nyra style learn <渠道> <样本文件|-> [--yes]   从已发送消息样本提炼文风画像（先展示、确认后才保存；样本原文不保存）\n"
+  + "  nyra style show [渠道]                        查看画像（不给渠道列出全部）\n"
+  + "  nyra style list                               列出已有画像的渠道\n"
+  + "  nyra style delete <渠道> [--yes]              删除画像\n"
+  + "  nyra style export                             导出全部画像（Markdown，可随记忆快照走）\n"
+  + "  nyra style import [文件]                      导入画像（只追加不覆盖；不给文件读 stdin）\n"
+  + "渠道：gmail、outlook、slack、imessage、whatsapp 等小写名；详见 docs/style.md";
   const {
     learnStyleProfile, parseSamples, saveStyleProfile, loadStyleProfile,
     listStyleProfiles, deleteStyleProfile, formatStyleProfile, StyleError,
@@ -1825,11 +1998,11 @@ async function handleStyle(argv: string[], home: string): Promise<number> {
   const readInput = async (src: string): Promise<string> => {
     if (src === "-") {
       return new Promise<string>((res) => {
-        let data = "";
-        process.stdin.setEncoding("utf-8");
-        process.stdin.on("data", (c: string) => { data += c; });
-        process.stdin.on("end", () => res(data));
-      });
+          let data = "";
+          process.stdin.setEncoding("utf-8");
+          process.stdin.on("data", (c: string) => { data += c; });
+          process.stdin.on("end", () => res(data));
+        });
     }
     const { readFileSync } = await import("node:fs");
     return readFileSync(src, "utf-8");
@@ -2077,15 +2250,15 @@ function printRestoreResult(result: RestoreResult): void {
   const files = result.files_restored.length + result.files_deleted.length;
   if (result.messages_deleted !== null) {
     process.stdout.write(t("repl.restored", {
-      id: result.snapshot_id, mode: result.mode, files,
-      deleted: result.messages_deleted, kept: result.messages_kept ?? 0,
-    }) + "\n");
+          id: result.snapshot_id, mode: result.mode, files,
+          deleted: result.messages_deleted, kept: result.messages_kept ?? 0,
+        }) + "\n");
   } else {
     process.stdout.write(t("repl.restoredFilesOnly", { id: result.snapshot_id, files }) + "\n");
   }
   process.stdout.write(t("repl.restorePending", {
-    tool: result.tool_call.tool, target: result.tool_call.target ?? "",
-  }) + "\n");
+        tool: result.tool_call.tool, target: result.tool_call.target ?? "",
+      }) + "\n");
 }
 
 function parseRestoreMode(args: string[]): RestoreMode | null {
@@ -2135,10 +2308,10 @@ async function handleRestore(argv: string[], home: string, workdir: string): Pro
     const conv = new ConversationStore(home);
     try {
       const result = store.restore(ref, mode, {
-        conversationStore: conv,
-        triggeredBy: "cli",
-        recordEvidence: (fields) => recordRestoreEvidence(home, workdir, record.session_id, fields),
-      });
+          conversationStore: conv,
+          triggeredBy: "cli",
+          recordEvidence: (fields) => recordRestoreEvidence(home, workdir, record.session_id, fields),
+        });
       // 无 live agent 时，会话文件也要回到快照时刻（否则 --resume 会读回已删的消息）。
       if (result.live_messages !== null) {
         saveSession(result.session_id, [...result.live_messages, { role: "user", content: buildRestoreNote(result) }], home);
@@ -2172,16 +2345,16 @@ export async function handleVault(argv: string[], home: string, input?: VaultInp
     if (process.env.NYRA_VAULT_PASSWORD) return process.env.NYRA_VAULT_PASSWORD;
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise<string>((resolvePromise) => {
-      rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
-    });
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
     return answer;
   };
   const askSecret = async (prompt: string): Promise<string> => {
     if (secretQueue.length) return secretQueue.shift()!;
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise<string>((resolvePromise) => {
-      rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
-    });
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
     return answer;
   };
   const unlock = async (): Promise<boolean> => {
@@ -2289,14 +2462,14 @@ export interface GmailCliInput {
 /** 缺口 6：nyra gmail —— Gmail 连接器的终端入口（状态/授权/搜索/读信/发信/吊销）。 */
 export async function handleGmail(argv: string[], home: string, input?: GmailCliInput): Promise<number> {
   const GMAIL_USAGE = "用法：\n"
-    + "  nyra gmail status                              查看 Gmail 连接器状态（是否启用、是否已授权、账号邮箱）\n"
-    + "  nyra gmail auth                                在浏览器里授权 Gmail（回环回调；client_id/secret 交互输入，只存密码箱）\n"
-    + "  nyra gmail search <查询> [--limit N]           按 Gmail 搜索语法找邮件\n"
-    + "  nyra gmail read <id>                           读一封邮件全文\n"
-    + "  nyra gmail send --to <邮箱> --subject <主题> --body <正文> [--cc <邮箱>] [--bcc <邮箱>] [--thread <id>] [--draft] [--yes]\n"
-    + "                                                 发一封邮件（默认先展示确认；--yes 跳过确认；--draft 只存草稿）\n"
-    + "  nyra gmail revoke [--yes]                      吊销授权并删除本地 token\n"
-    + "详见 docs/connectors-gmail.md";
+  + "  nyra gmail status                              查看 Gmail 连接器状态（是否启用、是否已授权、账号邮箱）\n"
+  + "  nyra gmail auth                                在浏览器里授权 Gmail（回环回调；client_id/secret 交互输入，只存密码箱）\n"
+  + "  nyra gmail search <查询> [--limit N]           按 Gmail 搜索语法找邮件\n"
+  + "  nyra gmail read <id>                           读一封邮件全文\n"
+  + "  nyra gmail send --to <邮箱> --subject <主题> --body <正文> [--cc <邮箱>] [--bcc <邮箱>] [--thread <id>] [--draft] [--yes]\n"
+  + "                                                 发一封邮件（默认先展示确认；--yes 跳过确认；--draft 只存草稿）\n"
+  + "  nyra gmail revoke [--yes]                      吊销授权并删除本地 token\n"
+  + "详见 docs/connectors-gmail.md";
   const {
     createGmailTransport, exchangeCodeForTokens, buildAuthUrl, newAuthState,
     startLoopbackCallbackServer, getGmailStatus, hasGmailTokensEntry,
@@ -2312,16 +2485,16 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
     if (process.env.NYRA_VAULT_PASSWORD) return process.env.NYRA_VAULT_PASSWORD;
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise<string>((resolvePromise) => {
-      rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
-    });
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
     return answer;
   };
   const askSecret = async (prompt: string): Promise<string> => {
     if (secretQueue.length) return secretQueue.shift()!;
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const answer = await new Promise<string>((resolvePromise) => {
-      rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
-    });
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
     return answer;
   };
   const unlockVault = async (): Promise<Vault | null> => {
@@ -2466,13 +2639,13 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
         }
       }
       const result = draft
-        ? await transport.createDraft({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) })
-        : await transport.send({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) });
+      ? await transport.createDraft({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) })
+      : await transport.send({ to, cc, bcc, subject, body, ...(threadId ? { threadId } : {}) });
       try {
         new EvidenceStore(join(home, "evidence"), "gmail").save("gmail_send", `gmail://${result.id}`, buildGmailSendEvidence({
-          to, cc, bcc, subject, body, threadId, draft,
-          resultId: result.id, approvalChannel: "终端命令（nyra gmail send）", mode: "full",
-        }));
+              to, cc, bcc, subject, body, threadId, draft,
+              resultId: result.id, approvalChannel: "终端命令（nyra gmail send）", mode: "full",
+            }));
       } catch { /* 证据落盘失败不破坏发送结果 */ }
       process.stdout.write(draft ? `已存为草稿（草稿 id：${result.id}）。\n` : `已发送（邮件 id：${result.id}）。\n`);
       return 0;
@@ -2519,14 +2692,14 @@ export async function handleGmail(argv: string[], home: string, input?: GmailCli
 
 // ---- JSON 模式 ----
 /**
- * 一次性任务的会话钩子外包：SessionStart 在任务开始前触发，SessionEnd 在
- * 任务结束（成功、失败或异常退出）后于 finally 里触发——与 REPL（runRepl）
- * /网关（newSession/stop/closeSession）行为一致：一次任务一个会话，
- * 开始与结束各触发一次。会话钩子是只通知事件（超时、退出码非零都只警告、
- * 不阻塞、不改退出码）；钩子只写 stderr、不碰 stdout，--json 模式的结构化输出不受影响。
- * 注意：包在 main() 分发层，参数错误等极早退出也会触发一次开始/结束——
- * 与 REPL“启动即触发 SessionStart”的口径一致。
- */
+* 一次性任务的会话钩子外包：SessionStart 在任务开始前触发，SessionEnd 在
+* 任务结束（成功、失败或异常退出）后于 finally 里触发——与 REPL（runRepl）
+* /网关（newSession/stop/closeSession）行为一致：一次任务一个会话，
+* 开始与结束各触发一次。会话钩子是只通知事件（超时、退出码非零都只警告、
+* 不阻塞、不改退出码）；钩子只写 stderr、不碰 stdout，--json 模式的结构化输出不受影响。
+* 注意：包在 main() 分发层，参数错误等极早退出也会触发一次开始/结束——
+* 与 REPL“启动即触发 SessionStart”的口径一致。
+*/
 async function withOneShotSession(args: CliArgs, fn: () => Promise<number>): Promise<number> {
   const home = resolveHome();
   const workdir = resolve(args.workdir);
@@ -2546,10 +2719,10 @@ async function runJson(args: CliArgs): Promise<number> {
     }
     if (!args.task) return invalidArguments(process.stdout, "--json 需要任务文本");
     const built = await buildAgent(args, {
-      interactive: false,
-      // 缺口 20：429 冷却以 JSON 事件报出（delay_ms 是本次计划等待的毫秒数）。
-      onRetry: (r) => lines.emit("rate_limit_cooldown", { provider: r.provider, attempt: r.attempt, delay_ms: r.delayMs, kind: r.kind }),
-    });
+        interactive: false,
+        // 缺口 20：429 冷却以 JSON 事件报出（delay_ms 是本次计划等待的毫秒数）。
+        onRetry: (r) => lines.emit("rate_limit_cooldown", { provider: r.provider, attempt: r.attempt, delay_ms: r.delayMs, kind: r.kind }),
+      });
     const { agent, config, home } = built;
     const workdir = resolve(args.workdir);
     const { command, skipReason } = verifySetup(args, config, workdir);
@@ -2561,16 +2734,16 @@ async function runJson(args: CliArgs): Promise<number> {
     const flusher = makeUsageFlusher(built);
     agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); lines.agentEvent(kind, data); };
     const recorder = new RunRecorder(store, agent, args.task, {
-      verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
-    });
+        verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
+      });
     const result = await recorder.run(args.task);
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
     lines.emit("run_completed", { run_id: recorder.runId, status: final.status });
     // P1-1：未验证通过的运行，不得在输出里宣称"已完成"。
     const note = final.status === "verify_failed"
-      ? "验证命令未通过"
-      : "未配置或未执行验证命令";
+    ? "验证命令未通过"
+    : "未配置或未执行验证命令";
     const downgraded = downgradeCompletionClaim(result, final.status, note);
     if (downgraded.downgraded) {
       lines.emit("completion_downgraded", { status: final.status, claim: downgraded.claim ?? "" });
@@ -2590,10 +2763,10 @@ async function runJson(args: CliArgs): Promise<number> {
     // P1-3：失败分类——CI 据此决定重试还是报 bug，不必解析自然语言。
     const info = classifyFailure(err);
     return lines.failed(info.class, info.message, EXIT_RUNTIME, {
-      class: info.class,
-      retryable: info.retryable,
-      errorName: info.errorName,
-    });
+        class: info.class,
+        retryable: info.retryable,
+        errorName: info.errorName,
+      });
   }
 }
 
@@ -2616,9 +2789,9 @@ async function runOneShot(args: CliArgs): Promise<number> {
       // P1-4：中断前已成功的写操作幂等键——续跑时同键调用跳过，不重复执行。
       const completedKeys = loadCompletedWriteKeys(store, args.resumeRun);
       const builtResume = await buildAgent({ ...args, mode: state.mode, maxTurns: state.max_turns }, {
-        interactive: true,
-        onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
-      });
+          interactive: true,
+          onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+        });
       const { agent } = builtResume;
       const flusherResume = makeUsageFlusher(builtResume);
       agent.onEvent = (kind, data) => flusherResume.flush(agent, kind, data);
@@ -2628,8 +2801,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
       agent.sessionId = state.session_id;
       const [timeout, retries] = resolveVerifySettings(args.verifyTimeout, args.verifyRetries, config);
       const recorder = new RunRecorder(store, agent, state.task, {
-        state, interruptedToolCalls: count, verifyTimeout: timeout, verifyRetries: retries,
-      });
+          state, interruptedToolCalls: count, verifyTimeout: timeout, verifyRetries: retries,
+        });
       const output = await recorder.run(state.task);
       flusherResume.flushNow(agent);
       process.stdout.write(output + "\n");
@@ -2643,10 +2816,10 @@ async function runOneShot(args: CliArgs): Promise<number> {
   // --plan / --execute-plan
   if (args.planMode || args.executePlan || args.approvePlan) {
     const badCombo =
-      (args.planMode && args.executePlan) ||
-      (args.approvePlan && !args.executePlan) ||
-      (args.planMode && (!args.task || args.approvePlan)) ||
-      (args.executePlan && (args.task !== undefined || !args.approvePlan));
+    (args.planMode && args.executePlan) ||
+    (args.approvePlan && !args.executePlan) ||
+    (args.planMode && (!args.task || args.approvePlan)) ||
+    (args.executePlan && (args.task !== undefined || !args.approvePlan));
     if (badCombo) {
       process.stderr.write("错误：--plan 需要任务文本；--execute-plan 需要 --approve-plan SHA256，且不能混用其他会话命令\n");
       return 2;
@@ -2675,9 +2848,9 @@ async function runOneShot(args: CliArgs): Promise<number> {
         const approved = readApprovedPlan(workdir, args.approvePlan!);
         const task = approvedExecutionTask(approved);
         const builtPlan = await buildAgent(args, {
-          interactive: true,
-          onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
-        });
+            interactive: true,
+            onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+          });
         const { agent } = builtPlan;
         const flusherPlan = makeUsageFlusher(builtPlan);
         agent.onEvent = (kind, data) => flusherPlan.flush(agent, kind, data);
@@ -2696,9 +2869,9 @@ async function runOneShot(args: CliArgs): Promise<number> {
   if (!args.task) return 0; // 无任务时由 main 分派 REPL。
   try {
     const built = await buildAgent(args, {
-      interactive: true,
-      onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
-    });
+        interactive: true,
+        onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+      });
     const { agent } = built;
     const flusher = makeUsageFlusher(built);
     if (args.resume) {
@@ -2718,8 +2891,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
     // 缺口 20 的前置修复：onEvent 先挂再建 recorder（同 runJson，见该处注释）。
     agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); printer.call(kind, data); };
     const recorder = new RunRecorder(store, agent, args.task, {
-      verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
-    });
+        verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
+      });
     const result = await recorder.run(args.task);
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
@@ -2862,9 +3035,9 @@ async function runRepl(args: CliArgs): Promise<number> {
   };
   const onReplSigint = (): void => {
     void (async () => {
-      await Promise.race([endSessionHooks(), new Promise((r) => setTimeout(r, 3000))]);
-      process.exit(130);
-    })();
+        await Promise.race([endSessionHooks(), new Promise((r) => setTimeout(r, 3000))]);
+        process.exit(130);
+      })();
   };
   process.once("SIGINT", onReplSigint);
   try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：只通知事件 */ }
@@ -2887,18 +3060,18 @@ async function runRepl(args: CliArgs): Promise<number> {
   let petOn = petEnabledFromConfig(built.config);
   const showPet = (): boolean => framed() && petVisible({ enabled: petOn, tty: isTty, cols: termCols(), unicode: uiUnicode });
   process.stdout.write(renderHeader(
-    { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir, branch },
-    { width: termCols(), ...ui, compact: !framed() },
-  ).join("\n") + "\n");
+      { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir, branch },
+      { width: termCols(), ...ui, compact: !framed() },
+    ).join("\n") + "\n");
   process.stdout.write((framed()
-    ? renderTips({ width: termCols(), ...ui, pet: showPet() })
-    : t("tips.plain")) + "\n");
+      ? renderTips({ width: termCols(), ...ui, pet: showPet() })
+      : t("tips.plain")) + "\n");
   const unread = (await import("./tasks.ts")).formatUnreadInbox(home);
   if (unread) process.stdout.write(unread + "\n");
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
   const ask = (prompt: string): Promise<string | null> => new Promise((resolvePromise) => {
-    rl.question(prompt, (answer) => resolvePromise(answer));
-  });
+      rl.question(prompt, (answer) => resolvePromise(answer));
+    });
   // 小伙伴：只在输入框可见时画在右侧固定列（保存/恢复光标，不动 readline 的光标）。
   let frameActive = false;
   let frameCols = 0;
@@ -2918,10 +3091,10 @@ async function runRepl(args: CliArgs): Promise<number> {
     }
     seq += "\x1b8";
     rows.forEach((row, i) => {
-      const d = i - 1; // 行偏移：上横线 -1、输入行 0、下横线 +1、状态栏 +2
-      if (d === 0 && 2 + textWidth(typed) >= col - 1) return; // 输入快碰到小伙伴时让位
-      seq += "\x1b7" + (d < 0 ? `\x1b[${-d}A` : d > 0 ? `\x1b[${d}B` : "") + `\x1b[${col}G` + row + "\x1b8";
-    });
+        const d = i - 1; // 行偏移：上横线 -1、输入行 0、下横线 +1、状态栏 +2
+        if (d === 0 && 2 + textWidth(typed) >= col - 1) return; // 输入快碰到小伙伴时让位
+        seq += "\x1b7" + (d < 0 ? `\x1b[${-d}A` : d > 0 ? `\x1b[${d}B` : "") + `\x1b[${col}G` + row + "\x1b8";
+      });
     return seq;
   };
   // spinner：只在 TTY 上转；小伙伴开着时右侧带一张同步转眼珠的小脸。
@@ -2929,10 +3102,10 @@ async function runRepl(args: CliArgs): Promise<number> {
   // 写完整行后再恢复，避免 spinner 和别的输出挤在同一行。
   const rawOut = process.stdout.write.bind(process.stdout) as (chunk: string) => boolean;
   const spinner = new Spinner({
-    write: (t) => rawOut(t), tty: framed(), level: uiLevel, unicode: uiUnicode, width: termCols,
-    face: (tick) => (showPet() ? petFace("thinking", tick, uiLevel) : null),
-    faceCol: () => termCols() - PET_WIDTH + 2,
-  });
+      write: (t) => rawOut(t), tty: framed(), level: uiLevel, unicode: uiUnicode, width: termCols,
+      face: (tick) => (showPet() ? petFace("thinking", tick, uiLevel) : null),
+      faceCol: () => termCols() - PET_WIDTH + 2,
+    });
   let spinning = false;
   let approvalOpen = false;
   const guardStream = (stream: NodeJS.WriteStream): (() => void) => {
@@ -2983,10 +3156,10 @@ async function runRepl(args: CliArgs): Promise<number> {
     const label = () => t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: remaining });
     spinner.setLabel(label());
     cooldownTimer = setInterval(() => {
-      remaining -= 1;
-      if (remaining <= 0) clearCooldown(true);
-      else spinner.setLabel(label());
-    }, 1000);
+        remaining -= 1;
+        if (remaining <= 0) clearCooldown(true);
+        else spinner.setLabel(label());
+      }, 1000);
     (cooldownTimer as { unref?: () => void }).unref?.();
     cooldownTimeout = setTimeout(() => clearCooldown(true), r.delayMs + 500);
     (cooldownTimeout as { unref?: () => void }).unref?.();
@@ -3011,9 +3184,9 @@ async function runRepl(args: CliArgs): Promise<number> {
     const bubble = renderBubble(pet.bubble ?? t("pet.approval"), uiLevel);
     const bw = textWidth(stripAnsi(bubble));
     const lines = rows.map((r, i) => {
-      const left = i === 1 && bw + PET_WIDTH + 3 < cols ? " ".repeat(cols - PET_WIDTH - bw - 2) + bubble + " " : " ".repeat(cols - PET_WIDTH - 1);
-      return left + r;
-    });
+        const left = i === 1 && bw + PET_WIDTH + 3 < cols ? " ".repeat(cols - PET_WIDTH - bw - 2) + bubble + " " : " ".repeat(cols - PET_WIDTH - 1);
+        return left + r;
+      });
     process.stdout.write(lines.join("\n") + "\n");
   };
   approvalHooks.after = () => {
@@ -3024,352 +3197,352 @@ async function runRepl(args: CliArgs): Promise<number> {
   let mode = agent.mode;
   // try/finally 只为保证 SessionEnd 一定触发：循环体不重缩进，diff 保持最小。
   try {
-  for (;;) {
-    const contextUsage = agent.usage.last_prompt_tokens !== null && agent.usage.configuredWindow
+    for (;;) {
+      const contextUsage = agent.usage.last_prompt_tokens !== null && agent.usage.configuredWindow
       ? agent.usage.last_prompt_tokens / agent.usage.configuredWindow
       : null;
-    let line: string | null;
-    if (framed()) {
-      const cols = termCols();
-      const petShown = showPet();
-      // Node 版暂不支持 shift+tab 切换模式（用 /mode），所以不显示该提示。
-      const frame = renderInputFrame(
-        // P2-3：框式状态栏同样追加成本段（上一轮算出的 lastCost；没配单价/没跑过一轮时不显示）。
-        { model: providerDesc, mode, contextUsage, modeSwitchKey: false, branch, cost: dashboardCostSegment(agent.lastCost) },
-        { width: cols, ...ui, reserveRight: petShown ? PET_WIDTH : 0 },
-      );
-      // 先画上横线并在下面预留几行（避免之后滚屏），光标回到输入行；
-      // readline 显示提示符后再把下横线和状态栏画到输入行下面。readline 在
-      // 退格、移动光标时会清掉光标以下的内容，所以每次按键后补画一次（只在
-      // 输入还是单行时画，多行时跳过，避免和折行的输入抢位置）。小伙伴随同一次写入补画。
-      process.stdout.write("\n" + frame.above.join("\n") + "\n" + "\n".repeat(frame.below.length) + `\x1b[${frame.below.length}A\r`);
-      frameActive = petShown;
-      frameCols = cols;
-      const drawBelow = (): void => {
-        const typed = (rl as unknown as { line?: string }).line ?? "";
-        if (inputRows(typed, cols) > 1) return;
-        process.stdout.write("\x1b7" + frame.below.map((l) => `\x1b[1B\r\x1b[2K${l}`).join("") + "\x1b8" + petSeq());
-      };
-      const onKey = (_s: unknown, key?: { name?: string }): void => {
-        if (key && (key.name === "return" || key.name === "enter")) return;
+      let line: string | null;
+      if (framed()) {
+        const cols = termCols();
+        const petShown = showPet();
+        // Node 版暂不支持 shift+tab 切换模式（用 /mode），所以不显示该提示。
+        const frame = renderInputFrame(
+          // P2-3：框式状态栏同样追加成本段（上一轮算出的 lastCost；没配单价/没跑过一轮时不显示）。
+          { model: providerDesc, mode, contextUsage, modeSwitchKey: false, branch, cost: dashboardCostSegment(agent.lastCost) },
+          { width: cols, ...ui, reserveRight: petShown ? PET_WIDTH : 0 },
+        );
+        // 先画上横线并在下面预留几行（避免之后滚屏），光标回到输入行；
+        // readline 显示提示符后再把下横线和状态栏画到输入行下面。readline 在
+        // 退格、移动光标时会清掉光标以下的内容，所以每次按键后补画一次（只在
+        // 输入还是单行时画，多行时跳过，避免和折行的输入抢位置）。小伙伴随同一次写入补画。
+        process.stdout.write("\n" + frame.above.join("\n") + "\n" + "\n".repeat(frame.below.length) + `\x1b[${frame.below.length}A\r`);
+        frameActive = petShown;
+        frameCols = cols;
+        const drawBelow = (): void => {
+          const typed = (rl as unknown as { line?: string }).line ?? "";
+          if (inputRows(typed, cols) > 1) return;
+          process.stdout.write("\x1b7" + frame.below.map((l) => `\x1b[1B\r\x1b[2K${l}`).join("") + "\x1b8" + petSeq());
+        };
+        const onKey = (_s: unknown, key?: { name?: string }): void => {
+          if (key && (key.name === "return" || key.name === "enter")) return;
+          drawBelow();
+        };
+        const pending = ask(frame.prompt);
         drawBelow();
-      };
-      const pending = ask(frame.prompt);
-      drawBelow();
-      if (petShown) pet.start();
-      process.stdin.on("keypress", onKey);
-      try { line = await pending; } finally {
-        process.stdin.off("keypress", onKey);
-        frameActive = false;
-        pet.stop();
-      }
-      if (line !== null) {
-        // 提交后：回到上横线，清掉输入框（连同上方的气泡行），留下一行暗色回显。
-        const up = inputRows(line, cols) + frame.above.length;
-        process.stdout.write(`\x1b[${up + 1}A\r\x1b[2K\x1b[1B\r\x1b[J` + renderEcho(line, ui) + "\n");
-      }
-    } else {
-      // P2-3：纯文本状态行同样追加成本段（与框式状态栏同一份 lastCost）。
-      process.stdout.write(formatReplStatus(providerDesc, workdir, contextUsage, mode, dashboardCostSegment(agent.lastCost)) + "\n");
-      line = await ask("> ");
-    }
-    if (line === null) { process.stdout.write("\n"); break; }
-    const text = line.trim();
-    if (!text) continue;
-    if (text === "/exit" || text === "/quit") break;
-    if (text === "/help") {
-      process.stdout.write(t("repl.help") + "\n");
-      continue;
-    }
-    if (text === "/clear") {
-      agent.messages = [];
-      saveSession(agent.sessionId, [], home);
-      process.stdout.write(ok(t("repl.cleared")) + "\n");
-      continue;
-    }
-    // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化与
-    // /compact focus（分发走 parseCompactCommand，见该函数注释）。
-    if (text === "/context") {
-      process.stdout.write(formatContextUsage(agent.contextUsage()) + "\n");
-      continue;
-    }
-    // 缺口 20：/stats 看本次会话用量与本月累计；/stats heatmap 看每日热力图。
-    if (text === "/stats" || text.startsWith("/stats ")) {
-      const arg = text.slice("/stats".length).trim();
-      if (arg === "" ) {
-        process.stdout.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + "\n");
-      } else if (arg === "heatmap" || arg.startsWith("heatmap ")) {
-        const weeksRaw = parseInt(arg.split(/\s+/)[1] ?? "8", 10);
-        const weeks = Number.isFinite(weeksRaw) && weeksRaw >= 1 && weeksRaw <= 52 ? weeksRaw : 8;
-        flusher.flushNow(agent);
-        const ledger = new UsageLedger(home);
-        process.stdout.write(formatHeatmap(ledger.dailyTotals(weeks * 7), { weeks }) + "\n");
+        if (petShown) pet.start();
+        process.stdin.on("keypress", onKey);
+        try { line = await pending; } finally {
+          process.stdin.off("keypress", onKey);
+          frameActive = false;
+          pet.stop();
+        }
+        if (line !== null) {
+          // 提交后：回到上横线，清掉输入框（连同上方的气泡行），留下一行暗色回显。
+          const up = inputRows(line, cols) + frame.above.length;
+          process.stdout.write(`\x1b[${up + 1}A\r\x1b[2K\x1b[1B\r\x1b[J` + renderEcho(line, ui) + "\n");
+        }
       } else {
-        process.stderr.write("用法：/stats；/stats heatmap [周数]\n");
+        // P2-3：纯文本状态行同样追加成本段（与框式状态栏同一份 lastCost）。
+        process.stdout.write(formatReplStatus(providerDesc, workdir, contextUsage, mode, dashboardCostSegment(agent.lastCost)) + "\n");
+        line = await ask("> ");
       }
-      continue;
-    }
-    // 缺口 19：/status 诊断清单（只读：坏配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher）。
-    if (text === "/status") {
-      const report = runStatusChecks({ home, workdir });
-      process.stdout.write(formatStatusReport(report) + "\n");
-      continue;
-    }
-    if (text === "/compact" || text.startsWith("/compact ")) {
-      const parsed = parseCompactCommand(text);
-      if (parsed === null) {
-        process.stderr.write(t("repl.compactUsage") + "\n");
+      if (line === null) { process.stdout.write("\n"); break; }
+      const text = line.trim();
+      if (!text) continue;
+      if (text === "/exit" || text === "/quit") break;
+      if (text === "/help") {
+        process.stdout.write(t("repl.help") + "\n");
         continue;
       }
-      try {
-        const info = await agent.compact(4, parsed.focus || undefined);
-        process.stdout.write(t("repl.compacted", { focus: parsed.focus ? t("repl.compactFocus", { focus: parsed.focus }) : "", before: info.before, after: info.after, method: info.method }) + "\n");
-      } catch (err: unknown) {
-        process.stderr.write(t("repl.compactFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
-      }
-      continue;
-    }
-    if (text.startsWith("/mode ")) {
-      const next = text.slice(6).trim();
-      try {
-        mode = validateMode(next);
-        agent.setMode(mode);
-        process.stdout.write(ok(t("repl.modeSwitched", { mode })) + "\n");
-      } catch {
-        process.stderr.write(fail(t("repl.modeInvalid")) + "\n");
-      }
-      continue;
-    }
-    // 缺口 5：对话中途换模型（/model）。只换 provider，不动会话与工具
-    // 状态（Agent.switchModel 保证）；新链以目标为 primary，兜底开关
-    // 与本次运行一致；窗口与单价按新模型重配。
-    if (text === "/model" || text.startsWith("/model ")) {
-      const spec = text.slice("/model".length).trim();
-      if (!spec) {
-        const allowlist = resolveSwitchAllowlist(config, agent.provider.name);
-        const fallbackOn = agent.provider instanceof FallbackProvider;
-        process.stdout.write(t("repl.modelCurrent", {
-          model: `${agent.provider.name} / ${agent.provider.model}`,
-          allowlist: allowlist.join("、"),
-          fallback: fallbackOn ? t("repl.modelFallbackOn") : t("repl.modelFallbackOff"),
-        }) + "\n");
+      if (text === "/clear") {
+        agent.messages = [];
+        saveSession(agent.sessionId, [], home);
+        process.stdout.write(ok(t("repl.cleared")) + "\n");
         continue;
       }
-      const sep = spec.indexOf(":");
-      const targetName = (sep >= 0 ? spec.slice(0, sep) : spec).trim();
-      const targetModel = sep >= 0 ? spec.slice(sep + 1).trim() || undefined : undefined;
-      if (!targetName) {
-        process.stderr.write(fail(t("repl.modelUsage")) + "\n");
+      // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化与
+      // /compact focus（分发走 parseCompactCommand，见该函数注释）。
+      if (text === "/context") {
+        process.stdout.write(formatContextUsage(agent.contextUsage()) + "\n");
         continue;
       }
-      try {
-        const targetCfg = resolveProvider({ home, config, providerName: targetName, model: targetModel });
-        const chain = resolveFallbackChain(config, targetCfg.name, fallbackEnabled(args) ?? undefined);
-        const next = buildProviderChain(targetCfg, chain, built.onModelSwitch, {
-          resolver: (n: string) => resolveProvider({ home, config, providerName: n }),
-          onRetry: (r) => retryNotify?.(r),
-        });
-        // 推理档位与当前运行一致（provider.extraBody）。
-        (next as { extraBody?: Record<string, unknown> }).extraBody = toRequestBody(resolveReasoningOptions(config));
-        const manualWindow = manualWindowFromConfig(config);
-        const windowResolved = resolveContextWindow({
-          model: next.model, provider: targetCfg.name,
-          cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
-          cache: loadModelCache(home),
-        });
-        const switched = agent.switchModel(next, {
-          reason: "用户在对话中途手动切换模型",
-          contextWindowTokens: windowResolved.window,
-          contextWindowSource: windowResolved.source,
-          contextWindowModel: windowResolved.model,
-          pricing: resolvePricing(config.pricing, next.model),
-        });
-        providerDesc = `${agent.provider.name} / ${agent.provider.model}`;
-        process.stdout.write(ok(t("repl.modelSwitched", { from: switched.from, to: switched.to })) + "\n");
-      } catch (err: unknown) {
-        process.stderr.write(fail(t("repl.modelSwitchFailed", { err: err instanceof Error ? err.message : String(err) })) + "\n");
-      }
-      continue;
-    }
-    if (text === "/pet" || text.startsWith("/pet ")) {
-      const next = parsePetCommand(text, petOn);
-      if (next === null) {
-        process.stderr.write(fail(t("pet.usage")) + "\n");
+      // 缺口 20：/stats 看本次会话用量与本月累计；/stats heatmap 看每日热力图。
+      if (text === "/stats" || text.startsWith("/stats ")) {
+        const arg = text.slice("/stats".length).trim();
+        if (arg === "" ) {
+          process.stdout.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + "\n");
+        } else if (arg === "heatmap" || arg.startsWith("heatmap ")) {
+          const weeksRaw = parseInt(arg.split(/\s+/)[1] ?? "8", 10);
+          const weeks = Number.isFinite(weeksRaw) && weeksRaw >= 1 && weeksRaw <= 52 ? weeksRaw : 8;
+          flusher.flushNow(agent);
+          const ledger = new UsageLedger(home);
+          process.stdout.write(formatHeatmap(ledger.dailyTotals(weeks * 7), { weeks }) + "\n");
+        } else {
+          process.stderr.write("用法：/stats；/stats heatmap [周数]\n");
+        }
         continue;
       }
-      petOn = next;
-      try { saveConfig(home, { pet: petOn }); } catch { /* 写不了配置也照样切换本次会话 */ }
-      let msg = petOn ? t("pet.on") : t("pet.off");
-      if (petOn && !showPet()) msg += t("pet.hidden");
-      process.stdout.write(ok(msg) + "\n");
-      continue;
-    }
-    if (text === "/lang" || text.startsWith("/lang ")) {
-      // 界面语言：立即切换并写回 config.json 的 language（下次启动沿用）。
-      const next = parseLangCommand(text);
-      if (next === null) {
-        process.stderr.write(fail(t("lang.usage", { lang: getLang() })) + "\n");
+      // 缺口 19：/status 诊断清单（只读：坏配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher）。
+      if (text === "/status") {
+        const report = runStatusChecks({ home, workdir });
+        process.stdout.write(formatStatusReport(report) + "\n");
         continue;
       }
-      setLang(next);
-      try { saveConfig(home, { language: next }); } catch { /* 写不了配置也照样切换本次会话 */ }
-      process.stdout.write(ok(t("lang.switched")) + "\n");
-      continue;
-    }
-    if (text === "/creator") {
-      try {
-        mode = validateMode("creator");
-        agent.setMode(mode);
-        process.stdout.write(t("repl.creatorOn") + "\n");
-      } catch {
-        process.stderr.write(t("repl.creatorFailed") + "\n");
-      }
-      continue;
-    }
-    if (text === "/commands") {
-      const found = listCustomCommands(workdir, home);
-      if (!found.length) process.stdout.write(t("repl.noCommands") + "\n");
-      else for (const f of found) process.stdout.write(`- ${f}\n`);
-      continue;
-    }
-    if (text.startsWith("/rewind-msg ") || text.startsWith("/rewind-edit ") || text.startsWith("/rewind-fork ")) {
-      // 对话回退（第 3 阶段 /rewind）：基于 conversations 存档，与网页/手机同一份实现。
-      const store = new ConversationStore(home);
-      try {
-        const parts = text.split(/\s+/);
-        const messageId = Number(parts[1]);
-        if (!Number.isInteger(messageId) || messageId <= 0) {
-          process.stderr.write(t("repl.rewindMsgUsage") + "\n");
+      if (text === "/compact" || text.startsWith("/compact ")) {
+        const parsed = parseCompactCommand(text);
+        if (parsed === null) {
+          process.stderr.write(t("repl.compactUsage") + "\n");
           continue;
         }
-        let result: { action: string; kept: number; deleted: number; new_session_id: string | null };
-        if (text.startsWith("/rewind-msg ")) {
-          result = rewindTo(store, agent.sessionId, messageId);
-        } else if (text.startsWith("/rewind-fork ")) {
-          result = rewindFork(store, agent.sessionId, messageId);
-        } else {
-          const newText = text.slice(text.indexOf(parts[1]) + parts[1].length).trim();
-          if (!newText) { process.stderr.write(t("repl.rewindEditUsage") + "\n"); continue; }
-          result = rewindEdit(store, agent.sessionId, messageId, newText);
+        try {
+          const info = await agent.compact(4, parsed.focus || undefined);
+          process.stdout.write(t("repl.compacted", { focus: parsed.focus ? t("repl.compactFocus", { focus: parsed.focus }) : "", before: info.before, after: info.after, method: info.method }) + "\n");
+        } catch (err: unknown) {
+          process.stderr.write(t("repl.compactFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
         }
-        if (result.action !== "fork") {
-          agent.messages = storeHistoryToAgentMessages(store.history(agent.sessionId, 100000));
+        continue;
+      }
+      if (text.startsWith("/mode ")) {
+        const next = text.slice(6).trim();
+        try {
+          mode = validateMode(next);
+          agent.setMode(mode);
+          process.stdout.write(ok(t("repl.modeSwitched", { mode })) + "\n");
+        } catch {
+          process.stderr.write(fail(t("repl.modeInvalid")) + "\n");
+        }
+        continue;
+      }
+      // 缺口 5：对话中途换模型（/model）。只换 provider，不动会话与工具
+      // 状态（Agent.switchModel 保证）；新链以目标为 primary，兜底开关
+      // 与本次运行一致；窗口与单价按新模型重配。
+      if (text === "/model" || text.startsWith("/model ")) {
+        const spec = text.slice("/model".length).trim();
+        if (!spec) {
+          const allowlist = resolveSwitchAllowlist(config, agent.provider.name);
+          const fallbackOn = agent.provider instanceof FallbackProvider;
+          process.stdout.write(t("repl.modelCurrent", {
+                model: `${agent.provider.name} / ${agent.provider.model}`,
+                allowlist: allowlist.join("、"),
+                fallback: fallbackOn ? t("repl.modelFallbackOn") : t("repl.modelFallbackOff"),
+              }) + "\n");
+          continue;
+        }
+        const sep = spec.indexOf(":");
+        const targetName = (sep >= 0 ? spec.slice(0, sep) : spec).trim();
+        const targetModel = sep >= 0 ? spec.slice(sep + 1).trim() || undefined : undefined;
+        if (!targetName) {
+          process.stderr.write(fail(t("repl.modelUsage")) + "\n");
+          continue;
+        }
+        try {
+          const targetCfg = resolveProvider({ home, config, providerName: targetName, model: targetModel });
+          const chain = resolveFallbackChain(config, targetCfg.name, fallbackEnabled(args) ?? undefined);
+          const next = buildProviderChain(targetCfg, chain, built.onModelSwitch, {
+              resolver: (n: string) => resolveProvider({ home, config, providerName: n }),
+              onRetry: (r) => retryNotify?.(r),
+            });
+          // 推理档位与当前运行一致（provider.extraBody）。
+          (next as { extraBody?: Record<string, unknown> }).extraBody = toRequestBody(resolveReasoningOptions(config));
+          const manualWindow = manualWindowFromConfig(config);
+          const windowResolved = resolveContextWindow({
+              model: next.model, provider: targetCfg.name,
+              cli: args.contextWindow, manual: manualWindow.value, manualKey: manualWindow.key,
+              cache: loadModelCache(home),
+            });
+          const switched = agent.switchModel(next, {
+              reason: "用户在对话中途手动切换模型",
+              contextWindowTokens: windowResolved.window,
+              contextWindowSource: windowResolved.source,
+              contextWindowModel: windowResolved.model,
+              pricing: resolvePricing(config.pricing, next.model),
+            });
+          providerDesc = `${agent.provider.name} / ${agent.provider.model}`;
+          process.stdout.write(ok(t("repl.modelSwitched", { from: switched.from, to: switched.to })) + "\n");
+        } catch (err: unknown) {
+          process.stderr.write(fail(t("repl.modelSwitchFailed", { err: err instanceof Error ? err.message : String(err) })) + "\n");
+        }
+        continue;
+      }
+      if (text === "/pet" || text.startsWith("/pet ")) {
+        const next = parsePetCommand(text, petOn);
+        if (next === null) {
+          process.stderr.write(fail(t("pet.usage")) + "\n");
+          continue;
+        }
+        petOn = next;
+        try { saveConfig(home, { pet: petOn }); } catch { /* 写不了配置也照样切换本次会话 */ }
+        let msg = petOn ? t("pet.on") : t("pet.off");
+        if (petOn && !showPet()) msg += t("pet.hidden");
+        process.stdout.write(ok(msg) + "\n");
+        continue;
+      }
+      if (text === "/lang" || text.startsWith("/lang ")) {
+        // 界面语言：立即切换并写回 config.json 的 language（下次启动沿用）。
+        const next = parseLangCommand(text);
+        if (next === null) {
+          process.stderr.write(fail(t("lang.usage", { lang: getLang() })) + "\n");
+          continue;
+        }
+        setLang(next);
+        try { saveConfig(home, { language: next }); } catch { /* 写不了配置也照样切换本次会话 */ }
+        process.stdout.write(ok(t("lang.switched")) + "\n");
+        continue;
+      }
+      if (text === "/creator") {
+        try {
+          mode = validateMode("creator");
+          agent.setMode(mode);
+          process.stdout.write(t("repl.creatorOn") + "\n");
+        } catch {
+          process.stderr.write(t("repl.creatorFailed") + "\n");
+        }
+        continue;
+      }
+      if (text === "/commands") {
+        const found = listCustomCommands(workdir, home);
+        if (!found.length) process.stdout.write(t("repl.noCommands") + "\n");
+        else for (const f of found) process.stdout.write(`- ${f}\n`);
+        continue;
+      }
+      if (text.startsWith("/rewind-msg ") || text.startsWith("/rewind-edit ") || text.startsWith("/rewind-fork ")) {
+        // 对话回退（第 3 阶段 /rewind）：基于 conversations 存档，与网页/手机同一份实现。
+        const store = new ConversationStore(home);
+        try {
+          const parts = text.split(/\s+/);
+          const messageId = Number(parts[1]);
+          if (!Number.isInteger(messageId) || messageId <= 0) {
+            process.stderr.write(t("repl.rewindMsgUsage") + "\n");
+            continue;
+          }
+          let result: { action: string; kept: number; deleted: number; new_session_id: string | null };
+          if (text.startsWith("/rewind-msg ")) {
+            result = rewindTo(store, agent.sessionId, messageId);
+          } else if (text.startsWith("/rewind-fork ")) {
+            result = rewindFork(store, agent.sessionId, messageId);
+          } else {
+            const newText = text.slice(text.indexOf(parts[1]) + parts[1].length).trim();
+            if (!newText) { process.stderr.write(t("repl.rewindEditUsage") + "\n"); continue; }
+            result = rewindEdit(store, agent.sessionId, messageId, newText);
+          }
+          if (result.action !== "fork") {
+            agent.messages = storeHistoryToAgentMessages(store.history(agent.sessionId, 100000));
+            saveSession(agent.sessionId, agent.messages, home);
+            process.stdout.write(t("repl.rewound", { id: messageId, kept: result.kept, deleted: result.deleted }) + "\n");
+          } else {
+            process.stdout.write(t("repl.forked", { sid: String(result.new_session_id), kept: result.kept }) + "\n");
+          }
+        } catch (err: unknown) {
+          process.stdout.write(t("repl.rewindFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
+        } finally {
+          store.close();
+        }
+        continue;
+      }
+      if (text === "/restore" || text.startsWith("/restore ")) {
+        // 缺口 9：影子快照联合回滚（文件 + 会话一起，或只文件 / 只会话）。
+        if (!agent.shadowSnapshots) {
+          process.stdout.write(t("repl.noShadow") + "\n");
+          continue;
+        }
+        const parts = text.split(/\s+/).filter(Boolean);
+        if (parts.length === 1) {
+          const records = agent.shadowSnapshots.list();
+          if (!records.length) {
+            process.stdout.write(t("repl.restoreNone") + "\n");
+            continue;
+          }
+          process.stdout.write(t("repl.restoreList", { n: records.length }) + "\n");
+          for (let i = 0; i < records.length; i++) process.stdout.write(formatSnapshotLine(i + 1, records[i]) + "\n");
+          continue;
+        }
+        let mode: RestoreMode = "both";
+        if (parts.length >= 3) {
+          if (parts[2] === "both" || parts[2] === "files" || parts[2] === "session") mode = parts[2];
+          else { process.stderr.write(t("repl.restoreUsage") + "\n"); continue; }
+        }
+        if (parts.length > 3) {
+          process.stderr.write(t("repl.restoreUsage") + "\n");
+          continue;
+        }
+        try {
+          const result = agent.restoreShadowSnapshot(parts[1], mode, "repl");
+          recordRestoreEvidence(home, workdir, agent.sessionId, {
+              snapshot_id: result.snapshot_id, triggered_by: "repl", mode,
+              files: [...result.files_restored, ...result.files_deleted].join(","),
+              ...(result.messages_deleted !== null
+                ? { messages_deleted: result.messages_deleted, messages_kept: result.messages_kept }
+                : {}),
+            });
+          printRestoreResult(result);
+        } catch (err: unknown) {
+          process.stdout.write(t("repl.restoreFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
+        }
+        continue;
+      }
+      if (text === "/undo" || text === "/rewind" || text.startsWith("/rewind ")) {
+        if (!agent.checkpoints) {
+          process.stdout.write(t("repl.noCheckpoints") + "\n");
+          continue;
+        }
+        let count = 1;
+        if (text.startsWith("/rewind ")) {
+          const pieces = text.split(/\s+/);
+          if (pieces.length !== 2 || !/^\d+$/.test(pieces[1])) {
+            process.stderr.write(t("repl.rewindUsage") + "\n");
+            continue;
+          }
+          count = parseInt(pieces[1], 10);
+        }
+        try {
+          const result = agent.checkpoints.undo(count);
+          // 模型的对话记录不能默认已撤销的改动还在：把回退记成一轮用户消息。
+          agent.messages.push({
+              role: "user",
+              content: `[Nyra 撤销记录] 已恢复最近 ${result.turns} 轮中的 ${result.files} 个本地文件；此前工具执行结果可能已失效。后续操作请重新读取文件，不要假设此前改动仍存在。`,
+            });
           saveSession(agent.sessionId, agent.messages, home);
-          process.stdout.write(t("repl.rewound", { id: messageId, kept: result.kept, deleted: result.deleted }) + "\n");
-        } else {
-          process.stdout.write(t("repl.forked", { sid: String(result.new_session_id), kept: result.kept }) + "\n");
+          process.stdout.write(t("repl.undone", { turns: result.turns, files: result.files }) + "\n");
+        } catch (err: unknown) {
+          process.stdout.write(t("repl.undoFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
         }
-      } catch (err: unknown) {
-        process.stdout.write(t("repl.rewindFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
-      } finally {
-        store.close();
-      }
-      continue;
-    }
-    if (text === "/restore" || text.startsWith("/restore ")) {
-      // 缺口 9：影子快照联合回滚（文件 + 会话一起，或只文件 / 只会话）。
-      if (!agent.shadowSnapshots) {
-        process.stdout.write(t("repl.noShadow") + "\n");
         continue;
       }
-      const parts = text.split(/\s+/).filter(Boolean);
-      if (parts.length === 1) {
-        const records = agent.shadowSnapshots.list();
-        if (!records.length) {
-          process.stdout.write(t("repl.restoreNone") + "\n");
-          continue;
-        }
-        process.stdout.write(t("repl.restoreList", { n: records.length }) + "\n");
-        for (let i = 0; i < records.length; i++) process.stdout.write(formatSnapshotLine(i + 1, records[i]) + "\n");
-        continue;
-      }
-      let mode: RestoreMode = "both";
-      if (parts.length >= 3) {
-        if (parts[2] === "both" || parts[2] === "files" || parts[2] === "session") mode = parts[2];
-        else { process.stderr.write(t("repl.restoreUsage") + "\n"); continue; }
-      }
-      if (parts.length > 3) {
-        process.stderr.write(t("repl.restoreUsage") + "\n");
-        continue;
-      }
+      agent.ctx.approvedShellCommands?.clear();
       try {
-        const result = agent.restoreShadowSnapshot(parts[1], mode, "repl");
-        recordRestoreEvidence(home, workdir, agent.sessionId, {
-          snapshot_id: result.snapshot_id, triggered_by: "repl", mode,
-          files: [...result.files_restored, ...result.files_deleted].join(","),
-          ...(result.messages_deleted !== null
-            ? { messages_deleted: result.messages_deleted, messages_kept: result.messages_kept }
-            : {}),
-        });
-        printRestoreResult(result);
-      } catch (err: unknown) {
-        process.stdout.write(t("repl.restoreFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
-      }
-      continue;
-    }
-    if (text === "/undo" || text === "/rewind" || text.startsWith("/rewind ")) {
-      if (!agent.checkpoints) {
-        process.stdout.write(t("repl.noCheckpoints") + "\n");
-        continue;
-      }
-      let count = 1;
-      if (text.startsWith("/rewind ")) {
-        const pieces = text.split(/\s+/);
-        if (pieces.length !== 2 || !/^\d+$/.test(pieces[1])) {
-          process.stderr.write(t("repl.rewindUsage") + "\n");
-          continue;
-        }
-        count = parseInt(pieces[1], 10);
-      }
-      try {
-        const result = agent.checkpoints.undo(count);
-        // 模型的对话记录不能默认已撤销的改动还在：把回退记成一轮用户消息。
-        agent.messages.push({
-          role: "user",
-          content: `[Nyra 撤销记录] 已恢复最近 ${result.turns} 轮中的 ${result.files} 个本地文件；此前工具执行结果可能已失效。后续操作请重新读取文件，不要假设此前改动仍存在。`,
-        });
-        saveSession(agent.sessionId, agent.messages, home);
-        process.stdout.write(t("repl.undone", { turns: result.turns, files: result.files }) + "\n");
-      } catch (err: unknown) {
-        process.stdout.write(t("repl.undoFailed", { err: err instanceof Error ? err.message : String(err) }) + "\n");
-      }
-      continue;
-    }
-    agent.ctx.approvedShellCommands?.clear();
-    try {
-      // 回退存档（第 3 阶段）：本轮问答记入 conversations，供 /rewind-* 用。
-      const store = new ConversationStore(home);
-      try { store.record(agent.sessionId, "user", text); } catch { /* ignore */ }
-      pet.setMood("thinking");
-      spinning = framed();
-      spinner.start(t("spinner.thinking"));
-      const unguard = spinning
+        // 回退存档（第 3 阶段）：本轮问答记入 conversations，供 /rewind-* 用。
+        const store = new ConversationStore(home);
+        try { store.record(agent.sessionId, "user", text); } catch { /* ignore */ }
+        pet.setMood("thinking");
+        spinning = framed();
+        spinner.start(t("spinner.thinking"));
+        const unguard = spinning
         ? [guardStream(process.stdout), guardStream(process.stderr), guardConsole("log"), guardConsole("error"), guardConsole("warn")]
         : [];
-      let result: string;
-      try { result = await agent.run(text); } finally {
-        spinning = false;
-        approvalOpen = false;
-        clearCooldown(false);
-        spinner.stop();
-        for (const u of unguard) u();
+        let result: string;
+        try { result = await agent.run(text); } finally {
+          spinning = false;
+          approvalOpen = false;
+          clearCooldown(false);
+          spinner.stop();
+          for (const u of unguard) u();
+        }
+        flusher.flushNow(agent);
+        try { store.record(agent.sessionId, "assistant", result); } catch { /* ignore */ }
+        store.close();
+        process.stdout.write((framed() ? renderReply(result, ui) : result) + "\n");
+        pet.setMood("happy");
+      } catch (err: unknown) {
+        if (err instanceof ApprovalRequired) {
+          pet.setMood("approval");
+          process.stdout.write(t("approval.pending", { tool: (err as ApprovalRequired).tool }) + "\n");
+          continue;
+        }
+        pet.setMood("worried");
+        process.stderr.write(fail(t("err.prefix", { err: err instanceof Error ? err.message : String(err) })) + "\n");
       }
-      flusher.flushNow(agent);
-      try { store.record(agent.sessionId, "assistant", result); } catch { /* ignore */ }
-      store.close();
-      process.stdout.write((framed() ? renderReply(result, ui) : result) + "\n");
-      pet.setMood("happy");
-    } catch (err: unknown) {
-      if (err instanceof ApprovalRequired) {
-        pet.setMood("approval");
-        process.stdout.write(t("approval.pending", { tool: (err as ApprovalRequired).tool }) + "\n");
-        continue;
-      }
-      pet.setMood("worried");
-      process.stderr.write(fail(t("err.prefix", { err: err instanceof Error ? err.message : String(err) })) + "\n");
+      agent.ctx.approvedShellCommands?.clear();
     }
-    agent.ctx.approvedShellCommands?.clear();
-  }
   } finally {
     clearCooldown(false);
     spinner.stop();
@@ -3387,24 +3560,24 @@ async function runRepl(args: CliArgs): Promise<number> {
 
 const PERMISSIONS_USAGE = `用法：nyra permissions <list|check|grant|revoke|audit> [选项]
   list [--site <站点>]                    列出本地授权意向
-  check --site <站点> --scope <scope> [--account <别名>]
-  grant --site <站点> --scope <scope> [--account <别名>] --confirm [--expect-revision <版本>]
-  revoke --site <站点> --scope <scope> [--account <别名>] [--expect-revision <版本>]
-  audit [--site <站点>] [--limit N]
+check --site <站点> --scope <scope> [--account <别名>]
+grant --site <站点> --scope <scope> [--account <别名>] --confirm [--expect-revision <版本>]
+revoke --site <站点> --scope <scope> [--account <别名>] [--expect-revision <版本>]
+audit [--site <站点>] [--limit N]
 只存本地记录，不等于已登录、OAuth 授权或真实远端执行权限。
 `;
 
 const EIGENFLUX_USAGE = `用法：nyra eigenflux <doctor|onboarding|policy> [选项]
   doctor [--room <群> --bot <机器人>] [--check]   仅做本地准备与可选 CLI 诊断
-  onboarding [--room <群> --bot <机器人>] [--check]  查看入网准备步骤（均需用户前台确认）
-  policy <show|allow|deny|audit> ...            本地网络限制账本（只记录上限，不等于官方授权）
+onboarding [--room <群> --bot <机器人>] [--check]  查看入网准备步骤（均需用户前台确认）
+policy <show|allow|deny|audit> ...            本地网络限制账本（只记录上限，不等于官方授权）
 EigenFlux 本地适配：不负责安装、认证、外发或自动计划任务；网络权限还需独立的 ef-onboarding 前台授权。
 `;
 
 function subFlagValue(argv: string[], name: string): string | null {
-  const idx = argv.indexOf(name);
-  if (idx === -1 || idx + 1 >= argv.length) return null;
-  return argv[idx + 1];
+const idx = argv.indexOf(name);
+if (idx === -1 || idx + 1 >= argv.length) return null;
+return argv[idx + 1];
 }
 
 function subHasFlag(argv: string[], name: string): boolean {
@@ -3565,6 +3738,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "responsibility") return handleResponsibility(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
+  if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
@@ -3594,20 +3768,20 @@ export async function main(argv: string[]): Promise<number> {
     };
     // --run <id>：给单次运行打分（配置级 verdict 只看设置，不看这一次的产物）。
     const runIdFlag = (() => {
-      const sub = args.subArgs ?? [];
-      const i = sub.indexOf("--run");
-      if (i >= 0 && sub[i + 1]) return sub[i + 1];
-      const eq = sub.find((a) => a.startsWith("--run="));
-      return eq ? eq.slice("--run=".length) : null;
-    })();
+        const sub = args.subArgs ?? [];
+        const i = sub.indexOf("--run");
+        if (i >= 0 && sub[i + 1]) return sub[i + 1];
+        const eq = sub.find((a) => a.startsWith("--run="));
+        return eq ? eq.slice("--run=".length) : null;
+      })();
     // --recent N：批量趋势（单次结论回答"这一次"，趋势回答"该修什么"）
     const recentFlag = (() => {
-      const sub = args.subArgs ?? [];
-      const i = sub.indexOf("--recent");
-      if (i >= 0 && sub[i + 1]) return Number(sub[i + 1]);
-      const eq = sub.find((a) => a.startsWith("--recent="));
-      return eq ? Number(eq.slice("--recent=".length)) : NaN;
-    })();
+        const sub = args.subArgs ?? [];
+        const i = sub.indexOf("--recent");
+        if (i >= 0 && sub[i + 1]) return Number(sub[i + 1]);
+        const eq = sub.find((a) => a.startsWith("--recent="));
+        return eq ? Number(eq.slice("--recent=".length)) : NaN;
+      })();
     if (Number.isFinite(recentFlag) && recentFlag > 0) {
       const n = Math.min(100, Math.floor(recentFlag));
       let states: Record<string, unknown>[] = [];
@@ -3637,7 +3811,7 @@ export async function main(argv: string[]): Promise<number> {
         failureCounts[cls] = (failureCounts[cls] ?? 0) + 1;
       }
       const v = buildTrendVerdict({ runs, failureCounts });
-        return emitVerdict(v, "trend");
+      return emitVerdict(v, "trend");
     }
     if (runIdFlag) {
       let state: Record<string, unknown> | null = null;
@@ -3650,16 +3824,16 @@ export async function main(argv: string[]): Promise<number> {
       }
       const us = (state.usage_summary ?? null) as Record<string, unknown> | null;
       const v = buildRunVerdict({
-        run_id: String(state.run_id ?? runIdFlag),
-        task: typeof state.task === "string" ? state.task : null,
-        status: String(state.status ?? ""),
-        verify_result: (state.verify_result ?? null) as Record<string, unknown> | null,
-        verify_cmd: typeof state.verify_cmd === "string" ? state.verify_cmd : null,
-        changed_files: Array.isArray(state.changed_files) ? (state.changed_files as string[]) : [],
-        spent_usd: us && typeof us.spent_usd === "number" ? (us.spent_usd as number) : null,
-        delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
-        error: typeof state.error === "string" ? state.error : null,
-      });
+          run_id: String(state.run_id ?? runIdFlag),
+          task: typeof state.task === "string" ? state.task : null,
+          status: String(state.status ?? ""),
+          verify_result: (state.verify_result ?? null) as Record<string, unknown> | null,
+          verify_cmd: typeof state.verify_cmd === "string" ? state.verify_cmd : null,
+          changed_files: Array.isArray(state.changed_files) ? (state.changed_files as string[]) : [],
+          spent_usd: us && typeof us.spent_usd === "number" ? (us.spent_usd as number) : null,
+          delegate_spent_usd: us && typeof us.delegate_spent_usd === "number" ? (us.delegate_spent_usd as number) : null,
+          error: typeof state.error === "string" ? state.error : null,
+        });
       return emitVerdict(v, "run");
     }
     // 一条结论：把红线 + 省钱 + 回忆 + 运行历史拼成"这次跑得值不值"。
@@ -3672,29 +3846,29 @@ export async function main(argv: string[]): Promise<number> {
     let redlines: RedlineResult | null = null;
     try {
       redlines = checkRedlines({
-        config: cfgV,
-        sandbox: resolveSandbox(cfgV),
-        permissions: null,
-        hasCostLimit: typeof cfgV.max_cost_usd === "number",
-        toolBudget: measureToolBudget(TOOL_SCHEMAS as never),
-      } as never);
+          config: cfgV,
+          sandbox: resolveSandbox(cfgV),
+          permissions: null,
+          hasCostLimit: typeof cfgV.max_cost_usd === "number",
+          toolBudget: measureToolBudget(TOOL_SCHEMAS as never),
+        } as never);
     } catch { redlines = null; }
 
     // 省钱 + 实测
     const savings = summarizeCostSavings({
-      config: cfgV,
-      schemas: TOOL_SCHEMAS as never,
-      disabledTools: Array.isArray(effectiveValue(cfgV, "disabled_tools")) ? (effectiveStringList(cfgV, "disabled_tools") as string[]) : [],
-      recallCount: null,
-      toolSearchEnabled: featureOn(feats, "tool_search"),
-      turns,
-    });
+        config: cfgV,
+        schemas: TOOL_SCHEMAS as never,
+        disabledTools: Array.isArray(effectiveValue(cfgV, "disabled_tools")) ? (effectiveStringList(cfgV, "disabled_tools") as string[]) : [],
+        recallCount: null,
+        toolSearchEnabled: featureOn(feats, "tool_search"),
+        turns,
+      });
     let modelSavings = null;
     try {
       modelSavings = summarizeModelSavings(new UsageLedger(home).readAll(), {
-        mainModel: (cfgV.model as string) ?? null,
-        mainPricing: resolvePricing(cfgV.pricing, (cfgV.model as string) ?? null),
-      });
+          mainModel: (cfgV.model as string) ?? null,
+          mainPricing: resolvePricing(cfgV.pricing, (cfgV.model as string) ?? null),
+        });
     } catch { modelSavings = null; }
 
     // 回忆
@@ -3702,8 +3876,8 @@ export async function main(argv: string[]): Promise<number> {
     if (taskText) {
       try {
         recallAvailable = selectRecalledRuns(new RunStore(join(home, "runs")).list(), taskText, {
-          workdir: resolve(args.workdir), limit: 3,
-        }).length;
+            workdir: resolve(args.workdir), limit: 3,
+          }).length;
       } catch { recallAvailable = null; }
     }
 
@@ -3748,18 +3922,18 @@ export async function main(argv: string[]): Promise<number> {
     // 账本实测：辅助模型到底省了多少（反事实 = 主模型单价 × 同样 tokens）
     const ledgerRecords = (() => { try { return new UsageLedger(home).readAll(); } catch { return []; } })();
     const modelSavings = summarizeModelSavings(ledgerRecords, {
-      mainModel: (cfgSav.model as string) ?? null,
-      mainPricing: resolvePricing(cfgSav.pricing, (cfgSav.model as string) ?? null),
-    });
+        mainModel: (cfgSav.model as string) ?? null,
+        mainPricing: resolvePricing(cfgSav.pricing, (cfgSav.model as string) ?? null),
+      });
     const summary = summarizeCostSavings({
-      config: cfgSav,
-      schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
-      disabledTools: disabled,
-      recallCount,
-      toolSearchEnabled: featureOn(feats, "tool_search"),
-      turns: typeof cfgSav.max_turns === "number" ? cfgSav.max_turns : 20,
-      modelSavings,
-    });
+        config: cfgSav,
+        schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
+        disabledTools: disabled,
+        recallCount,
+        toolSearchEnabled: featureOn(feats, "tool_search"),
+        turns: typeof cfgSav.max_turns === "number" ? cfgSav.max_turns : 20,
+        modelSavings,
+      });
     const savingsJson = (args.subArgs ?? []).includes("--json");
     if (savingsJson) {
       process.stdout.write(JSON.stringify(toSavingsJson(summary, modelSavings)) + "\n");
@@ -3810,10 +3984,10 @@ export async function main(argv: string[]): Promise<number> {
     const { kept, dropped } = filterSchemas(schemas, disabled);
     const toolsManual = manualWindowFromConfig(cfgTools);
     const toolsWindow = resolveContextWindow({
-      model: (cfgTools.model as string) ?? null, provider: (cfgTools.provider as string) ?? null,
-      cli: args.contextWindow, manual: toolsManual.value, manualKey: toolsManual.key,
-      cache: loadModelCache(home),
-    }).window;
+        model: (cfgTools.model as string) ?? null, provider: (cfgTools.provider as string) ?? null,
+        cli: args.contextWindow, manual: toolsManual.value, manualKey: toolsManual.key,
+        cache: loadModelCache(home),
+      }).window;
     const full = measureToolBudget(schemas, toolsWindow);
     const after = measureToolBudget(kept, toolsWindow);
     const saving = summarizeSavings(schemas, kept);
@@ -3851,63 +4025,63 @@ export async function main(argv: string[]): Promise<number> {
     const sandboxStatus = getSandboxStatus(cfgRed, args.sandbox ?? null);
     const perms = parseRules(cfgRed.permissions as { allow?: unknown; ask?: unknown; deny?: unknown } | null);
     const result = checkRedlines({
-      config: cfgRed,
-      sandbox: { level: sandboxStatus.level, backend: String(sandboxStatus.backend) },
-      permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
-      hasCostLimit: typeof cfgRed.max_cost_usd === "number",
-      // 权限规则体检需要已知工具名（含别名），否则会误报拼写
-      knownTools: [...TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string), "Bash", "Edit", "Write", "Read", "sh", "zsh", "powershell"],
-      // 阈值与忽略项：config.redlines（不同项目合理值不同）
-      thresholds: (() => {
-        const rl = cfgRed.redlines;
-        if (!rl || typeof rl !== "object") return null;
-        const t = (rl as Record<string, unknown>).thresholds;
-        return t && typeof t === "object" ? (t as Record<string, number>) : null;
-      })(),
-      ignore: (() => {
-        const rl = cfgRed.redlines;
-        if (!rl || typeof rl !== "object") return null;
-        const ig = (rl as Record<string, unknown>).ignore;
-        return Array.isArray(ig) ? ig.filter((x): x is string => typeof x === "string") : null;
-      })(),
-      // 跨会话回忆：开着但没有新鲜历史 = 看起来在省，其实一点没省。
-      recall: (() => {
-        const feats2 = resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures });
-        const all = new RunStore(join(home, "runs")).list();
-        const cfgRl = (cfgRed.redlines && typeof cfgRed.redlines === "object" ? (cfgRed.redlines as Record<string, unknown>).thresholds : null) as Record<string, number> | null;
-        const maxAgeDays = cfgRl && typeof cfgRl.recallMaxAgeDays === "number" ? cfgRl.recallMaxAgeDays : 30;
-        const cutoff = Date.now() - maxAgeDays * 86_400_000;
-        const fresh = all.filter((r) => {
-          const ts = Date.parse(String((r as unknown as Record<string, unknown>).created_at ?? ""));
-          return Number.isFinite(ts) && ts >= cutoff;
-        }).length;
-        return { enabled: featureOn(feats2, "run_recall"), total: all.length, fresh };
-      })(),
-      platform: process.platform,
-      // 工具体积：原生工具每轮都发 schema，工具多就是每轮白烧 token。
-      // （延迟加载只覆盖 MCP 工具且自动开启，这里不传开关——见 redlines.ts 检查 8。）
-      toolBudget: (() => {
-        const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
-        const disabled = Array.isArray(effectiveValue(cfgRed, "disabled_tools")) ? effectiveStringList(cfgRed, "disabled_tools").filter((t): t is string => typeof t === "string") : [];
-        const kept = filterSchemas(schemas, disabled).kept;
-        const m = measureToolBudget(kept, typeof cfgRed.context_window === "number" ? cfgRed.context_window : null);
-        return { totalTools: m.totalTools, tokensPerTurn: m.tokensPerTurn, contextRatio: m.contextRatio };
-      })(),
-    });
+        config: cfgRed,
+        sandbox: { level: sandboxStatus.level, backend: String(sandboxStatus.backend) },
+        permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
+        hasCostLimit: typeof cfgRed.max_cost_usd === "number",
+        // 权限规则体检需要已知工具名（含别名），否则会误报拼写
+        knownTools: [...TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string), "Bash", "Edit", "Write", "Read", "sh", "zsh", "powershell"],
+        // 阈值与忽略项：config.redlines（不同项目合理值不同）
+        thresholds: (() => {
+            const rl = cfgRed.redlines;
+            if (!rl || typeof rl !== "object") return null;
+            const t = (rl as Record<string, unknown>).thresholds;
+            return t && typeof t === "object" ? (t as Record<string, number>) : null;
+          })(),
+        ignore: (() => {
+            const rl = cfgRed.redlines;
+            if (!rl || typeof rl !== "object") return null;
+            const ig = (rl as Record<string, unknown>).ignore;
+            return Array.isArray(ig) ? ig.filter((x): x is string => typeof x === "string") : null;
+          })(),
+        // 跨会话回忆：开着但没有新鲜历史 = 看起来在省，其实一点没省。
+        recall: (() => {
+            const feats2 = resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures });
+            const all = new RunStore(join(home, "runs")).list();
+            const cfgRl = (cfgRed.redlines && typeof cfgRed.redlines === "object" ? (cfgRed.redlines as Record<string, unknown>).thresholds : null) as Record<string, number> | null;
+            const maxAgeDays = cfgRl && typeof cfgRl.recallMaxAgeDays === "number" ? cfgRl.recallMaxAgeDays : 30;
+            const cutoff = Date.now() - maxAgeDays * 86_400_000;
+            const fresh = all.filter((r) => {
+                const ts = Date.parse(String((r as unknown as Record<string, unknown>).created_at ?? ""));
+                return Number.isFinite(ts) && ts >= cutoff;
+              }).length;
+            return { enabled: featureOn(feats2, "run_recall"), total: all.length, fresh };
+          })(),
+        platform: process.platform,
+        // 工具体积：原生工具每轮都发 schema，工具多就是每轮白烧 token。
+        // （延迟加载只覆盖 MCP 工具且自动开启，这里不传开关——见 redlines.ts 检查 8。）
+        toolBudget: (() => {
+            const schemas = TOOL_SCHEMAS as unknown as { function?: { name?: string } }[];
+            const disabled = Array.isArray(effectiveValue(cfgRed, "disabled_tools")) ? effectiveStringList(cfgRed, "disabled_tools").filter((t): t is string => typeof t === "string") : [];
+            const kept = filterSchemas(schemas, disabled).kept;
+            const m = measureToolBudget(kept, typeof cfgRed.context_window === "number" ? cfgRed.context_window : null);
+            return { totalTools: m.totalTools, tokensPerTurn: m.tokensPerTurn, contextRatio: m.contextRatio };
+          })(),
+      });
     // 与省钱机制合并输出：红线管"该不该上生产"，savings 管"上了能省多少"。
     const savingsForRedlines = summarizeCostSavings({
-      config: cfgRed,
-      schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
-      disabledTools: Array.isArray(effectiveValue(cfgRed, "disabled_tools")) ? effectiveStringList(cfgRed, "disabled_tools").filter((t): t is string => typeof t === "string") : [],
-      recallCount: result.findings.some((f) => f.code === "recall-ready") ? 1 : 0,
-      toolSearchEnabled: featureOn(resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
-      turns: typeof cfgRed.max_turns === "number" ? cfgRed.max_turns : 20,
-    });
-      // --json：CI 按 code 白名单放行 / 统计哪条红线最常被踩（code 本来就是稳定短码）
-      if ((args.subArgs ?? []).includes("--json")) {
-        process.stdout.write(JSON.stringify(toRedlinesJson(result)) + "\n");
-        return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
-      }
+        config: cfgRed,
+        schemas: TOOL_SCHEMAS as unknown as { type?: string; function?: { name?: string; description?: string } }[],
+        disabledTools: Array.isArray(effectiveValue(cfgRed, "disabled_tools")) ? effectiveStringList(cfgRed, "disabled_tools").filter((t): t is string => typeof t === "string") : [],
+        recallCount: result.findings.some((f) => f.code === "recall-ready") ? 1 : 0,
+        toolSearchEnabled: featureOn(resolveFeatures(cfgRed, { enable: args.enableFeatures, disable: args.disableFeatures }), "tool_search"),
+        turns: typeof cfgRed.max_turns === "number" ? cfgRed.max_turns : 20,
+      });
+    // --json：CI 按 code 白名单放行 / 统计哪条红线最常被踩（code 本来就是稳定短码）
+    if ((args.subArgs ?? []).includes("--json")) {
+      process.stdout.write(JSON.stringify(toRedlinesJson(result)) + "\n");
+      return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
+    }
     process.stdout.write(formatRedlinesWithSavings(formatRedlines(result), savingsForRedlines) + "\n");
     return result.ok ? EXIT_SUCCESS : EXIT_RUNTIME;
   }
@@ -4080,7 +4254,7 @@ export async function main(argv: string[]): Promise<number> {
 // Bun --compile 入口：直接跑 main。
 if (import.meta.main) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }).catch((err) => {
-    process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
-    process.exitCode = 1;
-  });
+      process.stderr.write(t("err.prefix", { err: err instanceof Error ? err.message : String(err) }) + "\n");
+      process.exitCode = 1;
+    });
 }
