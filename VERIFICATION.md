@@ -1,3 +1,8 @@
+## 2026-11-20 — 静态审计 v6（未运行）
+
+- 静态审阅：同一路径只调用一次 _source；文件状态、文本匹配行号和 source_sha256 来自同一份有界内存快照；JSON 协议 v6。
+- 未执行脚本、单元测试或 CI；未做 Windows/POSIX 实测。路径检查与打开之间仍有 TOCTOU，根目录身份未绑定；指纹不证明 Git 提交或运行时调用图，也不是副作用回执。
+
 ## 2026-11-20 — 静态审计必需文件完整性 v5（未执行）
 
 - 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Python Agent/ToolJournal、审计脚本；查询 main 近期提交及开放 Issues/PR。
