@@ -47,6 +47,24 @@ nyra replay <运行 ID> --verbose
 错误数（工具/运行分开计）、token（prompt/completion/合计）、花费
 （括号里单列子任务花费）。
 
+## 当前阶段（工单阶段表，DSH-5）
+
+统计头下面一行是当前阶段：这个运行/工单现在在等谁、等什么，一眼能看出来。
+阶段不是从步骤标题里抠字，而是从事件有没有闭合推出来：
+
+| 阶段 | 含义 | 什么时候是这个阶段 |
+| --- | --- | --- |
+| 进行中 | agent 正在干活 | 运行中；或有子任务/工具还没结束 |
+| 等回答 | 等人回答 | 有 `approval_wait` 没配对 `approval_done`（等审批人决定） |
+| 等审阅 | 等人逐项批 | 运行已完成但未验证（completed_unverified），没有验证证据 |
+| 已卡住 | 跑不下去了 | 运行状态是 failed / interrupted / verify_failed / incomplete |
+| 空闲（无待办） | 已完成，没什么可等的 | 运行已验证（verified），且没有未闭合的等待 |
+
+`nyra timeline --json` 的输出里同样有 `stage` 一节（`stage`/`label`/
+`waitingOn`/`waitingFor` 四个字段，只记元数据）。阶段表与回归测例库
+（`nyra regression`，见 `docs/regression.md`）共用同一份失败口径：
+时间线里 `ok: false` 的步骤就是沉淀用例的来源。
+
 ## 回放是只读的
 
 `nyra replay` 只展示记录：按原始时序重现每一步的输入摘要、工具调用与结果摘要、
