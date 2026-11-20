@@ -137,6 +137,10 @@ voice_speak: ["chars", "engine", "cost_usd"],
 // 缺口 23：办公成品导出进证据链——格式、字节数、核查结论（已核实/未核实数、
 // 文件指纹）。只记元数据与指纹，不记文件全文与绝对路径。
 office_exported: ["format", "bytes", "verified", "unverified", "file_hash"],
+// 候选提案 4：媒体抓取进证据链——来源 host、标题指纹、时长、下载字节数、
+// 转写来源、转写文本指纹、云端花费。只记元数据与 SHA-256 前 12 位指纹，
+// 不记字幕/转写原文、不记完整 URL（查询串里可能带 token）、不记 cookies。
+media_ingested: ["host", "title_hash", "duration_seconds", "bytes", "source", "text_hash", "cost_usd"],
 delegate_start: ["task_id", "model", "max_turns"],
 delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
 llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
@@ -808,7 +812,7 @@ if (kind === "voice_input" || kind === "voice_speak") {
     this.voiceSpent = (this.voiceSpent ?? 0) + data.cost_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported", "media_ingested"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

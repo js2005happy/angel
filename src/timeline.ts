@@ -189,6 +189,15 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `导出办公成品（${format}）`, `${bytes} 字节 · 事实核查：${verified} 项已核实，${unverified} 项未核实`, null, null);
         break;
       }
+      case "media_ingested": {
+        const host = str(ev.host) ?? "未知来源";
+        const source = str(ev.source) ?? "未知来源";
+        const seconds = num(ev.duration_seconds);
+        const bytes = num(ev.bytes) ?? 0;
+        const cost = num(ev.cost_usd);
+        push(at, "event", `抓取媒体转写（${host} · ${source}）`, `${seconds !== null ? `${seconds} 秒 · ` : ""}${bytes} 字节 · 转写来源：${source}${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
+        break;
+      }
       case "peer_asked": {
         const peer = str(ev.peer) ?? "未知对端";
         const ok = bool(ev.ok);

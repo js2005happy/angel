@@ -43,6 +43,8 @@ import { loadConfig, resolveHome } from "./config.ts";
 import { LspClient, resolveLspServers, formatDiagnostics, formatSymbols, formatLocations, formatHover, type LspDiagnostic, type LspSymbol, type LspLocation } from "./lsp.ts";
 import { DEFAULT_VISION_CONFIG, loadImageFile, type VisionConfig, type VisionImageInput } from "./vision.ts";
 import { exportOfficeDocument, parseOfficeDocument, resolveOfficeConfig, type OfficeDocument, type OfficeExportResult } from "./office.ts";
+import { ingestMedia, formatMediaTranscript, resolveMediaConfig, type MediaIngestResult } from "./mediaIngest.ts";
+import { type HttpEndpoint } from "./voice.ts";
 
 export class ToolError extends Error {
   constructor(message: string) {
@@ -78,10 +80,10 @@ export const MUTATING_TOOLS = new Set([
   "plan", "http_post", "browser_navigate", "browser_click", "browser_screenshot",
   "computer_screenshot", "computer_click", "computer_type", "computer_key",
   "computer_windows", "mcp", "memory_forget", "memory_delete", "gmail_send",
-  "export_office",
+  "export_office", "media_ingest",
 ]);
 
-export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan", "memory_forget", "memory_delete", "export_office"]);
+export const SESSION_FILE_TOOLS = new Set(["write_file", "edit_file", "plan", "memory_forget", "memory_delete", "export_office", "media_ingest"]);
 export const SESSION_GRANT_TOOLS = new Set([...SESSION_FILE_TOOLS, "shell"]);
 export const APPROVE_ALWAYS = "always";
 /** 审批回调返回值：true/false、"always"（本会话同一命令/文件），或结构化决定（带规则范围 / 拒绝反馈）。 */
@@ -198,6 +200,15 @@ export interface ToolContext {
    */
   visionRunner?: ((input: { images: VisionImageInput[]; prompt: string }) => Promise<string>) | null;
   visionConfig?: VisionConfig | null;
+  /** 候选提案 4：media_ingest 的云端 STT 端点（主循环从当前 provider 取；
+   * 没有时只走本地 whisper，本地也没有直接报错、不静默降级）。 */
+  sttEndpoint?: HttpEndpoint | null;
+  /** 候选提案 4：media_ingest 的云端转写花费回调——主循环把花费记进同一本
+   * 硬顶账（voiceSpentUsd），月度硬顶在下次模型调用前的 checkCost 强制执行；
+   * 不传时工具只记事件里的 cost_usd。 */
+  onVoiceCost?: ((costUsd: number) => void) | null;
+  /** 候选提案 4：media_ingest 用的 yt-dlp 命令执行器（只供测试注入假实现）。 */
+  mediaRunner?: ((cmd: string, args: string[]) => { status: number | null; stdout: string; stderr: string }) | null;
   /**
    * 缺口 10：独立审查层的运行实例与审查上下文（由 Agent 在每次工具调用前
    * 填入，见 agent.ts）。reviewerRunner 为 null 表示审查模型不可用——审查层
@@ -282,6 +293,14 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
       out: { type: "string", description: "输出路径（相对工作目录，如 out/报告.docx）" },
     },
     ["format", "title", "out"]),
+  // 候选提案 4：媒体抓取——公开视频先取字幕、没有再本地转写；只处理用户给的
+  // 链接，不碰 DRM/付费墙、不带 cookies；下载只进临时目录、处理完即删。
+  schema("media_ingest", "抓取一段公开视频并转成文字：先取字幕（免费、零 token），没有字幕再提音频走本地 whisper.cpp 转写（没有则走云端 STT）。只处理用户显式给的链接与公开内容，不碰 DRM/付费墙、不带 cookies、不绕地区限制；下载只进临时目录、处理完即删；超长/超大直接拒绝。写文件须过审批。",
+    {
+      url: { type: "string", description: "公开视频链接（用户给的；host 须在媒体范围卡白名单里）" },
+      out: { type: "string", description: "转写文本保存路径（相对工作目录；不填则直接返回文本）" },
+    },
+    ["url"]),
   schema("multi_model_research", "一次向多个模型问同一个问题，并行跑，再汇总成一份报告。models 是模型列表（\"provider\" 或 \"provider:model\"，最多 5 个），synthesizer 可选（由它把各家回答合成共识/分歧/独特观点三节）。挂掉或超时的模型只记录、不兜底、不拖垮其他模型；返回内容是各模型的原话，按模型署名。",
     { models: { type: "array", items: { type: "string" }, description: "模型列表，如 [\"deepseek\", \"xai:grok-4\"]" }, prompt: { type: "string" }, system: { type: "string" }, synthesizer: { type: "string" }, timeout: { type: "number", default: 120.0 } },
     ["models", "prompt"]),
@@ -1681,6 +1700,55 @@ async function toolExportOffice(ctx: ToolContext, args: Record<string, unknown>)
   return `已导出 ${out}（${doc.format}，${result.bytes} 字节；事实核查：${v.verified}/${v.total} 项已核实，${v.unverified.length} 项未核实）${shadowFallbackSuffix(notice)}`;
 }
 
+// ---- 候选提案 4：媒体抓取（公开视频 → 字幕/转写 → 文本；写文件照常走审批与独立审查层）----
+async function toolMediaIngest(ctx: ToolContext, args: Record<string, unknown>): Promise<string> {
+  if (ctx.backend) {
+    return "错误：远端后端不支持媒体抓取（yt-dlp 与 whisper 都跑在本机，请在本地运行）";
+  }
+  const url = typeof args.url === "string" ? args.url.trim() : "";
+  if (!url) return "错误：media_ingest 需要 url（用户给的公开视频链接）";
+  const out = typeof args.out === "string" && args.out.trim() ? args.out.trim() : "";
+  const config = loadConfig(ctx.home) as Record<string, unknown>;
+  if (!resolveMediaConfig(config).enabled) {
+    return "错误：媒体抓取未开启（默认关；先跑 nyra media enable 显式开启，详见 docs/media-ingest.md）";
+  }
+  const summary = `抓取公开视频转写：${url}${out ? ` → ${out}` : ""}`;
+  await checkApproval(ctx, "media_ingest", summary, out ? { fileTarget: out } : undefined);
+  let target: string | null = null;
+  let notice: ShadowSnapshotNotice | null = null;
+  if (out) {
+    target = workspaceWritePath(ctx, out);
+    notice = takeShadowSnapshot(ctx, "media_ingest", target, summary);
+  }
+  let result: MediaIngestResult;
+  try {
+    result = await ingestMedia({
+      url, home: ctx.home ?? resolveHome(), config,
+      runCommand: ctx.mediaRunner ?? undefined,
+      sttEndpoint: ctx.sttEndpoint ?? null,
+    });
+  } catch (err: unknown) {
+    return `错误：${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (result.costUsd !== null) ctx.onVoiceCost?.(result.costUsd);
+  ctx.onEvent?.("media_ingested", {
+    host: result.host,
+    title_hash: result.titleHash,
+    duration_seconds: result.durationSeconds,
+    bytes: result.bytes,
+    source: result.source,
+    text_hash: result.textHash,
+    cost_usd: result.costUsd,
+  });
+  const text = formatMediaTranscript(result);
+  if (target) {
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, text, { mode: 0o600 });
+    return `已抓取 ${out}（${result.host}，${result.durationSeconds ?? "?"} 秒；转写来源：${result.source}${result.costUsd !== null ? `，花费 $${result.costUsd.toFixed(4)}` : ""}）${shadowFallbackSuffix(notice)}`;
+  }
+  return text;
+}
+
 // ---- 其余工具 ----
 async function toolMultiModelResearch(ctx: ToolContext, models: string[], prompt: string, system?: string | null, synthesizer?: string | null, timeout = 120): Promise<string> {
   if (!ctx.multiModelFactory) {
@@ -2212,7 +2280,7 @@ async function toolLspSymbols(ctx: ToolContext, path: string, query: string, lin
 
 // 调研报告第 1 项：Hooks 确定性钩子层（学 Claude Code）。
 // 跑 PreToolUse 的四类工具：写文件 / 改文件 / 打补丁 / 跑命令。其余工具不跑钩子。
-export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "export_office"]);
+export const HOOKED_TOOLS = new Set(["write_file", "edit_file", "apply_patch", "shell", "memory_forget", "memory_delete", "gmail_send", "export_office", "media_ingest"]);
 
 /**
  * PreToolUse：checkApproval 之前跑，被拦截时抛 ToolError。
@@ -2379,6 +2447,7 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
       case "computer_windows": return await toolComputerWindows(ctx);
       case "describe_image": return await toolDescribeImage(ctx, String(args.path), args.prompt === undefined ? null : String(args.prompt));
       case "export_office": return await toolExportOffice(ctx, args);
+      case "media_ingest": return await toolMediaIngest(ctx, args);
       case "multi_model_research": return await toolMultiModelResearch(ctx, args.models as string[], String(args.prompt), args.system as string | null ?? null, args.synthesizer as string | null ?? null, args.timeout === undefined ? 120 : Number(args.timeout));
       case "memory_append": return await toolMemoryAppend(ctx, String(args.text));
       case "memory_search": return await toolMemorySearch(ctx, String(args.query), args.limit === undefined ? 5 : Number(args.limit), typeof args.session_id === "string" ? args.session_id : null, typeof args.owner === "string" ? args.owner : null);

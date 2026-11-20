@@ -575,6 +575,12 @@ export class Agent {
       // 闭包注入；工具层拿不到 provider 时靠它看图）。
       visionRunner: (input) => this.describeImages(input.images, input.prompt),
       visionConfig: this.visionConfig,
+      // 候选提案 4：media_ingest 的云端 STT 端点（当前 provider 的 HTTP 端点；
+      // 没有时只走本地 whisper）与花费回调（记进同一本硬顶账 voiceSpentUsd，
+      // 月度硬顶在下次模型调用前的 checkCost 强制执行，不在工具内抛错——
+      // 工具内抛错可能触发重试，反而多花一份转写钱）。
+      sttEndpoint: httpEndpointOf(this.provider),
+      onVoiceCost: (cost) => { this.voiceCalls += 1; this.voiceSpentUsd += cost; },
       // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——沙箱配置透传给工具层。
       sandbox: opts.sandbox ?? null,
     });

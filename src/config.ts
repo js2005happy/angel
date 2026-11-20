@@ -131,6 +131,11 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 上限（默认 10MB）；mark_unverified = 无来源的数字在正文里标“未核实”
   // （默认开；关了也仍进核查小节与 office_exported 事件）。
   office: { max_bytes: 10 * 1024 * 1024, mark_unverified: true },
+  // 候选提案 4：媒体抓取（见 docs/media-ingest.md）。enabled 默认关（显式
+  // opt-in）；max_duration_seconds = 单个视频最长（默认 3600 秒）；
+  // max_bytes = 单次下载/音频上限（默认 2GB）；rate_limit = 下载限速
+  // （默认 1M）；sub_langs = 字幕语言（默认 zh,en）。数字不合法时回退默认值。
+  media: { enabled: false, max_duration_seconds: 3600, max_bytes: 2 * 1024 * 1024 * 1024, rate_limit: "1M", sub_langs: "zh,en" },
   // 缺口 24：子 agent（delegate）独立的推理档位；不填沿用全局 reasoning_effort。
   delegate_reasoning_effort: null,
   // 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图）。enabled 默认关（显式 opt-in）；
