@@ -301,6 +301,18 @@ export interface ResolvedEntry {
   dir: string;
 }
 
+/**
+ * 目录包含判定（跨平台）：把 `\` 与 `/` 都归一成 `/` 再比对。
+ * 直接写 `dir.startsWith(base + "/")` 在 Windows 下恒假（resolve 出来是反斜杠），
+ * Node CI #315 只红 Windows 就是这个原因。分隔符归一后在任何平台都能测。
+ */
+export function isPathWithin(base: string, dir: string): boolean {
+  const norm = (p: string) => p.replace(/[\\/]+/g, "/").replace(/\/+$/, "");
+  const b = norm(base);
+  const d = norm(dir);
+  return d === b || d.startsWith(b + "/");
+}
+
 export function resolveMarketEntry(home: string, id: string): ResolvedEntry | null {
   const sources = loadMarketSources(home);
   for (const source of sources) {
@@ -313,7 +325,7 @@ export function resolveMarketEntry(home: string, id: string): ResolvedEntry | nu
     const entry = index.entries.find((e) => e.id === id);
     if (!entry) continue;
     const dir = resolve(source.path, entry.path);
-    if (dir !== resolve(source.path) && !dir.startsWith(resolve(source.path) + "/")) {
+    if (!isPathWithin(resolve(source.path), dir)) {
       throw new MarketplaceError(`条目 ${id} 的 path 越出市场源目录，拒绝加载：${entry.path}`);
     }
     return { entry, source, dir };
