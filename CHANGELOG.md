@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Node claim 创建前后目录身份核对）
+
+- `scripts/node_tool_claim.ts`：在排他创建 claim 前打开并核验目录句柄，创建后再次核对 dev/ino，检测部分路径替换时失败关闭。仍是路径创建而非 openat，存在 TOCTOU；未接入主运行时，未运行测试或 CI，无 exactly-once 保证。
+
 ## 未发布（2026-11-20，Node claim 目录同步身份复核）
 
 - `scripts/node_tool_claim.ts`：在目录 fsync 前后检查目录路径与打开 fd 的设备/inode 身份，并使用 POSIX O_DIRECTORY/O_NOFOLLOW 拒绝部分路径替换；失败关闭，保留 unknown。仅静态审阅，未运行测试或 CI；不消除祖先路径竞态，仍未接入主运行时。
