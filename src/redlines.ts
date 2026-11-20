@@ -340,3 +340,48 @@ export function formatRedlines(result: RedlineResult): string {
   }
   return lines.join("\n");
 }
+
+// ---- 机器可读（nyra redlines --json）----
+// 红线的 ``code`` 本来就是"稳定短码，方便 CI/脚本判定"，但输出一直只有人读的文本。
+// CI 要按 code 白名单放行、要统计"哪条红线最常被踩"，都得先能解析——补上。
+//
+// 契约同 verdict/savings/cost/stats：只加字段、不改名、不删字段。
+// 等级映射成机器能判的布尔：``has_fail`` / ``has_warn``（别让 CI 去数字符串）。
+
+export const REDLINES_JSON_SCHEMA = 1;
+
+export interface RedlinesJson {
+  schema_version: number;
+  ok: boolean;
+  verdict: string;
+  has_fail: boolean;
+  has_warn: boolean;
+  counts: { ok: number; warn: number; fail: number };
+  findings: {
+    code: string;
+    level: RedlineLevel;
+    title: string;
+    detail: string;
+    fix: string | null;
+  }[];
+}
+
+export function toRedlinesJson(result: RedlineResult): RedlinesJson {
+  const counts = { ok: 0, warn: 0, fail: 0 };
+  for (const f of result.findings) counts[f.level] += 1;
+  return {
+    schema_version: REDLINES_JSON_SCHEMA,
+    ok: result.ok,
+    verdict: result.verdict,
+    has_fail: counts.fail > 0,
+    has_warn: counts.warn > 0,
+    counts,
+    findings: result.findings.map((f) => ({
+      code: f.code,
+      level: f.level,
+      title: f.title,
+      detail: f.detail,
+      fix: f.fix ?? null,
+    })),
+  };
+}
