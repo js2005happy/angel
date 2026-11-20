@@ -43,6 +43,7 @@
 | `nyra recall "<任务>" [--cross-dir]` | 查这个任务有哪些历史可复用 |
 | `nyra memory <export\|import\|search\|forget…>` | 记忆交换与检索/删除 |
 | `nyra style <learn\|show\|list\|delete…>` | 分应用文风学习 |
+| `nyra skills <status\|enable\|disable\|draft\|drafts\|show\|approve\|reject\|archive\|sweep>` | 技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 `docs/skill-sedimentation.md`） |
 
 ## 后台与协作
 
