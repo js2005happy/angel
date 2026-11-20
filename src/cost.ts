@@ -14,6 +14,7 @@
 // 由调用方决定是提示还是继续（默认继续，不假装封顶）。
 import type { UsageSnapshot } from "./usage.ts";
 import { t } from "./i18n.ts";
+import { enforcedOnly } from "./enforcedConfig.ts";
 
 export interface Pricing {
   /** 每 100 万输入 token 的美元单价。 */
@@ -166,7 +167,10 @@ export function formatCost(e: CostEstimate): string {
 
 /** 解析月度上限：CLI 显式值优先于配置；无效值（负数/NaN/非数字）按未设处理。 */
 export function resolveMonthlyLimit(config: Record<string, unknown>, cliValue?: number | null): number | null {
-  const v = cliValue ?? config.monthly_cost_limit_usd;
+  // config.enforced 优先：管理员锁了月度上限，就不能靠改 config.json 或命令行放宽。
+  // （与 max_cost_usd 同一优先级语义，见 enforcedConfig.effectiveValue）
+  const enforced = enforcedOnly(config, "monthly_cost_limit_usd");
+  const v = typeof enforced === "number" ? enforced : (cliValue ?? config.monthly_cost_limit_usd);
   if (typeof v !== "number" || !Number.isFinite(v) || v < 0) return null;
   return v;
 }

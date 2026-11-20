@@ -9,6 +9,7 @@ readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync, fsyncSync,
 } from "node:fs";
 import { hostname} from "node:os";
 import { join, resolve, dirname, sep } from "node:path";
+import { enforcedOnly } from "./enforcedConfig.ts";
 import { pythonJsonDump} from "./pyjson.ts";
 import { ApprovalRequired} from "./tools.ts";
 import { checkApproval, checkShellDenied, defaultShell, wrapShellCommand, workspaceShellCwd, idempotencyKey, RESUME_IDEMPOTENT_TOOLS, type ToolContext} from "./tools.ts";
@@ -124,7 +125,8 @@ workdir?: string | null,
 ): [string | null, string | null] {
 if (typeof cliValue === "string" && cliValue.trim()) return [cliValue.trim(), "cli"];
 if (config && typeof config === "object") {
-const value = config.verify_command;
+// config.enforced 优先：锁了校验命令就不能靠改 config.json 换掉它。
+const value = enforcedOnly(config, "verify_command") ?? config.verify_command;
 if (typeof value === "string" && value.trim()) return [value.trim(), "config"];
 }
 if (workdir) {
