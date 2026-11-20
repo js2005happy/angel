@@ -40,7 +40,7 @@ import { assertPublicUrl } from "./net.ts";
 import { isToolErrorResult } from "./repeatGuard.ts";
 import { t as tr } from "./i18n.ts";
 import { loadConfig, resolveHome } from "./config.ts";
-import { LspClient, resolveLspServers, formatDiagnostics, formatSymbols, formatLocations, type LspDiagnostic, type LspSymbol, type LspLocation } from "./lsp.ts";
+import { LspClient, resolveLspServers, formatDiagnostics, formatSymbols, formatLocations, formatHover, type LspDiagnostic, type LspSymbol, type LspLocation } from "./lsp.ts";
 import { DEFAULT_VISION_CONFIG, loadImageFile, type VisionConfig, type VisionImageInput } from "./vision.ts";
 
 export class ToolError extends Error {
@@ -349,12 +349,12 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("lsp_diagnostics", "用语言服务器（LSP）查看某个文件的诊断信息（错误/警告）。只读，不修改文件；语言服务器须已在 config.lsp.servers 里配置（未配置会返回说明）",
     { path: { type: "string", description: "要诊断的文件路径（相对或绝对）" } },
     ["path"]),
-  schema("lsp_symbols", "用语言服务器（LSP）查询代码符号：定义（definition）、引用（references）或文档符号（documentSymbols）。只读，不修改文件；重命名请用 apply_patch，不要用 LSP 改名",
+  schema("lsp_symbols", "用语言服务器（LSP）查询代码符号：定义（definition）、引用（references）、文档符号（documentSymbols）或悬停详情（hover）。只读，不修改文件；重命名请用 apply_patch，不要用 LSP 改名",
     {
       path: { type: "string", description: "文件路径（相对或绝对）" },
-      query: { type: "string", enum: ["symbols", "definition", "references"], description: "查询类型：symbols=文档符号列表；definition=某位置符号的定义；references=某位置符号的引用" },
-      line: { type: "integer", description: "行号（1 基；definition/references 需要，symbols 忽略）" },
-      column: { type: "integer", description: "列号（1 基；definition/references 需要，symbols 忽略）" },
+      query: { type: "string", enum: ["symbols", "definition", "references", "hover"], description: "查询类型：symbols=文档符号列表；definition=某位置符号的定义；references=某位置符号的引用；hover=某位置符号的悬停详情（类型、文档注释）" },
+      line: { type: "integer", description: "行号（1 基；definition/references/hover 需要，symbols 忽略）" },
+      column: { type: "integer", description: "列号（1 基；definition/references/hover 需要，symbols 忽略）" },
     },
     ["path", "query"]),
 ];
@@ -2142,6 +2142,10 @@ async function toolLspSymbols(ctx: ToolContext, path: string, query: string, lin
     }
     const l = typeof line === "number" && line >= 1 ? line - 1 : 0;
     const c = typeof column === "number" && column >= 1 ? column - 1 : 0;
+    if (query === "hover") {
+      const hover = await client.hover(abs, l, c);
+      return formatHover(hover);
+    }
     const locs: LspLocation[] = query === "references"
       ? await client.references(abs, l, c)
       : await client.definition(abs, l, c);

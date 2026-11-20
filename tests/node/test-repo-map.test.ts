@@ -4,7 +4,7 @@
 import { test, expect } from "bun:test";
 import {
   extractSignatures, isRepoMapCandidate, buildRepoMap, estimateTokens,
-  listRepoMapFiles, REPO_MAP_SKIP_DIRS,
+  listRepoMapFiles, REPO_MAP_SKIP_DIRS, isCodeRelatedTask, computeFingerprint,
 } from "../../src/repoMap.ts";
 
 test("TS：抽 function / class / interface / arrow / 方法", () => {
@@ -125,6 +125,50 @@ test("listRepoMapFiles：不递归 node_modules / .git / dist", () => {
     expect(files).not.toContain("node_modules/pkg/b.js");
     expect(files).not.toContain("dist/c.js");
     expect(files).not.toContain("README.md");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ---- 缺口 24 第二批：智能注入 + 缓存 ----
+
+test("isCodeRelatedTask：代码任务命中关键词 / 扩展名 / 路径，闲聊不命中", () => {
+  // 关键词命中
+  expect(isCodeRelatedTask("修复 src/a.ts 里的 bug")).toBe(true);
+  expect(isCodeRelatedTask("实现一个函数")).toBe(true);
+  expect(isCodeRelatedTask("refactor the module")).toBe(true);
+  expect(isCodeRelatedTask("加一个类")).toBe(true);
+  // 扩展名命中
+  expect(isCodeRelatedTask("看看 a.py 里的逻辑")).toBe(true);
+  expect(isCodeRelatedTask("编译 .go 文件")).toBe(true);
+  // 路径命中
+  expect(isCodeRelatedTask("检查 src/ 下的导入")).toBe(true);
+  // 闲聊 / 纯问答不命中
+  expect(isCodeRelatedTask("给我写一首诗")).toBe(false);
+  expect(isCodeRelatedTask("今天天气怎么样")).toBe(false);
+  expect(isCodeRelatedTask("翻译这段英文")).toBe(false);
+  expect(isCodeRelatedTask("")).toBe(false);
+  expect(isCodeRelatedTask("   ")).toBe(false);
+});
+
+test("computeFingerprint：文件内容 / mtime 变化会导致指纹变化", () => {
+  const fs = require("node:fs") as typeof import("node:fs");
+  const os = require("node:os") as typeof import("node:os");
+  const path = require("node:path") as typeof import("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-fp-"));
+  try {
+    fs.mkdirSync(path.join(root, "src"));
+    fs.writeFileSync(path.join(root, "src", "a.ts"), "export function a() {}\n");
+    const f1 = computeFingerprint(root, ["src/a.ts"]);
+    expect(f1).toContain("src/a.ts:");
+    // 内容不变 → 指纹相同
+    expect(computeFingerprint(root, ["src/a.ts"])).toBe(f1);
+    // 内容变化 → 指纹不同
+    fs.writeFileSync(path.join(root, "src", "a.ts"), "export function a() { return 1; }\n");
+    const f2 = computeFingerprint(root, ["src/a.ts"]);
+    expect(f2).not.toBe(f1);
+    // 文件缺失 → 标记 missing，不抛异常
+    expect(computeFingerprint(root, ["src/ghost.ts"])).toContain("src/ghost.ts:missing");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

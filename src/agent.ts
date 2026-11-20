@@ -45,7 +45,7 @@ import { buildDashboardSnapshot } from "./dashboard.ts";
 import { runHooks, type RunHooksContext } from "./hooks.ts";
 import type { ReviewerLike } from "./reviewer.ts";
 import { loadConfig } from "./config.ts";
-import { buildRepoMap } from "./repoMap.ts";
+import { buildRepoMap, isCodeRelatedTask, listRepoMapFiles, computeFingerprint, type RepoMapCache } from "./repoMap.ts";
 import {
   buildVisionUserMessage, DEFAULT_VISION_CONFIG, modelSupportsVision, visionGateMessage,
   type VisionConfig, type VisionImageInput,
@@ -358,6 +358,8 @@ export class Agent {
   private planActModels: { plan?: string; act?: string };
   /** 缺口 24：Repo Map 配置（enabled + token 预算）；默认关。 */
   private repoMap: { enabled: boolean; tokenBudget: number };
+  /** 缺口 24 第二批：repo map 缓存（按文件指纹失效）。undefined = 还没算过。 */
+  private repoMapCache: RepoMapCache | undefined = undefined;
   /** 缺口 24：子 agent 独立推理档位；null = 沿用主 provider。 */
   private delegateReasoningEffort: string | null;
   /**
@@ -1112,16 +1114,34 @@ export class Agent {
   }
 
   /** 缺口 24：Repo Map 段——开启且能抽出签名时返回 Markdown，否则 null。 */
-  private buildRepoMapSection(): string | null {
+  private buildRepoMapSection(task: string): string | null {
     if (!this.repoMap.enabled) return null;
+    // 缺口 24 第二批：纯问答 / 闲聊 / 写文章这类非代码任务注入签名地图是
+    // 纯浪费 token（还干扰注意力）。用轻量信号判断，非代码任务直接不注入。
+    if (!isCodeRelatedTask(task)) return null;
     try {
-      const map = buildRepoMap({
-        workdir: this.workdir,
-        tokenBudget: this.repoMap.tokenBudget,
-      });
-      if (!map.text || map.sigCount === 0) return null;
-      return map.text +
-        (map.truncated ? "\n（Repo Map 已按 token 预算截断；需要看某个文件的完整签名时用 grep_search 或 read_file。）" : "");
+      // 缺口 24 第二批：按文件 mtime+size 指纹缓存，同一工作目录逐轮不重扫
+      // 文件系统。指纹变了（有文件增删改）才重新 buildRepoMap。
+      const files = listRepoMapFiles(this.workdir);
+      const fingerprint = computeFingerprint(this.workdir, files);
+      let cache = this.repoMapCache;
+      if (!cache || cache.fingerprint !== fingerprint || cache.key !== this.workdir) {
+        const map = buildRepoMap({
+          workdir: this.workdir,
+          tokenBudget: this.repoMap.tokenBudget,
+        });
+        cache = {
+          key: this.workdir,
+          text: map.text,
+          result: map,
+          fingerprint,
+          builtAt: Date.now(),
+        };
+        this.repoMapCache = cache;
+      }
+      if (!cache.text || cache.result.sigCount === 0) return null;
+      return cache.text +
+        (cache.result.truncated ? "\n（Repo Map 已按 token 预算截断；需要看某个文件的完整签名时用 grep_search 或 read_file。）" : "");
     } catch {
       // repo map 失败绝不拦运行：只是少一份结构地图，不注入即可。
       return null;
@@ -1158,7 +1178,7 @@ export class Agent {
     if (agentsMd) sections.push(agentsMd);
     // 缺口 24：轻量 Repo Map（函数/类签名地图）。只在开启且能抽出签名时注入，
     // 预算内省 token；让模型一眼看清项目结构、定位要改的文件，而不是整仓扫描。
-    const repoMapSection = this.buildRepoMapSection();
+    const repoMapSection = this.buildRepoMapSection(task);
     if (repoMapSection) sections.push(repoMapSection);
     // 调研报告第 2 项：技能渐进披露——两段式。常驻段只放技能索引（每技能约
     // 100 字描述，skillIndexText 有缓存、集合不变不重算）；全文段只放命中的

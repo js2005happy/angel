@@ -318,3 +318,73 @@ export function buildRepoMap(opts: RepoMapOptions): RepoMapResult {
     truncated,
   };
 }
+
+/**
+ * 缺口 24 第二批：判断一个任务是否"代码相关"，决定要不要注入 repo map。
+ *
+ * 为什么：repo map 是给"改代码/定位代码"的任务用的。纯问答、闲聊、写文章、
+ * 翻译这类任务注入一份签名地图是纯浪费 token（还干扰模型注意力）。用轻量
+ * 信号判断——宁可多注入（代码任务漏判比闲聊多注入更糟），不可错杀。
+ *
+ * 信号（命中任一即判为代码相关）：
+ *   - 含代码修改/排障关键词（改/写/修/加/删/实现/重构/函数/类/接口/bug/编译/类型/导入/模块/重构/debug/fix/implement/refactor 等）
+ *   - 含代码文件路径或扩展名（.ts/.py/.go/.rs 等，或 src/ 等源码目录）
+ *
+ * 纯函数，便于单测。
+ */
+const CODE_TASK_KEYWORDS = [
+  // 中文：双字及以上的明确动作/对象（避免单字"写/改/加"误判"写诗/改文章"这类闲聊）
+  "修改", "实现", "重构", "函数", "类", "接口", "修复", "新增", "移除", "优化",
+  "排查", "编译", "类型", "导入", "模块", "代码", "文件", "测试", "报错",
+  "漏洞", "依赖", "配置", "脚本", "命令行", "调试", "重构",
+  // 英文
+  "bug", "debug", "fix", "implement", "refactor", "function", "class", "interface",
+  "import", "module", "type", "error", "build", "test", "code", "dep", "compile",
+];
+
+const CODE_TASK_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|rb|php)\b/i;
+const CODE_TASK_PATH_RE = /\b(src|lib|packages|app|components|utils|models|services)\//i;
+
+export function isCodeRelatedTask(task: string): boolean {
+  const t = task ?? "";
+  if (!t.trim()) return false;
+  const lower = t.toLowerCase();
+  for (const kw of CODE_TASK_KEYWORDS) {
+    if (lower.includes(kw)) return true;
+  }
+  if (CODE_TASK_EXT_RE.test(t)) return true;
+  if (CODE_TASK_PATH_RE.test(t)) return true;
+  return false;
+}
+
+/**
+ * 缺口 24 第二批：repo map 的带 mtime 失效的缓存。
+ *
+ * 为什么：buildRepoMap 每次都要递归扫文件系统 + 读文件 + 抽签名。同一
+ * 工作目录在一次会话里通常不变，逐轮重扫是浪费 CPU。缓存按"文件列表 +
+ * 每个文件的 mtime + 大小"做指纹，变了才重算。
+ */
+export interface RepoMapCache {
+  key: string;
+  text: string;
+  result: RepoMapResult;
+  /** 缓存时的文件指纹（rel → mtimeMs:size）。 */
+  fingerprint: string;
+  builtAt: number;
+}
+
+/** 算一份文件指纹（rel → mtimeMs:size，排序后拼接）。 */
+export function computeFingerprint(workdir: string, files: string[]): string {
+  const fs = require("node:fs") as typeof import("node:fs");
+  const parts: string[] = [];
+  for (const rel of files.slice().sort()) {
+    try {
+      const st = fs.statSync(join(workdir, rel));
+      parts.push(`${rel}:${Math.floor(st.mtimeMs)}:${st.size}`);
+    } catch {
+      parts.push(`${rel}:missing`);
+    }
+  }
+  return parts.join("|");
+}
+

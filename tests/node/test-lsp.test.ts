@@ -4,7 +4,7 @@
 import { test, expect } from "bun:test";
 import {
   toLspUri, fromLspUri, severityLabel, symbolKindLabel, languageIdFor,
-  resolveLspServers, formatDiagnostics, formatSymbols, formatLocations,
+  resolveLspServers, formatDiagnostics, formatSymbols, formatLocations, formatHover,
   LspClient, type LspDiagnostic, type LspSymbol, type LspLocation,
 } from "../../src/lsp.ts";
 
@@ -76,6 +76,13 @@ test("formatSymbols / formatLocations", () => {
   expect(formatLocations([])).toContain("未找到");
 });
 
+test("formatHover：空结果给说明，有内容原样返回", () => {
+  expect(formatHover(null)).toContain("没有悬停信息");
+  expect(formatHover({ text: "", isMarkdown: false })).toContain("没有悬停信息");
+  expect(formatHover({ text: "const a: number", isMarkdown: false })).toBe("const a: number");
+  expect(formatHover({ text: "**doc**", isMarkdown: true })).toBe("**doc**");
+});
+
 // ---- 端到端：mock 语言服务器（stdio + Content-Length 分帧） ----
 
 /** 一个极简 mock LSP 服务器：应答 initialize 与 documentSymbol，推送一条诊断。 */
@@ -114,6 +121,8 @@ process.stdin.on("data", (chunk) => {
       send({ jsonrpc: "2.0", id: msg.id, result: [{ name: "Foo", kind: 5, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } }] });
     } else if (msg.method === "textDocument/definition") {
       send({ jsonrpc: "2.0", id: msg.id, result: [{ uri: "file:///a.ts", range: { start: { line: 2, character: 1 }, end: { line: 2, character: 2 } } }] });
+    } else if (msg.method === "textDocument/hover") {
+      send({ jsonrpc: "2.0", id: msg.id, result: { contents: { kind: "markdown", value: "**Foo** mock hover" } } });
     } else {
       send({ jsonrpc: "2.0", id: msg.id, result: null });
     }
@@ -142,6 +151,11 @@ test("LspClient 端到端：握手 + 文档符号 + 定义 + 诊断", async () =
     const defs = await client.definition(target, 0, 0);
     expect(defs.length).toBe(1);
     expect(defs[0].line).toBe(2);
+
+    const hover = await client.hover(target, 0, 0);
+    expect(hover).not.toBeNull();
+    expect(hover!.text).toContain("Foo");
+    expect(hover!.isMarkdown).toBe(true);
 
     await client.openDocument(target);
     // 等诊断推送

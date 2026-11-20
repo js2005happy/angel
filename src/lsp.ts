@@ -62,6 +62,14 @@ export interface LspLocation {
   column: number;
 }
 
+/** hover 结果（textDocument/hover 的 contents，扁平化后的文本）。 */
+export interface LspHover {
+  /** 悬停显示的正文（纯文本 / markdown，去除 MarkupContent 外壳）。 */
+  text: string;
+  /** 是 markdown（kind === "markdown"）。 */
+  isMarkdown: boolean;
+}
+
 /** 查询结果的统一输出（已格式化、已截断，可直接交回模型）。 */
 export interface LspQueryResult {
   /** 是否成功（服务器没配/失败时为 false，附 reason）。 */
@@ -388,6 +396,17 @@ export class LspClient {
     return flattenSymbols(result, absPath);
   }
 
+  /** 查询某位置符号的悬停详情（类型、文档注释等）。 */
+  async hover(absPath: string, line: number, column: number): Promise<LspHover | null> {
+    await this.ensureInitialized();
+    await this.openDocument(absPath);
+    const result = await this.request("textDocument/hover", {
+      textDocument: { uri: toLspUri(absPath) },
+      position: { line, character: column },
+    });
+    return parseHover(result);
+  }
+
   /** 关闭并销毁（释放子进程）。 */
   close(): void {
     if (this.process) {
@@ -414,6 +433,45 @@ export function languageIdFor(absPath: string): string {
     ".cpp": "cpp", ".hpp": "cpp", ".rb": "ruby", ".php": "php",
   };
   return map[ext] ?? "plaintext";
+}
+
+/**
+ * 解析 hover 结果 → 结构化文本。
+ * contents 可能是 string、MarkupContent({kind,value}) 或数组（逐项拼接）。
+ * 空结果（null/空串）返回 null，表示"该位置没有悬停信息"。
+ */
+function parseHover(result: Record<string, unknown>): LspHover | null {
+  if (result == null) return null;
+  const contents = result.contents;
+  const parts: { text: string; isMarkdown: boolean }[] = [];
+  const push = (c: unknown) => {
+    if (typeof c === "string") {
+      if (c.trim()) parts.push({ text: c, isMarkdown: false });
+    } else if (c && typeof c === "object" && !Array.isArray(c)) {
+      const r = c as Record<string, unknown>;
+      const value = typeof r.value === "string" ? r.value : "";
+      const kind = typeof r.kind === "string" ? r.kind : "";
+      if (value.trim()) parts.push({ text: value, isMarkdown: kind === "markdown" });
+    }
+  };
+  if (Array.isArray(contents)) {
+    for (const c of contents) push(c);
+  } else {
+    push(contents);
+  }
+  if (!parts.length) return null;
+  return {
+    text: parts.map((p) => p.text).join("\n\n").trim(),
+    isMarkdown: parts.some((p) => p.isMarkdown),
+  };
+}
+
+/** 格式化 hover 文本（省 token：截断 + 提示 markdown）。 */
+export function formatHover(hover: LspHover | null, maxChars = LSP_MAX_RESULT_CHARS): string {
+  if (!hover || !hover.text) return "该位置没有悬停信息。";
+  let out = hover.text;
+  if (out.length > maxChars) out = out.slice(0, maxChars) + "\n……（hover 内容已截断）";
+  return out;
 }
 
 function parseLocations(result: Record<string, unknown>): LspLocation[] {
