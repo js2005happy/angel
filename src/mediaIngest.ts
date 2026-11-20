@@ -98,8 +98,8 @@ export function ytDlpAssetName(platform: string = process.platform): string {
 }
 
 /** setup 的安装位置：~/.nyra/bin/yt-dlp（不进仓库、不进安装包、不进 PATH）。 */
-export function mediaBinaryPath(home: string): string {
-  return join(home, "bin", process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
+export function mediaBinaryPath(home: string, platform: string = process.platform): string {
+  return join(home, "bin", platform === "win32" ? "yt-dlp.exe" : "yt-dlp");
 }
 
 /** 外部命令执行器（测试可注入假实现；下载步可能很久，超时放 30 分钟）。 */
@@ -437,11 +437,11 @@ export interface MediaSetupResult {
  */
 export async function installYtDlp(
   home: string,
-  input?: { fetchFn?: typeof fetch; runCommand?: CommandRunner },
+  input?: { fetchFn?: typeof fetch; runCommand?: CommandRunner; platform?: string },
 ): Promise<MediaSetupResult> {
   const fetchFn = input?.fetchFn ?? fetch;
   const run = input?.runCommand ?? defaultMediaRunner;
-  const asset = ytDlpAssetName();
+  const asset = ytDlpAssetName(input?.platform ?? process.platform);
   let tag = YT_DLP_PINNED_VERSION;
   try {
     const resp = await fetchFn("https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest", {
@@ -494,7 +494,7 @@ export async function installYtDlp(
       try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   }
-  const dest = mediaBinaryPath(home);
+  const dest = mediaBinaryPath(home, input?.platform);
   mkdirSync(dirname(dest), { recursive: true, mode: 0o700 });
   const tmp = `${dest}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, binBytes, { mode: 0o700 });
