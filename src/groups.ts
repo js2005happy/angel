@@ -358,6 +358,23 @@ export const DEFAULT_BOTS: Bot[] = [
     fallback_enabled: null,
     fallback_providers: null,
   },
+  {
+    // 缺口 13：验收者——群聊里的验收角色（独立上下文、只读、按检查清单验收）。
+    // 只在有产出可验时给结论（通过/打回 + 原因与要补的项），不通过就打回重做；
+    // 不自己改代码、不替人写代码、不附和。检查清单见 src/verifier.ts。
+    id: "verifier",
+    name: "验收者",
+    role: "按检查清单独立验收产出，不通过打回重做",
+    instructions:
+      "只验收已经拿出来的产出，不要凭空编造结论。按清单逐项核对：改动文件存在、diff 摘要完整、证据齐全（摘要非空、改动位置有记录）、摘要里声称的验证具体可核查（跑了什么命令、结果如何）。结论只写「通过」或「打回」加原因与要补的项；没产出可验时只说一句话，不要长篇议论。",
+    provider: null,
+    model: null,
+    api_keys: null,
+    api_keys_enc: null,
+    mode: "readonly",
+    fallback_enabled: null,
+    fallback_providers: null,
+  },
 ];
 
 /** 保留最近 user_turns 轮 user 消息起的完整模型/工具往来（与 Python _recent_messages 一致）。 */

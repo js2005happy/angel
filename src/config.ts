@@ -105,6 +105,13 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // memory_forget/memory_delete/gmail_send/http_post/submit_bughunt_report/marketplace_install/marketplace_publish）；rules 是用户用自然语言
   // 写的额外审查规则（审查提示里原样交给审查模型）。
   reviewer: { enabled: false, provider: null, model: null, tools: null, rules: [] },
+  // 缺口 13：验收者（学 MiniMax verifier / Devin 协调者 / Gas Town 合并队列）。
+  // 默认关闭（显式 opt-in）；开启后并行子 agent 的产出合入前先过验收门
+  // （确定性检查 + 便宜模型复核，结论进证据链）；rework 默认关闭，开了也
+  // 最多重做 1 次（受委派预算与成本硬顶约束）。provider/model 不填时沿用
+  // reviewer 的便宜模型链（smart_approvals.reviewer_*，再没有用 deepseek /
+  // deepseek-flash）；rules 是用户用自然语言写的额外验收规则。
+  verifier: { enabled: false, provider: null, model: null, rework: false, rules: [] },
   // 缺口 11：技能自沉淀闭环（学 OpenClaw Skill Workshop / Hermes 自写技能）。
   // 默认关闭（显式 opt-in）；开启后成功运行收尾时自动起草技能草稿（Markdown +
   // frontmatter，附来源运行与质量分），低质草稿出生即归档；安装永远要人批准

@@ -19,11 +19,13 @@
 // 写法）；文件损坏时抛错不静默丢队列。落盘位置与 runs/evidence 风格一致。
 //
 // 诚实边界：
-//   - 3a 的 verification 恒为 not-verified，本批不做自动验证；队列如实显示
-//     not-verified 并注明“未经核实”，不编验证结论。本批只附一个轻量 verifier
-//     （verifyReviewItem，方法 files-exist）：核对改动文件在 worktree/工作目录
-//     里存在、diffStat 非空；它明确写清没验证什么（没跑测试、没跑类型检查、
-//     没审代码语义），通过它不等于“代码是对的”。
+//   - 验收者（缺口 13）未开启时，3a 的 verification 恒为 not-verified，队列如实
+//     显示 not-verified 并注明“未经核实”，不编验证结论；verifyReviewItem 只附
+//     一个轻量检查（方法 files-exist）：核对改动文件在 worktree/工作目录里存在、
+//     diffStat 非空；它明确写清没验证什么（没跑测试、没跑类型检查、没审代码语义），
+//     通过它不等于“代码是对的”。验收者开启后，verifyReviewItem 改跑完整验收
+//     （verifyOutput：确定性检查 + 模型复核），结论写进 verification，方法为
+//     verifier / verifier-deterministic，另记 verifier_verdict 事件。
 //   - worktree 隔离的改动在 apply 之前只活在 worktree 里，批准 ≠ 合并；
 //     apply 才把文件拷回工作目录。非 worktree 的委派改动已在工作目录内，
 //     队列对它只是事后验收（批准即接受现状，拒绝只留记录，建议用影子快照回滚）。
@@ -38,6 +40,9 @@ import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { RunStore } from "./runs.ts";
 import { EvidenceStore } from "./evidence.ts";
+import { loadConfig } from "./config.ts";
+import { buildVerifierRunner, verifyOutput, verifierEnabled } from "./verifier.ts";
+import type { ReviewerLike } from "./reviewer.ts";
 import type { ParallelDelegateResult, ParallelThreadResult } from "./parallelDelegate.ts";
 
 export class ReviewQueueError extends Error {
@@ -378,9 +383,9 @@ export function enqueueParallelResults(
       diffStat: thread.evidence.diffStat,
       verification: {
         status: thread.evidence.verification.status,
-        method: null,
+        method: thread.evidence.verification.method ?? null,
         note: thread.evidence.verification.note,
-        at: null,
+        at: thread.evidence.verification.at ?? null,
       },
       spentUsd: thread.evidence.spentUsd,
     });
@@ -489,10 +494,17 @@ export function decideReviewItem(
  * 或工作目录里存在、diffStat 非空（有改动文件时）。通过只代表“文件都在”，
  * 不代表代码是对的——note 里写清没验证什么。只允许 pending / approved 的项。
  */
-export function verifyReviewItem(
+/**
+ * 验证一项：验收者未开启时沿用轻量 files-exist（行为与 3b 原样一致）；
+ * 开启时跑完整验收（verifyOutput：确定性检查 + 模型复核），结论写进
+ * item.verification，并另记一条 verifier_verdict 事件（谁验的、验了什么、
+ * 为什么通过/打回）。验证本身也进证据链（review_verified 事件照常记）。
+ */
+export async function verifyReviewItem(
   home: string | undefined,
   id: string,
-): { item: ReviewItem; evidenceChannel: EvidenceChannel } {
+  opts?: { config?: Record<string, unknown>; runner?: ReviewerLike | null },
+): Promise<{ item: ReviewItem; evidenceChannel: EvidenceChannel }> {
   const items = loadReviewQueue(home);
   const idx = items.findIndex((i) => i.id === id);
   if (idx < 0) throw new ReviewQueueError(`审阅项不存在：${id}`);
@@ -503,6 +515,46 @@ export function verifyReviewItem(
   const base = item.worktreePath ?? item.workdir;
   if (!base) {
     throw new ReviewQueueError("无法验证：既无 worktree 也无工作目录，改动文件无处核对");
+  }
+  const config = opts?.config ?? loadConfig(home);
+  if (verifierEnabled(config)) {
+    const runner = opts?.runner === undefined ? buildVerifierRunner(config, home) : opts.runner;
+    const verdict = await verifyOutput({
+      config,
+      input: {
+        title: item.title,
+        summary: item.summary,
+        changedFiles: item.changedFiles,
+        diffStat: item.diffStat,
+        worktreePath: item.worktreePath,
+        workdir: item.workdir,
+        spentUsd: item.spentUsd,
+      },
+      runner,
+    });
+    item.verification = { status: verdict.status, method: verdict.method, note: verdict.reason, at: verdict.at };
+    saveReviewQueue(home, items);
+    const channel = recordReviewEvent(home, item.runId, "review_verified", {
+      item_id: item.id,
+      status: item.verification.status,
+      method: item.verification.method,
+    }, evidenceLines(item, [`动作：验证（方法 ${verdict.method ?? "未验收"}）——${item.verification.note}`]));
+    // 验收结论另记一条 verifier_verdict（可审计：谁验的、为什么通过/打回）。
+    // item_id 不在 verifier_verdict 的字段表里（事件里不写），但证据文件用它做键，
+    // 所以这里多传一个，appendEvent 会忽略表外字段。
+    try {
+      recordReviewEvent(home, item.runId, "verifier_verdict", {
+        item_id: item.id,
+        target: item.id,
+        verdict: verdict.status,
+        reason: verdict.reason,
+        verifier_model: verdict.verifierModel,
+        source: verdict.source,
+        checks_passed: verdict.checks.filter((c) => c.passed).length,
+        checks_failed: verdict.checks.filter((c) => !c.passed).length,
+      }, evidenceLines(item, [`动作：验收（${verdict.method ?? "未验收"}）——${verdict.reason}`]));
+    } catch { /* 验收主事件已记，这条记不上也不破坏验证结果 */ }
+    return { item, evidenceChannel: channel };
   }
   const missing: string[] = [];
   for (const f of item.changedFiles) {
@@ -644,7 +696,7 @@ export async function handleReview(argv: string[], home: string): Promise<number
     + "  nyra review show <id> [--json]                                            查看一项（含 diffStat 与验证结论）\n"
     + "  nyra review approve <id> [--by <批复人>] [--note <备注>]                   批准（只允许 pending 的项）\n"
     + "  nyra review reject <id> [--by <批复人>] [--note <备注>]                    拒绝（只允许 pending 的项）\n"
-    + "  nyra review verify <id>                                                   轻量验证：核对改动文件存在（不跑测试、不审语义）\n"
+    + "  nyra review verify <id>                                                   验收：验收者未开启时只核对文件存在；开启时跑完整验收（确定性检查 + 模型复核）\n"
     + "  nyra review apply <id> [--by <执行人>]                                    应用已批准的改动（worktree 文件拷回工作目录）\n"
     + "  nyra review enqueue --title <标题> [--source parallel|automation|delegate] [--summary <摘要>] [--run <运行 id>] [--session <会话 id>] [--workdir <目录>] [--worktree <路径>] [--files <逗号分隔>] [--diff-stat <文本>] [--spent <美元>]   手动入队\n"
     + "审批 fail-closed：不批复就不放行；批复、验证、应用都进证据链（见 docs/review-queue.md）";
@@ -699,7 +751,7 @@ export async function handleReview(argv: string[], home: string): Promise<number
     if (cmd === "verify") {
       const id = argv[1];
       if (!id) { process.stderr.write("用法：nyra review verify <id>\n"); return 2; }
-      const { item, evidenceChannel } = verifyReviewItem(home, id);
+      const { item, evidenceChannel } = await verifyReviewItem(home, id);
       warnEvidence(evidenceChannel);
       process.stdout.write(`验证结论：${item.verification.status}——${item.verification.note}\n`);
       return 0;

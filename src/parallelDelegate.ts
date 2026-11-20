@@ -13,6 +13,9 @@
 // 若以后真要把子 agent 放进 worker 线程，需先解决 provider 与审批状态的
 // 序列化，那是另一批工作，不在本批假装已解决。
 
+// 验收结论的状态与审阅队列共用同一套口径（type-only，编译期抹掉，无循环 import）。
+import type { VerificationStatus } from "./reviewQueue.ts";
+
 /** 并行默认并发上限（学 Goose 的硬约束：默认 5，同时也是上限）。 */
 export const DEFAULT_PARALLEL_MAX_CONCURRENCY = 5;
 /** 并发上限硬顶：调用方给再大也只按 5 跑，并在结果里注明被夹住了。 */
@@ -32,8 +35,10 @@ export type ParallelThreadStatus = "ok" | "failed" | "timeout" | "rejected";
 
 /**
 * 3b review queue 的消费接口：每线程的证据。
-* verification 现在只有 "not-verified"：3a 不做自动验证、不替子任务编验证结论；
-* 子任务自述的验证情况见 summary 原文，真正的验收结论由 3b 的 verifier 填写。
+* verification 由缺口 13 的验收者填写：验收者开启时是真实验收结论
+* （verified/failed，方法与时间见 method/at）；未开启时恒为
+* "not-verified"（3a 不做自动验证、不替子任务编验证结论；子任务自述的
+* 验证情况见 summary 原文，不要把它当成已验证的结论）。
 */
 export interface ParallelThreadEvidence {
 /** worktree 隔离下改动的文件（相对路径，取自 git status --porcelain）；非 worktree 为空。 */
@@ -42,7 +47,8 @@ changedFiles: string[];
 diffStat: string | null;
 /** 改动留下的 worktree 路径；无改动、无隔离或已清理时为 null。 */
 worktreePath: string | null;
-verification: { status: "not-verified"; note: string};
+/** 验收结论（缺口 13）：状态 + 原因 + 方法（verifier/verifier-deterministic）+ 时间；未验收时只有状态与原因。 */
+verification: { status: VerificationStatus; note: string; method?: string | null; at?: string | null };
 /** 该线程已花美元；未计价（无单价 / provider 未报用量）时为 null，不编数字。 */
 spentUsd: number | null;
 }
@@ -123,6 +129,8 @@ model: string | null;
 worktreePath: string | null;
 changedFiles: string[];
 diffStat: string | null;
+/** 缺口 13：验收者的验收结论（未开启时不填，调用方按 not-verified 处理）。 */
+verification?: ParallelThreadEvidence["verification"];
 }
 
 export type ParallelRunner = (
@@ -192,6 +200,7 @@ evidence.changedFiles = outcome.changedFiles?? [];
 evidence.diffStat = outcome.diffStat?? null;
 evidence.worktreePath = outcome.worktreePath?? null;
 evidence.spentUsd = outcome.spentUsd?? null;
+if (outcome.verification) evidence.verification = outcome.verification;
 }
 results[index] = {
 ...base,
@@ -328,6 +337,7 @@ lines.push(
 ? `，改动文件：${r.evidence.changedFiles.join("、")}`
 : "，无文件改动")
 : "") +
+`；验收：${r.evidence.verification.status === "verified" ? "通过" : r.evidence.verification.status === "failed" ? "未通过" : "未验收"}${r.evidence.verification.method ? `（${r.evidence.verification.method}）` : ""}` +
 `\n${r.summary?? ""}`,
 );
 } else if (r.status === "timeout") {
@@ -345,7 +355,13 @@ lines.push(
 );
 }
 }
-lines.push("验证结论：本批不做自动验证（见各线程证据的 verification 字段），需 3b 的 review queue 验收后再合并。");
+const verifiedCount = result.results.filter((r) => r.evidence.verification.status === "verified").length;
+const failedCount = result.results.filter((r) => r.evidence.verification.status === "failed").length;
+lines.push(
+verifiedCount + failedCount > 0
+? `验证结论：验收者已验收 ${verifiedCount + failedCount} 个线程（通过 ${verifiedCount} 个，未通过 ${failedCount} 个），未通过的已打回（见各线程证据的 verification 字段），合入前仍需 3b 的 review queue 逐项批。`
+: "验证结论：本批未验收（验收者未开启，见各线程证据的 verification 字段），需 3b 的 review queue 验收后再合并。",
+);
 if (result.reviewEnqueued?.length) {
 lines.push(`已进审阅队列 ${result.reviewEnqueued.length} 项（nyra review list 查看）：${result.reviewEnqueued.join("、")}`);
 }

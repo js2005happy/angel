@@ -2095,7 +2095,7 @@ export class Gateway {
             const { item, appliedFiles } = applyReviewItem(this.home, reviewId, { by });
             this.sendJson(res, 200, { ok: true, item, applied_files: appliedFiles });
           } else {
-            const { item } = verifyReviewItem(this.home, reviewId);
+            const { item } = await verifyReviewItem(this.home, reviewId);
             this.sendJson(res, 200, { ok: true, item });
           }
         } catch (err) {

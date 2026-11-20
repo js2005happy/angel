@@ -58,6 +58,13 @@ hook_blocked: ["event", "tool", "hook", "reason"],
 // 为什么放行/拦截、命中哪条确定性规则）。与缺口 3b 的 review_decision
 // （审阅队列的批复）是两个事件，不要混用。
 reviewer_verdict: ["tool", "decision", "reason", "reviewer_model", "rule"],
+// 缺口 13：验收者结论进证据链——谁验的（verifier_model / source）、验了什么
+// （target：审阅项 id 或子任务 id）、结论（verified/failed/not-verified）、
+// 为什么（reason）、过了几项检查（checks_passed/checks_failed）。打回重做
+// 另记一条（第几次重做、为什么打回）。与缺口 3b 的 review_decision（人批复）
+// 与缺口 10 的 reviewer_verdict（工具调用审查）是三个事件，不要混用。
+verifier_verdict: ["target", "verdict", "reason", "verifier_model", "source", "checks_passed", "checks_failed"],
+verifier_rework: ["target", "attempt", "reason"],
 // 缺口 11：技能自沉淀进证据链——起草（哪个草稿、源运行、质量分、出生状态）、
 // 批准（只记名字与源运行；安装路径是绝对路径、过 appendEvent 的 redact 会被
 // 掩掉，所以只写账本的 installed_path 字段，不进事件）、拒绝、归档（为什么

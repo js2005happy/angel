@@ -44,10 +44,17 @@ import { selectTools, describeDeferred, searchDeferredTools, formatSearchResults
 import { buildDashboardSnapshot } from "./dashboard.ts";
 import { runHooks, type RunHooksContext } from "./hooks.ts";
 import type { ReviewerLike } from "./reviewer.ts";
+import { loadConfig } from "./config.ts";
+import {
+  verifyOutput,
+  verifierConfig,
+  type VerifierConfig,
+} from "./verifier.ts";
 import {
   runParallelDelegate, formatParallelResults, parallelConvergenceNote,
   resolveParallelOptions,
   type ParallelTaskSpec, type ParallelDelegateResult, type ParallelThreadOutcome,
+  type ParallelThreadEvidence,
   type ParallelThreadResult,
 } from "./parallelDelegate.ts";
 import { CheckpointStore } from "./checkpoints.ts";
@@ -201,6 +208,21 @@ export interface AgentOptions {
   /** 缺口 10：独立审查层的运行实例（网关/测试注入；不传时 Agent 按上款懒建）。 */
   reviewerRunner?: ReviewerLike | null;
   /**
+   * 缺口 13：验收者用的模型名（仅模型名；provider 由 multiModelFactory 按模型名解析）。
+   * 不传时用 delegate 便宜模型，再没有用主模型（验收上下文仍是独立的，只是模型与主 agent 相同）。
+   * CLI 从 config 的 verifier.model（或 smart_approvals reviewer_model）解析后传入；
+   * 直接构造 Agent 的测试可传 verifierRunner。
+   */
+  verifierModel?: string | null;
+  /** 缺口 13：验收者的运行实例（网关/测试注入；不传时 Agent 按上款懒建）。 */
+  verifierRunner?: ReviewerLike | null;
+  /**
+   * 缺口 13：验收者配置（enabled/rework/rules）。不传时 Agent 从 home 的
+   * config.json 懒读一次并缓存——CLI/网关/任务队列都不用逐个改构造点，
+   * 用户在配置里开一次就处处生效；显式传入时以传入的为准。
+   */
+  verifier?: VerifierConfig | null;
+  /**
    * 缺口 5：对话中途手动换模型的允许列表（provider 名）。
    * 只切列表里的服务商；null = 未配置（仅供直接构造 Agent 的嵌入 /
    * 测试场景，CLI 与网关等生产入口一定传 resolveSwitchAllowlist 的结果）。
@@ -249,10 +271,15 @@ export interface DelegateResult {
   changedFiles: string[];
   /** worktree 隔离下的 `git diff --stat HEAD` 原文；无改动或非 worktree 为 null。 */
   diffStat: string | null;
+  /** 缺口 13：验收者的验收结论（未开启时恒为 not-verified，见 verifyOutput）。 */
+  verification: ParallelThreadEvidence["verification"];
 }
 
 function delegateFailed(text: string): DelegateResult {
-  return { ok: false, text, spentUsd: null, model: null, worktreePath: null, changedFiles: [], diffStat: null };
+  return {
+    ok: false, text, spentUsd: null, model: null, worktreePath: null, changedFiles: [], diffStat: null,
+    verification: { status: "not-verified", note: "子任务未成功，无可验收的产出" },
+  };
 }
 
 export function parsePorcelainChangedFiles(porcelain: string): string[] {
@@ -316,6 +343,19 @@ export class Agent {
   private reviewerModelName: string | null;
   private reviewerRunnerOpt: ReviewerLike | null;
   private reviewerRunnerInstance: ReviewerLike | null | undefined = undefined;
+  /**
+   * 缺口 13：验收者用的模型名与运行实例（懒建一次后缓存，顺序与 reviewerRunner 同款）。
+   * verifierConfigCache 为 undefined = 还没解析过（显式传入 > home 配置懒读）；
+   * verifierRawConfigCache 是懒读到的整份配置（verifyOutput 解析模型名时用，
+   * 这样 smart_approvals 的便宜模型链不会丢；显式传入配置时没有它，模型名按
+   * verifier 自身配置解析——显示口径，实际用的模型以 runner 为准）。
+   */
+  private verifierModelName: string | null;
+  private verifierRunnerOpt: ReviewerLike | null;
+  private verifierRunnerInstance: ReviewerLike | null | undefined = undefined;
+  private verifierConfigOpt: VerifierConfig | null;
+  private verifierConfigCache: VerifierConfig | undefined = undefined;
+  private verifierRawConfigCache: Record<string, unknown> | undefined = undefined;
   /** 缺口 5：对话中途手动换模型的允许列表（provider 名）；见 AgentOptions。 */
   private modelSwitchAllowlist: string[] | null;
   /** 延迟加载（P3）：本轮没发出去的 MCP 工具（供 search_tools 检索）。 */
@@ -379,6 +419,9 @@ export class Agent {
     this.auxModels = opts.auxModels ?? {};
     this.reviewerModelName = opts.reviewerModel ?? null;
     this.reviewerRunnerOpt = opts.reviewerRunner ?? null;
+    this.verifierModelName = opts.verifierModel ?? null;
+    this.verifierRunnerOpt = opts.verifierRunner ?? null;
+    this.verifierConfigOpt = opts.verifier ?? null;
     this.modelSwitchAllowlist = opts.modelSwitchAllowlist ?? null;
     this.recallNote = opts.recallNote ?? null;
     this.skillsDisabled = Array.isArray(opts.skillsDisabled) ? opts.skillsDisabled : [];
@@ -538,6 +581,91 @@ export class Agent {
     }
     this.reviewerRunnerInstance = this.provider as unknown as ReviewerLike;
     return this.reviewerRunnerInstance;
+  }
+
+  /** 缺口 13：验收者配置（显式传入优先，否则从 home 的 config.json 懒读一次并缓存）。 */
+  private verifierCfg(): VerifierConfig {
+    if (this.verifierConfigOpt) return this.verifierConfigOpt;
+    if (this.verifierConfigCache === undefined) {
+      try {
+        const raw = loadConfig(this.home);
+        this.verifierRawConfigCache = raw;
+        this.verifierConfigCache = verifierConfig(raw);
+      } catch {
+        this.verifierConfigCache = { enabled: false, provider: null, model: null, rework: false, rules: [] };
+      }
+    }
+    return this.verifierConfigCache;
+  }
+
+  /**
+   * 缺口 13：验收者的运行实例（懒建一次后缓存）。顺序与 reviewerRunner 同款：
+   * 注入的实例 > multiModelFactory 按 verifierModel 名造 > delegate 便宜模型 > 主模型。
+   * 验收上下文是独立的（verifyOutput 只给任务、摘要与 diff，不带主对话），
+   * 模型分开是“最好”，独立上下文是“必须”。
+   */
+  private verifierRunner(): ReviewerLike | null {
+    if (this.verifierRunnerInstance !== undefined) return this.verifierRunnerInstance;
+    if (this.verifierRunnerOpt) {
+      this.verifierRunnerInstance = this.verifierRunnerOpt;
+      return this.verifierRunnerInstance;
+    }
+    const factory = this.ctx.multiModelFactory;
+    const modelName = this.verifierModelName ?? this.auxModels.delegate ?? null;
+    if (modelName && factory) {
+      try {
+        this.verifierRunnerInstance = factory("verifier", modelName) as unknown as ReviewerLike;
+        return this.verifierRunnerInstance;
+      } catch { /* 造不出来就往下走便宜模型/主模型 */ }
+    }
+    const cheap = this.auxProvider("delegate");
+    if (cheap) {
+      this.verifierRunnerInstance = cheap as unknown as ReviewerLike;
+      return this.verifierRunnerInstance;
+    }
+    this.verifierRunnerInstance = this.provider as unknown as ReviewerLike;
+    return this.verifierRunnerInstance;
+  }
+
+  /**
+   * 缺口 13：对一次子任务产出跑验收门，并把结论记进证据链（verifier_verdict 事件）。
+   * 未开启时返回 not-verified（不调模型、不记事件）。失败不抛错——调用方按结论
+   * 决定是否打回重做。spentUsd 这里不传：验收不编花费，成本以 delegate 记账为准。
+   */
+  private async verifyDelegateResult(
+    taskId: string,
+    task: string,
+    summary: string,
+    changedFiles: string[],
+    diffStat: string | null,
+    worktreePath: string | null,
+  ): Promise<DelegateResult["verification"]> {
+    const cfg = this.verifierCfg();
+    const verdict = await verifyOutput({
+      config: this.verifierRawConfigCache ?? { verifier: cfg },
+      input: { title: task, summary, changedFiles, diffStat, worktreePath, workdir: this.workdir, spentUsd: null },
+      runner: cfg.enabled ? this.verifierRunner() : null,
+    });
+    const verification: DelegateResult["verification"] = {
+      status: verdict.status,
+      note: verdict.reason,
+      method: verdict.method,
+      at: verdict.at,
+    };
+    if (cfg.enabled) {
+      try {
+        this.emit("verifier_verdict", {
+          target: taskId,
+          verdict: verdict.status,
+          reason: verdict.reason,
+          verifier_model: verdict.verifierModel,
+          source: verdict.source,
+          checks_passed: verdict.checks.filter((c) => c.passed).length,
+          checks_failed: verdict.checks.filter((c) => !c.passed).length,
+        });
+      } catch { /* 观察器故障绝不破坏主流程 */ }
+    }
+    return verification;
   }
 
   /** 缺口 10：审查员看到的“原始任务”——第一条用户消息（截断 2000 字）。 */
@@ -1417,6 +1545,9 @@ export class Agent {
       poppyEnabled: this.poppyEnabled,
       // 缺口 10：子 agent 继承父级的审查模型（审查层对子级同样生效）。
       reviewerModel: this.reviewerModelName,
+      // 缺口 13：子 agent 继承父级的验收者配置与模型（验收门对子级同样生效）。
+      verifier: this.verifierCfg(),
+      verifierModel: this.verifierModelName,
       home: this.home,
       disabledTools,
       multiModelFactory: this.ctx.multiModelFactory,
@@ -1464,32 +1595,81 @@ export class Agent {
       worktreePath: null,
       changedFiles: [],
       diffStat: null,
+      verification: { status: "not-verified", note: "未验收" },
       ...overrides,
     });
     try {
-      const summary = await child.run(task);
+      // 缺口 13：验收门——子任务产出先验收再交回；未通过且开了 rework 时打回重做
+      // 1 次（同一子 agent、同一 worktree 就地改，复用完整上下文；无改动可改时
+      // 不重做）。记账只在最终产出确定后记一次：child.lastCost 是累计值，
+      // 两次运行的钱都在里面，只记一次才不会 double-count。
+      const vcfg = this.verifierCfg();
+      const reworkOn = vcfg.enabled && vcfg.rework;
+      let summary = "";
+      let changedFiles: string[] = [];
+      let diffStat: string | null = null;
+      let verification: DelegateResult["verification"] = {
+        status: "not-verified",
+        note: "未验收",
+      };
+      let reworked = false;
+      let firstFailNote = "";
+      let cleanedNoChanges = false;
+      let attempts = 0;
+      while (attempts < (reworkOn ? 2 : 1)) {
+        attempts += 1;
+        const taskText = attempts === 1
+          ? task
+          : `${task}\n\n（验收打回重做：上一次验收未通过——${firstFailNote}请只改这些问题，不要重做已通过的部分。）`;
+        summary = await child.run(taskText);
+        // 缺口 19：SubagentStop 钩子——只通知，不拦截；失败只警告。
+        await this.runSubagentStopHook(taskId, task, true);
+        if (worktreePath) {
+          const st = spawnSync("git", ["status", "--porcelain"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
+          const stat = spawnSync("git", ["diff", "--stat", "HEAD"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
+          const changedRaw = st.stdout ?? "";
+          const changed = changedRaw.trim();
+          const statText = (stat.stdout ?? "").trim();
+          // 注意：porcelain 行是 `XY<空格>路径`，首行前导空格是状态位，绝不能
+          // 对整段输出 trim 后再解析——只把原始输出交给解析函数（它自己跳空行）。
+          changedFiles = parsePorcelainChangedFiles(changedRaw);
+          diffStat = statText || null;
+          if (!changed) {
+            spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
+            worktreePath = null;
+            changedFiles = [];
+            diffStat = null;
+            cleanedNoChanges = true;
+          }
+        }
+        verification = await this.verifyDelegateResult(taskId, task, summary, changedFiles, diffStat, worktreePath);
+        if (verification.status !== "failed") break;
+        if (!reworkOn || attempts >= 2) break;
+        if (changedFiles.length === 0 && !diffStat) break;
+        firstFailNote = verification.note;
+        reworked = true;
+        try {
+          this.emit("verifier_rework", { target: taskId, attempt: attempts + 1, reason: verification.note });
+        } catch { /* 观察器故障绝不破坏主流程 */ }
+      }
       recordChildUsage();
-      // 缺口 19：SubagentStop 钩子——只通知，不拦截；失败只警告。
-      await this.runSubagentStopHook(taskId, task, true);
       const head = notes.length ? `[子任务 ${taskId} 已完成]\n（${notes.join("；")}）\n` : `[子任务 ${taskId} 已完成]\n`;
-      if (!worktreePath) return detail(head + summary);
-
-      // 收尾：给 diff 摘要。有改动就保留工作树让人审，没改动就清掉。
-      const st = spawnSync("git", ["status", "--porcelain"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
-      const stat = spawnSync("git", ["diff", "--stat", "HEAD"], { cwd: worktreePath, encoding: "utf-8", windowsHide: true });
-      const changed = (st.stdout ?? "").trim();
-      const diffStat = (stat.stdout ?? "").trim();
-      const changedFiles = parsePorcelainChangedFiles(changed);
-      if (!changed) {
-        spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });
-        return detail(head + summary + "\n\n（worktree 隔离：子任务没有改动任何文件，工作树已清理）");
+      const cleanedNote = cleanedNoChanges ? "\n\n（worktree 隔离：子任务没有改动任何文件，工作树已清理）" : "";
+      const verdictLine = verification.status === "verified"
+        ? `\n\n验收：通过${verification.method ? `（${verification.method}）` : ""}——${verification.note}${reworked ? "（第 1 次验收未通过，已打回重做 1 次后通过）" : ""}`
+        : verification.status === "failed"
+          ? `\n\n验收：未通过${verification.method ? `（${verification.method}）` : ""}——${verification.note}${reworked ? "（已打回重做 1 次，仍未通过）" : "（未重做：rework 未开启或无改动可改）"}`
+          : `\n\n验收：未验收——${verification.note}`;
+      if (!worktreePath) {
+        return detail(head + summary + cleanedNote + verdictLine, { verification });
       }
       return detail(
         head + summary +
         `\n\n（worktree 隔离：改动留在独立工作树，主工作区未受影响）\n路径：${worktreePath}\n` +
         (diffStat ? `diffstat：\n${diffStat}` : "") +
-        `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"`,
-        { worktreePath, changedFiles, diffStat: diffStat || null },
+        `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"` +
+        verdictLine,
+        { worktreePath, changedFiles, diffStat: diffStat || null, verification },
       );
     } catch (err: unknown) {
       recordChildUsage();
@@ -1529,6 +1709,9 @@ export class Agent {
    * 默认不入队——自动进队是默认行为，必须 opt-in；`delegate_parallel` 工具
    * 不开这个开关（模型路径不替用户决定什么要审）；入队失败不破坏并行结果，
    * 原因记在返回的 reviewEnqueueError 里。
+   * 缺口 13：每线程出结果后先过验收门（delegateDetailed 里的 verifyDelegateResult，
+   * 结论进线程证据的 verification）；未通过且开了 rework 时打回重做 1 次，
+   * 重做结果替换首轮结果（首轮结论仍记在 verifier_verdict 事件里）。
    */
   async delegateParallel(
     tasks: ParallelTaskSpec[],
@@ -1582,6 +1765,7 @@ export class Agent {
           worktreePath: d.worktreePath,
           changedFiles: d.changedFiles,
           diffStat: d.diffStat,
+          verification: d.verification,
         };
       },
       tasks.slice(0, startable),
