@@ -43,6 +43,89 @@ export interface Timeline {
   delegateSpentUsd: number | null;
   steps: TimelineStep[];
   eventsTotal: number;
+  /** 当前阶段（DSH-5 工单阶段表）：等谁、等什么，只记元数据。 */
+  stage: RunStageInfo;
+}
+
+export type RunStage = "working" | "waiting-answer" | "waiting-review" | "blocked" | "idle";
+
+/** 工单当前阶段：等谁、等什么（只记元数据，不记 prompt/回答/绝对路径）。 */
+export interface RunStageInfo {
+  stage: RunStage;
+  label: string;
+  waitingOn: string | null;
+  waitingFor: string | null;
+}
+
+/** 失败步骤摘要：时间线阶段表与回归测例库共用的失败口径（只记元数据）。 */
+export interface FailedStepSummary {
+  kind: "tool" | "delegate" | "verdict" | "llm" | "run";
+  label: string;
+  detail: string | null;
+}
+
+export function failedStepSummaries(tl: Timeline): FailedStepSummary[] {
+  const out: FailedStepSummary[] = [];
+  for (const s of tl.steps) {
+    if (s.ok !== false) continue;
+    const kind: FailedStepSummary["kind"] =
+      s.kind === "tool" ? "tool"
+      : s.kind === "delegate" ? "delegate"
+      : s.kind === "verdict" ? "verdict"
+      : s.kind === "llm" ? "llm"
+      : "run";
+    out.push({ kind, label: s.title, detail: s.detail });
+  }
+  return out;
+}
+
+export interface StageInputs {
+  status: string;
+  approvalsPending: string[];
+  delegatesPending: string[];
+  toolsPending: string[];
+  lastFailureTitle: string | null;
+}
+
+const TERMINAL_STATUSES = new Set(["verified", "completed_unverified", "failed", "interrupted", "incomplete", "verify_failed"]);
+
+/** 阶段判定（纯函数）：等审批 > 卡住 > 等人工审阅 > 进行中 > 空闲。
+ * 注意状态词用 runs.ts 的真值：完成态只有 verified（已验证）与
+ * completed_unverified（跑完了但没证据），没有裸的 "completed"
+ *（setStatus("completed") 会抛“运行状态无效”）。等审阅就是
+ * completed_unverified 本身——状态已编码“跑完未验证”，不必再看末次
+ * 验收结论（verifier_verdict 也会由委派子任务发出，对运行级阶段是误导信号）。 */
+export function deriveRunStage(input: StageInputs): RunStageInfo {
+  if (input.approvalsPending.length > 0) {
+    return { stage: "waiting-answer", label: "等回答", waitingOn: "审批人", waitingFor: `审批 ${input.approvalsPending.join("、")}` };
+  }
+  if (input.status === "failed" || input.status === "interrupted" || input.status === "verify_failed" || input.status === "incomplete") {
+    return { stage: "blocked", label: "已卡住", waitingOn: null, waitingFor: input.lastFailureTitle ?? `运行状态 ${input.status}` };
+  }
+  if (input.status === "completed_unverified") {
+    return { stage: "waiting-review", label: "等审阅", waitingOn: "审阅者", waitingFor: "跑完了但没有验证证据，需人工逐项批" };
+  }
+  if (input.delegatesPending.length > 0) {
+    return { stage: "working", label: "进行中", waitingOn: `子任务 ${input.delegatesPending.join("、")}`, waitingFor: "未结束" };
+  }
+  if (input.toolsPending.length > 0) {
+    return { stage: "working", label: "进行中", waitingOn: null, waitingFor: `工具 ${input.toolsPending.join("、")} 无结果` };
+  }
+  if (input.status === "awaiting_approval") {
+    return { stage: "waiting-answer", label: "等回答", waitingOn: "审批人", waitingFor: "等待审批" };
+  }
+  if (input.status === "verified") {
+    return { stage: "idle", label: "空闲（无待办）", waitingOn: null, waitingFor: null };
+  }
+  return { stage: "working", label: "进行中", waitingOn: null, waitingFor: null };
+}
+
+/** 阶段一行：标签 +（等谁：等什么），没在等谁时只写标签。 */
+export function stageDisplay(stage: RunStageInfo): string {
+  if (stage.waitingOn && stage.waitingFor) return `${stage.label}（等${stage.waitingOn}：${stage.waitingFor}）`;
+  if (stage.waitingOn) return `${stage.label}（等${stage.waitingOn}）`;
+  if (stage.waitingFor) return `${stage.label}（${stage.waitingFor}）`;
+  return stage.label;
 }
 
 function str(v: unknown): string | null {
@@ -122,6 +205,9 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
   const steps: TimelineStep[] = [];
   const pendingTools = new Map<string, TimelineStep>();
   const pendingDelegates = new Map<string, TimelineStep>();
+  // 阶段表要的原始信号（与步骤配对无关，只看事件本身有没有闭合）。
+  const pendingApprovals = new Map<string, string>();
+  const pendingToolNames = new Map<string, string>();
   let turn = 0;
   let toolCalls = 0;
   let toolErrors = 0;
@@ -261,6 +347,7 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         toolCalls += 1;
         const step = push(at, "tool", `工具 ${name}`, null, null, null);
         if (id) pendingTools.set(id, step);
+        if (id) pendingToolNames.set(id, name);
         break;
       }
       case "tool_result": {
@@ -270,6 +357,7 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         if (ok === false) toolErrors += 1;
         const hash = str(ev.args_hash);
         const detail = hash ? `参数指纹 ${hash.slice(0, 12)}…` : null;
+        if (id) pendingToolNames.delete(id);
         const pending = id ? pendingTools.get(id) : undefined;
         if (pending) {
           pendingTools.delete(id);
@@ -325,12 +413,18 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       case "review_decision":
         push(at, "verdict", `审阅批复 ${str(ev.item_id) ?? "?"}：${str(ev.decision) ?? "?"}`, null, str(ev.decision) === "approve" ? true : str(ev.decision) === "reject" ? false : null, null);
         break;
-      case "approval_wait":
-        push(at, "approval", `等待审批：${str(ev.tool) ?? "?"}`, null, null, null);
+      case "approval_wait": {
+        const tool = str(ev.tool) ?? "?";
+        pendingApprovals.set(tool, tool);
+        push(at, "approval", `等待审批：${tool}`, null, null, null);
         break;
-      case "approval_done":
-        push(at, "approval", `审批 ${str(ev.tool) ?? "?"}：${bool(ev.approved) === true ? "批准" : bool(ev.approved) === false ? "拒绝" : "未知"}`, null, bool(ev.approved), null);
+      }
+      case "approval_done": {
+        const tool = str(ev.tool) ?? "?";
+        pendingApprovals.delete(tool);
+        push(at, "approval", `审批 ${tool}：${bool(ev.approved) === true ? "批准" : bool(ev.approved) === false ? "拒绝" : "未知"}`, null, bool(ev.approved), null);
         break;
+      }
       case "model_switch":
         push(at, "model", `换模型 ${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}` + (str(ev.reason) ? `（${safeText(ev.reason)}）` : ""), null, null, null);
         break;
@@ -372,6 +466,16 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
   }
   steps.forEach((s, i) => { s.index = i + 1; });
 
+  // 阶段表：从事件闭合情况推当前阶段（等谁、等什么），不是从步骤标题里抠字。
+  const lastFailure = [...steps].reverse().find((s) => s.ok === false);
+  const stage = deriveRunStage({
+    status: state.status,
+    approvalsPending: [...pendingApprovals.keys()],
+    delegatesPending: [...pendingDelegates.keys()],
+    toolsPending: [...pendingToolNames.values()],
+    lastFailureTitle: lastFailure ? lastFailure.title : null,
+  });
+
   const summary = (state.usage_summary ?? {}) as Record<string, unknown>;
   return {
     runId: state.run_id,
@@ -395,12 +499,14 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
     delegateSpentUsd: num(summary.delegate_spent_usd),
     steps,
     eventsTotal: rawEvents.length,
+    stage,
   };
 }
 
 function headlineLines(tl: Timeline): string[] {
   return [
     `运行 ${tl.runId}（${tl.status}）`,
+    `当前阶段：${stageDisplay(tl.stage)}`,
     `任务：${safeText(tl.task)}`,
     `总耗时：${formatDurationMs(tl.durationMs)} · 轮次：${tl.turns} · 模型调用：${tl.llmCalls === null ? "未知" : tl.llmCalls} · 工具调用：${tl.toolCalls} · 错误：${tl.toolErrors + tl.runErrors}（工具 ${tl.toolErrors} / 运行 ${tl.runErrors}）`,
     `Token：prompt ${formatTokens(tl.promptTokens)} / completion ${formatTokens(tl.completionTokens)} / 合计 ${formatTokens(tl.totalTokens)} · 花费：${formatUsd(tl.spentUsd)}${tl.delegateSpentUsd !== null ? `（其中子任务 ${formatUsd(tl.delegateSpentUsd)}）` : ""}`,
@@ -461,6 +567,7 @@ export function formatTimelineMarkdown(tl: Timeline): string {
     "| 项目 | 数值 |",
     "| --- | --- |",
     `| 状态 | ${tl.status} |`,
+    `| 当前阶段 | ${stageDisplay(tl.stage)} |`,
     `| 模式 | ${tl.mode} |`,
     `| 开始 | ${tl.createdAt} |`,
     `| 结束 | ${tl.updatedAt} |`,
