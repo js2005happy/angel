@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseSkillFile, canonicalSkillDirs } from "./skills.ts";
-import { parseRules, normalizeToolName } from "./permissionRules.ts";
+import { parseRules, normalizeToolName, lintRules } from "./permissionRules.ts";
 import { getSandboxStatus } from "./sandbox.ts";
 import { listHookEntries, listUnknownHookEvents, matchHookTool, HOOK_EVENTS } from "./hooks.ts";
 import { TOOL_SCHEMAS } from "./tools.ts";
@@ -293,6 +293,17 @@ export function runStatusChecks(opts: { home: string; workdir: string; config?: 
           fix: "删掉这条被覆盖的规则，或收紧 deny 规则的范围",
         });
       }
+    }
+    // 与 `nyra redlines` 共用同一套死规则判定（lintRules）：否则两个命令会对同一份
+    // 配置给出不同结论——"status 说全部可命中、redlines 说有一条永不命中"是自相矛盾。
+    // unknown-tool 已由上面更具体的检查覆盖，这里跳过避免重复。
+    for (const lint of lintRules(rules, { knownTools: [...known] })) {
+      if (lint.code === "unknown-tool") continue;
+      checks.push({
+        id: `permission-lint:${lint.action}:${lint.raw}`, category: "permissions", level: "warn",
+        message: `权限规则可疑（${lint.code}）：${lint.action} ${lint.raw} —— ${lint.detail}`,
+        fix: "按 docs/permissions.md 修正 specifier 语法",
+      });
     }
     if (rules.warnings.length === 0 && all.length === 0) {
       checks.push({ id: "permissions", category: "permissions", level: "info", message: "未配置权限规则" });
