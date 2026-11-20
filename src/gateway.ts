@@ -23,7 +23,8 @@ import { Provider, buildProviderChain, switchTriggerFor, switchTriggerLabel, typ
 import { TOOL_SCHEMAS, SESSION_GRANT_TOOLS, APPROVE_ALWAYS, MUTATING_TOOLS, type ApproveResult } from "./tools.ts";
 import { SessionRules, RuleStore, RULE_SCOPES, MAX_FEEDBACK, normalizeProject, type RuleScope, type RuleSuggestion } from "./approvalRules.ts";
 import { encode as qrEncode, toSvg as qrSvg } from "./qrcode.ts";
-import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFont } from "./webuiMobile.ts";
+import { MOBILE_V2_HTML, MOBILE_V2_MANIFEST, MOBILE_ICON_ROUTES, MOBILE_FONT_ROUTE, mobileIconPng, mobileFaviconSvg, mobileFaviconIco, mobileFont } from "./webuiMobile.ts";
+import { markSvg } from "./brandMark.ts";
 import { runHooks } from "./hooks.ts";
 import { getGmailStatus } from "./connectors/gmail.ts";
 import {
@@ -1485,7 +1486,7 @@ export class Gateway {
     const method = req.method ?? "GET";
 
     // 手机公共壳：页面与静态资源不含秘密，不用 token；API 仍要鉴权。
-    // 手机 v2（src/webuiMobile.ts）：按 docs/assets/screenshots 设计稿的黑白界面、审批底部弹层、从 nyra-mark.svg 光栅化的图标。
+    // 手机 v2（src/webuiMobile.ts）：按 docs/assets/screenshots 设计稿的黑白界面、审批底部弹层、从正式标志（src/brandMark.ts）光栅化的图标。
     if (method === "GET" && (path === "/m" || path === "/m/")) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": CSP, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY" });
       res.end(MOBILE_V2_HTML);
@@ -1511,6 +1512,12 @@ export class Gateway {
       if (!font) { this.sendError(res, 404, "未找到"); return; }
       res.writeHead(200, { "Content-Type": "font/woff", "Content-Length": font.length, "Cache-Control": "public, max-age=86400" });
       res.end(font);
+      return;
+    }
+    if (method === "GET" && path === "/favicon.ico") {
+      const ico = mobileFaviconIco();
+      res.writeHead(200, { "Content-Type": "image/x-icon", "Content-Length": ico.length, "Cache-Control": "public, max-age=86400" });
+      res.end(ico);
       return;
     }
     if (method === "GET" && path === "/m/favicon.svg") {
@@ -1540,10 +1547,9 @@ export class Gateway {
     }
     if (method === "GET" && path === "/nyra-mark.svg") {
       if (!this.pageTokenOk(req)) { this.sendError(res, 403, "token 无效"); return; }
-      const iconPath = join(process.cwd(), "docs", "assets", "nyra-mark.svg");
-      if (!existsSync(iconPath)) { this.sendError(res, 404, "未找到"); return; }
+      // 内置正式标志（与 docs/assets/nyra-mark.svg 同源生成），不再依赖当前目录下有 docs/。
       res.writeHead(200, { "Content-Type": "image/svg+xml" });
-      res.end(readFileSync(iconPath));
+      res.end(markSvg());
       return;
     }
     if (method === "GET" && path === "/groups") {

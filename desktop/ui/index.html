@@ -8,7 +8,10 @@
 </head>
 <body>
 <main>
-  <img class="mark" src="mark.svg" alt="" width="56" height="56">
+  <picture class="mark">
+    <source srcset="mark-dark.svg" media="(prefers-color-scheme: dark)">
+    <img src="mark.svg" alt="" width="56" height="56">
+  </picture>
 
   <section data-state="starting">
     <h1>正在启动 Nyra…</h1>

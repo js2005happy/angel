@@ -105,7 +105,13 @@ function renderThreads(){
   if (!lastSessions) return;
   let list = lastSessions.sessions || [];
   if (searchQ) { const q = searchQ.toLowerCase(); list = list.filter(s => (titleOf(s) + ' ' + (s.project || '')).toLowerCase().includes(q)); }
-  if (!list.length) { const e = el('div', 'empty'); e.appendChild(el('span', '', searchQ ? t('m.noMatch') : t('m.noThreads'))); box.appendChild(e); return; }
+  if (!list.length) {
+    const e = el('div', 'empty');
+    // 还没有任何对话（不是搜索没结果）时，空状态上方放正式标志。
+    const tpl = !searchQ && document.getElementById('tpl-mark');
+    if (tpl) { const m = el('div', 'mk'); m.appendChild(tpl.content.cloneNode(true)); e.appendChild(m); }
+    e.appendChild(el('span', '', searchQ ? t('m.noMatch') : t('m.noThreads'))); box.appendChild(e); return;
+  }
   // 按项目分组（设计稿：app / nyra），组的顺序按组内最新一条。
   const groups = new Map();
   list.forEach(s => { const g = s.project || ''; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); });

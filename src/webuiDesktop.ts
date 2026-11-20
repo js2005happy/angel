@@ -7,6 +7,7 @@
 // 只在桌面外壳里（/api/info 的 shell === "desktop"）每次冷启动播一次。界面文案在 src/i18n.ts 的 d.* 键（复用部分 m.* 键）。
 // 旧网页界面（PAGE_HTML，src/webuiPage.ts）保留导出，不再挂在 / 上。
 import { MESSAGES, type Lang } from "./i18n.ts";
+import { inlineMarkSvg } from "./brandMark.ts";
 import APP_CSS from "./assets/desktop-app.css.txt" with { type: "text" };
 import APP_JS from "./assets/desktop-app.js.txt" with { type: "text" };
 import SPLASH_JS from "./assets/mobile-splash.js.txt" with { type: "text" };
@@ -29,7 +30,8 @@ export function desktopMessages(): Record<Lang, Record<string, string>> {
 const I18N_JSON = JSON.stringify(desktopMessages()).replace(/</g, "\\u003c");
 
 const SVG = (body: string, cls = "", vb = "0 0 24 24") => `<svg${cls ? ` class="${cls}"` : ""} viewBox="${vb}" aria-hidden="true">${body}</svg>`;
-const STAR = '<path d="M8 0C9 5 11 7 16 8C11 9 9 11 8 16C7 11 5 9 0 8C5 7 7 5 8 0Z"/>';
+// 正式标志（圆盘 + 光标镂空，= 入场动画终帧）：圆盘跟随文字色，深浅主题自动反色。
+const MARK = inlineMarkSvg("brand-mark");
 const ICONS: Record<string, string> = {
   pencil: SVG('<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>'),
   search: SVG('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 20 20"/>'),
@@ -74,7 +76,7 @@ ${NAV}
 <header class="top glass" id="top"></header>
 <div class="cols">
 <section class="view" id="v-home"><div class="home">
-<div class="hero"><div class="mk">${SVG(STAR, "", "0 0 16 16").replace("<svg", '<svg fill="currentColor"')}</div>
+<div class="hero"><div class="mk">${MARK}</div>
 <h1><span data-i="d.home.before"></span> <span class="proj" id="home-proj"></span><span id="home-after" data-i="d.home.after"></span></h1></div>
 <div class="comp glass"><textarea id="home-input" rows="1" data-ip="d.home.placeholder"></textarea><div class="rw" id="home-pills"></div></div>
 <div class="cards" id="cards"></div>
@@ -95,7 +97,7 @@ ${NAV}
 </div>
 <div class="overlay hidden" id="search-dlg"><div class="dlg"><input class="srch" id="search-q" data-ip="d.searchPh" autocomplete="off"><div class="res" id="search-res"></div></div></div>
 <div class="overlay setup hidden" id="setup" role="dialog" aria-modal="true"><div class="box">
-<div class="mk">${SVG(STAR, "", "0 0 16 16").replace("<svg", '<svg fill="currentColor"')}</div>
+<div class="mk">${MARK}</div>
 <h1 data-i="d.setup.title"></h1><p class="lead" data-i="d.setup.lead"></p>
 <div class="step"><b>1</b><span data-i="d.setup.step1"></span></div>
 <div class="provs" id="setup-provs"></div>

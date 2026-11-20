@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/assets/nyra-mark.svg" width="72" height="72" alt="Nyra">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/nyra-mark-dark.svg">
+    <img src="docs/assets/nyra-mark.svg" width="72" height="72" alt="Nyra">
+  </picture>
 </p>
 
 <h1 align="center">Nyra</h1>

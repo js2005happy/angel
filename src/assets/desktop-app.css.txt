@@ -131,8 +131,10 @@ button.fr:hover{background:var(--hover)}
 /* ---- 新对话空状态 ---- */
 .home{flex:1;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:0 20px}
 .home .hero{text-align:center;margin-top:max(40px,calc(18vh - 30px))}
-.mk{width:44px;height:44px;border-radius:12px;background:var(--fg);color:var(--bg);display:flex;align-items:center;justify-content:center;margin:0 auto 18px}
-.mk svg{width:22px;height:22px}
+/* 正式标志（圆盘 + 镂空光标，= 入场动画终帧）：浅色主题深色圆盘、深色主题浅色圆盘，光标露出底色 */
+.mk{width:48px;height:48px;color:#0B0B0C;display:flex;align-items:center;justify-content:center;margin:0 auto 18px}
+.mk svg{width:48px;height:48px;display:block}
+@media (prefers-color-scheme: dark){.mk{color:#F5F5F7}}
 .home h1{font-size:28px;font-weight:600;letter-spacing:-.02em}
 .home h1 .proj{border-bottom:1.5px dashed var(--mu2)}
 .home .comp{margin:28px auto 16px;width:720px;max-width:100%}

@@ -47,6 +47,7 @@ svg.i.f{fill:currentColor;stroke:none}
 .empty{padding:56px 32px;text-align:center;color:var(--mu)}
 .empty b{display:block;color:var(--fg);font-weight:600;font-size:16px;margin-bottom:6px}
 .empty code{display:inline-block;margin-top:2px;font-size:12.5px;color:var(--fg)}
+.empty .mk{margin:0 auto 14px}
 /* 悬浮新建按钮 */
 .fab{position:fixed;right:16px;bottom:calc(92px + var(--sab));height:56px;border-radius:18px;background:var(--btn);color:var(--btnfg);display:flex;align-items:center;gap:8px;padding:0 20px;font-weight:600;font-size:15px;box-shadow:0 6px 16px var(--shadow);z-index:6}
 .fab svg.i{width:16px;height:16px}
@@ -145,8 +146,10 @@ svg.i.f{fill:currentColor;stroke:none}
 .textbtn{color:var(--rm);font-weight:600;padding:14px;width:100%;text-align:center}
 /* 配对页 */
 .pair{padding:calc(48px + var(--sat)) 24px 32px;max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
-.mk{width:46px;height:46px;border-radius:14px;background:var(--fg);color:var(--bg);display:flex;align-items:center;justify-content:center;margin-bottom:8px}
-.mk svg{width:22px;height:22px}
+/* 正式标志（圆盘 + 镂空光标，= 入场动画终帧） */
+.mk{width:48px;height:48px;color:#0B0B0C;display:flex;align-items:center;justify-content:center;margin-bottom:8px}
+.mk svg{width:48px;height:48px;display:block}
+@media (prefers-color-scheme: dark){.mk{color:#F5F5F7}}
 .pair h1{font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1.2}
 .pair p{color:var(--mu);line-height:1.5;font-size:14px}
 .pair p code{color:var(--fg);font-size:13px}

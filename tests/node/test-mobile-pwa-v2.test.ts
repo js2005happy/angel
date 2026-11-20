@@ -13,6 +13,7 @@ import {
 import { checkApproval, newToolContext, ToolError, findApprovalRule } from "../../src/tools.ts";
 import { encode, toSvg, toTerminal } from "../../src/qrcode.ts";
 import { MOBILE_ICON_ROUTES, MARK_CURSOR, MARK_CIRCLE, MARK_STROKE, MOBILE_V2_MANIFEST } from "../../src/webuiMobile.ts";
+import { markSvg } from "../../src/brandMark.ts";
 import { Gateway } from "../../src/gateway.ts";
 import { fakeProvider } from "./fake-provider.ts";
 
@@ -305,10 +306,11 @@ function pngInfo(buf: Uint8Array): { w: number; h: number; colorType: number; pi
 
 test("icons: manifest 192/512 any + maskable、apple 180、favicon；几何与 nyra-mark.svg 一致", async () => {
   const svg = readFileSync(join(import.meta.dir, "..", "..", "docs", "assets", "nyra-mark.svg"), "utf-8");
-  const pts = MARK_CURSOR.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`);
-  expect(svg).toContain(`M${pts[0]} L${pts.slice(1).join(" L")} Z`);
-  expect(svg).toContain(`r="${MARK_CIRCLE.r}"`);
-  expect(svg).toContain(`stroke-width="${MARK_STROKE}"`);
+  // 主文件由 src/brandMark.ts 生成：圆盘 r40 + 光标外扩 MARK_STROKE/2 的镂空（evenodd）。
+  expect(svg.trim()).toBe(markSvg());
+  expect(svg).toContain(`A${MARK_CIRCLE.r} ${MARK_CIRCLE.r} 0 1 0`);
+  expect(svg).toContain(`A${MARK_STROKE / 2} ${MARK_STROKE / 2} 0 0`);
+  expect(MARK_CURSOR[0]).toEqual([40, 31]);
   const purposes = MOBILE_V2_MANIFEST.icons.map((i) => `${i.sizes}:${i.purpose}`);
   expect(purposes).toEqual(["192x192:any", "512x512:any", "192x192:maskable", "512x512:maskable"]);
   const gw = new Gateway({ home: tmp("nyra-icons-"), workdir: "/tmp", host: "127.0.0.1", port: 0, config: { mcp_enabled: false } });
@@ -326,10 +328,10 @@ test("icons: manifest 192/512 any + maskable、apple 180、favicon；几何与 n
       if (spec.kind === "maskable" || spec.kind === "apple") expect(corner[3]).toBe(255); // 铺满不透明
       else expect(corner[3]).toBe(0); // any/favicon 透明底
     }
-    // 光标填白：取光标内部一点。
+    // 光标镂空：光标内部一点透明（露出底色），圆盘上一点是深色。
     const any = pngInfo(new Uint8Array(await (await fetch(`${base}/m/icon-512.png`)).arrayBuffer()));
-    const white = any.pixel(Math.round(512 * 0.47), Math.round(512 * 0.55));
-    expect(white.slice(0, 3)).toEqual([255, 255, 255]);
+    expect(any.pixel(Math.round(512 * 0.47), Math.round(512 * 0.55))[3]).toBe(0);
+    expect(any.pixel(Math.round(512 * 0.25), Math.round(512 * 0.5))).toEqual([0x0b, 0x0b, 0x0c, 255]);
     // maskable / apple：黑底 + 浅色圆盘（= 入场动画终帧），中心一点是浅色圆盘。
     const mask = pngInfo(new Uint8Array(await (await fetch(`${base}/m/icon-maskable-512.png`)).arrayBuffer()));
     expect(mask.pixel(0, 0).slice(0, 3)).toEqual([0x0b, 0x0b, 0x0c]);

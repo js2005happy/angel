@@ -1,9 +1,9 @@
 :root{color-scheme:light dark;--bg:#FFFFFF;--fg:#0B0B0C;--mu:#6B6F76;--line:#E4E5E7;--code:#F4F4F5}
-@media (prefers-color-scheme:dark){:root{--bg:#0B0B0C;--fg:#F4F4F5;--mu:#9A9EA6;--line:#26272B;--code:#17181B}.mark{filter:invert(1)}}
+@media (prefers-color-scheme:dark){:root{--bg:#0B0B0C;--fg:#F4F4F5;--mu:#9A9EA6;--line:#26272B;--code:#17181B}}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif}
 main{max-width:640px;margin:0 auto;padding:56px 28px}
-.mark{display:block;margin-bottom:20px}
+.mark{display:block;margin-bottom:20px}.mark img{display:block}
 h1{font-size:22px;margin:0 0 8px;font-weight:600}
 h2{font-size:14px;margin:20px 0 6px;font-weight:600}
 .muted{color:var(--mu)}

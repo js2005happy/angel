@@ -6,8 +6,8 @@
 // src/assets/mobile-app.css.txt / mobile-app.js.txt；入场动画移植自原 Nyra splash
 // （src/assets/mobile-splash.js.txt）。界面文案在 src/i18n.ts 的 m.* 键（中英）。
 // 页面本身不含任何秘密：设备 token 只在 localStorage，每次 API 调用带 X-Nyra-Token 头。
-// 图标从 docs/assets/nyra-mark.svg 的几何（圆 r46 + 旋转 -6° 的光标，描边 6 圆角）在本机光栅化成 PNG。
-import { deflateSync } from "node:zlib";
+// 图标是正式标志（圆盘 + 光标，= 入场动画终帧，几何在 src/brandMark.ts）在本机光栅化的 PNG。
+import { MARK_PRESETS, icoFromPngs, inlineMarkSvg, markPng, markSvg, rasterizeMark, type RasterOpts } from "./brandMark.ts";
 import { MESSAGES, type Lang } from "./i18n.ts";
 import APP_CSS from "./assets/mobile-app.css.txt" with { type: "text" };
 import APP_JS from "./assets/mobile-app.js.txt" with { type: "text" };
@@ -27,154 +27,23 @@ export const MOBILE_COLORS = {
 };
 
 // ---------------------------------------------------------------- 图标 ---
-// nyra-mark.svg 的几何（100×100 视框）。改 SVG 时同步改这里；测试会核对两边一致。
-export const MARK_CIRCLE = { cx: 50, cy: 50, r: 46 };
-export const MARK_CURSOR: [number, number][] = [
-  [40.0, 31.0], [40.0, 75.72], [50.75, 65.83], [58.06, 81.74], [65.37, 78.47], [58.06, 62.65], [72.25, 62.65],
-];
-export const MARK_STROKE = 6;
-export const MARK_ROTATE_DEG = -6;
+// 正式标志（圆盘 + 光标，入场动画终帧）的几何与光栅化都在 src/brandMark.ts；这里只选用途。
+// 旧名字照旧导出，调用方与测试不用改。
+export { MARK_CIRCLE, MARK_CURSOR, MARK_STROKE, MARK_ROTATE_DEG, rgbaPng } from "./brandMark.ts";
 
 type IconKind = "any" | "maskable" | "apple" | "favicon";
 
-function hexRgb(hex: string): [number, number, number] {
-  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+function presetFor(size: number, kind: IconKind): RasterOpts {
+  // any / favicon：透明底，深色圆盘，光标镂空（露出底色，与 nyra-mark.svg 一致）；
+  // maskable / apple：与入场动画终帧一致——黑底 + 浅色圆盘 + 黑色光标，从主屏幕图标到入场动画再到应用不跳色。
+  if (kind === "maskable") return MARK_PRESETS.maskable();
+  if (kind === "apple") return MARK_PRESETS.apple();
+  return MARK_PRESETS.light();
 }
 
-function rotatedCursor(): [number, number][] {
-  const a = (MARK_ROTATE_DEG * Math.PI) / 180;
-  const c = Math.cos(a);
-  const s = Math.sin(a);
-  return MARK_CURSOR.map(([x, y]) => {
-    const dx = x - 50;
-    const dy = y - 50;
-    return [50 + dx * c - dy * s, 50 + dx * s + dy * c];
-  });
-}
-
-function insidePolygon(poly: [number, number][], x: number, y: number): boolean {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [xi, yi] = poly[i];
-    const [xj, yj] = poly[j];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
-
-function distToPolygon(poly: [number, number][], x: number, y: number): number {
-  let best = Infinity;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const [ax, ay] = poly[j];
-    const [bx, by] = poly[i];
-    const vx = bx - ax;
-    const vy = by - ay;
-    const t = Math.max(0, Math.min(1, ((x - ax) * vx + (y - ay) * vy) / (vx * vx + vy * vy)));
-    const d = Math.hypot(x - (ax + t * vx), y - (ay + t * vy));
-    if (d < best) best = d;
-  }
-  return best;
-}
-
-const CRC_TABLE: Int32Array = (() => {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c;
-  }
-  return t;
-})();
-
-function crc32(buf: Buffer): number {
-  let c = 0xffffffff;
-  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function chunk(type: string, data: Buffer): Buffer {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length, 0);
-  const typeBuf = Buffer.from(type, "ascii");
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
-  return Buffer.concat([len, typeBuf, data, crc]);
-}
-
-/** RGBA 像素 → PNG（色彩类型 6）。 */
-export function rgbaPng(width: number, height: number, rgba: Uint8Array): Buffer {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  const raw = Buffer.alloc((width * 4 + 1) * height);
-  for (let y = 0; y < height; y++) {
-    raw[y * (width * 4 + 1)] = 0;
-    Buffer.from(rgba.buffer, rgba.byteOffset + y * width * 4, width * 4).copy(raw, y * (width * 4 + 1) + 1);
-  }
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw, { level: 9 })), chunk("IEND", Buffer.alloc(0)),
-  ]);
-}
-
-/**
- * 光栅化 Nyra 标志：
- *   - any / favicon：透明底，黑色圆盘占满（视框原有 4% 留白），光标填白；
- *   - maskable：黑底铺满，浅色圆盘缩在 80% 安全区内（直径 72%），光标黑色（= 入场动画终帧）；
- *   - apple：同 maskable（iOS 不支持透明），直径 78%。
- * 光标外 3 单位（描边 6 的一半）留出底色缝。
- */
+/** 光栅化 Nyra 标志（RGBA）。16–32 px 自动用光标加粗的小尺寸版。 */
 export function renderMarkRgba(size: number, kind: IconKind): Uint8Array {
-  const out = new Uint8Array(size * size * 4);
-  const fraction = kind === "maskable" ? 0.72 : kind === "apple" ? 0.78 : 1;
-  const opaqueBg = kind === "maskable" || kind === "apple";
-  // any / favicon：黑色圆盘 + 白色光标（同 nyra-mark.svg）；maskable / apple：与入场动画终帧一致——
-  // 黑底 + 浅色圆盘 + 黑色光标，从主屏幕图标到入场动画再到应用不跳色。
-  const bg = hexRgb(MOBILE_COLORS.splashBg);
-  const disc = hexRgb(opaqueBg ? MOBILE_COLORS.splashFg : MOBILE_COLORS.mark);
-  const cursor: [number, number, number] = opaqueBg ? hexRgb(MOBILE_COLORS.splashBg) : [255, 255, 255];
-  const poly = rotatedCursor();
-  const half = MARK_STROKE / 2;
-  const unit = (size * fraction) / 100; // 1 个视框单位 = 多少像素
-  const offset = (size - size * fraction) / 2;
-  const SS = 4; // 4×4 超采样抗锯齿
-  for (let py = 0; py < size; py++) {
-    for (let px = 0; px < size; px++) {
-      let r = 0, g = 0, b = 0, a = 0;
-      // 远离所有边缘的像素只采样一次（渐变在一个像素内几乎不变），边缘像素 4×4 超采样。
-      const cx = (px + 0.5 - offset) / unit;
-      const cy = (py + 0.5 - offset) / unit;
-      const pxUnits = 1 / unit;
-      const edge = Math.min(
-        Math.abs(Math.hypot(cx - MARK_CIRCLE.cx, cy - MARK_CIRCLE.cy) - MARK_CIRCLE.r),
-        Math.abs(distToPolygon(poly, cx, cy) - (insidePolygon(poly, cx, cy) ? 0 : half)),
-        insidePolygon(poly, cx, cy) ? distToPolygon(poly, cx, cy) : Infinity,
-      );
-      const ss = edge > pxUnits * 1.5 ? 1 : SS;
-      for (let sy = 0; sy < ss; sy++) {
-        for (let sx = 0; sx < ss; sx++) {
-          const x = (px + (sx + 0.5) / ss - offset) / unit;
-          const y = (py + (sy + 0.5) / ss - offset) / unit;
-          let cr: number, cg: number, cb: number, ca: number;
-          const inDisc = Math.hypot(x - MARK_CIRCLE.cx, y - MARK_CIRCLE.cy) <= MARK_CIRCLE.r;
-          const inCursor = insidePolygon(poly, x, y);
-          const inGap = !inCursor && distToPolygon(poly, x, y) <= half;
-          if (inDisc && inCursor) { [cr, cg, cb] = cursor; ca = 1; }
-          else if (inDisc && !inGap) { [cr, cg, cb] = disc; ca = 1; }
-          else if (opaqueBg) { [cr, cg, cb] = inCursor ? disc : bg; ca = 1; } // 光标尖略出圆盘：与原 splash 一样画成圆盘色
-          else if (inCursor) { [cr, cg, cb] = [255, 255, 255]; ca = 1; } // 光标尖略出圆盘的部分
-          else { cr = 0; cg = 0; cb = 0; ca = 0; }
-          r += cr * ca; g += cg * ca; b += cb * ca; a += ca;
-        }
-      }
-      const i = (py * size + px) * 4;
-      const n = ss * ss;
-      if (a > 0) { out[i] = Math.round(r / a); out[i + 1] = Math.round(g / a); out[i + 2] = Math.round(b / a); }
-      out[i + 3] = Math.round((a / n) * 255);
-    }
-  }
-  return out;
+  return rasterizeMark(size, presetFor(size, kind));
 }
 
 const iconCache = new Map<string, Buffer>();
@@ -182,7 +51,7 @@ export function mobileIconPng(size: number, kind: IconKind): Buffer {
   const key = `${kind}:${size}`;
   let png = iconCache.get(key);
   if (!png) {
-    png = rgbaPng(size, size, renderMarkRgba(size, kind));
+    png = markPng(size, presetFor(size, kind));
     iconCache.set(key, png);
   }
   return png;
@@ -197,17 +66,22 @@ export const MOBILE_ICON_ROUTES: Record<string, { size: number; kind: IconKind }
   "/m/apple-touch-icon.png": { size: 180, kind: "apple" },
   "/m/icon-180.png": { size: 180, kind: "apple" },
   "/m/favicon-32.png": { size: 32, kind: "favicon" },
-  "/favicon.ico": { size: 32, kind: "favicon" },
 };
 
-/** 矢量 favicon：同一几何，黑色圆盘 + 白色光标（与 nyra-mark.svg 一致）。 */
-export function mobileFaviconSvg(): string {
-  const pts = MARK_CURSOR.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(" L");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs>` +
-    `<mask id="m"><rect width="100" height="100" fill="#fff"/><path d="M${pts} Z" fill="#000" stroke="#000" stroke-width="${MARK_STROKE}" stroke-linejoin="round" transform="rotate(${MARK_ROTATE_DEG} 50 50)"/></mask></defs>` +
-    `<circle cx="${MARK_CIRCLE.cx}" cy="${MARK_CIRCLE.cy}" r="${MARK_CIRCLE.r}" fill="${MOBILE_COLORS.mark}" mask="url(#m)"/>` +
-    `<path d="M${pts} Z" fill="#fff" transform="rotate(${MARK_ROTATE_DEG} 50 50)"/></svg>`;
+/** 真正的多尺寸 favicon.ico（16 / 32 / 48，内嵌 PNG）。 */
+let icoCache: Buffer | null = null;
+export function mobileFaviconIco(): Buffer {
+  if (!icoCache) icoCache = icoFromPngs([16, 32, 48].map((size) => ({ size, png: mobileIconPng(size, "favicon") })));
+  return icoCache;
 }
+
+/** 矢量 favicon：同一几何；浅色系统下深色圆盘，深色系统下浅色圆盘，光标都是镂空。 */
+export function mobileFaviconSvg(): string {
+  return markSvg({ disc: MOBILE_COLORS.mark, adaptive: true });
+}
+
+/** 内联进页面的标志（圆盘 = currentColor，光标镂空）。 */
+export const MARK_INLINE = inlineMarkSvg("brand-mark");
 
 export const MOBILE_V2_MANIFEST = {
   name: "Nyra",
@@ -269,7 +143,7 @@ const IC = {
   more: SVG('<circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/>', "i f"),
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
   up: SVG('<path d="M12 19V5"/><path d="M6 11l6-6 6 6"/>'),
-  mark: '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C9 5 11 7 16 8C11 9 9 11 8 16C7 11 5 9 0 8C5 7 7 5 8 0Z"/></svg>',
+  mark: MARK_INLINE,
 };
 const NAV = (["threads", "review", "automations", "skills", "settings"] as const)
   .map((k) => `<button data-tab="${k}"><i>${IC[k]}</i><span data-i="m.tab.${k}"></span></button>`).join("");
@@ -290,6 +164,7 @@ export const MOBILE_V2_HTML = `<!doctype html><html lang="en"><head><meta charse
 <link rel="apple-touch-icon" sizes="180x180" href="/m/apple-touch-icon.png">
 <style>${APP_CSS}
 .ios .and-only,.android .ios-only{display:none}</style></head><body>
+<template id="tpl-mark">${IC.mark}</template>
 <div id="splash" class="hidden" aria-hidden="true"></div>
 <p id="fatal" class="err"></p>
 <section id="pair-view" class="view hidden"><div class="pair">

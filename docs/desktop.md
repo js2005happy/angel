@@ -81,11 +81,12 @@ npx tauri build --bundles msi,nsis              # Windows
 cd src-tauri && cargo test                      # 外壳的单元测试
 ```
 
-图标全部由正式标志 `docs/assets/nyra-mark.svg` 生成。生成脚本 `desktop/scripts/make_icons.py` 已在 0.4.0 随 Python 删除（图标文件本身已提交在 `desktop/src-tauri/icons/`，只是再生工具没了）；需要重新生成时，先补一个等价的 Node 脚本（仍需要 `rsvg-convert`），或按标志 SVG 手工导出各尺寸。
+图标全部由正式标志（圆盘 + 光标，= 入场动画终帧，几何在 `src/brandMark.ts`）生成：`bun scripts/make-icons.ts`（零依赖，自带光栅化与 PNG / ICO / ICNS 编码，任何平台都能跑；`--check` 只核对 SVG）。
 
-- 48 px 及以上直接用正式标志；16 / 24 / 32 px 用同一标志的加粗版 `desktop/icon-src/nyra-mark-small.svg`（光标更粗、圆更满），标题栏、任务栏、资源管理器列表里也看得清。
-- App 图标里光标填成白色（正式标志的光标是镂空的，在深色程序坞 / 任务栏上会“消失”）；浅色背景上与正式标志看起来一样。
-- `icon.ico`（16/24/32/48/64/256）用于 exe、安装程序（`nsis.installerIcon`）、桌面与开始菜单快捷方式、任务栏和窗口；`icon.icns`（16–1024，含 @2x）用于 macOS 的 .app、程序坞与访达。没有使用 Tauri 默认图标。
+- App 图标 = 与手机主屏幕图标同一套：黑色圆角图块 + 浅色圆盘（#F5F5F7）+ 黑色光标（#0B0B0C），深色、浅色程序坞 / 任务栏上都看得清。矢量源 `desktop/icon-src/nyra-app-icon.svg`。
+- 16 / 24 / 32 px 用加粗版 `desktop/icon-src/nyra-mark-small.svg`（光标镂空加粗、圆盘更满），标题栏、任务栏、资源管理器列表里也看得清。
+- `icon.ico`（16/24/32/48/64/256）用于 exe、安装程序（`nsis.installerIcon`）、桌面与开始菜单快捷方式、任务栏和窗口；`icon.icns`（16–1024，含 @2x；按 macOS 图标网格留约 10% 透明边距）用于 macOS 的 .app、程序坞与访达；`icon.png`（512）给 Linux。没有使用 Tauri 默认图标。
+- 启动引导页（`desktop/ui/`）的标志：浅色 `mark.svg`、深色 `mark-dark.svg`，用 `<picture>` 跟随系统切换。
 
 ## 已知限制 / 待办
 

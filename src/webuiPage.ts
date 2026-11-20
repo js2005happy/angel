@@ -16,7 +16,12 @@ export const MANIFEST = {
   display: "standalone",
   background_color: "#FFFFFF",
   theme_color: "#0B0B0C",
-  icons: [{ src: "/nyra-mark.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }],
+  icons: [
+    { src: "/nyra-mark.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+    { src: "/m/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/m/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/m/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+  ],
 };
 
 export const MOBILE_MANIFEST = {
