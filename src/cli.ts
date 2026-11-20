@@ -153,6 +153,7 @@ nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|c
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
 nyra bughunt <install|status|scope|template|check>   授权漏洞挖掘技能包：范围卡 + 证伪验证 + 提交前七问 + 证据卫生，提交前核对（详见 docs/bughunt.md）
 nyra market <list|show|source|install|uninstall|installed|publish|template>   内置机器人市场：浏览、安装、发布技能包与机器人配置（第一阶段：静态策展仓库 + 本地客户端，详见 docs/marketplace.md）
+nyra account <status|login|logout|list|revoke|link>   用户账号登录：Google / GitHub / 邮箱（邮箱随网关兑换端点在下一批），账号身份 + 会话（详见 docs/accounts.md）
 nyra kb <create|list|add|search|ask|remove>  本地知识库
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
 nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -225,6 +226,7 @@ nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|c
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
 nyra bughunt <install|status|scope|template|check>   authorized bug-hunting skill pack: scope card + falsification + pre-submit seven questions + evidence hygiene, pre-submit gate (see docs/bughunt.md)
 nyra market <list|show|source|install|uninstall|installed|publish|template>   built-in bot marketplace: browse, install and publish skill packs and bot configs (phase 1: static curated repo + local client, see docs/marketplace.md)
+nyra account <status|login|logout|list|revoke|link>   user account login: Google / GitHub / email (email lands with the gateway exchange endpoint next batch), account identity + sessions (see docs/accounts.md)
 nyra kb <create|list|add|search|ask|remove>  local knowledge base
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
 nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -1691,6 +1693,290 @@ async function handleBughunt(argv: string[], home: string): Promise<number> {
 }
 
 // ---- 子命令：market（内置机器人市场，第一阶段：静态策展仓库 + 本地客户端） ----
+// ---- 子命令：account（用户账号登录，缺口 41） ----
+const ACCOUNT_USAGE =
+  "用法：nyra account <status|login|logout|list|revoke|link> [选项]\n" +
+  "  nyra account status              当前登录状态\n" +
+  "  nyra account login google        Google 登录（回环回调；首次要 OAuth 客户端）\n" +
+  "  nyra account login github        GitHub 登录（设备流：终端给码，浏览器里输码）\n" +
+  "  nyra account link google|github  给当前账号再绑一个登录方式\n" +
+  "  nyra account list                列出本机账号\n" +
+  "  nyra account revoke <会话 id>|--all  撤销会话\n" +
+  "  nyra account logout              登出（撤销当前会话 + 清掉本机 token）\n" +
+  "  （邮箱登录随网关兑换端点在下一批，详见 docs/accounts.md）\n" +
+  "  数据库：设 NYRA_DATABASE_URL 后账号数据存 Postgres（Neon），否则存本机文件。";
+
+async function handleAccount(argv: string[], home: string): Promise<number> {
+  const cmd = argv[0];
+  if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
+    process.stdout.write(ACCOUNT_USAGE + "\n");
+    return 0;
+  }
+  let pg: import("./accountsDb.ts").PostgresAccounts | null = null;
+  try {
+    const mod = await import("./accounts.ts");
+    const dbMod = await import("./accountsDb.ts");
+    // 有连接串就走 Postgres（先建表），没有就走本地文件；进程退出前关连接。
+    const backend = dbMod.resolveAccountsBackend(home);
+    pg = backend.kind === "postgres" ? await dbMod.openPostgresAccounts(backend.url) : null;
+    const stores = pg
+      ? { directory: pg.directory, sessions: pg.sessions, magicLinks: pg.magicLinks, audit: pg.audit }
+      : undefined;
+    const audit = async (entry: { action: "login" | "logout" | "link" | "revoke" | "magic_link_requested" | "magic_link_redeemed"; provider?: "google" | "github" | "email"; account_id?: string }): Promise<void> => {
+      if (stores?.audit) await stores.audit(entry);
+      else mod.appendAccountAudit(home, entry);
+    };
+    const ask = async (prompt: string): Promise<string> => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolvePromise) => {
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
+      return answer;
+    };
+    const unlockVault = async (): Promise<Vault | null> => {
+      const vault = new Vault(join(home, "vault.json"));
+      if (!vault.exists()) {
+        process.stderr.write("密码箱不存在，先运行：nyra vault init\n");
+        return null;
+      }
+      if (!vault.unlock(await ask("主密码："))) {
+        const remaining = vault.lockoutRemainingMs();
+        if (remaining > 0) {
+          process.stderr.write(`尝试次数过多，请 ${Math.ceil(remaining / 1000)} 秒后再试\n`);
+        } else {
+          process.stderr.write("主密码错误或密码箱已损坏\n");
+        }
+        return null;
+      }
+      return vault;
+    };
+    const openAuthUrl = async (url: string): Promise<void> => {
+      process.stdout.write("请在浏览器里打开下面的链接完成授权：\n" + url + "\n");
+      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+      const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+      try {
+        const child = spawn(opener, args, { detached: true, stdio: "ignore" });
+        child.unref();
+      } catch {
+        /* 打不开浏览器不阻塞：链接已经打印出来了 */
+      }
+    };
+    const readGoogleClient = async (vault: Vault): Promise<{ client_id: string; client_secret: string } | null> => {
+      const raw = vault.get(mod.OAUTH_GOOGLE_CLIENT_ENTRY);
+      if (raw) {
+        try {
+          const d = JSON.parse(raw) as Record<string, unknown>;
+          if (typeof d.client_id === "string" && d.client_id && typeof d.client_secret === "string" && d.client_secret) {
+            return { client_id: d.client_id, client_secret: d.client_secret };
+          }
+        } catch {
+          /* 损坏的客户端条目按没有处理，下面重新输入 */
+        }
+      }
+      process.stdout.write("第一次登录需要 Google Cloud 的 OAuth 客户端（Desktop app 类型）：\n");
+      process.stdout.write("  在 console.cloud.google.com 建好 OAuth 2.0 客户端后，把 client_id 与 client_secret 粘贴进来（只存密码箱，不进配置文件）。\n");
+      const clientId = (await ask("client_id：")).trim();
+      const clientSecret = (await ask("client_secret：")).trim();
+      if (!clientId || !clientSecret) {
+        process.stderr.write("client_id 与 client_secret 不能为空\n");
+        return null;
+      }
+      const client = { client_id: clientId, client_secret: clientSecret };
+      vault.add(mod.OAUTH_GOOGLE_CLIENT_ENTRY, JSON.stringify(client), true);
+      return client;
+    };
+    const readGithubClient = async (vault: Vault): Promise<string | null> => {
+      const raw = vault.get(mod.OAUTH_GITHUB_CLIENT_ENTRY);
+      if (raw) {
+        try {
+          const d = JSON.parse(raw) as Record<string, unknown>;
+          if (typeof d.client_id === "string" && d.client_id) return d.client_id;
+        } catch {
+          /* 损坏的客户端条目按没有处理，下面重新输入 */
+        }
+      }
+      process.stdout.write("第一次登录需要 GitHub OAuth App 的 client_id（设备流不需要 secret）：\n");
+      process.stdout.write("  在 github.com/settings/developers 建好 OAuth App 后，把 client_id 粘贴进来（只存密码箱，不进配置文件）。\n");
+      const clientId = (await ask("client_id：")).trim();
+      if (!clientId) {
+        process.stderr.write("client_id 不能为空\n");
+        return null;
+      }
+      vault.add(mod.OAUTH_GITHUB_CLIENT_ENTRY, JSON.stringify({ client_id: clientId }), true);
+      return clientId;
+    };
+    if (cmd === "status") {
+      const account = await mod.getCurrentAccount(home, { stores });
+      if (!account) {
+        process.stdout.write("未登录（nyra account login google|github）\n");
+        return 0;
+      }
+      const current = mod.readCurrentSession(home);
+      let expires = "";
+      if (current) {
+        const sessions = stores?.sessions ?? new mod.AccountSessionStore(home);
+        const verified = await sessions.verify(current.token);
+        if (verified) {
+          const found = (await sessions.listSessions(account.id)).find((s) => s.id === verified.session_id);
+          if (found) expires = found.expires_at;
+        }
+      }
+      process.stdout.write(`已登录：${account.email}（${account.role === "owner" ? "机主" : "普通用户"}）\n`);
+      process.stdout.write(`登录方式：${account.providers.map((p) => p.provider).join("、") || "无"}\n`);
+      if (expires) process.stdout.write(`会话过期：${expires}\n`);
+      return 0;
+    }
+    if (cmd === "list") {
+      const store = stores?.directory ?? new mod.AccountStore(home);
+      const accounts = await store.listAccounts();
+      if (!accounts.length) {
+        process.stdout.write("本机还没有账号（nyra account login google|github）\n");
+        return 0;
+      }
+      for (const a of accounts) {
+        process.stdout.write(`- ${a.email}（${a.role === "owner" ? "机主" : "普通用户"}，${a.providers.map((p) => p.provider).join("、") || "未绑定登录方式"}，创建于 ${a.created_at}）\n`);
+      }
+      return 0;
+    }
+    if (cmd === "login") {
+      const provider = argv[1];
+      if (provider === "google") {
+        const vault = await unlockVault();
+        if (!vault) return 1;
+        const client = await readGoogleClient(vault);
+        if (!client) return 1;
+        const { account } = await mod.loginWithGoogle({ home, client, openUrl: openAuthUrl, stores });
+        process.stdout.write(`登录成功：${account.email}（${account.role === "owner" ? "机主" : "普通用户"}）\n`);
+        return 0;
+      }
+      if (provider === "github") {
+        const vault = await unlockVault();
+        if (!vault) return 1;
+        const clientId = await readGithubClient(vault);
+        if (!clientId) return 1;
+        const { account } = await mod.loginWithGithub({
+          home,
+          clientId,
+          stores,
+          onUserCode: (code) => {
+            process.stdout.write(`请在浏览器里打开 ${code.verification_uri}，输入设备码：${code.user_code}\n`);
+            process.stdout.write(`（设备码 ${Math.floor(code.expires_in / 60)} 分钟内有效）\n`);
+          },
+        });
+        process.stdout.write(`登录成功：${account.email}（${account.role === "owner" ? "机主" : "普通用户"}）\n`);
+        return 0;
+      }
+      if (provider === "email") {
+        process.stderr.write("邮箱登录随网关兑换端点在下一批（见 docs/accounts.md）；本批先用 Google 或 GitHub 登录\n");
+        return 2;
+      }
+      process.stderr.write("用法：nyra account login <google|github>\n");
+      return 2;
+    }
+    if (cmd === "link") {
+      const provider = argv[1];
+      const current = await mod.getCurrentAccount(home, { stores });
+      if (!current) {
+        process.stderr.write("请先登录（nyra account login google|github），再绑定其他登录方式\n");
+        return 1;
+      }
+      const store = stores?.directory ?? new mod.AccountStore(home);
+      if (provider === "google") {
+        const vault = await unlockVault();
+        if (!vault) return 1;
+        const client = await readGoogleClient(vault);
+        if (!client) return 1;
+        const info = await mod.runGoogleIdentity({ client, openUrl: openAuthUrl });
+        await store.linkIdentity(current.id, { provider: "google", sub: info.sub, email: info.email, ...(info.name ? { name: info.name } : {}) });
+        await audit({ action: "link", provider: "google", account_id: current.id });
+        process.stdout.write(`已绑定 Google 身份：${info.email}\n`);
+        return 0;
+      }
+      if (provider === "github") {
+        const vault = await unlockVault();
+        if (!vault) return 1;
+        const clientId = await readGithubClient(vault);
+        if (!clientId) return 1;
+        const info = await mod.runGithubIdentity({
+          clientId,
+          onUserCode: (code) => {
+            process.stdout.write(`请在浏览器里打开 ${code.verification_uri}，输入设备码：${code.user_code}\n`);
+            process.stdout.write(`（设备码 ${Math.floor(code.expires_in / 60)} 分钟内有效）\n`);
+          },
+        });
+        await store.linkIdentity(current.id, { provider: "github", sub: info.sub, email: info.email, ...(info.name ? { name: info.name } : {}) });
+        await audit({ action: "link", provider: "github", account_id: current.id });
+        process.stdout.write(`已绑定 GitHub 身份：${info.email}\n`);
+        return 0;
+      }
+      process.stderr.write("用法：nyra account link <google|github>\n");
+      return 2;
+    }
+    if (cmd === "logout") {
+      const current = mod.readCurrentSession(home);
+      if (!current) {
+        process.stdout.write("当前没有登录的账号\n");
+        return 0;
+      }
+      const sessions = stores?.sessions ?? new mod.AccountSessionStore(home);
+      const verified = await sessions.verify(current.token);
+      if (verified) {
+        await sessions.revoke(verified.session_id);
+        await audit({ action: "logout", account_id: verified.account_id });
+      }
+      mod.clearCurrentSession(home);
+      process.stdout.write("已登出\n");
+      return 0;
+    }
+    if (cmd === "revoke") {
+      const target = argv[1];
+      const current = await mod.getCurrentAccount(home, { stores });
+      if (!current) {
+        process.stderr.write("请先登录（nyra account login google|github）\n");
+        return 1;
+      }
+      const sessions = stores?.sessions ?? new mod.AccountSessionStore(home);
+      if (target === "--all") {
+        const n = await sessions.revokeAllForAccount(current.id);
+        mod.clearCurrentSession(home);
+        await audit({ action: "revoke", account_id: current.id });
+        process.stdout.write(`已撤销全部 ${n} 个会话（含当前会话，已登出）\n`);
+        return 0;
+      }
+      if (!target) {
+        process.stderr.write("用法：nyra account revoke <会话 id>|--all\n");
+        return 2;
+      }
+      const ok = await sessions.revoke(target);
+      if (!ok) {
+        process.stderr.write("会话不存在\n");
+        return 1;
+      }
+      const cur = mod.readCurrentSession(home);
+      if (cur) {
+        const v = await sessions.verify(cur.token);
+        if (!v) mod.clearCurrentSession(home);
+      }
+      await audit({ action: "revoke", account_id: current.id });
+      process.stdout.write("已撤销会话\n");
+      return 0;
+    }
+    process.stderr.write(ACCOUNT_USAGE + "\n");
+    return 2;
+  } catch (err) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  } finally {
+    if (pg) {
+      try {
+        await pg.close();
+      } catch {
+        /* 关连接失败不影响本次命令的退出码 */
+      }
+    }
+  }
+}
+
 async function handleMarket(argv: string[], home: string): Promise<number> {
   const action = argv[0];
   if (!action) {
@@ -3946,6 +4232,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
   if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
   if (args.subcommand === "market") return handleMarket(args.subArgs ?? [], home);
+  if (args.subcommand === "account") return handleAccount(args.subArgs ?? [], home);
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
