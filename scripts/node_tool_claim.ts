@@ -9,7 +9,7 @@
  * proving an external side effect. Never use on an untrusted/shared filesystem.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fsyncSync, lstatSync, openSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export class ClaimUnavailable extends Error {
@@ -77,8 +77,20 @@ export function claimOperation(directory: string, operationId: string): Operatio
   // Directory durability varies by OS/filesystem; failure must not be treated
   // as a successful durable reservation.
   try {
-    const dirfd = openSync(directory, constants.O_RDONLY);
-    try { fsyncSync(dirfd); } finally { closeSync(dirfd); }
+    const dirfd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(dirfd);
+      const named = lstatSync(directory);
+      if (!opened.isDirectory() || !named.isDirectory() || named.isSymbolicLink() ||
+          opened.dev !== named.dev || opened.ino !== named.ino ||
+          opened.uid !== process.getuid?.() || (opened.mode & 0o077) !== 0) {
+        throw new ClaimUnavailable();
+      }
+      fsyncSync(dirfd);
+      const after = lstatSync(directory);
+      if (after.dev !== opened.dev || after.ino !== opened.ino ||
+          !after.isDirectory() || after.isSymbolicLink()) throw new ClaimUnavailable();
+    } finally { closeSync(dirfd); }
   } catch { throw new ClaimUnavailable(); }
   return { operationId, claimId, state: "unknown" };
 }
