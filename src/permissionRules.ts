@@ -159,8 +159,16 @@ function matchCommandGlob(pattern: string, command: string): boolean {
   return segmentMatch(pattern, command);
 }
 
+/** 只有这些工具的目标是文件系统路径，其余（shell 命令 / URL / MCP 名）不能按路径处理。 */
+const PATH_TARGET_TOOLS = new Set(["read_file", "write_file", "edit_file", "apply_patch", "list_dir", "grep_search"]);
+
 function normalizeTarget(ctx: PermissionContext): string {
   const target = ctx.target ?? "";
+  if (!target) return target;
+  // **只对路径类工具做文件系统归一化**：shell 命令、URL、MCP 工具名不是路径，
+  // 一旦走 resolve() 就会被当相对路径拼上 process.cwd()，于是 `Bash(rm *)` 这类
+  // 规则在带 workdir 时永不命中（deny 规则静默失效——这是真实缺陷，不是配置问题）。
+  if (!PATH_TARGET_TOOLS.has(normalizeToolName(ctx.tool))) return target.replace(/\\/g, "/");
   if (!target) return target;
   if (!ctx.workdir) return target.replace(/\\/g, "/");
   const abs = resolve(target);
