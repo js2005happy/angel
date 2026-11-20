@@ -41,4 +41,20 @@ CLI 覆盖  >  config.json  >  环境变量（仅个别能力）  >  默认值
 | 双保险 | `config import` 会跳过被锁的键，导入覆盖不了 |
 | 不是强边界 | 能改文件的人仍能改 `enforced`；它挡的是「agent 顺手改配置绕过硬顶」这条现实路径 |
 
+
+### 运行时真正生效的锁定范围
+
+`enforced` 不是装饰。目前**运行时读取路径也认锁定值**的键：
+
+| 键 | 生效点 |
+|---|---|
+| `max_cost_usd` | `cli` 建 agent 时（CLI 参数让位） |
+| `deny_read_globs` | `tools.ts` 的禁读清单（清空顶层也拦得住） |
+| `permissions` | `tools.ts` 的权限规则解析（改 config 放不开 deny） |
+| `sandbox` / `sandbox_mode` | `config.ts` 的 `resolveSandbox`（改不回 local / danger-full-access） |
+| 其余 `ENFORCEABLE_KEYS` | 只在 `config import` 与展示层生效，运行时暂未消费 |
+
+优先级：**环境变量（排障用）> `config.enforced` > `config.json` 顶层 > 默认值**。
+
+> 为什么写这张表：功能说"锁了"但运行时没读，比没有这个功能更糟——用户以为锁住了。
 `nyra redlines` 会报三种状态：`enforced-empty`（warn，没锁 = 红线靠自觉）、`enforced-active`（ok，列出锁了哪些）、`enforced-rejected`（warn，名单外的键被忽略）。

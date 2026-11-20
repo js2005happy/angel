@@ -7,6 +7,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getCredential } from "./vault.ts";
 
+import { effectiveValue } from "./enforcedConfig.ts";
+
 export const VERSION = "0.5.1";
 
 export interface ProviderPreset {
@@ -461,11 +463,12 @@ export function resolveSandbox(
   timeout?: number | null,
 ): SandboxSettings {
   const cfg = config ?? {};
-  const chosen = backend || envVar("SANDBOX") || (cfg.sandbox as string) || "auto";
+  // config.enforced 优先（锁了沙箱就不能被 config 改成 local）；环境变量仍最高，供排障。
+  const chosen = backend || envVar("SANDBOX") || ((effectiveValue(cfg, "sandbox") as string | undefined)) || "auto";
   if (!(VALID_SANDBOXES as readonly string[]).includes(chosen)) {
     throw new Error(`Invalid sandbox backend: ${chosen}. Valid backends: ${VALID_SANDBOXES.join(", ")}`);
   }
-  const modeRaw = envVar("SANDBOX_MODE") || (cfg.sandbox_mode as string) || "workspace-write";
+  const modeRaw = envVar("SANDBOX_MODE") || ((effectiveValue(cfg, "sandbox_mode") as string | undefined)) || "workspace-write";
   if (!(VALID_SANDBOX_MODES as readonly string[]).includes(modeRaw)) {
     throw new Error(`Invalid sandbox_mode: ${modeRaw}. Valid modes: ${VALID_SANDBOX_MODES.join(", ")}`);
   }

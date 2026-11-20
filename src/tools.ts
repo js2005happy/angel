@@ -25,6 +25,7 @@ import type { ProviderLike } from "./providers.ts";
 import { CDPBrowser } from "./cdpBrowser.ts";
 import { ComputerControl, computerErrorMessage } from "./computer.ts";
 import { runHooks } from "./hooks.ts";
+import { effectiveStringList, effectiveValue } from "./enforcedConfig.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 的两处执行点统一走这里解析后端。
 // 审批仍在 checkApproval，钩子仍在宿主机跑（hooks.ts 不动），沙箱内只跑命令本身。
 import {
@@ -401,8 +402,8 @@ function denyReadGlobsFor(home: string | undefined): string[] {
   let globs: string[] = [];
   try {
     const raw = JSON.parse(readFileSync(join(home, "config.json"), "utf-8")) as Record<string, unknown>;
-    const list = raw.deny_read_globs;
-    if (Array.isArray(list)) globs = list.filter((g): g is string => typeof g === "string" && g.trim().length > 0);
+    // config.enforced 优先：锁了禁读清单就必须按锁定值来（否则"锁了"只是摆设）。
+    globs = effectiveStringList(raw, "deny_read_globs");
   } catch {
     globs = [];
   }
@@ -522,7 +523,8 @@ function permissionRulesFor(home: string | undefined): RuleSet {
   let section: unknown = null;
   try {
     const raw = JSON.parse(readFileSync(join(home, "config.json"), "utf-8")) as Record<string, unknown>;
-    section = raw.permissions ?? null;
+    // config.enforced 优先：锁了权限规则就按锁定值解析（否则改 config 就能放开 deny）。
+    section = effectiveValue(raw, "permissions") ?? null;
   } catch {
     section = null;
   }

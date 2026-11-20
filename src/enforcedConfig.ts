@@ -94,3 +94,24 @@ export function formatEnforced(res: EnforcedResolution, ignored: readonly { key:
   for (const o of ignored) lines.push(`  ⚠️  ${o.key} 的尝试值 ${JSON.stringify(o.attempted)} 被锁定值 ${JSON.stringify(o.locked)} 覆盖`);
   return lines.join("\n");
 }
+
+/**
+ * 取某个键的**生效值**：被锁就用锁定值，否则用配置文件里的值。纯函数。
+ *
+ * 存在的理由：#82 只把 enforced 接进了 CLI 的命令行选项，运行时的几条读取路径
+ * （禁读清单、权限规则、沙箱模式）仍直接读 config.json 顶层——于是"锁了"其实没锁，
+ * 这是把功能做成摆设。凡是要读安全键的地方都应走这里。
+ */
+export function effectiveValue(config: Record<string, unknown> | null | undefined, key: string): unknown {
+  const enforced = resolveEnforced(config).values;
+  if (Object.prototype.hasOwnProperty.call(enforced, key)) return enforced[key];
+  if (!isPlainObject(config)) return undefined;
+  return config[key];
+}
+
+/** 取字符串数组型的生效值（禁读清单等）：只保留非空字符串项。 */
+export function effectiveStringList(config: Record<string, unknown> | null | undefined, key: string): string[] {
+  const v = effectiveValue(config, key);
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+}
