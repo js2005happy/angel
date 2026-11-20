@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，Windows Node claim 失败关闭）
+
+- `scripts/node_tool_claim.ts`：在 Windows 上拒绝创建 claim，避免路径预检无法可靠识别 junction/reparse 时错误承诺可信执行所有权。POSIX 行为未变；仍未接入运行时。仅静态审阅，未运行测试或 CI。
+
 ## 未发布（2026-11-20，Node claim 存储目录预检）
 
 - `scripts/node_tool_claim.ts`：拒绝相对 claim 路径、符号链接/非目录祖先及 POSIX 非当前用户所有或权限过宽的叶目录；不自动修改权限。仅静态审阅，未运行测试或 CI，尚未接入运行时；Windows reparse/路径竞态与跨平台持久化仍待解决。
