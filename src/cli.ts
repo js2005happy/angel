@@ -101,6 +101,7 @@ import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreRe
 import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
+import { handleExport } from "./office.ts";
 import { listPresets } from "./mcpPresets.ts";
 import { buildNotifierFromConfig, handleBot, type BotNotifier } from "./bot/index.ts";
 import {
@@ -155,6 +156,7 @@ nyra connector <status|list|approve|revoke>   连接器授权状态机：每应�
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra peer <status|enable|disable|list|auth|ask|handoff>   对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭，详见 docs/peer.md）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
+nyra export --format docx|xlsx|pptx --from <内容 JSON> --out <路径>   成品导出：结构化内容写成可编辑的真办公文件（详见 docs/office.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
 nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
 nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
@@ -239,6 +241,7 @@ nyra connector <status|list|approve|revoke>   connector auth state machine: appr
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra peer <status|enable|disable|list|auth|ask|handoff>   peer collaboration: ask another Nyra instance, hand off run context (off by default, see docs/peer.md)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
+nyra export --format docx|xlsx|pptx --from <content JSON> --out <path>   export a finished office file from structured content (see docs/office.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
 nyra cost --show               pricing, per-run cap and monthly cap (spent this month)
 nyra verdict [task]            one conclusion: is this run worth it (redlines + savings + recall + history)
@@ -5280,6 +5283,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);
   if (args.subcommand === "peer") return handlePeer(args.subArgs ?? [], home);
   if (args.subcommand === "voice") return handleVoice(args.subArgs ?? [], home);
+  if (args.subcommand === "export") return handleExport(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
   if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
   if (args.subcommand === "market") return handleMarket(args.subArgs ?? [], home);
