@@ -16,6 +16,7 @@ import { buildTimeline, formatTimelineText } from "../../src/timeline.ts";
 import {
   probeMedia, extractAudio, ingestMedia, formatMediaTranscript,
   installYtDlp, resolveMediaConfig, parseVtt, findSha256, handleMedia,
+  ytDlpAssetName,
   type MediaConfig,
 } from "../../src/mediaIngest.ts";
 import {
@@ -135,6 +136,21 @@ function fakeFetchFactory(files: Record<string, Buffer | string>): typeof fetch 
     }
     return fakeResp(typeof body === "string" ? Buffer.from(body, "utf-8") : body);
   }) as unknown as typeof fetch;
+}
+
+/** setup 测试用的假 release：三个平台的二进制 + 三行 SHA2-256SUMS 全给齐，
+ * 否则 Windows/macOS 上 installYtDlp 要的 yt-dlp.exe / yt-dlp_macos 没 mock、
+ * 真请求会 404（Node CI #401 的 5 个失败就是这么来的）。 */
+const SETUP_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26";
+function setupFetch(bin: Buffer, sumsSha: string, withSig = true): typeof fetch {
+  const files: Record<string, Buffer | string> = {
+    [`${SETUP_BASE}/yt-dlp_linux`]: bin,
+    [`${SETUP_BASE}/yt-dlp_macos`]: bin,
+    [`${SETUP_BASE}/yt-dlp.exe`]: bin,
+    [`${SETUP_BASE}/SHA2-256SUMS`]: `${sumsSha}  yt-dlp_linux\n${sumsSha}  yt-dlp_macos\n${sumsSha}  yt-dlp.exe\n`,
+  };
+  if (withSig) files[`${SETUP_BASE}/SHA2-256SUMS.sig`] = "fake-sig";
+  return fakeFetchFactory(files);
 }
 
 // ---- 范围卡 ----
@@ -327,11 +343,7 @@ test("MediaIngestTest.test_setup_sha256_ok_without_gpg", async () => {
   const { home } = setup();
   const bin = Buffer.from("fake-yt-dlp-binary-bytes");
   const sha = createHash("sha256").update(bin).digest("hex");
-  const fetchFn = fakeFetchFactory({
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux": bin,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS": `${sha}  yt-dlp_linux\n`,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS.sig": "fake-sig",
-  });
+  const fetchFn = setupFetch(bin, sha);
   const { run } = makeFakeRunner({ gpgMissing: true });
   const result = await installYtDlp(home, { fetchFn, runCommand: run });
   expect(result.shaVerified).toBe(true);
@@ -345,10 +357,7 @@ test("MediaIngestTest.test_setup_sha256_ok_without_gpg", async () => {
 test("MediaIngestTest.test_setup_sha256_mismatch_refuses", async () => {
   const { home } = setup();
   const bin = Buffer.from("fake-yt-dlp-binary-bytes");
-  const fetchFn = fakeFetchFactory({
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux": bin,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS": `${"0".repeat(64)}  yt-dlp_linux\n`,
-  });
+  const fetchFn = setupFetch(bin, "0".repeat(64), false);
   const { run } = makeFakeRunner();
   await expect(installYtDlp(home, { fetchFn, runCommand: run })).rejects.toThrow(/SHA256 校验失败/);
   expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(false);
@@ -358,11 +367,7 @@ test("MediaIngestTest.test_setup_gpg_verified_when_key_present", async () => {
   const { home } = setup();
   const bin = Buffer.from("fake-yt-dlp-binary-bytes");
   const sha = createHash("sha256").update(bin).digest("hex");
-  const fetchFn = fakeFetchFactory({
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux": bin,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS": `${sha}  yt-dlp_linux\n`,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS.sig": "fake-sig",
-  });
+  const fetchFn = setupFetch(bin, sha);
   const { run } = makeFakeRunner({ gpgVerifyStatus: 0 });
   const result = await installYtDlp(home, { fetchFn, runCommand: run });
   expect(result.gpgVerified).toBe(true);
@@ -373,14 +378,31 @@ test("MediaIngestTest.test_setup_gpg_bad_signature_refuses", async () => {
   const { home } = setup();
   const bin = Buffer.from("fake-yt-dlp-binary-bytes");
   const sha = createHash("sha256").update(bin).digest("hex");
-  const fetchFn = fakeFetchFactory({
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux": bin,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS": `${sha}  yt-dlp_linux\n`,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS.sig": "fake-sig",
-  });
+  const fetchFn = setupFetch(bin, sha);
   const { run } = makeFakeRunner({ gpgVerifyStatus: 1, gpgVerifyStderr: "gpg: BAD signature" });
   await expect(installYtDlp(home, { fetchFn, runCommand: run })).rejects.toThrow(/GPG 签名校验失败/);
   expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(false);
+});
+
+test("MediaIngestTest.test_setup_asset_name_per_platform", () => {
+  expect(ytDlpAssetName("win32")).toBe("yt-dlp.exe");
+  expect(ytDlpAssetName("darwin")).toBe("yt-dlp_macos");
+  expect(ytDlpAssetName("linux")).toBe("yt-dlp_linux");
+});
+
+test("MediaIngestTest.test_setup_win32_and_darwin_assets", async () => {
+  const { home } = setup();
+  const bin = Buffer.from("fake-yt-dlp-binary-bytes");
+  const sha = createHash("sha256").update(bin).digest("hex");
+  const fetchFn = setupFetch(bin, sha);
+  const { run } = makeFakeRunner({ gpgMissing: true });
+  for (const platform of ["win32", "darwin"]) {
+    const result = await installYtDlp(home, { fetchFn, runCommand: run, platform });
+    expect(result.shaVerified).toBe(true);
+    expect(existsSync(result.path)).toBe(true);
+  }
+  expect(existsSync(join(home, "bin", "yt-dlp.exe"))).toBe(true);
+  expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(true);
 });
 
 test("MediaIngestTest.test_find_sha256_parses_sums", () => {
@@ -549,11 +571,7 @@ test("MediaIngestTest.test_cli_setup_end_to_end", async () => {
   const { home, workdir } = setup();
   const bin = Buffer.from("fake-yt-dlp-binary-bytes");
   const sha = createHash("sha256").update(bin).digest("hex");
-  const fetchFn = fakeFetchFactory({
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp_linux": bin,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS": `${sha}  yt-dlp_linux\n`,
-    "https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/SHA2-256SUMS.sig": "fake-sig",
-  });
+  const fetchFn = setupFetch(bin, sha);
   const { run } = makeFakeRunner({ gpgMissing: true });
   expect(await handleMedia(["setup"], home, workdir, { fetchFn, runCommand: run })).toBe(0);
   expect(existsSync(join(home, "bin", "yt-dlp"))).toBe(true);
