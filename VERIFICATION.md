@@ -1,3 +1,9 @@
+## 2026-11-20 — Node operation claim 原语（仅静态审阅）
+
+- 读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python Agent/ToolJournal/审计脚本，以及 main 的 package.json、src/agent.ts、src/tools.ts；检查最近提交、开放 Issues/PR、上一提交状态（statuses 为空，不等于 CI 通过）。
+- 新增 `scripts/node_tool_claim.ts`：只依赖 Node 内置模块，O_EXCL 排他文件、写入 fsync、目录 fsync；失败不删除 claim，结果始终 unknown，禁止自动重放。**尚未接入真实工具执行入口**。
+- **未运行 TypeScript 编译、测试、脚本、CI 或跨平台实测**。目录与文件名之间存在 TOCTOU，可信目录/祖先路径未绑定，目录 fsync 的 Windows 兼容性未验证，无法宣称跨进程 exactly-once 或生产安全。
+
 ## 2026-11-20 — 静态审计 v6（未运行）
 
 - 静态审阅：同一路径只调用一次 _source；文件状态、文本匹配行号和 source_sha256 来自同一份有界内存快照；JSON 协议 v6。
