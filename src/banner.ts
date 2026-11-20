@@ -1,6 +1,5 @@
 // src/banner.ts — 交互终端外观 v2（品牌化）：
-//   1. 欢迎屏：左边是 Nyra 标志（圆盘 + 光标，18 列 × 9 行，见 termMark.ts：能显示内联图片的终端
-//      画标志图片本身，其余用半块字符拼），
+//   1. 欢迎屏：左边是用半块字符拼的 Nyra 标志（圆盘 + 光标，18 列 × 9 行，见 termMark.ts），
 //      右边 "Nyra 版本" + 一句话介绍；下面一张圆角信息卡（模型 / 模式徽章 / 目录 / git 分支），
 //      再一行 Tips；窄于 MARK_MIN_COLS 列退回单行 "✻ Nyra"。
 //   2. 工作区信任：简短的框式确认。
@@ -120,9 +119,8 @@ export function gitBranch(cwd: string): string | null {
 export const MARK_MIN_COLS = 40;
 /** 标志右侧文字所在的行（标题与介绍夹住圆心所在的行）。 */
 const MARK_TITLE_ROW = Math.floor(TERM_MARK_ROWS / 2) - 1;
-/** 欢迎屏里标志左上角所在的行（renderHeader 返回的行号，从 0 起）与列（从 0 起）。 */
-export const MARK_TOP_LINE = 1;
-export const MARK_LEFT_COL = 1;
+/** 欢迎屏里标志左边留的空格列数。 */
+const MARK_LEFT_COL = 1;
 
 /** 模式徽章的底色：readonly 绿 / auto 蓝紫 / full 红 / creator 珊瑚。 */
 export function modeColor(mode: string): string {
@@ -178,7 +176,7 @@ export interface HeaderInfo {
 export const DEFAULT_TAGLINE = "跑在你电脑上的开源 AI Agent";
 
 /** 欢迎屏这次会不会画标志（否则是单行 "✻ Nyra"）。 */
-export function headerShowsMark(opts: { width: number; unicode?: boolean; compact?: boolean }): boolean {
+function headerShowsMark(opts: { width: number; unicode?: boolean; compact?: boolean }): boolean {
   return (opts.unicode ?? true) && !opts.compact && Math.max(1, opts.width) >= MARK_MIN_COLS;
 }
 
@@ -186,10 +184,7 @@ export function headerShowsMark(opts: { width: number; unicode?: boolean; compac
  * 欢迎屏：宽屏（≥ MARK_MIN_COLS 列且能画框线）是半块字符标志 + "Nyra 版本" + 介绍 + 信息卡；
  * 窄屏、ASCII 回退或 compact（非 TTY）是单行 "✻ Nyra <版本>" + 信息卡。
  */
-export function renderHeader(
-  info: HeaderInfo,
-  opts: RenderOpts & { home?: string; compact?: boolean; light?: boolean; /** 标志位置留空，由调用方随后画内联图片。 */ markImage?: boolean },
-): string[] {
+export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: string; compact?: boolean; light?: boolean }): string[] {
   const level = levelOf(opts);
   const unicode = opts.unicode ?? true;
   const g = glyphsFor(unicode);
@@ -200,9 +195,7 @@ export function renderHeader(
   out.push(""); // 与上方（信任确认或命令行）隔开一行
   if (headerShowsMark({ width: cols, unicode, compact: opts.compact })) {
     // 标志在左，"Nyra 版本" 与一句话介绍在右侧、对齐圆心；介绍放不下时截断。
-    const mark = opts.markImage
-      ? Array.from({ length: TERM_MARK_ROWS }, () => " ".repeat(TERM_MARK_COLS))
-      : renderTermMark({ level, light: opts.light });
+    const mark = renderTermMark({ level, light: opts.light });
     const textCol = MARK_LEFT_COL + TERM_MARK_COLS + 3;
     const room = Math.max(1, cols - textCol - 1);
     const title = truncateWidth(`Nyra ${version}`, room, g.ellipsis);

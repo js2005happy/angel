@@ -1,14 +1,12 @@
 // src/termMark.ts — 终端欢迎屏上的 Nyra 标志（圆盘 + 光标）。
 //
-// 能显示内联图片的终端（kitty 图形协议：kitty / Ghostty；iTerm2 内联图片：iTerm2 / WezTerm）直接画
-// 标志图片本身（与 App 图标同一份 brandMark 几何，预先生成的 256px PNG，见 termMarkImage.ts），
-// 占 18 列 × 9 行；其余终端用半块字符 ▀▄█ 拼。
+// 所有终端都用半块字符 ▀▄█ 拼（像素风，不画内联图片）。
 //
 // 半块字符画：几何来自 src/brandMark.ts（圆盘 r=40、光标绕圆心 -6°、光标四周 3 个单位的镂空），
 // 光栅化成 18×18 的覆盖率网格（每格 0–f 共 16 级），一个字符格上下各放一个像素
 // （终端字符格高 ≈ 宽 × 2，所以像素是方的、圆盘是圆的），画成 18 列 × 9 行。
-// 网格与 PNG 都预先算好写成常量（启动时不光栅化、不加载 brandMark / zlib）；
-// 改了几何跑 bun scripts/make-term-mark.ts，tests/node/test-term-mark.test.ts 会核对常量与 brandMark 一致。
+// 网格预先算好写成常量（启动时不光栅化、不加载 brandMark）；
+// 改了几何，tests/node/test-term-mark.test.ts 会失败并打印新常量，贴回这里即可。
 //
 // 字符画的三种画法：
 // - color（深色终端、256 色或 truecolor）：每个像素按覆盖率在“假定深底”与浅色圆盘 #F5F5F7 之间
@@ -18,7 +16,6 @@
 //   浅色终端上自然是深色圆盘 + 浅色镂空光标（= 浅色版标志），NO_COLOR 的深色终端上是浅色圆盘。
 // - 不能画块字符（老 conhost 等）或终端太窄：不调用这里，欢迎屏退回单行 "✻ Nyra"/"* Nyra"。
 import { fgCode, bgCode, mix, type ColorLevel } from "./theme.ts";
-import { TERM_MARK_PNG_DARK, TERM_MARK_PNG_LIGHT } from "./termMarkImage.ts";
 
 type Env = Record<string, string | undefined>;
 
@@ -28,7 +25,7 @@ export const TERM_MARK_COLS = TERM_MARK_PX;
 export const TERM_MARK_ROWS = TERM_MARK_PX / 2;
 
 /**
- * 预先算好的覆盖率（每行 14 个十六进制数字，0 = 空、f = 全满）：
+ * 预先算好的覆盖率（每行 18 个十六进制数字，0 = 空、f = 全满）：
  * rasterizeMark(18, { disc, bg: null, discFraction: 1, stroke: MARK_STROKE })
  * 的 alpha，量化到 16 级。
  */
@@ -127,58 +124,4 @@ export function renderTermMark(opts: { level: ColorLevel; light?: boolean }): st
     lines.push(line);
   }
   return lines;
-}
-
-// ------------------------------------------------------------ 内联图片 ---
-
-export type TermImageProtocol = "kitty" | "iterm";
-
-/**
- * 终端能不能（以及用哪种协议）显示内联图片。只看环境变量，不向终端发查询（不阻塞启动、不往输入里留回应）：
- * - NYRA_IMAGES=0/off/no/none 关掉；NYRA_IMAGES=kitty/iterm 强制某种协议（仍要求是 TTY、不在 tmux/screen 里）。
- * - 非 TTY、tmux / screen（它们不转发图片序列）、TERM=dumb：不画。
- * - kitty 图形协议：kitty（TERM=xterm-kitty / KITTY_WINDOW_ID）、Ghostty（TERM_PROGRAM=ghostty / TERM=xterm-ghostty）。
- * - iTerm2 内联图片：iTerm2（TERM_PROGRAM=iTerm.app，或 ssh 过去后的 LC_TERMINAL=iTerm2）、WezTerm（TERM_PROGRAM=WezTerm）。
- * - sixel 不画：没有可靠的环境变量能判断，探测要发 DA1 查询并等回应。
- */
-export function termImageProtocol(env: Env = process.env, tty = true): TermImageProtocol | null {
-  const force = (env.NYRA_IMAGES ?? "").trim().toLowerCase();
-  if (["0", "off", "no", "none", "false"].includes(force)) return null;
-  if (!tty) return null;
-  const term = (env.TERM ?? "").toLowerCase();
-  if (env.TMUX || env.STY || term.startsWith("screen") || term.startsWith("tmux") || term === "dumb") return null;
-  if (force === "kitty" || force === "iterm") return force;
-  const prog = (env.TERM_PROGRAM ?? "").toLowerCase();
-  if (term === "xterm-kitty" || env.KITTY_WINDOW_ID) return "kitty";
-  if (prog === "ghostty" || term === "xterm-ghostty") return "kitty";
-  if (prog === "iterm.app" || prog === "wezterm" || (env.LC_TERMINAL ?? "") === "iTerm2") return "iterm";
-  return null;
-}
-
-/** 把标志图片画在光标处（图片宽 TERM_MARK_COLS 列，高按图片比例，约 TERM_MARK_ROWS 行）的转义序列。 */
-export function termMarkImageSequence(protocol: TermImageProtocol, light = false): string {
-  const b64 = light ? TERM_MARK_PNG_LIGHT : TERM_MARK_PNG_DARK;
-  if (protocol === "iterm") {
-    const bytes = Math.floor((b64.length * 3) / 4) - (b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0);
-    return `\x1b]1337;File=inline=1;size=${bytes};width=${TERM_MARK_COLS};height=auto;preserveAspectRatio=1:${b64}\x07`;
-  }
-  // kitty：f=100 PNG、a=T 传完即显示、c=列数（行数按比例）、C=1 不移动光标、q=2 不回任何应答（不往输入里留字）；
-  // base64 按 4096 字节分块。
-  const chunks: string[] = [];
-  for (let i = 0; i < b64.length; i += 4096) chunks.push(b64.slice(i, i + 4096));
-  return chunks.map((c, i) => {
-    const more = i < chunks.length - 1 ? 1 : 0;
-    const keys = i === 0 ? `a=T,f=100,c=${TERM_MARK_COLS},C=1,q=2,m=${more}` : `m=${more}`;
-    return `\x1b_G${keys};${c}\x1b\\`;
-  }).join("");
-}
-
-/**
- * 欢迎屏已经整段输出（标志位置留空）之后，把图片画回标志的位置：保存光标 → 上移 linesUp 行、
- * 到第 col 列（从 0 起）→ 画图 → 恢复光标。图片只落在已经输出过的行里，不会让屏幕滚动。
- */
-export function termMarkImageOverlay(protocol: TermImageProtocol, opts: { linesUp: number; col: number; light?: boolean }): string {
-  const up = opts.linesUp > 0 ? `\x1b[${opts.linesUp}A` : "";
-  const right = opts.col > 0 ? `\x1b[${opts.col}C` : "";
-  return `\x1b7${up}\r${right}${termMarkImageSequence(protocol, opts.light)}\x1b8`;
 }

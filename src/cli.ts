@@ -47,9 +47,9 @@ import { loadSession, listSessions, saveSession, newSessionId } from "./memory.t
 import { loadSkills, canonicalSkillDirs } from "./skills.ts";
 import {
   renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing, renderTips, renderEcho,
-  renderReply, renderOk, renderError, gitBranch, stripAnsi, headerShowsMark, MARK_TOP_LINE, MARK_LEFT_COL,
+  renderReply, renderOk, renderError, gitBranch, stripAnsi,
 } from "./banner.ts";
-import { isLightTerminal, termImageProtocol, termMarkImageOverlay } from "./termMark.ts";
+import { isLightTerminal } from "./termMark.ts";
 import { detectColorLevel, type ColorLevel } from "./theme.ts";
 import {
   PetController, PET_WIDTH, petVisible, petEnabledFromConfig, parsePetCommand, renderPet, renderBubble, petFace,
@@ -3265,21 +3265,10 @@ async function runRepl(args: CliArgs): Promise<number> {
   const branch = gitBranch(workdir);
   let petOn = petEnabledFromConfig(built.config);
   const showPet = (): boolean => framed() && petVisible({ enabled: petOn, tty: isTty, cols: termCols(), unicode: uiUnicode });
-  {
-    // 能显示内联图片的终端（kitty / Ghostty / iTerm2 / WezTerm，不在 tmux 里）画标志图片本身：
-    // 先把欢迎屏整段输出（标志位置留空），再回到那里画图；屏幕不够高（标志顶上那行已滚出去）就用字符画。
-    const headerInfo = { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir, branch };
-    const light = isLightTerminal();
-    const headerOpts = { width: termCols(), ...ui, compact: !framed(), light };
-    const markImg = framed() && uiLevel >= 2 && headerShowsMark(headerOpts) ? termImageProtocol(process.env, isTty) : null;
-    let header = renderHeader(headerInfo, { ...headerOpts, markImage: Boolean(markImg) });
-    const imgOk = Boolean(markImg) && (process.stdout.rows ?? 0) > header.length;
-    if (markImg && !imgOk) header = renderHeader(headerInfo, headerOpts);
-    process.stdout.write(header.join("\n") + "\n");
-    if (markImg && imgOk) {
-      process.stdout.write(termMarkImageOverlay(markImg, { linesUp: header.length - MARK_TOP_LINE, col: MARK_LEFT_COL, light }));
-    }
-  }
+  process.stdout.write(renderHeader(
+      { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir, branch },
+      { width: termCols(), ...ui, compact: !framed(), light: isLightTerminal() },
+    ).join("\n") + "\n");
   process.stdout.write((framed()
       ? renderTips({ width: termCols(), ...ui, pet: showPet() })
       : t("tips.plain")) + "\n");
