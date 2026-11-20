@@ -62,22 +62,28 @@ export function claimOperation(directory: string, operationId: string): Operatio
   const path = join(directory, filename);
   // Bind the directory identity before creation, not only after writing.
   // This detects some replacements but is NOT an openat-style guarantee.
+  // Linux procfs exposes a stable descriptor-relative path. Keep the directory
+  // fd open through O_EXCL creation so a renamed ancestor cannot redirect it.
+  // This is Linux-only; do not silently fall back to a racy pathname on other OSes.
+  if (process.platform !== "linux") throw new ClaimUnavailable();
   let before;
+  let fd: number;
+  let directoryFd: number;
   try {
-    const dirfd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
-      before = fstatSync(dirfd);
+      before = fstatSync(directoryFd);
       const named = lstatSync(directory);
       if (!before.isDirectory() || !named.isDirectory() || named.isSymbolicLink() ||
           before.dev !== named.dev || before.ino !== named.ino ||
           before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0) throw new ClaimUnavailable();
-    } finally { closeSync(dirfd); }
+      // /proc/self/fd/N is resolved by the kernel against the open directory,
+      // not by traversing the original directory pathname again.
+      fd = openSync(`/proc/self/fd/${directoryFd}/${filename}`,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    } finally { closeSync(directoryFd); }
   } catch { throw new ClaimUnavailable(); }
   let claimFileIdentity: { dev: number; ino: number; size: number } | undefined;
-  let fd: number;
-  try {
-    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
-  } catch { throw new ClaimUnavailable(); }
   try {
     const body = JSON.stringify({ version: 1, operationId, claimId, state: "unknown" }) + "\n";
     const data = Buffer.from(body, "utf8");
