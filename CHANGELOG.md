@@ -1,3 +1,8 @@
+## 未发布（2026-11-20，Node 派发与持久化静态锚点 v3）
+
+- 扩充只读标准库审计脚本：纳入 Node gateway/memory，定位会话及调度 Agent 入口、工具结果消息追加和 saveSession 的源码行号锚点，JSON schema 升至 v3。
+- 更新 ROADMAP 和 VERIFICATION；未执行脚本或测试，不能把文本命中当作跨进程锁、崩溃恢复或工具副作用安全保证。
+
 ## 未发布（2026-11-20，静态审计证据 v2）
 
 - `scripts/audit_runtime_boundary.py` 输出源码引用行号和读取状态，限制单文件大小；不可读、符号链接、超限不再被误报为缺失。JSON schema 升至 v2；不运行目标代码，不增加依赖。
