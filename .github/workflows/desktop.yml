@@ -1,4 +1,4 @@
-# Build the Nyra desktop app (Tauri shell in desktop/) for macOS and Windows.
+# Build the Nyra desktop app (Tauri shell in desktop/) for macOS, Windows and Linux.
 #
 # Runs only by hand (Actions → "Build desktop app" → Run workflow) or when a
 # version tag (v*) is pushed, so it never slows down normal pushes / PRs.
@@ -19,9 +19,12 @@
 # and is not notarized; Windows .msi/.exe are unsigned. A half-configured
 # secret set fails the build loudly instead of silently shipping unsigned.
 #
-# The app does not bundle a runtime: it starts the installed `nyra` binary
-# (`nyra ui --host 127.0.0.1 --port 0 --print-url-json`) and shows a guide
-# page if none is found.
+# 0.5.3 起安装包自带同版本的 nyra 命令行（Tauri sidecar，bundle.externalBin =
+# binaries/nyra-cli）：每个平台先用 Bun 从同一提交编出 CLI，放到
+# desktop/src-tauri/binaries/nyra-cli-<target triple>[.exe]（macOS 通用包另用
+# lipo 合成 nyra-cli-universal-apple-darwin），再 `tauri build`。桌面外壳按
+# NYRA_BIN → 自带 CLI → PATH 上的 nyra → 安装目录 的顺序找 CLI，找到的版本与
+# 桌面版本不一致时改用自带的（`nyra ui --host 127.0.0.1 --port 0 --print-url-json`）。
 
 name: Build desktop app
 
@@ -78,6 +81,15 @@ jobs:
             files: |
               desktop/src-tauri/target/release/bundle/msi/*.msi
               desktop/src-tauri/target/release/bundle/nsis/*.exe
+          - name: Linux (x64)
+            os: ubuntu-22.04
+            rust_targets: x86_64-unknown-linux-gnu
+            tauri_args: --bundles appimage,deb
+            bundle_dir: desktop/src-tauri/target/release/bundle
+            artifact: Nyra-linux-x64
+            files: |
+              desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+              desktop/src-tauri/target/release/bundle/deb/*.deb
     defaults:
       run:
         shell: bash
@@ -105,6 +117,57 @@ jobs:
           if [ "$pkg" != "$conf" ] || [ "$pkg" != "$cargo" ] || [ "$pkg" != "$desk" ]; then
             echo "::error::desktop version must match package.json ($pkg)"; exit 1
           fi
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      # 自带 CLI（sidecar）：同一提交编出的 nyra，文件名带 target triple，
+      # 放在 tauri.conf.json 的 externalBin 期望的位置。必须在 Rust 单元测试
+      # 之前：tauri-build 编译时就检查 sidecar 文件是否存在。
+      - name: Build bundled nyra CLI (sidecar)
+        run: |
+          set -euo pipefail
+          BIN=desktop/src-tauri/binaries
+          mkdir -p "$BIN"
+          want=$(node -p "require('./package.json').version")
+          case "$RUNNER_OS" in
+            macOS)
+              bash scripts/build-binaries.sh --out-dir dist-cli --only macos-arm64
+              bash scripts/build-binaries.sh --out-dir dist-cli --only macos-x64
+              cp dist-cli/nyra-macos-arm64 "$BIN/nyra-cli-aarch64-apple-darwin"
+              cp dist-cli/nyra-macos-x64 "$BIN/nyra-cli-x86_64-apple-darwin"
+              lipo -create -output "$BIN/nyra-cli-universal-apple-darwin" dist-cli/nyra-macos-arm64 dist-cli/nyra-macos-x64
+              host="$BIN/nyra-cli-$(rustc -vV 2>/dev/null | sed -n 's/^host: //p' || true)"
+              [ -f "$host" ] || host="$BIN/nyra-cli-universal-apple-darwin"
+              ;;
+            Windows)
+              bash scripts/build-binaries.sh --out-dir dist-cli --only windows-x64
+              cp dist-cli/nyra-windows-x64.exe "$BIN/nyra-cli-x86_64-pc-windows-msvc.exe"
+              host="$BIN/nyra-cli-x86_64-pc-windows-msvc.exe"
+              ;;
+            Linux)
+              bash scripts/build-binaries.sh --out-dir dist-cli --only linux-x64
+              cp dist-cli/nyra-linux-x64 "$BIN/nyra-cli-x86_64-unknown-linux-gnu"
+              host="$BIN/nyra-cli-x86_64-unknown-linux-gnu"
+              ;;
+          esac
+          chmod +x "$BIN"/nyra-cli-* || true
+          ls -l "$BIN"
+          export NYRA_HOME="$RUNNER_TEMP/.nyra-sidecar-check"
+          got=$("$host" --version)
+          echo "sidecar: $got"
+          case "$got" in
+            *"$want"*"node runtime"*) ;;
+            *) echo "::error::bundled CLI reports '$got', expected $want (node runtime)"; exit 1 ;;
+          esac
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -202,6 +265,8 @@ jobs:
         run: |
           # signing-config.json 只有上面导入证书的步骤成功时才存在；
           # 不存在时走原来的无签名构建，行为与以前完全一致。
+          # Linux AppImage：不让 linuxdeploy strip（Bun 编出的单文件 CLI 不能被 strip）。
+          export NO_STRIP=true
           if [ -f signing-config.json ]; then
             echo "Signing enabled: building with signing-config.json"
             npx tauri build ${{ matrix.tauri_args }} --config signing-config.json
@@ -256,3 +321,5 @@ jobs:
             dist/**/*.dmg
             dist/**/*.msi
             dist/**/*.exe
+            dist/**/*.AppImage
+            dist/**/*.deb

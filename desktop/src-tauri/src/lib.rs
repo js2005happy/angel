@@ -1,7 +1,8 @@
 //! Nyra desktop shell.
 //!
 //! A native window (system WebView via Tauri) around the local Nyra web UI.
-//! On start it finds the Nyra single-file binary (Node runtime), starts
+//! On start it finds the Nyra single-file binary (Node runtime; the
+//! installer ships a matching one as a sidecar, see `bundled_binary`), starts
 //! `nyra ui --host 127.0.0.1 --port 0 --print-url-json --exit-on-stdin-close`
 //! in the background, reads the one JSON line it prints (address + random
 //! token) and points the window at it. Closing the app closes the child's
@@ -277,30 +278,58 @@ fn launcher_command(l: &Launcher, env: &HashMap<String, String>) -> Command {
 
 // ---------------------------------------------------------------- discovery
 
-// ---------------------------------------------------------------- discovery
+/// The desktop app's own version (same as tauri.conf.json / package.json).
+const DESKTOP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The CLI shipped inside the installer as a Tauri sidecar
+/// (`bundle.externalBin = ["binaries/nyra-cli"]`). Tauri puts it next to the
+/// app executable with the target-triple suffix stripped:
+/// `Nyra.app/Contents/MacOS/nyra-cli`, `<install dir>\nyra-cli.exe`,
+/// `/usr/bin/nyra-cli` (deb) or `usr/bin/nyra-cli` inside the AppImage.
+/// Named `nyra-cli`, not `nyra`: macOS and Windows file systems are case
+/// insensitive, and `nyra` would collide with the app executable `Nyra`.
+fn bundled_binary() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) { "nyra-cli.exe" } else { "nyra-cli" };
+    let p = dir.join(name);
+    // Never pick the shell itself (the app executable is `nyra-desktop` /
+    // `Nyra`, but guard against a same-named file anyway).
+    (p.is_file() && p != exe).then_some(p)
+}
+
+/// One place the Node single-file binary can come from.
+#[derive(Clone, Debug, PartialEq)]
+struct Candidate {
+    path: PathBuf,
+    bundled: bool,
+}
 
 /// Where the Node single-file binary can come from, in order:
-/// `NYRA_BIN` (explicit override), `nyra` on PATH, then the install
-/// scripts' locations (~/.local/share/nyra/nyra, ~/.local/bin/nyra,
-/// ~/nyra/nyra[.exe] on Windows).
-fn nyra_binary_candidates(env: &HashMap<String, String>) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    let mut add = |p: PathBuf| {
-        if !out.contains(&p) {
-            out.push(p);
+/// `NYRA_BIN` (explicit override), the CLI bundled in the installer
+/// (sidecar), `nyra` on PATH, then the install scripts' locations
+/// (~/.local/share/nyra/nyra, ~/.local/bin/nyra, ~/nyra/nyra[.exe]).
+fn nyra_binary_candidates(env: &HashMap<String, String>, bundled: Option<PathBuf>) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    let mut add = |p: PathBuf, bundled: bool| {
+        if !out.iter().any(|c| c.path == p) {
+            out.push(Candidate { path: p, bundled });
         }
     };
     if let Some(p) = env.get("NYRA_BIN").filter(|s| !s.is_empty()) {
-        add(PathBuf::from(p));
+        add(PathBuf::from(p), false);
+    }
+    if let Some(p) = bundled {
+        add(p, true);
     }
     if let Some(p) = find_on_path("nyra", env) {
-        add(p);
+        add(p, false);
     }
     if let Some(home) = home_dir() {
         let exe = if cfg!(windows) { "nyra.exe" } else { "nyra" };
-        add(home.join(".local").join("share").join("nyra").join(exe));
-        add(home.join(".local").join("bin").join(exe));
-        add(home.join("nyra").join(exe));
+        add(home.join(".local").join("share").join("nyra").join(exe), false);
+        add(home.join(".local").join("bin").join(exe), false);
+        add(home.join("nyra").join(exe), false);
     }
     out
 }
@@ -310,6 +339,27 @@ fn nyra_binary_candidates(env: &HashMap<String, String>) -> Vec<PathBuf> {
 /// launcher, an unrelated `nyra`) is not usable here.
 fn is_node_version_output(output: &str) -> bool {
     output.contains("node runtime")
+}
+
+/// The version number in a `--version` line such as
+/// "nyra 0.5.3 (node runtime)": the first word that starts with a digit,
+/// with a leading `v` tolerated.
+fn version_from_output(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .map(|w| w.trim_start_matches('v').trim_end_matches(|c: char| c == ',' || c == ')'))
+        .find(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .map(|w| w.to_string())
+}
+
+/// Should a found CLI be swapped for the bundled one? Only when the found
+/// one is not the bundled CLI, its version differs from the desktop app's
+/// (an old CLI would serve an old UI), and the bundled CLI actually runs.
+fn prefer_bundled(found_version: &str, found_is_bundled: bool, bundled_ok: bool) -> bool {
+    if found_is_bundled || !bundled_ok {
+        return false;
+    }
+    version_from_output(found_version).as_deref() != Some(DESKTOP_VERSION)
 }
 
 /// Run `<program> --version`; return the first line when it is the Node
@@ -326,25 +376,45 @@ fn probe_node_binary(program: &Path, env: &HashMap<String, String>) -> Option<St
     Some(out.lines().next().unwrap_or("").trim().to_string())
 }
 
+fn found(program: &Path, version: &str) -> Discovery {
+    Discovery::Found(Launcher {
+        program: program.to_path_buf(),
+        prefix: vec![],
+        label: format!("{} ({})", program.display(), version),
+    })
+}
+
 fn discover(env: &HashMap<String, String>) -> Discovery {
     let mut tried = Vec::new();
     // Overall budget: each probe is capped at 15 s, but with several
     // candidates the total could otherwise stretch while the window sits
     // on "starting".
     let probe_deadline = Instant::now() + Duration::from_secs(90);
-    for program in nyra_binary_candidates(env) {
+    let candidates = nyra_binary_candidates(env, bundled_binary());
+    let bundled = candidates.iter().find(|c| c.bundled).cloned();
+    let mut bundled_probe: Option<Option<String>> = None;
+    for c in &candidates {
         if Instant::now() >= probe_deadline {
             break;
         }
-        match probe_node_binary(&program, env) {
+        let probe = if c.bundled {
+            bundled_probe.get_or_insert_with(|| probe_node_binary(&c.path, env)).clone()
+        } else {
+            probe_node_binary(&c.path, env)
+        };
+        match probe {
             Some(version) => {
-                return Discovery::Found(Launcher {
-                    program: program.clone(),
-                    prefix: vec![],
-                    label: format!("{} ({})", program.display(), version),
-                });
+                if let Some(b) = bundled.as_ref().filter(|_| !c.bundled) {
+                    let b_version = bundled_probe
+                        .get_or_insert_with(|| probe_node_binary(&b.path, env))
+                        .clone();
+                    if prefer_bundled(&version, false, b_version.is_some()) {
+                        return found(&b.path, b_version.as_deref().unwrap_or(""));
+                    }
+                }
+                return found(&c.path, &version);
             }
-            None => tried.push(program.display().to_string()),
+            None => tried.push(c.path.display().to_string()),
         }
     }
     Discovery::NoBinary { tried }
@@ -706,5 +776,48 @@ mod tests {
         assert!(is_node_version_output("nyra 0.3.0 (node runtime, phase 1 preview)"));
         assert!(!is_node_version_output("Nyra 0.3.0"));
         assert!(!is_node_version_output(""));
+    }
+
+    #[test]
+    fn version_parsing() {
+        assert_eq!(version_from_output("nyra 0.5.3 (node runtime)").as_deref(), Some("0.5.3"));
+        assert_eq!(version_from_output("nyra v0.5.1 (node runtime, phase 1 preview)").as_deref(), Some("0.5.1"));
+        assert_eq!(version_from_output("nyra (node runtime)"), None);
+    }
+
+    #[test]
+    fn bundled_cli_wins_on_version_mismatch() {
+        let old = "nyra 0.5.1 (node runtime)";
+        let same = format!("nyra {DESKTOP_VERSION} (node runtime)");
+        // An older CLI on PATH / NYRA_BIN is swapped for the bundled one.
+        assert!(prefer_bundled(old, false, true));
+        // Same version: keep what was found.
+        assert!(!prefer_bundled(&same, false, true));
+        // No working bundled CLI: keep what was found, even if old.
+        assert!(!prefer_bundled(old, false, false));
+        // The found one already is the bundled CLI.
+        assert!(!prefer_bundled(old, true, true));
+        // Unparseable version counts as a mismatch.
+        assert!(prefer_bundled("nyra (node runtime)", false, true));
+    }
+
+    #[test]
+    fn candidate_order_puts_bundled_after_nyra_bin() {
+        let mut env = HashMap::new();
+        env.insert("NYRA_BIN".to_string(), "/opt/custom/nyra".to_string());
+        env.insert("PATH".to_string(), String::new());
+        let bundled = PathBuf::from("/Applications/Nyra.app/Contents/MacOS/nyra-cli");
+        let c = nyra_binary_candidates(&env, Some(bundled.clone()));
+        assert_eq!(c[0], Candidate { path: PathBuf::from("/opt/custom/nyra"), bundled: false });
+        assert_eq!(c[1], Candidate { path: bundled.clone(), bundled: true });
+        assert_eq!(c.iter().filter(|x| x.bundled).count(), 1);
+        // Without NYRA_BIN the bundled CLI comes first.
+        env.remove("NYRA_BIN");
+        let c = nyra_binary_candidates(&env, Some(bundled.clone()));
+        assert_eq!(c[0].path, bundled);
+        assert!(c[0].bundled);
+        // No bundled CLI (dev build): nothing is marked bundled.
+        let c = nyra_binary_candidates(&env, None);
+        assert!(c.iter().all(|x| !x.bundled));
     }
 }

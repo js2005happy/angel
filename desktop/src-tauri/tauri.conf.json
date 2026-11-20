@@ -18,7 +18,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Nyra",
-    "longDescription": "Nyra desktop app: a native window for the local Nyra web UI.",
+    "longDescription": "Nyra desktop app: a native window for the local Nyra web UI. Ships the matching nyra command-line binary.",
     "copyright": "Nyra",
     "icon": [
       "icons/32x32.png",
@@ -36,6 +36,9 @@
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico"
       }
-    }
+    },
+    "externalBin": [
+      "binaries/nyra-cli"
+    ]
   }
 }
