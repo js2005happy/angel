@@ -17,6 +17,28 @@
   `memory_append` 写入时把当前会话 id 记成新行的来源会话；
   手工写 / 旧行 / 导入的行的来源会话为 null。
 
+## 记忆三分法（G-1）：session / state / long-term 各管什么
+
+Google 的 harness 把记忆拆成三层（对话记录 / 草稿纸 / 长期偏好），
+Nyra 的三层存储正好对得上，写清分工、不要混用：
+
+| 层 | 是什么 | Nyra 里对应什么 | 生命周期 |
+| --- | --- | --- | --- |
+| session（对话记录） | 昨天聊了什么：逐条消息原文 | `~/.nyra/sessions/<会话 id>.jsonl`（会话 transcript）；运行事件 `runs/<运行 ID>/events.jsonl`（这次运行发生了什么） | 会话在就留着；接着聊靠它续上 |
+| state（草稿纸） | 现在做到哪了：程序直接读的字段 | `runs/<运行 ID>/state.json`（任务、状态、用量摘要、轮次）；会话压缩后重读的也是这一层 | 运行期草稿；运行结束即定格，留作证据，不当长期记忆读 |
+| long-term（偏好与知识） | 下次还记得什么：事实、偏好、不变量 | `MEMORY.md`（事实，一行一条）+ `~/.nyra/knowledge/`（知识库，BM25 检索）+ 技能（缺口 11 自沉淀）+ Soul Tenets（缺口 28：不变量与偏好） | 跨会话持久；写入要过 `memory_append`（索引同步）或技能沉淀 |
+
+三条边界：
+
+- session 不自动进长期记忆——只有 `memory_append` 显式写的才进
+  MEMORY.md，对话记录本身不倒进长期记忆。
+- state 不当长期记忆读——`state.json` 是运行的快照，查“上次同类任务
+  的结论”走 `runRecall`（缺口 1 一节已述），不要直接读 state.json
+  当事实。
+- long-term 的三样（事实 / 知识 / 偏好）分开存、分开检索：事实走
+  BM25（本页），知识走知识库（`src/knowledge.ts`），偏好与不变量走
+  Soul（`docs/soul.md`）；检索时各查各的，不混成一锅。
+
 ## 作用域（owner）
 
 记忆文件本身定 owner：全局 `MEMORY.md` 是 `global`，群机器人
