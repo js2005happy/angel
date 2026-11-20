@@ -99,7 +99,7 @@ export const HIGH_PRIVILEGE_TOOLS = new Set([
   "computer_screenshot", "computer_click", "computer_type", "computer_key", "computer_windows",
 ]);
 
-const KNOWN_TOOLS = new Set(
+export const KNOWN_TOOLS = new Set(
   TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string),
 );
 

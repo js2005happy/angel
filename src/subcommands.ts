@@ -16,7 +16,7 @@ export const SUBCOMMANDS: readonly string[] = [
   // 配置与开关
   "config", "features", "tools", "models", "reviewer",
   // 记忆与复用
-  "recall", "memory", "style", "skills", "bughunt",
+  "recall", "memory", "style", "skills", "bughunt", "market",
   // 后台与协作
   "ui", "gw", "schedule", "events", "task", "review", "mail-inbox", "responsibility",
   // 扩展与集成

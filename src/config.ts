@@ -102,7 +102,7 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 审查失败即拦截（fail-closed，不学 Goose 的 fail-open）。
   // provider/model 不填时沿用 smart_approvals.reviewer_*，再没有用 deepseek /
   // deepseek-flash；tools 不填时用默认被审集（write/edit/apply_patch/shell/
-  // memory_forget/memory_delete/gmail_send/http_post/submit_bughunt_report）；rules 是用户用自然语言
+  // memory_forget/memory_delete/gmail_send/http_post/submit_bughunt_report/marketplace_install/marketplace_publish）；rules 是用户用自然语言
   // 写的额外审查规则（审查提示里原样交给审查模型）。
   reviewer: { enabled: false, provider: null, model: null, tools: null, rules: [] },
   // 缺口 11：技能自沉淀闭环（学 OpenClaw Skill Workshop / Hermes 自写技能）。

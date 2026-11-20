@@ -79,6 +79,13 @@ mail_task_enqueued: ["message_id", "thread_id", "from", "subject", "run_id", "mo
 // 收件箱通知，不控制证据：没发现的巡查同样留一条报告事件。
 patrol_report: ["responsibility_id", "responsibility_name", "run_id", "findings", "reported"],
 patrol_write_blocked: ["tool", "reason"],
+// 内置机器人市场：安装（哪个条目、哪个版本、哪种、哪个源、Bot Ready 评分、
+// 审查模型）、卸载（哪个条目、哪种）、发布（哪个条目、哪个版本、哪种、
+// 许可证、Bot Ready 评分）。事件里只记名字与来源 id，不记绝对路径——
+// 绝对路径在 ~/.nyra/marketplace-installed.json 账本里（与缺口 11 同理）。
+marketplace_installed: ["item_name", "item_version", "kind", "source", "bot_ready", "reviewer_model"],
+marketplace_uninstalled: ["item_name", "kind"],
+marketplace_published: ["item_name", "item_version", "kind", "license", "bot_ready"],
 final: [],
 max_turns: [],
 error: ["error_type"],

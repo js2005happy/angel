@@ -67,6 +67,8 @@ import { DESKTOP_HTML } from "./webuiDesktop.ts";
 import { keyStatus, setKey, removeKey, maskKey, validateKey, openVault, vaultState, migrateKeysToVault, keysPath } from "./keystore.ts";
 import { loadMcpServers } from "./mcp.ts";
 import { saveConfig, configPath } from "./config.ts";
+import { listMarketplacePublic } from "./marketplace.ts";
+import { listDrafts } from "./skillDrafts.ts";
 
 export const GATEWAY_DEFAULT_HOST = "127.0.0.1";
 export const GATEWAY_DEFAULT_PORT = 8765;
@@ -1652,6 +1654,29 @@ export class Gateway {
           ...(gmail.scopes ? { scopes: gmail.scopes } : {}),
         }],
       });
+      return;
+    }
+    // 内置机器人市场（第一阶段：静态策展仓库 + 本地客户端；供桌面端/手机 PWA
+    // 的市场页消费；只给公开元数据，不含绝对路径与技能正文）。
+    if (method === "GET" && path === "/api/marketplace") {
+      try { this.sendJson(res, 200, listMarketplacePublic(this.home)); }
+      catch (err) { this.sendError(res, 400, `市场读取失败：${err instanceof Error ? err.message : String(err)}`); }
+      return;
+    }
+    // 缺口 11 留的口子：技能草稿清单（供桌面端/手机 PWA 的市场页消费；
+    // 草稿是用户自己的内容，含正文；只读，不含批准操作——批准走 CLI）。
+    if (method === "GET" && path === "/api/skill-drafts") {
+      try {
+        const drafts = listDrafts(this.home).map((d) => ({
+          name: d.name,
+          status: d.status,
+          quality: d.quality,
+          source_run_id: d.source_run_id,
+          created_at: d.created_at,
+          updated_at: d.updated_at,
+        }));
+        this.sendJson(res, 200, { drafts });
+      } catch (err) { this.sendError(res, 400, `技能草稿读取失败：${err instanceof Error ? err.message : String(err)}`); }
       return;
     }
     if (method === "GET" && reviewGetMatch) {

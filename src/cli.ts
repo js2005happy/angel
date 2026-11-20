@@ -151,6 +151,7 @@ nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查�
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
 nyra bughunt <install|status|scope|template|check>   授权漏洞挖掘技能包：范围卡 + 证伪验证 + 提交前七问 + 证据卫生，提交前核对（详见 docs/bughunt.md）
+nyra market <list|show|source|install|uninstall|installed|publish|template>   内置机器人市场：浏览、安装、发布技能包与机器人配置（第一阶段：静态策展仓库 + 本地客户端，详见 docs/marketplace.md）
 nyra kb <create|list|add|search|ask|remove>  本地知识库
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
 nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -222,6 +223,7 @@ nyra responsibility <list|add|remove|enable|disable|check>   standing responsibi
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
 nyra bughunt <install|status|scope|template|check>   authorized bug-hunting skill pack: scope card + falsification + pre-submit seven questions + evidence hygiene, pre-submit gate (see docs/bughunt.md)
+nyra market <list|show|source|install|uninstall|installed|publish|template>   built-in bot marketplace: browse, install and publish skill packs and bot configs (phase 1: static curated repo + local client, see docs/marketplace.md)
 nyra kb <create|list|add|search|ask|remove>  local knowledge base
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
 nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -1682,6 +1684,207 @@ async function handleBughunt(argv: string[], home: string): Promise<number> {
     process.stderr.write(`错误：未知子命令 bughunt ${action}\n`);
     return 2;
   } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+// ---- 子命令：market（内置机器人市场，第一阶段：静态策展仓库 + 本地客户端） ----
+async function handleMarket(argv: string[], home: string): Promise<number> {
+  const action = argv[0];
+  if (!action) {
+    process.stdout.write("用法：nyra market <list|show|source|install|uninstall|installed|publish|template> [选项]\n");
+    return 2;
+  }
+  try {
+    const mod = await import("./marketplace.ts");
+    const config = loadConfig(home);
+    const askConfirm = async (prompt: string): Promise<boolean> => {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolvePromise) => {
+        rl.question(prompt, (a) => { rl.close(); resolvePromise(a); });
+      });
+      return answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes";
+    };
+    const newRun = (task: string): { store: RunStore; runId: string } => {
+      const store = new RunStore(join(home, "runs"));
+      const run = store.create(task, "cli", home, "readonly", 1);
+      return { store, runId: run.run_id };
+    };
+    if (action === "list") {
+      const sourceIdx = argv.indexOf("--source");
+      const sourceName = sourceIdx !== -1 ? argv[sourceIdx + 1] : undefined;
+      const queryIdx = argv.indexOf("--query");
+      const query = queryIdx !== -1 ? argv[queryIdx + 1] : undefined;
+      const sources = mod.loadMarketSources(home);
+      if (!sources.length) {
+        process.stdout.write("还没有登记的市场源。\n");
+        process.stdout.write("登记一个本地市场目录：nyra market source add <本地目录>（目录里须有 index.json）\n");
+        process.stdout.write("或登记策展仓库：nyra market source add https://github.com/js2005happy/nyra-community.git\n");
+        process.stdout.write("（仓库尚未建立，先用 nyra market template index 起一个本地市场目录；见 docs/marketplace.md）\n");
+        return 0;
+      }
+      const entries = mod.listMarketEntries(home, { query, source: sourceName });
+      if (!entries.length) { process.stdout.write("市场里没有条目\n"); return 0; }
+      for (const l of entries) {
+        const e = l.entry;
+        process.stdout.write(`- ${e.id}（${e.kind === "skill" ? "技能包" : "机器人配置"}）v${e.version} — ${e.description ?? "（无说明）"} — Bot Ready ${l.botReady.score}/100 — ${e.license ?? "无许可证"} — 来源 ${l.source}\n`);
+      }
+      return 0;
+    }
+    if (action === "show") {
+      const id = argv[1];
+      if (!id) { process.stderr.write("错误：用法：nyra market show <条目 id>\n"); return 2; }
+      const resolved = mod.resolveMarketEntry(home, id);
+      if (!resolved) { process.stderr.write(`错误：市场里没有条目 ${id}（先 nyra market list 看看）\n`); return 1; }
+      const verification = mod.verifyMarketplaceEntry(resolved);
+      const scanHits = mod.scanMarketplaceEntry(resolved);
+      const botReady = mod.computeBotReadyForDir(resolved.entry, resolved.dir);
+      process.stdout.write(`${mod.MARKET_WARNING}\n`);
+      const e = resolved.entry;
+      process.stdout.write(`条目：${e.name} v${e.version}（${e.kind === "skill" ? "技能包" : "机器人配置"}，来源 ${resolved.source.name}:${e.id}）\n`);
+      if (e.description) process.stdout.write(`说明：${e.description}\n`);
+      if (e.author) process.stdout.write(`作者：${e.author}\n`);
+      process.stdout.write(`许可证：${e.license ?? "未声明"}\n`);
+      if (e.source) process.stdout.write(`来源链接：${e.source}\n`);
+      process.stdout.write(`声明的工具：${verification.tools.join("、") || "未声明"}\n`);
+      process.stdout.write(`声明的权限：${verification.permissions.join("、") || "未声明"}\n`);
+      process.stdout.write(`模式：${e.mode ?? verification.manifest?.mode ?? "readonly"}（新装机器人默认只读起步）\n`);
+      if (verification.routines.length) process.stdout.write(`routine：${verification.routines.length} 个（只随机器人安装，不自动执行，须手动启用）\n`);
+      if (verification.highPrivilegeTools.length) process.stdout.write(`⚠ 高权限工具：${verification.highPrivilegeTools.join("、")}\n`);
+      for (const w of verification.warnings) process.stdout.write(`提醒：${w}\n`);
+      if (!verification.ok) {
+        for (const err of verification.errors) process.stdout.write(`清单问题：${err}\n`);
+      }
+      if (scanHits.length) {
+        for (const h of scanHits) process.stdout.write(`高危模式：${h.where}：${h.reason}\n`);
+      }
+      process.stdout.write(`Bot Ready：${botReady.score}/100${botReady.missing.length ? `（缺：${botReady.missing.join("、")}）` : "（满分）"}\n`);
+      process.stdout.write(`文件：${verification.files.join("、") || "无"}\n`);
+      return 0;
+    }
+    if (action === "source") {
+      const sub = argv[1];
+      if (sub === "list") {
+        const sources = mod.loadMarketSources(home);
+        if (!sources.length) { process.stdout.write("还没有登记的市场源\n"); return 0; }
+        for (const s of sources) {
+          let count = 0;
+          try { count = mod.loadMarketIndex(s.path).entries.length; } catch { count = 0; }
+          process.stdout.write(`- ${s.name}（${s.kind}，${s.path}，${count} 个条目）\n`);
+        }
+        return 0;
+      }
+      if (sub === "add") {
+        const input = argv[2];
+        if (!input) { process.stderr.write("错误：用法：nyra market source add <本地目录|git 地址>\n"); return 2; }
+        const source = mod.addMarketSource(home, input);
+        let count = 0;
+        try { count = mod.loadMarketIndex(source.path).entries.length; } catch { count = 0; }
+        process.stdout.write(`已登记市场源 ${source.name}（${source.kind}，${count} 个条目）\n`);
+        return 0;
+      }
+      if (sub === "remove") {
+        const name = argv[2];
+        if (!name) { process.stderr.write("错误：用法：nyra market source remove <源名>\n"); return 2; }
+        if (!mod.removeMarketSource(home, name)) { process.stderr.write(`错误：没有登记的市场源 ${name}\n`); return 1; }
+        process.stdout.write(`已移除市场源 ${name}（git 克隆的目录已保留在 ~/.nyra/marketplace-sources/，不需要可手动删除）\n`);
+        return 0;
+      }
+      process.stdout.write("用法：nyra market source <list|add <本地目录|git 地址>|remove <源名>>\n");
+      return 2;
+    }
+    if (action === "install") {
+      const id = argv[1];
+      if (!id) { process.stderr.write("错误：用法：nyra market install <条目 id> [--force]\n"); return 2; }
+      const force = argv.includes("--force");
+      const prepared = await mod.prepareMarketplaceInstall(home, id, { config });
+      process.stdout.write(`${prepared.plannedChanges.join("\n")}\n`);
+      if (argv.includes("--yes")) {
+        process.stdout.write("提示：市场安装确认不能用 --yes 跳过（市场内容是不受信任的第三方配置），仍需你确认。\n");
+      }
+      if (!await askConfirm("确认安装？(y/N) ")) {
+        process.stdout.write("已取消，未安装任何文件。\n");
+        return 0;
+      }
+      const { store, runId } = newRun(`marketplace install ${id}`);
+      const result = mod.executeMarketplaceInstall(home, prepared, { force, store, runId });
+      process.stdout.write(`已安装 ${result.installed.item_name} v${result.installed.version}：${result.installed.installed_path}\n`);
+      if (result.overwritten) process.stdout.write("（覆盖了旧版）\n");
+      if (result.keptModified.length) process.stdout.write(`升级时保留了你改过的文件：${result.keptModified.join("、")}\n`);
+      if (result.installed.kind === "bot") {
+        process.stdout.write("机器人默认只读起步：写操作须在机器人自己的权限里显式放开；routine 不自动执行，须手动启用。\n");
+      }
+      process.stdout.write(`卸载：nyra market uninstall ${result.installed.item_name}\n`);
+      return 0;
+    }
+    if (action === "uninstall") {
+      const name = argv[1];
+      if (!name) { process.stderr.write("错误：用法：nyra market uninstall <条目名> [--yes]\n"); return 2; }
+      if (!argv.includes("--yes") && !await askConfirm(`确认卸载 ${name}？(y/N) `)) {
+        process.stdout.write("已取消，未卸载任何文件。\n");
+        return 0;
+      }
+      const { store, runId } = newRun(`marketplace uninstall ${name}`);
+      const result = mod.uninstallMarketplaceEntry(home, name, { store, runId });
+      process.stdout.write(`已卸载 ${name}：删了 ${result.removed.join("、") || "无"}\n`);
+      if (result.kept.length) process.stdout.write(`保留未删：${result.kept.join("、")}\n`);
+      process.stdout.write("卸载记录留在安装账本里（nyra market installed 可查历史）。\n");
+      return 0;
+    }
+    if (action === "installed") {
+      const entries = mod.listInstalled(home);
+      if (!entries.length) { process.stdout.write("还没有从市场安装过任何东西\n"); return 0; }
+      for (const e of entries) {
+        process.stdout.write(`- ${e.item_name}（${e.kind === "skill" ? "技能包" : "机器人配置"}）v${e.version} — 来源 ${e.source} — ${e.status}${e.status === "uninstalled" && e.uninstalled_at ? `（${e.uninstalled_at} 卸载）` : ""} — Bot Ready ${e.bot_ready}/100 — ${e.installed_at}\n`);
+      }
+      return 0;
+    }
+    if (action === "publish") {
+      const skillIdx = argv.indexOf("--skill");
+      const licenseIdx = argv.indexOf("--license");
+      const license = licenseIdx !== -1 ? argv[licenseIdx + 1] : undefined;
+      const outIdx = argv.indexOf("--out");
+      const outDir = outIdx !== -1 ? argv[outIdx + 1] : undefined;
+      const dryRun = argv.includes("--dry-run");
+      let input: { dir: string } | { skill: string };
+      if (skillIdx !== -1) {
+        const skillName = argv[skillIdx + 1];
+        if (!skillName) { process.stderr.write("错误：用法：nyra market publish --skill <技能名> [--license <许可证>]\n"); return 2; }
+        input = { skill: skillName };
+      } else {
+        const dir = argv[1];
+        if (!dir) { process.stderr.write("错误：用法：nyra market publish <机器人目录|技能文件> [--license <许可证>] [--dry-run] [--out <目录>]\n"); return 2; }
+        input = { dir };
+      }
+      const { store, runId } = newRun(`marketplace publish ${"skill" in input ? input.skill : input.dir}`);
+      const result = await mod.publishMarketplaceEntry(home, input, { config, dryRun, outDir, license, store, runId });
+      process.stdout.write(`${dryRun ? "试运行（未写出任何文件，未记账本）" : "已打包"}：${result.itemName} v${result.version}（${result.kind === "skill" ? "技能包" : "机器人配置"}）\n`);
+      process.stdout.write(`输出目录：${result.outDir}\n`);
+      process.stdout.write(`文件：${result.files.join("、")}\n`);
+      process.stdout.write(`Bot Ready 自评：${result.botReady.score}/100${result.botReady.missing.length ? `（缺：${result.botReady.missing.join("、")}）` : "（满分）"}\n`);
+      process.stdout.write(`审查：${result.review.source === "skipped" ? "已跳过（审查层未开启；只走了两道确定性门）" : `${result.review.decision === "ALLOW" ? "通过" : "拦截"}（${result.review.reviewerModel ?? ""}，${result.review.reason}）`}\n`);
+      for (const w of result.warnings) process.stdout.write(`提醒：${w}\n`);
+      if (!dryRun) {
+        process.stdout.write("下一步：把输出目录里的文件提交到策展仓库 nyra-community（提 PR），market-entry.json 是给维护者的索引片段。\n");
+      }
+      return 0;
+    }
+    if (action === "template") {
+      const kind = argv[1];
+      if (kind === "bot") { process.stdout.write(mod.marketBotTemplate()); return 0; }
+      if (kind === "index") { process.stdout.write(mod.marketIndexTemplate()); return 0; }
+      process.stdout.write("用法：nyra market template <bot|index>\n");
+      return 2;
+    }
+    process.stdout.write("用法：nyra market <list|show|source|install|uninstall|installed|publish|template> [选项]\n");
+    return 2;
+  } catch (err: unknown) {
+    if (err instanceof Error && (err as { gate?: string }).gate) {
+      const gate = (err as { gate?: string }).gate;
+      process.stderr.write(`错误：${err.message}\n`);
+      return gate === "license" ? 2 : 3;
+    }
     process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
@@ -3741,6 +3944,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
   if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
+  if (args.subcommand === "market") return handleMarket(args.subArgs ?? [], home);
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);

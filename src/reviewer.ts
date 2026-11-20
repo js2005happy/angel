@@ -78,6 +78,12 @@ export const DEFAULT_REVIEWED_TOOLS: readonly string[] = [
   // 提交前核对把“提交漏洞报告”当敏感动作过审查，见 src/bughunt.ts 的
   // reviewSubmitReport；executeTool 不会遇到这个名字，加进来只影响审查集。
   "submit_bughunt_report",
+  // marketplace_install / marketplace_publish 是虚拟敏感动作（不是 tools.ts
+  // 里的工具）：机器人市场安装与发布前过审查，见 src/marketplace.ts 的
+  // reviewMarketplaceAction；executeTool 不会遇到这两个名字，加进来只影响
+  // 审查集（市场那道门用合并后的配置调 reviewToolCall，用户收窄 tools
+  // 也不影响市场审查）。
+  "marketplace_install", "marketplace_publish",
 ];
 
 export function reviewerConfig(config: Record<string, unknown>): ReviewerConfig {

@@ -1,0 +1,1473 @@
+// src/marketplace.ts — 内置机器人市场（第一阶段：静态策展仓库 + 本地客户端）。
+//
+// 只卖两样文件（本地优先：分享配置与技能，不分享电脑）：
+//   - 技能包（Skill）：单文件 .md，与缺口 11 沉淀出的技能同格式，可直接进 ~/.nyra/skills/
+//   - 机器人配置（Bot）：一个目录（bot.json + skills/*.md + 可选 routines.json），
+//     即创造模式的插件形态（plugin.json + skills），安装复用 src/plugins.ts 的路径。
+// 不卖：整台电脑/云电脑共享、真实凭证与账号信息、无许可证内容。
+//
+// 一键安装走三道门（缺口 10 的复用）：清单校验（verifyStagedPlugin / 技能解析）
+// → 确定性规则（技能正文与 routine 里的高危模式，规则 id 与缺口 10 同款）
+// → 独立审查（marketplace_install 虚拟敏感动作；审查失败即拦截，fail-closed）。
+// 审查层未开启时只走两道确定性门、明确告知用户（与候选提案 1 的 bughunt check
+// 同口径：未开启 ≠ 失败，但新装机器人默认只读起步，写操作须用户显式放开）。
+// `--yes` 不跳过市场安装的确认（市场内容是不受信任的第三方配置）。
+//
+// 证据链写两处：运行事件 marketplace_installed / marketplace_uninstalled /
+// marketplace_published（src/runs.ts 的 EVENT_FIELDS 登记；事件里只记名字与
+// 来源 id，不记绝对路径——绝对路径在账本里）+ 安装账本
+// ~/.nyra/marketplace-installed.json（原子写 0600，损坏先备份再抛错；卸载留
+// 一条 uninstalled 记录，不直接抹掉历史）。
+//
+// 后端第一阶段是静态策展仓库（nyra-community，git + 本地 index.json，无服务
+// 端、无账号、无支付）：客户端用本地目录或 git clone 拉取，绝不自动更新、
+// 绝不静默拉取。star 过 500 或周活过 100 才加服务端与交流群（第二阶段，不做）。
+import { execFileSync } from "node:child_process";
+import {
+  existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
+  renameSync, rmSync, statSync, copyFileSync, openSync, writeSync,
+  fsyncSync, closeSync, mkdtempSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, dirname, basename, relative } from "node:path";
+import { checkPanelSelfContained, verifyStagedPlugin, HIGH_PRIVILEGE_TOOLS, KNOWN_TOOLS } from "./creator.ts";
+import { installPlugin, uninstallPlugin, pluginDir, sha256File, PLUGIN_NAME_RE, PROTECTED_BUILTIN_SKILLS } from "./plugins.ts";
+import { reviewToolCall, buildReviewerRunner, type ReviewerLike, type ReviewVerdict } from "./reviewer.ts";
+import { parseSkillFile, parseSkillText } from "./skills.ts";
+import { checkEvidenceHygiene } from "./bughunt.ts";
+import { type RunStore } from "./runs.ts";
+
+export class MarketplaceError extends Error {
+  /** 哪道门拦的（manifest 清单校验 / deterministic 确定性规则 / reviewer 独立审查 / hygiene 脱敏 / license 许可证）；没填就是一般错误。 */
+  gate?: string;
+  constructor(message: string, gate?: string) {
+    super(message);
+    this.name = "MarketplaceError";
+    if (gate) this.gate = gate;
+  }
+}
+
+/** 市场是不受信任的第三方配置：浏览与详情页置顶的警告（抄 divo12 的文案）。 */
+export const MARKET_WARNING =
+"社区内容是不受信任的第三方配置；导入前检查，只读起步，发送/购买/删除留在审批后。";
+
+export type MarketKind = "skill" | "bot";
+
+export interface MarketEntryMeta {
+  id: string;
+  kind: MarketKind;
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  license?: string;
+  /** 来源链接（条目主页或仓库地址）。 */
+  source?: string;
+  /** 相对路径（相对市场源根目录）：技能是 .md 文件，机器人是目录。 */
+  path: string;
+  tools?: string[];
+  permissions?: string[];
+  mode?: string;
+  updated_at?: string;
+}
+
+export interface MarketIndex {
+  version: 1;
+  name?: string;
+  description?: string;
+  updated_at?: string;
+  entries: MarketEntryMeta[];
+}
+
+export interface MarketSource {
+  name: string;
+  kind: "local" | "git";
+  /** 本地源是目录绝对路径；git 源是克隆到的本地目录绝对路径。 */
+  path: string;
+  url?: string;
+  added_at: string;
+}
+
+export interface InstalledEntry {
+  item_id: string;
+  item_name: string;
+  kind: MarketKind;
+  version: string;
+  /** 市场源名（本机发布记 "self"）。 */
+  source: string;
+  author?: string;
+  license?: string;
+  installed_at: string;
+  /** 绝对路径：只写账本，绝不进运行事件。 */
+  installed_path: string;
+  files: Record<string, string>;
+  reviewer_source: string;
+  reviewer_model: string | null;
+  reviewer_decision: string;
+  bot_ready: number;
+  bot_ready_missing: string[];
+  status: "installed" | "uninstalled" | "published";
+  uninstalled_at?: string;
+  uninstalled_files?: string[];
+  published_at?: string;
+  published_out_dir?: string;
+}
+
+export function marketplaceSourcesPath(home: string): string {
+  return join(home, "marketplace-sources.json");
+}
+
+export function marketplaceSourcesDir(home: string): string {
+  return join(home, "marketplace-sources");
+}
+
+export function marketplaceLedgerPath(home: string): string {
+  return join(home, "marketplace-installed.json");
+}
+
+export function marketplacePublishDir(home: string): string {
+  return join(home, "market-publish");
+}
+
+function atomicWriteJson(path: string, data: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const fd = openSync(tmp, "w", 0o600);
+  try {
+    writeSync(fd, JSON.stringify(data, null, 2) + "\n", null, "utf-8");
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    renameSync(tmp, path);
+  } catch (err: unknown) {
+    try { rmSync(tmp, { force: true }); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
+// ---- 市场源（策展仓库的本地登记；绝不自动更新、绝不静默拉取） ----
+
+export function loadMarketSources(home: string): MarketSource[] {
+  const path = marketplaceSourcesPath(home);
+  if (!existsSync(path)) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err: unknown) {
+    const backup = `${path}.corrupt-${Date.now()}`;
+    try { renameSync(path, backup); } catch { /* ignore */ }
+    throw new MarketplaceError(`市场源登记损坏，已备份到 ${backup}，请检查后再试：${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { sources?: unknown }).sources)) {
+    const backup = `${path}.corrupt-${Date.now()}`;
+    try { renameSync(path, backup); } catch { /* ignore */ }
+    throw new MarketplaceError(`市场源登记格式无效，已备份到 ${backup}`);
+  }
+  return (raw as { sources: MarketSource[] }).sources;
+}
+
+export function saveMarketSources(home: string, sources: MarketSource[]): void {
+  atomicWriteJson(marketplaceSourcesPath(home), { version: 1, sources });
+}
+
+function sourceNameFromInput(input: string): string {
+  const base = basename(input.replace(/\.git$/, "").replace(/\/+$/, "")) || "market";
+  const cleaned = base.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return cleaned || "market";
+}
+
+/**
+* 登记一个市场源：本地目录（须含 index.json）或 git 地址（https / git@ /
+* .git 结尾，git clone --depth 1 到 ~/.nyra/marketplace-sources/<名>/）。
+* 已登记同名源先 remove 再 add；登记本身不拉取更新。
+*/
+export function addMarketSource(home: string, input: string): MarketSource {
+  const trimmed = input.trim();
+  if (!trimmed) throw new MarketplaceError("市场源不能为空");
+  const sources = loadMarketSources(home);
+  const isGit = trimmed.startsWith("https://") || /^git@[^:]+:/.test(trimmed) || trimmed.endsWith(".git");
+  if (trimmed.startsWith("http://")) throw new MarketplaceError("只接受 https 或 git@ 来源，不接受明文 http");
+  const name = sourceNameFromInput(trimmed);
+  if (sources.some((s) => s.name === name)) {
+    throw new MarketplaceError(`市场源 ${name} 已登记（先 nyra market source remove ${name} 再登记）`);
+  }
+  let source: MarketSource;
+  if (isGit) {
+    const dest = join(marketplaceSourcesDir(home), name);
+    if (existsSync(dest)) throw new MarketplaceError(`市场源目录已存在：${dest}（先删掉再登记）`);
+    mkdirSync(marketplaceSourcesDir(home), { recursive: true });
+    try {
+      execFileSync("git", ["clone", "--depth", "1", trimmed, dest], { timeout: 60000, stdio: "pipe", encoding: "utf-8" });
+    } catch (err: unknown) {
+      try { rmSync(dest, { recursive: true, force: true }); } catch { /* ignore */ }
+      throw new MarketplaceError(`git 拉取失败：${trimmed}（${err instanceof Error ? err.message : String(err)}）`);
+    }
+    source = { name, kind: "git", path: dest, url: trimmed, added_at: new Date().toISOString() };
+  } else {
+    const dir = resolve(trimmed);
+    if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+      throw new MarketplaceError(`本地市场源不存在或不是目录：${dir}`);
+    }
+    if (!existsSync(join(dir, "index.json"))) {
+      throw new MarketplaceError(`本地市场源缺少 index.json：${dir}（先确认它是市场仓库根目录）`);
+    }
+    source = { name, kind: "local", path: dir, added_at: new Date().toISOString() };
+  }
+  if (!existsSync(join(source.path, "index.json"))) {
+    throw new MarketplaceError(`市场源缺少 index.json：${source.path}`);
+  }
+  saveMarketSources(home, [...sources, source]);
+  return source;
+}
+
+export function removeMarketSource(home: string, name: string): boolean {
+  const sources = loadMarketSources(home);
+  const found = sources.find((s) => s.name === name);
+  if (!found) return false;
+  saveMarketSources(home, sources.filter((s) => s.name !== name));
+  return true;
+}
+
+// ---- 安装账本（与缺口 11 的草稿账本同口径：原子写 0600，损坏先备份再抛错） ----
+
+export function loadInstalledLedger(home: string): InstalledEntry[] {
+  const path = marketplaceLedgerPath(home);
+  if (!existsSync(path)) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err: unknown) {
+    const backup = `${path}.corrupt-${Date.now()}`;
+    try { renameSync(path, backup); } catch { /* ignore */ }
+    throw new MarketplaceError(`安装账本损坏，已备份到 ${backup}，请检查后再试：${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { entries?: unknown }).entries)) {
+    const backup = `${path}.corrupt-${Date.now()}`;
+    try { renameSync(path, backup); } catch { /* ignore */ }
+    throw new MarketplaceError(`安装账本格式无效，已备份到 ${backup}`);
+  }
+  return (raw as { entries: InstalledEntry[] }).entries;
+}
+
+export function saveInstalledLedger(home: string, entries: InstalledEntry[]): void {
+  atomicWriteJson(marketplaceLedgerPath(home), { version: 1, entries });
+}
+
+export function listInstalled(home: string): InstalledEntry[] {
+  return loadInstalledLedger(home);
+}
+
+export function findInstalled(home: string, name: string): InstalledEntry | null {
+  const entries = loadInstalledLedger(home);
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].item_name === name && entries[i].status === "installed") return entries[i];
+  }
+  return null;
+}
+
+// ---- 索引与条目 ----
+
+const ENTRY_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export function loadMarketIndex(sourceDir: string): MarketIndex {
+  const path = join(sourceDir, "index.json");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err: unknown) {
+    throw new MarketplaceError(`读不到市场索引：${path}（${err instanceof Error ? err.message : String(err)}）`);
+  }
+  if (!raw || typeof raw !== "object" || (raw as MarketIndex).version !== 1 || !Array.isArray((raw as MarketIndex).entries)) {
+    throw new MarketplaceError(`市场索引格式无效：${path}（顶层须是 {version: 1, entries: [...]}）`);
+  }
+  for (const e of (raw as MarketIndex).entries) {
+    if (!e || typeof e !== "object" || typeof e.id !== "string" || !ENTRY_ID_RE.test(e.id)) {
+      throw new MarketplaceError(`市场索引里有无效条目 id：${JSON.stringify(e?.id ?? null)}（只允许小写字母、数字、- 和 _）`);
+    }
+    if (e.kind !== "skill" && e.kind !== "bot") throw new MarketplaceError(`条目 ${e.id} 的 kind 只允许 skill|bot`);
+    if (typeof e.name !== "string" || !e.name || typeof e.version !== "string" || !e.version || typeof e.path !== "string" || !e.path) {
+      throw new MarketplaceError(`条目 ${e.id} 缺少 name/version/path`);
+    }
+  }
+  return raw as MarketIndex;
+}
+
+export interface ResolvedEntry {
+  entry: MarketEntryMeta;
+  source: MarketSource;
+  /** 条目在源内的绝对目录（技能是 .md 文件的绝对路径，机器人是目录）。 */
+  dir: string;
+}
+
+export function resolveMarketEntry(home: string, id: string): ResolvedEntry | null {
+  const sources = loadMarketSources(home);
+  for (const source of sources) {
+    let index: MarketIndex;
+    try {
+      index = loadMarketIndex(source.path);
+    } catch {
+      continue;
+    }
+    const entry = index.entries.find((e) => e.id === id);
+    if (!entry) continue;
+    const dir = resolve(source.path, entry.path);
+    if (dir !== resolve(source.path) && !dir.startsWith(resolve(source.path) + "/")) {
+      throw new MarketplaceError(`条目 ${id} 的 path 越出市场源目录，拒绝加载：${entry.path}`);
+    }
+    return { entry, source, dir };
+  }
+  return null;
+}
+
+export interface ListedEntry {
+  entry: MarketEntryMeta;
+  source: string;
+  botReady: BotReady;
+}
+
+export function listMarketEntries(home: string, opts?: { query?: string; source?: string }): ListedEntry[] {
+  const sources = loadMarketSources(home);
+  const out: ListedEntry[] = [];
+  const q = (opts?.query ?? "").trim().toLowerCase();
+  for (const source of sources) {
+    if (opts?.source && source.name !== opts.source) continue;
+    let index: MarketIndex;
+    try {
+      index = loadMarketIndex(source.path);
+    } catch (err: unknown) {
+      throw new MarketplaceError(`市场源 ${source.name} 的索引读失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    for (const entry of index.entries) {
+      if (q && !(entry.id.includes(q) || entry.name.toLowerCase().includes(q) || (entry.description ?? "").toLowerCase().includes(q))) continue;
+      const dir = resolve(source.path, entry.path);
+      const botReady = computeBotReadyForDir(entry, dir);
+      out.push({ entry, source: source.name, botReady });
+    }
+  }
+  out.sort((a, b) => b.botReady.score - a.botReady.score || a.entry.name.localeCompare(b.entry.name));
+  return out;
+}
+
+// ---- 机器人清单（bot.json） ----
+
+export type BotMode = "readonly" | "auto";
+
+export interface BotRoutine {
+  name: string;
+  kind: "schedule" | "event";
+  schedule?: string;
+  event?: string;
+  task: string;
+  mode?: BotMode;
+}
+
+export interface BotManifest {
+  name: string;
+  version: string;
+  description?: string;
+  author?: string;
+  license?: string;
+  homepage?: string;
+  skills: string[];
+  tools?: string[];
+  permissions?: string[];
+  /** 市场条目不许声明 full：新装机器人默认只读起步，写操作须用户显式放开。 */
+  mode?: BotMode;
+}
+
+export function parseBotManifest(dir: string): BotManifest {
+  const path = join(dir, "bot.json");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    throw new MarketplaceError(`缺少可读的 bot.json：${path}`);
+  }
+  if (!raw || typeof raw !== "object") throw new MarketplaceError("bot.json 格式错误：顶层必须是对象");
+  const m = raw as Record<string, unknown>;
+  const name = m.name;
+  if (typeof name !== "string" || !PLUGIN_NAME_RE.test(name)) {
+    throw new MarketplaceError("bot.json 的 name 无效（只允许小写字母、数字、- 和 _，以字母或数字开头）");
+  }
+  const version = m.version;
+  if (typeof version !== "string" || !version) throw new MarketplaceError("bot.json 缺少 version");
+  const skills = m.skills;
+  if (!Array.isArray(skills) || !skills.length || skills.some((s) => typeof s !== "string" || !s)) {
+    throw new MarketplaceError("bot.json 的 skills 必须是非空字符串数组");
+  }
+  const tools = m.tools;
+  if (tools !== undefined && (!Array.isArray(tools) || tools.some((t) => typeof t !== "string" || !/^[a-z][a-z0-9_]*$/.test(t)))) {
+    throw new MarketplaceError("bot.json 的 tools 必须是非空字符串数组（Nyra 工具名）");
+  }
+  const permissions = m.permissions;
+  if (permissions !== undefined && (!Array.isArray(permissions) || permissions.some((p) => typeof p !== "string" || !p))) {
+    throw new MarketplaceError("bot.json 的 permissions 必须是非空字符串数组");
+  }
+  const mode = m.mode;
+  if (mode !== undefined && mode !== "readonly" && mode !== "auto") {
+    throw new MarketplaceError("bot.json 的 mode 只允许 readonly|auto：市场条目不许声明 full 模式（新装机器人默认只读起步）");
+  }
+  return {
+    name,
+    version,
+    description: typeof m.description === "string" ? m.description : undefined,
+    author: typeof m.author === "string" ? m.author : undefined,
+    license: typeof m.license === "string" ? m.license : undefined,
+    homepage: typeof m.homepage === "string" ? m.homepage : undefined,
+    skills: [...(skills as string[])],
+    tools: tools === undefined ? undefined : [...(tools as string[])],
+    permissions: permissions === undefined ? undefined : [...(permissions as string[])],
+    mode: mode === undefined ? undefined : (mode as BotMode),
+  };
+}
+
+export function parseRoutines(dir: string): BotRoutine[] {
+  const path = join(dir, "routines.json");
+  if (!existsSync(path)) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch (err: unknown) {
+    throw new MarketplaceError(`routines.json 解析失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!Array.isArray(raw)) throw new MarketplaceError("routines.json 顶层必须是数组");
+  const out: BotRoutine[] = [];
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object") throw new MarketplaceError("routines.json 里有非对象条目");
+    if (typeof r.name !== "string" || !r.name) throw new MarketplaceError("routine 缺少 name");
+    if (r.kind !== "schedule" && r.kind !== "event") throw new MarketplaceError(`routine ${r.name} 的 kind 只允许 schedule|event`);
+    if (r.kind === "schedule" && (typeof r.schedule !== "string" || !r.schedule)) {
+      throw new MarketplaceError(`routine ${r.name} 是 schedule 但没写 schedule`);
+    }
+    if (r.kind === "event" && (typeof r.event !== "string" || !r.event)) {
+      throw new MarketplaceError(`routine ${r.name} 是 event 但没写 event`);
+    }
+    if (typeof r.task !== "string" || !r.task.trim() || r.task.length > 8000) {
+      throw new MarketplaceError(`routine ${r.name} 的 task 为空或超过 8000 字`);
+    }
+    if (r.mode !== undefined && r.mode !== "readonly" && r.mode !== "auto") {
+      throw new MarketplaceError(`routine ${r.name} 的 mode 只允许 readonly|auto（routine 不自动执行写操作）`);
+    }
+    out.push({
+        name: r.name,
+        kind: r.kind as "schedule" | "event",
+        schedule: typeof r.schedule === "string" ? r.schedule : undefined,
+        event: typeof r.event === "string" ? r.event : undefined,
+        task: r.task,
+        mode: r.mode === undefined ? undefined : (r.mode as BotMode),
+      });
+  }
+  return out;
+}
+
+// ---- 第一道门：清单校验（确定性，零成本） ----
+
+export interface EntryVerification {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  manifest: BotManifest | null;
+  skillNames: string[];
+  tools: string[];
+  permissions: string[];
+  highPrivilegeTools: string[];
+  files: string[];
+  routines: BotRoutine[];
+}
+
+function listEntryFiles(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (d: string, prefix: string) => {
+    if (!existsSync(d)) return;
+    for (const f of readdirSync(d).sort()) {
+      const full = join(d, f);
+      if (statSync(full).isDirectory()) walk(full, `${prefix}${f}/`);
+      else out.push(`${prefix}${f}`);
+    }
+  };
+  walk(dir, "");
+  return out;
+}
+
+/** 技能名规则与 saveSkillFile 同款：首字母数字，其余字母数字 - _。 */
+export function isValidSkillName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name);
+}
+
+export function verifyMarketplaceEntry(resolved: ResolvedEntry): EntryVerification {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const files: string[] = [];
+  let manifest: BotManifest | null = null;
+  let skillNames: string[] = [];
+  let tools: string[] = [];
+  let permissions: string[] = [];
+  let routines: BotRoutine[] = [];
+  const { entry, dir } = resolved;
+  if (entry.kind === "skill") {
+    files.push(entry.path);
+  } else {
+    try {
+      files.push(...listEntryFiles(dir));
+    } catch (err: unknown) {
+      errors.push(`无法读取条目目录：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (entry.kind === "skill") {
+    if (!existsSync(dir) || !statSync(dir).isFile()) {
+      errors.push(`技能文件不存在：${entry.path}`);
+    } else {
+      try {
+        const parsed = parseSkillText(readFileSync(dir, "utf-8"), dir);
+        if (parsed.name !== entry.name) errors.push(`技能文件 ${entry.name}.md 的 name 是 ${parsed.name}，与索引不一致`);
+        if (!isValidSkillName(parsed.name)) errors.push(`技能名 ${parsed.name} 无效（只允许字母、数字、- 和 _）`);
+        if (PROTECTED_BUILTIN_SKILLS.includes(parsed.name)) errors.push(`技能名 ${parsed.name} 是内置技能，市场条目不得顶替`);
+        if (!parsed.instructions.trim()) errors.push(`技能 ${parsed.name} 没有写做法（instructions 为空）`);
+        skillNames = [parsed.name];
+      } catch (err: unknown) {
+        errors.push(`技能解析失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { ok: errors.length === 0, errors, warnings, manifest, skillNames, tools, permissions, highPrivilegeTools: [], files, routines };
+  }
+  try {
+    manifest = parseBotManifest(dir);
+  } catch (err: unknown) {
+    errors.push(err instanceof Error ? err.message : String(err));
+  }
+  if (manifest) {
+    skillNames = manifest.skills;
+    tools = manifest.tools ?? [];
+    permissions = manifest.permissions ?? [];
+    for (const skill of manifest.skills) {
+      const path = join(dir, "skills", `${skill}.md`);
+      if (!existsSync(path)) {
+        errors.push(`清单声明的技能缺文件：skills/${skill}.md`);
+        continue;
+      }
+      try {
+        const parsed = parseSkillFile(path);
+        if (parsed.name !== skill) errors.push(`技能文件 ${skill}.md 的 name 是 ${parsed.name}，与清单不一致`);
+        if (!isValidSkillName(parsed.name)) errors.push(`技能名 ${parsed.name} 无效（只允许字母、数字、- 和 _）`);
+        if (PROTECTED_BUILTIN_SKILLS.includes(skill)) errors.push(`技能名 ${skill} 是内置技能，插件不得顶替`);
+        if (!parsed.instructions.trim()) errors.push(`技能 ${skill} 没有写做法（instructions 为空）`);
+      } catch (err: unknown) {
+        errors.push(`技能 ${skill} 解析失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    for (const tool of tools) {
+      if (!KNOWN_TOOLS.has(tool)) errors.push(`声明的工具 ${tool} 不是 Nyra 已知的工具`);
+    }
+    if (!tools.length) warnings.push("未声明 tools 白名单：默认最小权限，建议写明它要用的工具");
+    if (!permissions.length) warnings.push("未声明 permissions 清单");
+    if (!manifest.license) warnings.push("未声明 license：Bot Ready 扣分，发布时许可证必填");
+    try {
+      routines = parseRoutines(dir);
+    } catch (err: unknown) {
+      errors.push(err instanceof Error ? err.message : String(err));
+    }
+    const panelDir = join(dir, "panel");
+    if (existsSync(panelDir)) {
+      for (const f of readdirSync(panelDir).sort()) {
+        if (!f.endsWith(".html")) {
+          errors.push(`panel 只允许 .html 文件：${f}`);
+          continue;
+        }
+        const html = readFileSync(join(panelDir, f), "utf-8");
+        for (const p of checkPanelSelfContained(html)) errors.push(`面板 ${f}：${p}`);
+      }
+    }
+  }
+  const highPrivilegeTools = tools.filter((t) => HIGH_PRIVILEGE_TOOLS.has(t));
+  if (highPrivilegeTools.length) {
+    warnings.push(`高权限工具：${highPrivilegeTools.join("、")}（安装确认时须单独说明风险）`);
+  }
+  return { ok: errors.length === 0, errors, warnings, manifest, skillNames, tools, permissions, highPrivilegeTools, files, routines };
+}
+
+// ---- 第二道门：确定性规则（技能正文与 routine 里的高危模式） ----
+//
+// 规则 id 与缺口 10 的确定性规则同款（destructive-rm / pipe-to-shell /
+// disk-destroy / credential-exfil / private-key-in-send 的文本版）：
+// 散文里的“不要 rm -rf /”不算——只扫命令形态的文本（围栏代码块、行内代码、
+// 以 ! 开头的内联命令、routine 的 task 文本），私钥 PEM 块除外（正文里出现
+// 就是密钥，整段都扫）。漏判由第三道门（模型审查）兜底，误判必须接近零。
+
+export interface ScanHit {
+  rule: string;
+  reason: string;
+  where: string;
+}
+
+function extractCodeLike(text: string): string {
+  const parts: string[] = [];
+  // 围栏代码块与行内代码用字符串拼正则：反引号写进正则字面量会干扰缩进脚本。
+  const fenced = new RegExp("```(?:[a-zA-Z0-9_-]*)?\\n([\\s\\S]*?)```", "g");
+  for (const m of text.matchAll(fenced)) parts.push(m[1]);
+  const inline = new RegExp("`([^`\n]+)`", "g");
+  for (const m of text.matchAll(inline)) parts.push(m[1]);
+  for (const line of text.split("\n")) {
+    if (/^\s*!/.test(line)) parts.push(line.replace(/^\s*!/, ""));
+  }
+  return parts.join("\n");
+}
+
+function shellSegments(command: string): string[] {
+  return command.split(/(?:;|&&|\|\||\|)/).map((s) => s.trim()).filter(Boolean);
+}
+
+const SCAN_RULES: { id: string; description: string; test: (code: string, full: string) => boolean }[] = [
+  {
+    id: "destructive-rm",
+    description: "rm -rf 的目标是根目录、家目录或通配符",
+    test: (code) => {
+      for (const seg of shellSegments(code)) {
+        if (!/^rm\b/.test(seg)) continue;
+        if (!/-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r/.test(seg)) continue;
+        const tokens = seg.split(/\s+/).filter(Boolean);
+        const target = tokens.slice(1).find((t) => !t.startsWith("-"));
+        if (target === undefined) continue;
+        if (["/", "~", "$HOME", "${HOME}", "*", ".", ".."].includes(target)) return true;
+        if (target.startsWith("/*")) return true;
+      }
+      return false;
+    },
+  },
+  {
+    id: "pipe-to-shell",
+    description: "curl/wget 下载后直接管道进 shell 执行",
+    test: (code) => /\b(curl|wget)\b[^|\n]*\|\s*(sh|bash|zsh|dash)\b/.test(code),
+  },
+  {
+    id: "disk-destroy",
+    description: "mkfs 或 dd 写原始设备",
+    test: (code) => {
+      for (const seg of shellSegments(code)) {
+        if (/^mkfs\b/.test(seg)) return true;
+        if (/^dd\b/.test(seg) && seg.includes("of=/dev/")) return true;
+      }
+      return false;
+    },
+  },
+  {
+    id: "credential-exfil",
+    description: "读私钥/凭证文件后经网络工具外发",
+    test: (code) => {
+      const readsSecret = code.includes("~/.ssh/") || code.includes(".ssh/id_") || code.includes("-----BEGIN");
+      if (!readsSecret) return false;
+      const tokens = code.split(/[\s|;&()<>]+/).filter(Boolean);
+      return tokens.some((t) => ["curl", "wget", "nc", "ncat", "ssh"].includes(t));
+    },
+  },
+  {
+    id: "private-key",
+    description: "文本里含私钥 PEM 块",
+    test: (_code, full) => /-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(full),
+  },
+];
+
+/** 扫一段文本：返回命中的规则（只报规则 id 与位置，不回显原文）。 */
+export function scanMarketplaceText(text: string, where: string): ScanHit[] {
+  const code = extractCodeLike(text);
+  const hits: ScanHit[] = [];
+  for (const rule of SCAN_RULES) {
+    if (rule.test(code, text)) {
+      hits.push({ rule: rule.id, reason: `命中确定性规则 ${rule.id}：${rule.description}`, where });
+    }
+  }
+  return hits;
+}
+
+/** 扫整个条目：全部技能正文 + routine 的 task 文本 + bot.json 描述。 */
+export function scanMarketplaceEntry(resolved: ResolvedEntry): ScanHit[] {
+  const hits: ScanHit[] = [];
+  const { entry, dir } = resolved;
+  const pushFile = (path: string, where: string) => {
+    if (!existsSync(path)) return;
+    hits.push(...scanMarketplaceText(readFileSync(path, "utf-8"), where));
+  };
+  if (entry.kind === "skill") {
+    pushFile(dir, entry.path);
+    return hits;
+  }
+  const skillsDir = join(dir, "skills");
+  if (existsSync(skillsDir)) {
+    for (const f of readdirSync(skillsDir).sort()) {
+      if (f.endsWith(".md")) pushFile(join(skillsDir, f), `skills/${f}`);
+    }
+  }
+  try {
+    for (const r of parseRoutines(dir)) {
+      hits.push(...scanMarketplaceText(r.task, `routines.json:${r.name}`));
+    }
+  } catch { /* 清单校验已报错，这里不重复报 */ }
+  try {
+    const manifest = parseBotManifest(dir);
+    if (manifest.description) hits.push(...scanMarketplaceText(manifest.description, "bot.json:description"));
+  } catch { /* 清单校验已报错，这里不重复报 */ }
+  return hits;
+}
+
+// ---- Bot Ready 评分（抄 cobusgreyling 的做法：100/100 才算稳定） ----
+
+export interface BotReady {
+  score: number;
+  missing: string[];
+}
+
+const MAINTENANCE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function computeBotReady(input: {
+    license?: string | null;
+    source?: string | null;
+    skillsOk: boolean;
+    toolsDeclared: boolean;
+    toolsKnown: boolean;
+    scanHits: number;
+    updatedAt?: string | null;
+    newestMtimeMs?: number | null;
+  }): BotReady {
+  let score = 0;
+  const missing: string[] = [];
+  if (input.license) score += 20;
+  else missing.push("无许可证");
+  if (input.source) score += 15;
+  else missing.push("无来源链接");
+  if (input.skillsOk) score += 20;
+  else missing.push("技能不可解析或缺文件");
+  if (input.toolsDeclared && input.toolsKnown) score += 15;
+  else if (!input.toolsDeclared) missing.push("未声明工具");
+  else missing.push("声明了未知工具");
+  if (input.scanHits === 0) score += 15;
+  else missing.push(`命中 ${input.scanHits} 条高危模式`);
+  const updatedMs = input.updatedAt ? Date.parse(input.updatedAt) : NaN;
+  const fresh = (Number.isFinite(updatedMs) && Date.now() - updatedMs <= MAINTENANCE_WINDOW_MS)
+  || (typeof input.newestMtimeMs === "number" && Date.now() - input.newestMtimeMs <= MAINTENANCE_WINDOW_MS);
+  if (fresh) score += 15;
+  else missing.push("90 天内无维护信号");
+  return { score, missing };
+}
+
+function newestMtimeMs(dir: string): number | null {
+  if (!existsSync(dir)) return null;
+  if (statSync(dir).isFile()) return statSync(dir).mtimeMs;
+  let newest: number | null = null;
+  const walk = (d: string) => {
+    if (!existsSync(d)) return;
+    for (const f of readdirSync(d)) {
+      const full = join(d, f);
+      const st = statSync(full);
+      if (st.isDirectory()) walk(full);
+      else if (newest === null || st.mtimeMs > newest) newest = st.mtimeMs;
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
+/** 列表用的评分：只读索引元数据 + 条目文件（不调模型、不联网）。 */
+export function computeBotReadyForDir(entry: MarketEntryMeta, dir: string): BotReady {
+  let skillsOk = false;
+  let toolsKnown = true;
+  let scanHits = 0;
+  try {
+    if (entry.kind === "skill") {
+      if (existsSync(dir) && statSync(dir).isFile()) {
+        const parsed = parseSkillText(readFileSync(dir, "utf-8"), dir);
+        skillsOk = parsed.name === entry.name && Boolean(parsed.instructions.trim());
+        scanHits = scanMarketplaceText(readFileSync(dir, "utf-8"), entry.path).length;
+      }
+    } else {
+      const verification = verifyMarketplaceEntry({ entry, source: { name: "", kind: "local", path: dirname(dir), added_at: "" }, dir });
+      skillsOk = verification.ok;
+      scanHits = scanMarketplaceEntry({ entry, source: { name: "", kind: "local", path: dirname(dir), added_at: "" }, dir }).length;
+      toolsKnown = (entry.tools ?? []).length === 0 || (verification.tools ?? []).every((t) => KNOWN_TOOLS.has(t));
+    }
+  } catch {
+    skillsOk = false;
+  }
+  return computeBotReady({
+      license: entry.license,
+      source: entry.source,
+      skillsOk,
+      toolsDeclared: (entry.tools ?? []).length > 0,
+      toolsKnown,
+      scanHits,
+      updatedAt: entry.updated_at,
+      newestMtimeMs: newestMtimeMs(dir),
+    });
+}
+
+// ---- 第三道门：独立审查（缺口 10 的模型审查，fail-closed） ----
+
+/**
+* 市场动作的模型审查。审查层未开启时返回 skipped（只走了两道确定性门，
+* 调用方必须明确告诉用户——与候选提案 1 的 bughunt check 同口径）；
+* 开启后审查模型不可用 / 无有效结论 → BLOCK（fail-closed）。
+* 被审集用合并后的配置：用户显式收窄 reviewer.tools 也不影响市场这道门
+* （市场内容是不受信任的第三方配置，审查不能被配置收窄悄悄跳过）。
+*/
+export async function reviewMarketplaceAction(opts: {
+    config: Record<string, unknown>;
+    home: string;
+    action: "marketplace_install" | "marketplace_publish";
+    itemName: string;
+    kind: MarketKind;
+    author?: string | null;
+    license?: string | null;
+    tools: string[];
+    permissions: string[];
+    mode: string;
+    runner?: ReviewerLike | null;
+  }): Promise<ReviewVerdict> {
+  const cfg = opts.config;
+  const reviewer = (cfg.reviewer ?? {}) as Record<string, unknown>;
+  if (reviewer.enabled !== true) {
+    return {
+      decision: "ALLOW",
+      reason: "审查层未开启：只走了两道确定性门（清单校验 + 确定性规则），未过模型审查；新装机器人默认只读起步",
+      reviewerModel: null,
+      source: "skipped",
+    };
+  }
+  const merged: Record<string, unknown> = {
+    ...cfg,
+    reviewer: {
+      ...(reviewer as Record<string, unknown>),
+      tools: [...new Set([...(Array.isArray(reviewer.tools) ? (reviewer.tools as string[]) : []), opts.action])],
+    },
+  };
+  const runner = opts.runner !== undefined ? opts.runner : buildReviewerRunner(cfg, opts.home);
+  const verb = opts.action === "marketplace_install" ? "安装市场条目" : "发布市场条目";
+  return reviewToolCall({
+      config: merged,
+      tool: opts.action,
+      args: {
+        item_name: opts.itemName,
+        kind: opts.kind,
+        author: opts.author ?? "",
+        license: opts.license ?? "",
+        tools: opts.tools.join(","),
+        permissions: opts.permissions.join(","),
+        mode: opts.mode,
+      },
+      task: `${verb} ${opts.itemName}（${opts.kind}，作者 ${opts.author ?? "未知"}，许可证 ${opts.license ?? "未声明"}，声明工具 ${opts.tools.join("、") || "未声明"}，权限 ${opts.permissions.join("、") || "未声明"}，模式 ${opts.mode}）`,
+      runner,
+    });
+}
+
+// ---- 安装：先准备（三道门）再执行（确认后才装） ----
+
+export interface InstallPrepared {
+  entry: MarketEntryMeta;
+  source: MarketSource;
+  dir: string;
+  verification: EntryVerification;
+  scanHits: ScanHit[];
+  botReady: BotReady;
+  review: ReviewVerdict;
+  plannedChanges: string[];
+}
+
+function eventItemName(name: string): string {
+  // 事件字段过 appendEvent 的 redact：≥32 字的连续词串会被当成疑似密钥掩掉，
+  // 名字超长时事件里只留前 28 字，全名在账本里（与缺口 11 的 slug 上限同理）。
+  return name.length > 28 ? name.slice(0, 28) : name;
+}
+
+function recordMarketEvent(store: RunStore | undefined, runId: string | undefined, type: string, fields: Record<string, unknown>): void {
+  if (!store || !runId) return;
+  try {
+    store.appendEvent(runId, type, fields);
+  } catch { /* 运行目录没了只丢审计副本，不破坏安装本身 */ }
+}
+
+export function describeInstallPlan(prepared: InstallPrepared): string {
+  const lines: string[] = [];
+  lines.push(MARKET_WARNING);
+  const e = prepared.entry;
+  lines.push(`条目：${e.name} v${e.version}（${e.kind === "skill" ? "技能包" : "机器人配置"}，来源 ${prepared.source.name}:${e.id}）`);
+  if (e.description) lines.push(`说明：${e.description}`);
+  lines.push(`装到：${e.kind === "skill" ? `~/.nyra/skills/${e.name}.md` : `~/.nyra/plugins/${e.name}/`}`);
+  lines.push(`声明的工具：${prepared.verification.tools.join("、") || "未声明"}`);
+  lines.push(`声明的权限：${prepared.verification.permissions.join("、") || "未声明"}`);
+  lines.push(`模式：${e.mode ?? "readonly"}（新装机器人默认只读起步，写操作须用户显式放开）`);
+  if (prepared.verification.highPrivilegeTools.length) {
+    lines.push(`⚠ 高权限工具：${prepared.verification.highPrivilegeTools.join("、")}——装完后每次调用仍需审批，请确认你真的需要它。`);
+  }
+  if (prepared.verification.routines.length) {
+    lines.push(`routine：${prepared.verification.routines.length} 个（只随机器人安装，不自动执行，须手动启用）`);
+  }
+  for (const w of prepared.verification.warnings) lines.push(`提醒：${w}`);
+  lines.push(`Bot Ready：${prepared.botReady.score}/100${prepared.botReady.missing.length ? `（缺：${prepared.botReady.missing.join("、")}）` : "（满分）"}`);
+  lines.push(`审查：${prepared.review.source === "skipped" ? "已跳过（审查层未开启；只走了两道确定性门）" : `${prepared.review.decision === "ALLOW" ? "通过" : "拦截"}（${prepared.review.reviewerModel ?? ""}，${prepared.review.reason}）`}`);
+  return lines.join("\n");
+}
+
+/** 三道门按顺序过：清单校验 → 确定性规则 → 独立审查；一道不过就抛错、写清哪道门为什么。 */
+export async function prepareMarketplaceInstall(
+  home: string,
+  id: string,
+  opts: { config: Record<string, unknown>; runner?: ReviewerLike | null },
+): Promise<InstallPrepared> {
+  const resolved = resolveMarketEntry(home, id);
+  if (!resolved) throw new MarketplaceError(`市场里没有条目 ${id}（先 nyra market list 看看）`);
+  const verification = verifyMarketplaceEntry(resolved);
+  if (!verification.ok) {
+    throw new MarketplaceError(`清单校验不过，拒绝安装：\n${verification.errors.map((e) => `- ${e}`).join("\n")}`, "manifest");
+  }
+  const scanHits = scanMarketplaceEntry(resolved);
+  if (scanHits.length) {
+    throw new MarketplaceError(`确定性规则拦截，拒绝安装：\n${scanHits.map((h) => `- ${h.where}：${h.reason}`).join("\n")}`, "deterministic");
+  }
+  const botReady = computeBotReadyForDir(resolved.entry, resolved.dir);
+  const manifest = verification.manifest;
+  const review = await reviewMarketplaceAction({
+      config: opts.config,
+      home,
+      action: "marketplace_install",
+      itemName: resolved.entry.name,
+      kind: resolved.entry.kind,
+      author: resolved.entry.author ?? manifest?.author,
+      license: resolved.entry.license ?? manifest?.license,
+      tools: verification.tools,
+      permissions: verification.permissions,
+      mode: resolved.entry.mode ?? manifest?.mode ?? "readonly",
+      runner: opts.runner,
+    });
+  if (review.decision === "BLOCK") {
+    throw new MarketplaceError(`独立审查拦截，拒绝安装（${review.reviewerModel ?? ""}）：${review.reason}`, "reviewer");
+  }
+  const prepared: InstallPrepared = {
+    entry: resolved.entry,
+    source: resolved.source,
+    dir: resolved.dir,
+    verification,
+    scanHits,
+    botReady,
+    review,
+    plannedChanges: [],
+  };
+  prepared.plannedChanges = describeInstallPlan(prepared).split("\n");
+  return prepared;
+}
+
+function stageBotEntry(entryDir: string, manifest: BotManifest): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "nyra-market-"));
+  const cleanup = () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } };
+  try {
+    const pluginJson = {
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description,
+      author: manifest.author,
+      license: manifest.license,
+      homepage: manifest.homepage,
+      skills: manifest.skills,
+      tools: manifest.tools,
+      permissions: manifest.permissions,
+    };
+    writeFileSync(join(dir, "plugin.json"), JSON.stringify(pluginJson, null, 2) + "\n", "utf-8");
+    const skillsDir = join(entryDir, "skills");
+    if (existsSync(skillsDir)) {
+      mkdirSync(join(dir, "skills"), { recursive: true });
+      for (const f of readdirSync(skillsDir).sort()) {
+        if (f.endsWith(".md")) copyFileSync(join(skillsDir, f), join(dir, "skills", f));
+      }
+    }
+    const panelDir = join(entryDir, "panel");
+    if (existsSync(panelDir)) {
+      mkdirSync(join(dir, "panel"), { recursive: true });
+      for (const f of readdirSync(panelDir).sort()) {
+        if (f.endsWith(".html")) copyFileSync(join(panelDir, f), join(dir, "panel", f));
+      }
+    }
+    return { dir, cleanup };
+  } catch (err: unknown) {
+    cleanup();
+    throw err;
+  }
+}
+
+export interface InstallResult {
+  installed: InstalledEntry;
+  files: string[];
+  overwritten: boolean;
+  keptModified: string[];
+}
+
+/** 确认后才执行安装：写文件 → 账本 → 事件（事件写失败不破坏安装）。 */
+export function executeMarketplaceInstall(
+  home: string,
+  prepared: InstallPrepared,
+  opts?: { force?: boolean; store?: RunStore; runId?: string },
+): InstallResult {
+  const entry = prepared.entry;
+  const files: string[] = [];
+  let overwritten = false;
+  let keptModified: string[] = [];
+  let installedPath: string;
+  if (entry.kind === "skill") {
+    const dir = join(home, "skills");
+    installedPath = join(dir, `${entry.name}.md`);
+    const existed = existsSync(installedPath);
+    if (existed && !opts?.force) {
+      throw new MarketplaceError(`技能 ${entry.name} 已安装在 ${installedPath}（改动会丢，先删掉旧版或加 --force 覆盖）`);
+    }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(installedPath, readFileSync(prepared.dir, "utf-8"), { encoding: "utf-8", mode: 0o600 });
+    overwritten = existed;
+    files.push(`skills/${entry.name}.md`);
+  } else {
+    const manifest = prepared.verification.manifest;
+    if (!manifest) throw new MarketplaceError("机器人清单缺失，无法安装（先重新核对条目）");
+    const staged = stageBotEntry(prepared.dir, manifest);
+    try {
+      const report = verifyStagedPlugin(staged.dir);
+      if (!report.ok) {
+        throw new MarketplaceError(`插件验证未通过，拒绝安装：\n${report.errors.map((e) => `- ${e}`).join("\n")}`);
+      }
+      const install = installPlugin(home, staged.dir);
+      keptModified = install.keptModified;
+      files.push(...install.files);
+      // bot.json 与 routines.json 不在插件锁定文件里：随插件目录一起装，
+      // 模式与 routine 声明以它们为准（routine 不自动执行）。
+      const dest = pluginDir(home, manifest.name);
+      copyFileSync(join(prepared.dir, "bot.json"), join(dest, "bot.json"));
+      if (existsSync(join(prepared.dir, "routines.json"))) {
+        copyFileSync(join(prepared.dir, "routines.json"), join(dest, "routines.json"));
+      }
+      installedPath = dest;
+      overwritten = install.upgraded;
+    } finally {
+      staged.cleanup();
+    }
+  }
+  const hashes: Record<string, string> = {};
+  for (const rel of files) {
+    const abs = entry.kind === "skill" ? join(home, rel) : join(installedPath, rel);
+    try { hashes[rel] = sha256File(abs); } catch { /* 缺文件时不记哈希 */ }
+  }
+  const record: InstalledEntry = {
+    item_id: entry.id,
+    item_name: entry.name,
+    kind: entry.kind,
+    version: entry.version,
+    source: prepared.source.name,
+    author: entry.author ?? prepared.verification.manifest?.author,
+    license: entry.license ?? prepared.verification.manifest?.license,
+    installed_at: new Date().toISOString(),
+    installed_path: installedPath,
+    files: hashes,
+    reviewer_source: prepared.review.source,
+    reviewer_model: prepared.review.reviewerModel,
+    reviewer_decision: prepared.review.decision,
+    bot_ready: prepared.botReady.score,
+    bot_ready_missing: prepared.botReady.missing,
+    status: "installed",
+  };
+  const ledger = loadInstalledLedger(home);
+  ledger.push(record);
+  saveInstalledLedger(home, ledger);
+  recordMarketEvent(opts?.store, opts?.runId, "marketplace_installed", {
+      item_name: eventItemName(entry.name),
+      item_version: entry.version,
+      kind: entry.kind,
+      source: `${prepared.source.name}:${entry.id}`,
+      bot_ready: prepared.botReady.score,
+      reviewer_model: prepared.review.reviewerModel ?? "",
+    });
+  return { installed: record, files, overwritten, keptModified };
+}
+
+// ---- 卸载：只删哈希一致的文件，用户改过的文件留着并报告；账本留 uninstalled 记录 ----
+
+export function uninstallMarketplaceEntry(
+  home: string,
+  name: string,
+  opts?: { store?: RunStore; runId?: string },
+): { removed: string[]; kept: string[]; kind: MarketKind } {
+  const record = findInstalled(home, name);
+  if (!record) throw new MarketplaceError(`没有已安装的市场条目 ${name}（先 nyra market installed 看看）`);
+  let removed: string[] = [];
+  let kept: string[] = [];
+  if (record.kind === "skill") {
+    const path = join(home, "skills", `${name}.md`);
+    const expected = record.files[`skills/${name}.md`];
+    if (!existsSync(path)) {
+      kept.push(`skills/${name}.md（文件已不在）`);
+    } else if (expected && sha256File(path) !== expected) {
+      kept.push(`skills/${name}.md（你改过，保留未删）`);
+    } else {
+      rmSync(path, { force: true });
+      removed.push(`skills/${name}.md`);
+    }
+  } else {
+    const result = uninstallPlugin(home, name);
+    removed = result.removed;
+    kept = [...result.keptModified, ...result.missing.map((m) => `${m}（文件已不在）`)];
+    for (const extra of ["bot.json", "routines.json"]) {
+      const p = join(pluginDir(home, name), extra);
+      if (existsSync(p)) {
+        try { rmSync(p, { force: true }); removed.push(extra); } catch { kept.push(extra); }
+      }
+    }
+  }
+  const ledger = loadInstalledLedger(home);
+  // 按名字 + 状态找（record 来自另一次解析，indexOf 比对象恒为 -1）。
+  let idx = -1;
+  for (let i = ledger.length - 1; i >= 0; i--) {
+    if (ledger[i].item_name === name && ledger[i].status === "installed") { idx = i; break; }
+  }
+  if (idx !== -1) {
+    ledger[idx] = { ...ledger[idx], status: "uninstalled", uninstalled_at: new Date().toISOString(), uninstalled_files: removed };
+    saveInstalledLedger(home, ledger);
+  }
+  recordMarketEvent(opts?.store, opts?.runId, "marketplace_uninstalled", {
+      item_name: eventItemName(name),
+      kind: record.kind,
+    });
+  return { removed, kept, kind: record.kind };
+}
+
+// ---- 发布：本地三道门 → 打包脱敏检查 → 生成可提交的条目包 ----
+
+const PUBLISH_SECRET_PATTERNS: { id: string; label: string }[] = [
+  { id: "password-assign", label: "明文密码赋值" },
+  { id: "api-key", label: "API 密钥字样" },
+  { id: "bearer-token", label: "Bearer token" },
+  { id: "private-key", label: "私钥" },
+  { id: "aws-key", label: "AWS Access Key" },
+  { id: "session-cookie", label: "会话 Cookie" },
+];
+
+/** 绝对路径另查：字符类里不放引号（正则字面量里的引号会干扰缩进脚本，见 AGENTS.md）。 */
+const ABSOLUTE_PATH_RE = /(?:\/home\/|\/Users\/|[A-Za-z]:\\)[^\s]+/;
+
+/**
+* 发布脱敏检查：密钥类命中直接拒绝发布；邮箱/电话/身份证是 PII 警告
+* （作者联系方式由作者自己决定，不拦，但写进输出提醒）。
+* 只报模式与行号，绝不返回匹配原文。
+*/
+export function checkPublishHygiene(text: string): { blockers: { pattern: string; label: string; lines: number[] }[]; warnings: { pattern: string; label: string; lines: number[] }[] } {
+  // JSON 文件里的值是转义过的（\"sk-...\"）：转义会挡住密钥正则，先把
+  // \" 与 \\ 还原再扫一份（行数不变，行号仍准），两份命中按模式去重。
+  const variants = [text, text.replace(/\\"/g, "\"").replace(/\\\\/g, "\\")];
+  const seen = new Set<string>();
+  const blockers: { pattern: string; label: string; lines: number[] }[] = [];
+  const warnings: { pattern: string; label: string; lines: number[] }[] = [];
+  for (const variant of variants) {
+    const hygiene = checkEvidenceHygiene(variant);
+    for (const h of hygiene.hits) {
+      const key = `${h.pattern}:${h.lines.join(",")}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const item = { pattern: h.pattern, label: h.label, lines: h.lines };
+      if (PUBLISH_SECRET_PATTERNS.some((p) => p.id === h.pattern)) blockers.push(item);
+      else warnings.push(item);
+    }
+  }
+  const lines = text.split("\n");
+  const found: number[] = [];
+  lines.forEach((line, i) => {
+      ABSOLUTE_PATH_RE.lastIndex = 0;
+      if (ABSOLUTE_PATH_RE.test(line)) found.push(i + 1);
+    });
+  if (found.length) blockers.push({ pattern: "absolute-path", label: "绝对路径", lines: found });
+  return { blockers, warnings };
+}
+
+export interface PublishResult {
+  itemName: string;
+  kind: MarketKind;
+  version: string;
+  outDir: string;
+  files: string[];
+  botReady: BotReady;
+  review: ReviewVerdict;
+  warnings: string[];
+  dryRun: boolean;
+}
+
+function collectPublishFiles(dir: string, kind: MarketKind): { rel: string; abs: string }[] {
+  const out: { rel: string; abs: string }[] = [];
+  if (kind === "bot") {
+    // 只打包条目文件（bot.json、skills、routines.json、panel），不带杂文件。
+    const push = (rel: string) => {
+      const abs = join(dir, rel);
+      if (existsSync(abs)) out.push({ rel, abs });
+    };
+    push("bot.json");
+    push("routines.json");
+    const skillsDir = join(dir, "skills");
+    if (existsSync(skillsDir)) {
+      for (const f of readdirSync(skillsDir).sort()) {
+        if (f.endsWith(".md")) out.push({ rel: `skills/${f}`, abs: join(skillsDir, f) });
+      }
+    }
+    const panelDir = join(dir, "panel");
+    if (existsSync(panelDir)) {
+      for (const f of readdirSync(panelDir).sort()) {
+        if (f.endsWith(".html")) out.push({ rel: `panel/${f}`, abs: join(panelDir, f) });
+      }
+    }
+    return out;
+  }
+  out.push({ rel: basename(dir), abs: dir });
+  return out;
+}
+
+/** 把一个已装技能打包成市场条目用的临时目录（技能文件 + 生成的 bot.json 外壳不适用，技能条目只要 .md）。 */
+export function packSkillAsEntry(home: string, skillName: string): string {
+  const path = join(home, "skills", `${skillName}.md`);
+  if (!existsSync(path)) throw new MarketplaceError(`没有已安装的技能 ${skillName}（先 nyra skills list 看看）`);
+  const parsed = parseSkillText(readFileSync(path, "utf-8"), path);
+  if (parsed.name !== skillName) throw new MarketplaceError(`技能文件里的 name 是 ${parsed.name}，与 ${skillName} 不一致`);
+  return path;
+}
+
+export async function publishMarketplaceEntry(
+  home: string,
+  input: { dir: string } | { skill: string },
+  opts: { config: Record<string, unknown>; runner?: ReviewerLike | null; dryRun?: boolean; outDir?: string; license?: string; store?: RunStore; runId?: string },
+): Promise<PublishResult> {
+  let kind: MarketKind;
+  let pkgDir: string;
+  let skillFile: string | null = null;
+  let manifest: BotManifest | null = null;
+  if ("skill" in input) {
+    kind = "skill";
+    skillFile = packSkillAsEntry(home, input.skill);
+    pkgDir = dirname(skillFile);
+  } else {
+    const dir = resolve(input.dir);
+    if (!existsSync(dir)) throw new MarketplaceError(`发布目录不存在：${dir}`);
+    if (statSync(dir).isFile() && dir.endsWith(".md")) {
+      kind = "skill";
+      skillFile = dir;
+      pkgDir = dirname(dir);
+    } else if (existsSync(join(dir, "bot.json"))) {
+      kind = "bot";
+      pkgDir = dir;
+      manifest = parseBotManifest(dir);
+    } else {
+      throw new MarketplaceError(`发布目录既不是机器人目录（须含 bot.json）也不是单个技能文件（.md）：${dir}`);
+    }
+  }
+  const files = collectPublishFiles(kind === "bot" ? pkgDir : skillFile!, kind);
+  // 打包脱敏检查：含密钥/绝对路径直接拒绝发布。
+  const warnings: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(f.abs, "utf-8");
+    const { blockers, warnings: w } = checkPublishHygiene(text);
+    if (blockers.length) {
+      throw new MarketplaceError(`脱敏检查不过，拒绝发布：${f.rel} 含 ${blockers.map((b) => `${b.label}（第 ${b.lines.join("、")} 行）`).join("、")}，先删掉再发布`, "hygiene");
+    }
+    for (const x of w) warnings.push(`${f.rel}：${x.label}（第 ${x.lines.join("、")} 行，仅提醒，不拦发布）`);
+  }
+  // 许可证必填（机器人看 bot.json，技能看 --license）。
+  const license = manifest?.license ?? opts.license;
+  if (!license) throw new MarketplaceError("许可证必填（bot.json 写 license，或发布时加 --license <许可证>），无许可证不让发", "license");
+  // 本地三道门（与安装同一套门，工具名换成 marketplace_publish）。
+  let verification: EntryVerification;
+  let scanHits: ScanHit[];
+  let botReady: BotReady;
+  if (kind === "skill") {
+    const name = basename(skillFile!, ".md");
+    const fakeEntry: MarketEntryMeta = { id: name, kind: "skill", name, version: "0.1.0", path: basename(skillFile!), license };
+    verification = verifyMarketplaceEntry({ entry: fakeEntry, source: { name: "self", kind: "local", path: pkgDir, added_at: "" }, dir: skillFile! });
+    scanHits = scanMarketplaceText(readFileSync(skillFile!, "utf-8"), basename(skillFile!));
+    botReady = computeBotReady({
+        license, source: null, skillsOk: verification.ok,
+        toolsDeclared: false, toolsKnown: true, scanHits: scanHits.length,
+        updatedAt: null, newestMtimeMs: statSync(skillFile!).mtimeMs,
+      });
+  } else {
+    const fakeEntry: MarketEntryMeta = {
+      id: manifest!.name, kind: "bot", name: manifest!.name, version: manifest!.version,
+      description: manifest!.description, author: manifest!.author, license,
+      source: manifest!.homepage, path: ".", tools: manifest!.tools, permissions: manifest!.permissions,
+      mode: manifest!.mode,
+    };
+    verification = verifyMarketplaceEntry({ entry: fakeEntry, source: { name: "self", kind: "local", path: pkgDir, added_at: "" }, dir: pkgDir });
+    scanHits = scanMarketplaceEntry({ entry: fakeEntry, source: { name: "self", kind: "local", path: pkgDir, added_at: "" }, dir: pkgDir });
+    botReady = computeBotReadyForDir(fakeEntry, pkgDir);
+  }
+  if (!verification.ok) {
+    throw new MarketplaceError(`清单校验不过，拒绝发布：\n${verification.errors.map((e) => `- ${e}`).join("\n")}`, "manifest");
+  }
+  if (scanHits.length) {
+    throw new MarketplaceError(`确定性规则拦截，拒绝发布：\n${scanHits.map((h) => `- ${h.where}：${h.reason}`).join("\n")}`, "deterministic");
+  }
+  const itemName = kind === "skill" ? basename(skillFile!, ".md") : manifest!.name;
+  const version = kind === "skill" ? "0.1.0" : manifest!.version;
+  const review = await reviewMarketplaceAction({
+      config: opts.config,
+      home,
+      action: "marketplace_publish",
+      itemName,
+      kind,
+      author: manifest?.author,
+      license,
+      tools: verification.tools,
+      permissions: verification.permissions,
+      mode: manifest?.mode ?? "readonly",
+      runner: opts.runner,
+    });
+  if (review.decision === "BLOCK") {
+    throw new MarketplaceError(`独立审查拦截，拒绝发布（${review.reviewerModel ?? ""}）：${review.reason}`, "reviewer");
+  }
+  const outDir = opts.outDir ? resolve(opts.outDir) : join(marketplacePublishDir(home), itemName);
+  const outFiles: string[] = [];
+  if (!opts.dryRun) {
+    mkdirSync(outDir, { recursive: true });
+    for (const f of files) {
+      const target = join(outDir, f.rel === basename(skillFile ?? "") && kind === "skill" ? basename(f.abs) : f.rel);
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(f.abs, target);
+      outFiles.push(relative(outDir, target));
+    }
+    const fragment = {
+      id: itemName,
+      kind,
+      name: itemName,
+      version,
+      description: manifest?.description,
+      author: manifest?.author,
+      license,
+      source: manifest?.homepage ?? "",
+      path: kind === "bot" ? "." : `${itemName}.md`,
+      tools: verification.tools,
+      permissions: verification.permissions,
+      mode: manifest?.mode ?? "readonly",
+      updated_at: new Date().toISOString(),
+      bot_ready: botReady.score,
+    };
+    writeFileSync(join(outDir, "market-entry.json"), JSON.stringify(fragment, null, 2) + "\n", "utf-8");
+    outFiles.push("market-entry.json");
+    const ledger = loadInstalledLedger(home);
+    ledger.push({
+        item_id: itemName,
+        item_name: itemName,
+        kind,
+        version,
+        source: "self",
+        author: manifest?.author,
+        license,
+        installed_at: new Date().toISOString(),
+        installed_path: outDir,
+        files: {},
+        reviewer_source: review.source,
+        reviewer_model: review.reviewerModel,
+        reviewer_decision: review.decision,
+        bot_ready: botReady.score,
+        bot_ready_missing: botReady.missing,
+        status: "published",
+        published_at: new Date().toISOString(),
+        published_out_dir: outDir,
+      });
+    saveInstalledLedger(home, ledger);
+    recordMarketEvent(opts.store, opts.runId, "marketplace_published", {
+        item_name: eventItemName(itemName),
+        item_version: version,
+        kind,
+        license,
+        bot_ready: botReady.score,
+      });
+  }
+  return { itemName, kind, version, outDir, files: opts.dryRun ? files.map((f) => f.rel) : outFiles, botReady, review, warnings, dryRun: Boolean(opts.dryRun) };
+}
+
+// ---- 模板与网关公开视图 ----
+
+export function marketBotTemplate(): string {
+  return JSON.stringify({
+      name: "my-bot",
+      version: "0.1.0",
+      description: "一句话说明这个机器人是干什么的",
+      author: "你的名字",
+      license: "MIT",
+      homepage: "https://github.com/<你>/<仓库>",
+      skills: ["my-skill"],
+      tools: ["read_file"],
+      permissions: ["fs:read-workspace"],
+      mode: "readonly",
+    }, null, 2) + "\n";
+}
+
+export function marketIndexTemplate(): string {
+  return JSON.stringify({
+      version: 1,
+      name: "my-market",
+      description: "市场索引：entries 里每条是一个技能包或机器人配置",
+      updated_at: new Date().toISOString(),
+      entries: [
+        {
+          id: "my-bot",
+          kind: "bot",
+          name: "my-bot",
+          version: "0.1.0",
+          description: "一句话说明",
+          author: "你的名字",
+          license: "MIT",
+          source: "https://github.com/<你>/<仓库>",
+          path: "bots/my-bot",
+          tools: ["read_file"],
+          permissions: ["fs:read-workspace"],
+          mode: "readonly",
+        },
+        {
+          id: "my-skill",
+          kind: "skill",
+          name: "my-skill",
+          version: "0.1.0",
+          description: "一句话说明",
+          author: "你的名字",
+          license: "MIT",
+          source: "https://github.com/<你>/<仓库>",
+          path: "skills/my-skill.md",
+        },
+      ],
+    }, null, 2) + "\n";
+}
+
+/** 网关 GET /api/marketplace：只给公开元数据，不含绝对路径与正文。 */
+export function listMarketplacePublic(home: string): {
+  sources: { name: string; kind: string; entries: number }[];
+  entries: { id: string; kind: string; name: string; version: string; description?: string; author?: string; license?: string; source?: string; bot_ready: number; bot_ready_missing: string[]; tools: string[]; permissions: string[]; mode?: string }[];
+  installed: { item_name: string; kind: string; version: string; source: string; installed_at: string; status: string; bot_ready: number }[];
+} {
+  const sources = loadMarketSources(home);
+  const srcView = sources.map((s) => {
+      let count = 0;
+      try { count = loadMarketIndex(s.path).entries.length; } catch { count = 0; }
+      return { name: s.name, kind: s.kind, entries: count };
+    });
+  const entries = listMarketEntries(home).map((l) => ({
+        id: l.entry.id,
+        kind: l.entry.kind,
+        name: l.entry.name,
+        version: l.entry.version,
+        description: l.entry.description,
+        author: l.entry.author,
+        license: l.entry.license,
+        source: l.entry.source,
+        bot_ready: l.botReady.score,
+        bot_ready_missing: l.botReady.missing,
+        tools: l.entry.tools ?? [],
+        permissions: l.entry.permissions ?? [],
+        mode: l.entry.mode,
+      }));
+  const installed = listInstalled(home).map((e) => ({
+        item_name: e.item_name,
+        kind: e.kind,
+        version: e.version,
+        source: e.source,
+        installed_at: e.installed_at,
+        status: e.status,
+        bot_ready: e.bot_ready,
+      }));
+  return { sources: srcView, entries, installed };
+}
