@@ -90,6 +90,10 @@ export const DEFAULT_REVIEWED_TOOLS: readonly string[] = [
   // executeTool 不会遇到这三个名字，加进来只影响审查集（对外服务那道门
   // 用合并后的配置调 reviewToolCall，用户收窄 tools 也不影响对外服务审查）。
   "mcp_server_add_memory", "mcp_server_forget_session", "mcp_server_dispatch_task",
+  // peer_ask / peer_handoff 是虚拟敏感动作（不是 tools.ts 里的工具）：
+  // 对端协作的对外发送过审查，见 src/peer.ts 的 reviewPeerAction；同款
+  // 合并配置做法，用户收窄 tools 也不影响对端协作那道门。
+  "peer_ask", "peer_handoff",
 ];
 
 export function reviewerConfig(config: Record<string, unknown>): ReviewerConfig {
