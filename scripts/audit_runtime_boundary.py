@@ -18,6 +18,8 @@ PATHS = {
     "node_cli": "src/cli.ts",
     "node_agent": "src/agent.ts",
     "node_tools": "src/tools.ts",
+    "node_gateway": "src/gateway.ts",
+    "node_memory": "src/memory.ts",
 }
 PROBES = {
     "python_journal_reference": ("angel/agent.py", "tool_journal"),
@@ -25,6 +27,11 @@ PROBES = {
     "node_idempotent_reference": ("src/agent.ts", "executeToolIdempotent"),
     "node_execute_tool_definition": ("src/tools.ts", "function executeTool"),
     "node_cli_agent_reference": ("src/cli.ts", "from \"./agent.ts\""),
+    "node_tool_result_persistence": ("src/agent.ts", "saveSession(this.sessionId, messages.slice(1), this.home)"),
+    "node_tool_result_append": ("src/agent.ts", "messages.push({ role: \"tool\""),
+    "node_gateway_agent_run": ("src/gateway.ts", "run.agent!.run(text)"),
+    "node_gateway_scheduler_run": ("src/gateway.ts", "agent.run(task.prompt)"),
+    "node_memory_save_definition": ("src/memory.ts", "function saveSession"),
 }
 
 
@@ -86,12 +93,13 @@ def main() -> int:
                  for tree in (development, main)
                  for status in tree["file_status"].values())
     print(json.dumps({
-        "schema_version": 2,
+        "schema_version": 3,
         "development": development,
         "main": main,
         "runtime_split_detected": split if not errors else None,
         "audit_incomplete": errors,
         "node_protected_by_python_journal": "not_established",
+        "node_dispatch_and_persistence": "textual_anchors_only_not_complete_call_graph",
         "static_only": True,
     }, ensure_ascii=False, indent=2))
     return 2 if errors or not split else 0
