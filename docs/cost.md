@@ -145,3 +145,34 @@ nyra stats heatmap [--weeks N]   # 默认 8 周；N 为 1–52
 辅助模型：实测省 $0.0230
   cheap：1 次 · 实际 $0.0020 · 主模型口径 $0.0250 · 省 $0.0230
 ```
+
+## 机器可读：`nyra savings --json`
+
+人看单页（默认输出），机器拿结构：
+
+```bash
+nyra savings --json
+```
+
+```json
+{
+  "schema_version": 1,
+  "tokens_per_turn_total": 391,
+  "unknown_count": 4,
+  "lines": [
+    { "mechanism": "disable_tool", "enabled": true,
+      "tokens_per_turn_saved": 391, "additive": true, "effect": "…", "source": "…" }
+  ],
+  "model_savings": {
+    "main_model": "…", "total_saved_usd": 0.023, "unknown_calls": 0, "main_spent_usd": null,
+    "rows": [{ "model": "…", "calls": 2, "actual_usd": 0.002,
+               "counterfactual_usd": 0.025, "saved_usd": 0.023 }]
+  }
+}
+```
+
+契约纪律（与 `nyra verdict --json` 一致）：
+
+- **只加字段、不改名、不删字段**，客户端按 `schema_version` 判断兼容
+- `tokens_per_turn_saved` 为 `null` 表示**算不出**，不是 0——把"不知道"写成 0 会让看板画出假的下降曲线
+- 没传实测节省时 `model_savings` 为 `null`，不编造 0
