@@ -10,7 +10,7 @@
 
 export const SUBCOMMANDS: readonly string[] = [
   // 运行与结论
-  "verdict", "guard", "redlines", "evidence", "restore",
+  "verdict", "guard", "redlines", "evidence", "restore", "timeline", "replay",
   // 成本与用量
   "cost", "savings", "stats",
   // 配置与开关

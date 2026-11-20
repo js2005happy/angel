@@ -116,6 +116,13 @@ bot_watch_changed: ["watch_id", "label", "from_hash", "to_hash"],
 connector_authorized: ["connector", "user_id", "scopes_hash"],
 connector_expired: ["connector", "user_id", "reason"],
 connector_revoked: ["connector", "user_id"],
+// 缺口 21：多 agent 执行时间线——子任务起止与单次模型调用 span。
+// delegate_start/end 只记元数据（不记任务文本）；llm_span 只记模型、耗时、
+// token 数（不记 prompt/回答内容）。子任务的 run 链靠 task_id 串联：父级
+// 事件里的 task_id 与子 agent 产出文本里的 [子任务 task-… 已完成] 同源。
+delegate_start: ["task_id", "model", "max_turns"],
+delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
+llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
 final: [],
 max_turns: [],
 error: ["error_type"],
@@ -771,7 +778,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);
@@ -1179,16 +1186,21 @@ export function computeRunStats(store: RunStore, runId: string, state: RunState)
   const base = statsFromState(state as unknown as Record<string, unknown>);
   const events = store.readEvents(runId);
   let llmCalls = 0;
+  let llmSpanCalls = 0;
   let toolCalls = 0;
   let toolErrors = 0;
   let runErrors = 0;
   for (const ev of events) {
-    if (ev.type === "turn") llmCalls += 1;
+    // 缺口 21：有 llm_span 时按 span 计数（单次调用的模型/耗时/token 都在），
+    // 旧运行没有 span 时退回 turn 计数，不把旧数据算成 0。
+    if (ev.type === "llm_span") llmSpanCalls += 1;
+    else if (ev.type === "turn") llmCalls += 1;
     else if (ev.type === "tool_start") toolCalls += 1;
     else if (ev.type === "tool_result" && ev.ok === false) toolErrors += 1;
     else if (ev.type === "error") runErrors += 1;
   }
-  return { ...base, llmCalls: llmCalls > 0 ? llmCalls : null, toolCalls, toolErrors, runErrors };
+  const llm = llmSpanCalls > 0 ? llmSpanCalls : llmCalls;
+  return { ...base, llmCalls: llm > 0 ? llm : null, toolCalls, toolErrors, runErrors };
 }
 
 export function formatRunStatsHeader(stats: RunStats | null): string {

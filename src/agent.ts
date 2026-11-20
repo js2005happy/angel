@@ -1223,15 +1223,40 @@ export class Agent {
         messages.length = 0;
         messages.push(...current);
       }
+      // 缺口 21：单次模型调用 span——模型、耗时、本次 token 数进证据链
+      // （只记元数据，不记 prompt/回答内容；失败调用同样记一笔 ok=false）。
+      // token 用快照差值：与 usage.record 同源，provider 没报用量时为 null。
+      const spanStart = Date.now();
+      const spanUsageBefore = this.usage.snapshot();
+      const spanModel = typeof (actModel as { model?: unknown }).model === "string"
+        ? (actModel as { model: string }).model
+        : (typeof this.provider.model === "string" ? this.provider.model : null);
+      const emitLlmSpan = (ok: boolean): void => {
+        try {
+          const after = this.usage.snapshot();
+          const delta = (a: number | null, b: number | null): number | null =>
+            a === null ? null : a - (b ?? 0);
+          this.emit("llm_span", {
+            model: spanModel,
+            duration_ms: Date.now() - spanStart,
+            prompt_tokens: delta(after.prompt_tokens, spanUsageBefore.prompt_tokens),
+            completion_tokens: delta(after.completion_tokens, spanUsageBefore.completion_tokens),
+            total_tokens: delta(after.total_tokens, spanUsageBefore.total_tokens),
+            ok,
+          });
+        } catch { /* span 记账失败绝不破坏主循环 */ }
+      };
       let resp: Record<string, unknown>;
       try {
         resp = await actModel.chat(current as never, schemas as never);
       } catch (err: unknown) {
+        emitLlmSpan(false);
         if (err instanceof ProviderError) throw new AgentError(String(err));
         throw err;
       }
       this.turn = turnOffset + i + 1;
       this.usage.record(resp as never);
+      emitLlmSpan(true);
       this.checkCost();
       if (resp && typeof resp === "object" && typeof (resp as Record<string, unknown>).usage === "object") {
         this.emit("usage", this.usage.snapshot() as unknown as Record<string, unknown>);
@@ -1694,6 +1719,10 @@ export class Agent {
       // 1 次（同一子 agent、同一 worktree 就地改，复用完整上下文；无改动可改时
       // 不重做）。记账只在最终产出确定后记一次：child.lastCost 是累计值，
       // 两次运行的钱都在里面，只记一次才不会 double-count。
+      // 缺口 21：子任务起止进父级事件链（只记 task_id/模型/轮数上限，不记任务文本）。
+      try {
+        this.emit("delegate_start", { task_id: taskId, model: child.provider.model ?? null, max_turns: maxTurns });
+      } catch { /* 观察器故障绝不破坏主流程 */ }
       const vcfg = this.verifierCfg();
       const reworkOn = vcfg.enabled && vcfg.rework;
       let summary = "";
@@ -1744,6 +1773,10 @@ export class Agent {
         } catch { /* 观察器故障绝不破坏主流程 */ }
       }
       recordChildUsage();
+      // 缺口 21：子任务结束（成功路径）——轮数取子 agent 实际跑的轮数。
+      try {
+        this.emit("delegate_end", { task_id: taskId, ok: true, turns: child.turn, spent_usd: childSpentUsd, verification: verification.status });
+      } catch { /* 观察器故障绝不破坏主流程 */ }
       const head = notes.length ? `[子任务 ${taskId} 已完成]\n（${notes.join("；")}）\n` : `[子任务 ${taskId} 已完成]\n`;
       const cleanedNote = cleanedNoChanges ? "\n\n（worktree 隔离：子任务没有改动任何文件，工作树已清理）" : "";
       const verdictLine = verification.status === "verified"
@@ -1764,6 +1797,10 @@ export class Agent {
       );
     } catch (err: unknown) {
       recordChildUsage();
+      // 缺口 21：子任务结束（失败路径）。
+      try {
+        this.emit("delegate_end", { task_id: taskId, ok: false, turns: child.turn, spent_usd: childSpentUsd, verification: "not-verified" });
+      } catch { /* 观察器故障绝不破坏主流程 */ }
       // 缺口 19：子任务失败时 SubagentStop 同样触发（只通知）。
       await this.runSubagentStopHook(taskId, task, false);
       if (worktreePath) spawnSync("git", ["worktree", "remove", "--force", worktreePath], { cwd: this.workdir, windowsHide: true });

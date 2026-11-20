@@ -18,6 +18,7 @@ import {
 import { Provider, FallbackProvider, buildProviderChain, makeModelFactory, ProviderError, switchTriggerFor, type RetryRecord, type SwitchRecord } from "./providers.ts";
 import { Agent, AgentError, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport, computeRunStats } from "./runs.ts";
+import { buildTimeline, formatTimelineText, formatReplayText, exportTimelineMarkdown } from "./timeline.ts";
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { handleCost } from "./costCli.ts";
 import { handleStats, formatMonthLine } from "./statsCli.ts";
@@ -127,6 +128,8 @@ REPL：/context 查看上下文占用；/compact focus <关键词> 按重点压�
 nyra --resume <会话 ID>        继续指定会话
 nyra --resume-run <运行 ID>    从运行记录断点续跑
 nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
+nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]   执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行，详见 docs/timeline.md）
+nyra replay <运行 ID> [--verbose]   会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -203,6 +206,8 @@ REPL: /context shows context usage; /compact focus <keyword> compacts around a t
 nyra --resume <session id>     continue a session
 nyra --resume-run <run id>     resume a run from its record
 nyra evidence verify <run id>  independently re-check a run's evidence chain (see docs/evidence.md)
+nyra timeline <run id> [--verbose] [--json] [--out <path>]   rebuild one multi-agent run as a timeline (read-only replay, no re-execution, see docs/timeline.md)
+nyra replay <run id> [--verbose]   replay one run step by step, grouped by turn (read-only, no re-execution)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -4966,6 +4971,65 @@ function handleEigenflux(argv: string[], home: string): number {
   }
 }
 
+/** 缺口 21：nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]。
+ * 只读：从 state.json + events.jsonl 重建时间线；--out 导出 Markdown（0600）。 */
+function handleTimeline(sub: string[], home: string): number {
+  const runId = sub.find((a) => !a.startsWith("-")) ?? "";
+  if (!runId) {
+    process.stderr.write("用法：nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]\n");
+    return EXIT_ARGUMENT;
+  }
+  const verbose = sub.includes("--verbose");
+  const json = sub.includes("--json");
+  const outIdx = sub.findIndex((a) => a === "--out");
+  const outPath = outIdx >= 0 ? sub[outIdx + 1] ?? "" : "";
+  if (outIdx >= 0 && !outPath) {
+    process.stderr.write("--out 需要一个路径\n");
+    return EXIT_ARGUMENT;
+  }
+  const store = new RunStore(join(home, "runs"));
+  let tl;
+  try {
+    tl = buildTimeline(store, runId);
+  } catch {
+    process.stderr.write(`找不到运行 ${runId}（用 nyra runs 查看现有记录）\n`);
+    return EXIT_ARGUMENT;
+  }
+  if (outPath) {
+    try {
+      const written = exportTimelineMarkdown(store, runId, resolve(outPath));
+      process.stdout.write(`已导出时间线到 ${written}\n`);
+      return 0;
+    } catch (err: unknown) {
+      process.stderr.write(`导出失败：${err instanceof Error ? err.message : String(err)}\n`);
+      return EXIT_RUNTIME;
+    }
+  }
+  if (json) process.stdout.write(JSON.stringify(tl, null, 2) + "\n");
+  else process.stdout.write(formatTimelineText(tl, { verbose }) + "\n");
+  return 0;
+}
+
+/** 缺口 21：nyra replay <运行 ID> [--verbose]——按轮次逐步重现，只读 walkthrough。 */
+function handleReplay(sub: string[], home: string): number {
+  const runId = sub.find((a) => !a.startsWith("-")) ?? "";
+  if (!runId) {
+    process.stderr.write("用法：nyra replay <运行 ID> [--verbose]\n");
+    return EXIT_ARGUMENT;
+  }
+  const verbose = sub.includes("--verbose");
+  const store = new RunStore(join(home, "runs"));
+  let tl;
+  try {
+    tl = buildTimeline(store, runId);
+  } catch {
+    process.stderr.write(`找不到运行 ${runId}（用 nyra runs 查看现有记录）\n`);
+    return EXIT_ARGUMENT;
+  }
+  process.stdout.write(formatReplayText(tl, { verbose }) + "\n");
+  return 0;
+}
+
 // ---- 主入口 ----
 export async function main(argv: string[]): Promise<number> {
   // spec 07：首次运行做原子迁移（~/.angel → ~/.nyra），只读 ~/.nyra。
@@ -5040,6 +5104,8 @@ export async function main(argv: string[]): Promise<number> {
     args.subcommand = "verdict";
     args.subArgs = [...(args.subArgs ?? []), "--guard"];
   }
+  if (args.subcommand === "timeline") return handleTimeline(args.subArgs ?? [], home);
+  if (args.subcommand === "replay") return handleReplay(args.subArgs ?? [], home);
   if (args.subcommand === "verdict") {
     // --json：机器可读输出（CI 门禁只看 grade，看板画趋势线看 reasons 里的数字）。
     const verdictJson = (args.subArgs ?? []).includes("--json");
