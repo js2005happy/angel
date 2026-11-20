@@ -130,9 +130,12 @@ function expectBoxAligned(lines: string[]): void {
 test("I18n.test_header_snapshot_en", () => {
   setLang("en");
   const lines = renderHeader(INFO, { width: 100, color: false, unicode: true, home: "/home/sj" });
-  expect(lines.slice(4).join("\n")).toBe([
-    " ██   ▀██     ██     ██  ▀██▄  ██▀▀▀▀██   v0.5.1",
-    " ██    ██     ██     ██    ██  ██    ██   An open-source AI agent that runs on your computer",
+  expect(lines.slice(3).join("\n")).toBe([
+    " █████  ▀██████   Nyra v0.5.1",
+    " █████    ▀████   An open-source AI agent that runs on your computer",
+    " █████     ▄███",
+    "  ▀███  ▄  ▀█▀",
+    "    ▀████▄▄▀",
     "",
     "╭──────────────────────────────────────────╮",
     "│ Model   deepseek / deepseek-flash        │",
@@ -142,15 +145,23 @@ test("I18n.test_header_snapshot_en", () => {
     "╰──────────────────────────────────────────╯",
   ].join("\n"));
   expectBoxAligned(lines);
-  // 彩色版去掉 ANSI 后与无色版一致。
-  expect(renderHeader(INFO, { width: 100, color: true, unicode: true, home: "/home/sj" }).map(stripAnsi)).toEqual(lines);
+  // 彩色版去掉 ANSI 后：标志以下逐字一致（标志行是抗锯齿画法，只比宽度）。
+  const colored = renderHeader(INFO, { width: 100, color: true, unicode: true, home: "/home/sj" }).map(stripAnsi);
+  expect(colored.slice(8)).toEqual(lines.slice(8));
+  expect(colored[3]).toEndWith("Nyra v0.5.1");
+  expect(textWidth(colored[3])).toBe(textWidth(lines[3]));
+  expect(textWidth(colored[4])).toBe(textWidth(lines[4]));
 });
 
 test("I18n.test_header_snapshot_zh", () => {
   setLang("zh");
   const lines = renderHeader(INFO, { width: 100, color: false, unicode: true, home: "/home/sj" });
-  expect(lines.slice(5).join("\n")).toBe([
-    " ██    ██     ██     ██    ██  ██    ██   跑在你电脑上的开源 AI Agent",
+  expect(lines.slice(3).join("\n")).toBe([
+    " █████  ▀██████   Nyra v0.5.1",
+    " █████    ▀████   跑在你电脑上的开源 AI Agent",
+    " █████     ▄███",
+    "  ▀███  ▄  ▀█▀",
+    "    ▀████▄▄▀",
     "",
     "╭──────────────────────────────────────────╮",
     "│ 模型  deepseek / deepseek-flash          │",

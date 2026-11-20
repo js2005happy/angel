@@ -1,12 +1,13 @@
 // src/banner.ts — 交互终端外观 v2（品牌化）：
-//   1. 欢迎屏：鼠尾草绿 → 雾蓝渐变的块字 NYRA（5 行）+ 版本，下面一张圆角信息卡
-//      （模型 / 模式徽章 / 目录 / git 分支），再一行 Tips；窄于 60 列退回单行 "✻ Nyra"。
+//   1. 欢迎屏：左边是用半块字符拼的 Nyra 标志（圆盘 + 光标，14 列 × 7 行，见 termMark.ts），
+//      右边 "Nyra 版本" + 一句话介绍；下面一张圆角信息卡（模型 / 模式徽章 / 目录 / git 分支），
+//      再一行 Tips；窄于 MARK_MIN_COLS 列退回单行 "✻ Nyra"。
 //   2. 工作区信任：简短的框式确认。
 //   3. 输入区：主色 "›" 提示符，暗主色横线；状态栏是彩色分段，左右对齐。
 // 全部是纯函数（文本进、行出），便于快照测试；只做零依赖的环境探测和几次同步小文件读
 // （git 分支读 .git/HEAD），不 spawn 子进程，不拖慢启动。
 //
-// 字形：能画框线的终端用 ╭─╮│╰╯、块字与 ✻；Windows 上只有确认能渲染的终端
+// 字形：能画框线的终端用 ╭─╮│╰╯、半块字符标志与 ✻；Windows 上只有确认能渲染的终端
 // （Windows Terminal / VS Code / ConEmu / mintty 等）才用，否则（老 conhost
 // 点阵字体、未知宿主）退回纯 ASCII，保证不出乱码。NYRA_ASCII=1 强制 ASCII，
 // NYRA_UNICODE=1 强制框线。NO_COLOR 只去掉颜色，布局不变。
@@ -15,6 +16,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { charWidth, textWidth, truncateWidth } from "./consoleUi.ts";
 import { BRAND, gradient, paint as paintRaw, type ColorLevel, type PaintOpts } from "./theme.ts";
+import { renderTermMark, TERM_MARK_COLS, TERM_MARK_ROWS } from "./termMark.ts";
 import { t } from "./i18n.ts";
 
 export { supportsBoxDrawing } from "./theme.ts";
@@ -113,17 +115,10 @@ export function gitBranch(cwd: string): string | null {
   return null;
 }
 
-// ---- 块字 NYRA（5 行，每个字母 8 列，字母间隔 2 列，总宽 38） ----
-const WORDMARK_FONT: Record<string, string[]> = {
-  N: ["██▄   ██", "██▀█▄ ██", "██ ▀█▄██", "██   ▀██", "██    ██"],
-  Y: ["██    ██", "▀██▄▄██▀", "  ▀██▀  ", "   ██   ", "   ██   "],
-  R: ["███████▄", "██    ██", "███████▀", "██  ▀██▄", "██    ██"],
-  A: ["  ▄██▄  ", " ██▀▀██ ", "██▄▄▄▄██", "██▀▀▀▀██", "██    ██"],
-};
-export const WORDMARK_LINES: string[] = [0, 1, 2, 3, 4].map((i) => ["N", "Y", "R", "A"].map((c) => WORDMARK_FONT[c][i]).join("  "));
-export const WORDMARK_WIDTH = textWidth(WORDMARK_LINES[0]);
-/** 宽度低于此值时欢迎屏退回单行 "✻ Nyra"。 */
-export const WORDMARK_MIN_COLS = 60;
+/** 宽度低于此值时欢迎屏退回单行 "✻ Nyra"（标志 + 右侧文字至少要这么宽）。 */
+export const MARK_MIN_COLS = 40;
+/** 标志右侧文字所在的行（7 行标志里，标题与介绍对齐圆心上下）。 */
+const MARK_TITLE_ROW = 2;
 
 /** 模式徽章的底色：readonly 绿 / auto 蓝紫 / full 红 / creator 珊瑚。 */
 export function modeColor(mode: string): string {
@@ -179,10 +174,10 @@ export interface HeaderInfo {
 export const DEFAULT_TAGLINE = "跑在你电脑上的开源 AI Agent";
 
 /**
- * 欢迎屏：宽屏（≥ 60 列且能画框线）是渐变块字 NYRA + 版本 + 信息卡；
+ * 欢迎屏：宽屏（≥ MARK_MIN_COLS 列且能画框线）是半块字符标志 + "Nyra 版本" + 介绍 + 信息卡；
  * 窄屏、ASCII 回退或 compact（非 TTY）是单行 "✻ Nyra <版本>" + 信息卡。
  */
-export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: string; compact?: boolean }): string[] {
+export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: string; compact?: boolean; light?: boolean }): string[] {
   const level = levelOf(opts);
   const unicode = opts.unicode ?? true;
   const g = glyphsFor(unicode);
@@ -191,16 +186,25 @@ export function renderHeader(info: HeaderInfo, opts: RenderOpts & { home?: strin
   const tagline = info.tagline ?? t("banner.tagline");
   const version = `v${info.version}`;
   out.push(""); // 与上方（信任确认或命令行）隔开一行
-  if (unicode && !opts.compact && cols >= WORDMARK_MIN_COLS) {
-    // 版本与一句话介绍放在块字右侧（够宽时），否则放在块字下面。
-    const side = cols >= 1 + WORDMARK_WIDTH + 3 + textWidth(tagline) + 1;
-    WORDMARK_LINES.forEach((line, i) => {
-      let row = " " + gradient(line, level);
-      if (side && i === 3) row += "   " + paintRaw(version, level, { fg: BRAND.text, bold: true });
-      if (side && i === 4) row += "   " + paintRaw(tagline, level, { fg: BRAND.muted });
-      out.push(row);
-    });
-    if (!side) out.push(" " + paintRaw(version, level, { fg: BRAND.text, bold: true }) + "  " + paintRaw(truncateWidth(tagline, Math.max(1, cols - textWidth(version) - 4), g.ellipsis), level, { fg: BRAND.muted }));
+  if (unicode && !opts.compact && cols >= MARK_MIN_COLS) {
+    // 标志在左，"Nyra 版本" 与一句话介绍在右侧、对齐圆心；介绍放不下时截断。
+    const mark = renderTermMark({ level, light: opts.light });
+    const textCol = 1 + TERM_MARK_COLS + 3;
+    const room = Math.max(1, cols - textCol - 1);
+    const title = truncateWidth(`Nyra ${version}`, room, g.ellipsis);
+    // 浅色终端上 BRAND.text（近白）看不见：标题用终端默认前景色加粗。
+    const titleStyle: PaintOpts = opts.light ? { bold: true } : { fg: BRAND.text, bold: true };
+    const titlePainted = title === `Nyra ${version}`
+      ? paintRaw("Nyra", level, titleStyle) + " " + paintRaw(version, level, { fg: BRAND.muted })
+      : paintRaw(title, level, titleStyle);
+    const side: Record<number, string> = {
+      [MARK_TITLE_ROW]: titlePainted,
+      [MARK_TITLE_ROW + 1]: paintRaw(truncateWidth(tagline, room, g.ellipsis), level, { fg: BRAND.muted }),
+    };
+    for (let i = 0; i < TERM_MARK_ROWS; i++) {
+      const row = " " + mark[i];
+      out.push(side[i] ? row + "   " + side[i] : row.replace(/ +$/, ""));
+    }
     out.push("");
   } else {
     const plain = `${g.mark} Nyra ${info.version}`;

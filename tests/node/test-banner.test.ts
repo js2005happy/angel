@@ -1,4 +1,4 @@
-// tests/node/test-banner.test.ts — 终端外观 v2（渐变块字欢迎屏 / 信息卡 / 信任确认 / 输入区 / 状态栏）。
+// tests/node/test-banner.test.ts — 终端外观 v2（半块字符标志欢迎屏 / 信息卡 / 信任确认 / 输入区 / 状态栏）。
 // 内联快照锁定无色布局；颜色只做"去掉 ANSI 后与无色版完全一致"的检查。
 import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
@@ -7,9 +7,10 @@ import { join } from "node:path";
 import {
   renderHeader, renderTrustPrompt, renderStatusBar, renderInputFrame, renderRule, renderTips, renderReply,
   renderOk, renderError, renderEcho, supportsBoxDrawing, shortenPath, truncateLeft, stripAnsi, inputRows,
-  gitBranch, modeBadge, WORDMARK_LINES, WORDMARK_MIN_COLS,
+  gitBranch, modeBadge, MARK_MIN_COLS,
 } from "../../src/banner.ts";
 import { textWidth } from "../../src/consoleUi.ts";
+import { TERM_MARK_COLS, TERM_MARK_ROWS } from "../../src/termMark.ts";
 
 const INFO = { version: "0.5.1", model: "deepseek / deepseek-flash", mode: "auto", cwd: "/home/sj/projects/nyra-cli", branch: "main" };
 
@@ -17,11 +18,13 @@ test("BannerTest.test_header_snapshot_wide", () => {
   const out = renderHeader(INFO, { width: 100, color: false, unicode: true, home: "/home/sj" }).join("\n");
   expect(out).toBe([
     "",
-    " ██▄   ██  ██    ██  ███████▄    ▄██▄  ",
-    " ██▀█▄ ██  ▀██▄▄██▀  ██    ██   ██▀▀██ ",
-    " ██ ▀█▄██    ▀██▀    ███████▀  ██▄▄▄▄██",
-    " ██   ▀██     ██     ██  ▀██▄  ██▀▀▀▀██   v0.5.1",
-    " ██    ██     ██     ██    ██  ██    ██   跑在你电脑上的开源 AI Agent",
+    "    ▄██████▄",
+    "  ▄██████████▄",
+    " █████  ▀██████   Nyra v0.5.1",
+    " █████    ▀████   跑在你电脑上的开源 AI Agent",
+    " █████     ▄███",
+    "  ▀███  ▄  ▀█▀",
+    "    ▀████▄▄▀",
     "",
     "╭──────────────────────────────────────────╮",
     "│ 模型  deepseek / deepseek-flash          │",
@@ -32,13 +35,15 @@ test("BannerTest.test_header_snapshot_wide", () => {
   ].join("\n"));
 });
 
-test("BannerTest.test_header_narrow_falls_back_to_single_line", () => {
+test("BannerTest.test_header_narrow_truncates_then_falls_back_to_single_line", () => {
   const lines = renderHeader(INFO, { width: 50, color: false, unicode: true, home: "/home/sj" });
-  expect(lines.slice(0, 2)).toEqual(["", "✻ Nyra 0.5.1"]);
-  expect(lines.join("\n")).not.toContain("█");
-  // 恰好在阈值上才出块字。
-  expect(renderHeader(INFO, { width: WORDMARK_MIN_COLS, unicode: true }).join("")).toContain("█");
-  expect(renderHeader(INFO, { width: WORDMARK_MIN_COLS - 1, unicode: true }).join("")).not.toContain("█");
+  expect(lines.join("\n")).toContain("█");
+  expect(renderHeader(INFO, { width: MARK_MIN_COLS, color: false, unicode: true }).join("\n")).toContain("…");
+  // 50 列仍然出标志（介绍截断）；恰好在阈值上才出标志，低一列退回单行。
+  expect(renderHeader(INFO, { width: MARK_MIN_COLS, unicode: true }).join("")).toContain("█");
+  expect(renderHeader(INFO, { width: MARK_MIN_COLS - 1, unicode: true }).join("")).not.toContain("█");
+  const narrow = renderHeader(INFO, { width: MARK_MIN_COLS - 1, color: false, unicode: true, home: "/home/sj" });
+  expect(narrow.slice(0, 2)).toEqual(["", "✻ Nyra 0.5.1"]);
   for (const l of lines) expect(textWidth(l)).toBeLessThanOrEqual(50);
 });
 
@@ -75,11 +80,14 @@ test("BannerTest.test_header_without_branch_has_no_branch_row", () => {
   expect(out).not.toContain("分支");
 });
 
-test("BannerTest.test_wordmark_shape", () => {
-  expect(WORDMARK_LINES.length).toBeGreaterThanOrEqual(4);
-  expect(WORDMARK_LINES.length).toBeLessThanOrEqual(6);
-  expect(new Set(WORDMARK_LINES.map((l) => textWidth(l))).size).toBe(1);
-  expect(WORDMARK_LINES.join("")).not.toContain("#");
+test("BannerTest.test_mark_replaces_wordmark", () => {
+  // 不再有 NYRA 块字（用户不要字标）；"Nyra" 只作为纯文字标题出现。
+  const out = renderHeader(INFO, { width: 100, color: false, unicode: true, home: "/home/sj" });
+  const mark = out.slice(1, 1 + TERM_MARK_ROWS);
+  expect(mark.length).toBe(TERM_MARK_ROWS);
+  for (const l of mark) expect(textWidth(l.slice(0, 1 + TERM_MARK_COLS))).toBeLessThanOrEqual(1 + TERM_MARK_COLS);
+  expect(out.join("\n")).not.toContain("██▄   ██");
+  expect(out.join("\n")).toContain("Nyra v0.5.1");
 });
 
 test("BannerTest.test_never_angel", () => {
@@ -128,7 +136,15 @@ test("BannerTest.test_color_levels_keep_layout", () => {
   for (const level of [1, 2, 3] as const) {
     const colored = renderHeader(INFO, { width: 100, color: true, level, home: "/home/sj" });
     expect(colored.join("\n")).toContain("\x1b[");
-    expect(colored.map(stripAnsi)).toEqual(plain);
+    // 标志行：256 色 / truecolor 是抗锯齿画法，字形可以不同，但显示宽度一致；其余行逐字一致。
+    const markRows = 1 + TERM_MARK_ROWS;
+    expect(colored.slice(markRows).map(stripAnsi)).toEqual(plain.slice(markRows));
+    colored.slice(0, markRows).forEach((l, i) => {
+      const w = textWidth(stripAnsi(l));
+      if (stripAnsi(l).includes("Nyra") || plain[i].includes("AI")) expect(w).toBe(textWidth(plain[i]));
+      else expect(w).toBeLessThanOrEqual(1 + TERM_MARK_COLS);
+    });
+    if (level === 1) expect(colored.map(stripAnsi)).toEqual(plain);
   }
   // truecolor 用 38;2，256 色用 38;5，16 色不用两者。
   const tc = renderHeader(INFO, { width: 100, color: true, level: 3 }).join("");

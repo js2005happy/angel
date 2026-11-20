@@ -49,6 +49,7 @@ import {
   renderHeader, renderTrustPrompt, renderInputFrame, inputRows, supportsBoxDrawing, renderTips, renderEcho,
   renderReply, renderOk, renderError, gitBranch, stripAnsi,
 } from "./banner.ts";
+import { isLightTerminal } from "./termMark.ts";
 import { detectColorLevel, type ColorLevel } from "./theme.ts";
 import {
   PetController, PET_WIDTH, petVisible, petEnabledFromConfig, parsePetCommand, renderPet, renderBubble, petFace,
@@ -3247,7 +3248,7 @@ async function runRepl(args: CliArgs): Promise<number> {
   process.once("SIGINT", onReplSigint);
   try { await runHooks("SessionStart", { home, workdir }); } catch { /* 同上：只通知事件 */ }
   let providerDesc = `${agent.provider.name} / ${(agent.provider as { model?: string }).model ?? ""}`;
-  // 终端外观 v2：TTY 且宽度够时是品牌化欢迎屏（渐变块字 + 信息卡 + Tips）、横线输入区、
+  // 终端外观 v2：TTY 且宽度够时是品牌化欢迎屏（半块字符标志 + 信息卡 + Tips）、横线输入区、
   // 彩色状态栏、spinner 与右侧小伙伴；非 TTY / TERM=dumb / 太窄时退回纯文本状态行 + "> "
   // （管道与脚本不受影响）。颜色：truecolor → 256 → 16 → NO_COLOR 无色。
   const uiColor = useColor(process.stdout);
@@ -3266,7 +3267,7 @@ async function runRepl(args: CliArgs): Promise<number> {
   const showPet = (): boolean => framed() && petVisible({ enabled: petOn, tty: isTty, cols: termCols(), unicode: uiUnicode });
   process.stdout.write(renderHeader(
       { version: VERSION, model: providerDesc, mode: agent.mode, cwd: workdir, branch },
-      { width: termCols(), ...ui, compact: !framed() },
+      { width: termCols(), ...ui, compact: !framed(), light: isLightTerminal() },
     ).join("\n") + "\n");
   process.stdout.write((framed()
       ? renderTips({ width: termCols(), ...ui, pet: showPet() })
