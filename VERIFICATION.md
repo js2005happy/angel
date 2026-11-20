@@ -1,3 +1,9 @@
+## 2026-11-20 — 静态审计锚点失效保护 v4（未执行）
+
+- 读取开发分支五份文档、Python Agent/ToolJournal 与审计脚本，读取主分支五份文档及 `src/agent.ts`、`src/tools.ts`、`src/gateway.ts`、`src/memory.ts`，查询近期提交、开放 Issues/PR 和上一提交 CI 状态。
+- 代码审阅：`scripts/audit_runtime_boundary.py` 增加主分支 Node 锚点完整性检查。缺失或无法读取的锚点会出现在 `missing_node_anchors`，标记 `audit_incomplete` 并返回 2；协议 v4。
+- **未执行脚本、测试、类型检查或 CI**；前一提交 `40fa92d` combined status 和关联 PR workflow 均为空，不等于通过。静态字符串命中不证明真实运行时派发覆盖、跨进程锁或工具副作用。
+
 ## 2026-11-20 — Node 派发/结果持久化静态锚点 v3（未执行）
 
 - 静态读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python Agent/ToolJournal、审计脚本，主分支 package.json、src/cli.ts、src/agent.ts、src/tools.ts、src/gateway.ts；查询最新提交、开放 Issues/PR。
