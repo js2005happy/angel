@@ -1,3 +1,9 @@
+## 2026-11-20 — Node 派发/结果持久化静态锚点 v3（未执行）
+
+- 静态读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Python Agent/ToolJournal、审计脚本，主分支 package.json、src/cli.ts、src/agent.ts、src/tools.ts、src/gateway.ts；查询最新提交、开放 Issues/PR。
+- 审计脚本新增 gateway/memory 文件状态与 agent 工具结果追加、saveSession、gateway 交互及调度 run 调用的文本行号锚点，schema_version=3。仅源码审阅；未执行脚本、测试、类型检查或 CI。
+- 静态文本命中不构成完整控制流、事务边界、跨进程互斥或外部副作用证明。未安装、未合并 main、未发布。
+
 ## 2026-11-20 — 静态审计 v2（源码审阅，未执行）
 
 - 已核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Python Agent/ToolJournal 与原审计脚本；主分支 package.json、src/cli.ts、src/agent.ts、src/tools.ts；查询最近提交、开放 Issue/PR 和上一提交状态。
