@@ -48,11 +48,13 @@ jobs:
         with:
           bun-version: '1.4.4'
 
-      - name: Set up Java 17
+      # Capacitor 8.6.2 的 :capacitor-android 模块以 source release 21 编译，
+      # Java 17 的 javac 认不出 release 21（0.5.3 曾因此在 assembleDebug 失败），故用 21。
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Ensure Android SDK 36
         # Capacitor 8.6.2 targets compileSdk 36. The runner image usually
