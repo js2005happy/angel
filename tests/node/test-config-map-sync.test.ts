@@ -41,10 +41,19 @@ test("每个能力的「可改的键」全都出现在它那一行", () => {
 
 test("文档里没有多出来的能力行（代码删掉的能力不能留在文档里）", () => {
   const known = new Set(explainAll({ config: {} }).map((c) => c.capability));
-  const docCaps = doc
-    .split("\n")
-    .filter((l) => /^\| `[a-z_]+` \|/.test(l))
-    .map((l) => /^\| `([a-z_]+)` \|/.exec(l)![1]);
+    // 只看「能力表」那一段：文档里还有别的表（如锁定范围表）首列也是 `键`，
+    // 全局正则会把它们误当成能力行（这条断言自己踩过）。
+    const capSection = (() => {
+      const lines = doc.split("\n");
+      const start = lines.findIndex((l) => l.startsWith("| 能力 |"));
+      if (start < 0) return [];
+      const rest = lines.slice(start);
+      const end = rest.findIndex((l, i) => i > 0 && /^#{1,6} /.test(l));
+      return end < 0 ? rest : rest.slice(0, end);
+    })();
+        const docCaps = capSection
+          .filter((l) => /^\| `[a-z_]+` \|/.test(l))
+          .map((l) => /^\| `([a-z_]+)` \|/.exec(l)![1]);
   for (const cap of docCaps) expect(known.has(cap)).toBe(true);
 });
 
