@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 Linux claim 名称复核目录 fd 绑定
+
+- 实验性 Node/Bun claim：写入后与目录 fsync 后的 claim 名称复核，改为相对于仍打开的 Linux 目录 fd 的 procfs 路径，避免重新解析可能被替换的原目录路径。无新增依赖；不自动删除 claim 或重放工具。
+- 仅静态审阅，未运行测试/CI；尚未接入主 Node 工具派发，procfs 信任边界未验证。
+
 ## Unreleased — 2026-11-21 Linux claim 同一目录 fd 持久化
 
 - 实验性 Node/Bun claim：保留 Linux 创建时的目录描述符直至目录 fsync 与最终名称核验，避免重新打开路径时同步被替换的目录。失败不自动删除 claim、不自动重放；无新增依赖。
