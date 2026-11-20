@@ -166,6 +166,21 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `看了 ${count} 张图（${model}）`, kinds ? `来源：${kinds}` : null, null, null);
         break;
       }
+      case "voice_input": {
+        const seconds = num(ev.seconds);
+        const chars = num(ev.chars) ?? 0;
+        const engine = str(ev.engine) ?? "未知引擎";
+        const cost = num(ev.cost_usd);
+        push(at, "event", `语音转写（${engine}）`, `${seconds !== null ? `${seconds} 秒 · ` : ""}${chars} 字${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
+        break;
+      }
+      case "voice_speak": {
+        const chars = num(ev.chars) ?? 0;
+        const engine = str(ev.engine) ?? "未知引擎";
+        const cost = num(ev.cost_usd);
+        push(at, "event", `语音回读（${engine}）`, `${chars} 字${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
+        break;
+      }
       case "peer_asked": {
         const peer = str(ev.peer) ?? "未知对端";
         const ok = bool(ev.ok);
@@ -314,8 +329,8 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
     promptTokens: num(summary.prompt_tokens),
     completionTokens: num(summary.completion_tokens),
     totalTokens: num(summary.total_tokens),
-    spentUsd: num(summary.spent_usd) !== null || num(summary.delegate_spent_usd) !== null
-      ? (num(summary.spent_usd) ?? 0) + (num(summary.delegate_spent_usd) ?? 0)
+    spentUsd: num(summary.spent_usd) !== null || num(summary.delegate_spent_usd) !== null || num(summary.voice_spent_usd) !== null
+      ? (num(summary.spent_usd) ?? 0) + (num(summary.delegate_spent_usd) ?? 0) + (num(summary.voice_spent_usd) ?? 0)
       : null,
     delegateSpentUsd: num(summary.delegate_spent_usd),
     steps,

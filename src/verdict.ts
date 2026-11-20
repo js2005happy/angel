@@ -228,15 +228,18 @@ export interface RunVerdictInput {
   spent_usd?: number | null;
   /** 子任务花费合计。 */
   delegate_spent_usd?: number | null;
+  /** 语音花费合计（缺口 15：STT/TTS）。 */
+  voice_spent_usd?: number | null;
   error?: string | null;
 }
 
-/** 本次运行的总花费：主 + 子；两处都未知时为 null。 */
+/** 本次运行的总花费：主 + 子 + 语音；三处都未知时为 null。 */
 function runTotal(input: RunVerdictInput): number | null {
   const main = typeof input.spent_usd === "number" && Number.isFinite(input.spent_usd) ? input.spent_usd : null;
   const del = typeof input.delegate_spent_usd === "number" && Number.isFinite(input.delegate_spent_usd) ? input.delegate_spent_usd : null;
-  if (main === null && del === null) return null;
-  return (main ?? 0) + (del ?? 0);
+  const voice = typeof input.voice_spent_usd === "number" && Number.isFinite(input.voice_spent_usd) ? input.voice_spent_usd : null;
+  if (main === null && del === null && voice === null) return null;
+  return (main ?? 0) + (del ?? 0) + (voice ?? 0);
 }
 
 /**

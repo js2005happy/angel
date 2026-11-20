@@ -11,7 +11,7 @@
 // 后续轮次直接发给模型。测试覆盖见 tests/node/test-agent.test.ts
 // （缓存不变式专项）与 tests/node/test-lazy-tools.test.ts。
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { ProviderError, type ProviderLike } from "./providers.ts";
@@ -50,6 +50,11 @@ import {
   buildVisionUserMessage, DEFAULT_VISION_CONFIG, modelSupportsVision, visionGateMessage,
   type VisionConfig, type VisionImageInput,
 } from "./vision.ts";
+import {
+  DEFAULT_VOICE_CONFIG, estimateSttCostUsd, estimateTtsCostUsd, httpEndpointOf,
+  playAudioFile, shortTextHash, synthesizeSpeech, transcribeAudio,
+  type VoiceAudioInput, type VoiceConfig,
+} from "./voice.ts";
 import {
   verifyOutput,
   verifierConfig,
@@ -256,6 +261,19 @@ export interface AgentOptions {
   visionInputs?: VisionImageInput[] | null;
   /** 缺口 16：视觉输入的配置（上限等）；不传用默认值，CLI 从 config.json 解析后传入。 */
   visionConfig?: VisionConfig | null;
+  /**
+   * 缺口 15：本次运行附带的语音（CLI --voice 备好后传入；直接构造
+   * Agent 的测试也可传）。只在首轮、非续跑时先转写再当任务文本；用完即清。
+   */
+  voiceInputs?: VoiceAudioInput[] | null;
+  /** 缺口 15：语音的配置（上限、模型、单价等）；不传用默认值，CLI 从 config.json 解析后传入。 */
+  voiceConfig?: VoiceConfig | null;
+  /**
+   * 缺口 15：测试注入——语音的外部命令执行器（默认 spawnSync；测试传假实现，
+   * 不依赖本机 whisper/ffprobe）与云端 fetch（默认全局 fetch）。
+   */
+  voiceRunner?: import("./voice.ts").CommandRunner | null;
+  voiceFetch?: typeof fetch | null;
 }
 
 // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化的 breakdown。
@@ -416,6 +434,17 @@ export class Agent {
   visionInputs: VisionImageInput[] = [];
   /** 缺口 16：视觉输入的配置（上限等）。 */
   private visionConfig: VisionConfig = DEFAULT_VISION_CONFIG;
+  /** 缺口 15：本次运行附带的语音（首轮先转写再当任务文本，用完即清）。 */
+  voiceInputs: VoiceAudioInput[] = [];
+  /** 缺口 15：语音的配置（上限、模型、单价等）。 */
+  private voiceConfig: VoiceConfig = DEFAULT_VOICE_CONFIG;
+  /** 缺口 15：测试注入——语音的外部命令执行器与云端 fetch。 */
+  private voiceRunner: import("./voice.ts").CommandRunner | null = null;
+  private voiceFetch: typeof fetch | null = null;
+  /** 缺口 15：本次运行已计价的语音花费合计（STT 按分钟、TTS 按字数；单次硬顶与月度硬顶要含这部分，否则语音就是旁路）。 */
+  voiceSpentUsd = 0;
+  /** 缺口 15：本次运行的语音调用次数（STT + TTS）。 */
+  voiceCalls = 0;
   skillsDirs: string[];
   skills: Skill[];
   // 调研报告第 2 项：技能渐进披露——技能索引缓存。技能集合以数组引用标识：
@@ -481,6 +510,12 @@ export class Agent {
     this.visionInputs = opts.visionInputs ? [...opts.visionInputs] : [];
     /** 缺口 16：视觉输入的配置（上限等）；describe_image 工具共用同一份。 */
     this.visionConfig = opts.visionConfig ?? DEFAULT_VISION_CONFIG;
+    /** 缺口 15：本次运行附带的语音（首轮先转写再当任务文本，用完即清）。 */
+    this.voiceInputs = opts.voiceInputs ? [...opts.voiceInputs] : [];
+    /** 缺口 15：语音的配置（上限、模型、单价等）。 */
+    this.voiceConfig = opts.voiceConfig ?? DEFAULT_VOICE_CONFIG;
+    this.voiceRunner = opts.voiceRunner ?? null;
+    this.voiceFetch = opts.voiceFetch ?? null;
     // 调研报告第 2 项：技能渐进披露——分层加载。loadSkills 是“先加载的赢”
     // （seen 去重：同名技能只保留第一次出现的），所以数组顺序即优先级顺序：
     // 项目层（<workdir>/skills、<workdir>/.nyra/skills）在前、全局层
@@ -1226,6 +1261,14 @@ export class Agent {
   }
 
   private async runLoop(task: string, resume: boolean): Promise<string> {
+    if (!resume && this.voiceInputs.length > 0) {
+      // 缺口 15：首轮带语音——先转写（本地 whisper 优先、云端兜底；失败直接
+      // 报错，不静默降级），转写文本当任务文本；转写只记元数据与文本指纹进证据链。
+      // 转写在 toolSchemas / buildSystemPrompt 之前：技能匹配要看到转写后的任务。
+      const transcript = await this.transcribeVoiceInput(this.voiceInputs[0]);
+      task = task.trim() ? `${task}\n\n语音转写：${transcript}` : transcript;
+      this.voiceInputs = [];
+    }
     this.lastTask = task;
     if (this.delegateDepth === 0) {
       this.delegateBudget.reset();
@@ -1538,6 +1581,65 @@ export class Agent {
   }
 
   /**
+   * 缺口 15：一段语音转写成任务文本（本地 whisper 优先、云端兜底；失败直接
+   * 报错，不静默降级）。花费按分钟计价进同一本硬顶账（voiceSpentUsd，与
+   * delegateSpentUsd 同口径）；转写只记时长、字数、引擎、花费与文本指纹进
+   * 证据链，不记音频内容与转写原文（转写原文就是任务文本，已在运行记录里）。
+   */
+  private async transcribeVoiceInput(input: VoiceAudioInput): Promise<string> {
+    const endpoint = httpEndpointOf(this.provider);
+    const result = await transcribeAudio({
+      input, config: this.voiceConfig, endpoint,
+      runCommand: this.voiceRunner ?? undefined, fetchFn: this.voiceFetch ?? undefined,
+    });
+    this.voiceCalls += 1;
+    const cost = estimateSttCostUsd(result.seconds, this.voiceConfig);
+    if (cost !== null) this.voiceSpentUsd += cost;
+    try {
+      this.emit("voice_input", {
+        seconds: result.seconds,
+        chars: result.text.length,
+        engine: result.engine,
+        cost_usd: cost,
+        text_hash: shortTextHash(result.text),
+      });
+    } catch { /* 记账失败绝不破坏主循环 */ }
+    this.checkCost();
+    return result.text;
+  }
+
+  /**
+   * 缺口 15：把一段结果文字读出来（云端 TTS 合成 mp3，存 ~/.nyra/voice/）。
+   * 只读结果摘要（前 500 字），不读完整证据链。force = true 时绕过
+   * tts_enabled 开关（CLI --speak 显式要求读）；否则默认关。返回 null =
+   * 未开启；合成失败直接抛错（调用方决定是警告还是中断）。
+   */
+  async speakResult(text: string, force = false): Promise<{ path: string; chars: number; costUsd: number | null } | null> {
+    if (!force && !this.voiceConfig.ttsEnabled) return null;
+    const summary = text.trim().slice(0, 500);
+    if (!summary) return null;
+    const endpoint = httpEndpointOf(this.provider);
+    if (!endpoint) {
+      throw new AgentError("回读需要云端 TTS：当前 provider 没有 HTTP 音频接口（Codex CLI 之类），请换一个 HTTP provider 或关闭回读");
+    }
+    const out = await synthesizeSpeech(summary, this.voiceConfig, endpoint, this.voiceFetch ?? undefined);
+    this.voiceCalls += 1;
+    const cost = estimateTtsCostUsd(out.chars, this.voiceConfig);
+    if (cost !== null) this.voiceSpentUsd += cost;
+    const dir = join(this.home, "voice");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const name = `speak-${new Date().toISOString().replace(/[:.]/g, "-")}.mp3`;
+    const path = join(dir, name);
+    writeFileSync(path, out.bytes, { mode: 0o600 });
+    try {
+      this.emit("voice_speak", { chars: out.chars, engine: out.engine, cost_usd: cost });
+    } catch { /* 记账失败绝不破坏主流程 */ }
+    this.checkCost();
+    playAudioFile(path, this.voiceConfig);
+    return { path, chars: out.chars, costUsd: cost };
+  }
+
+  /**
    * 缺口 16：单次视觉调用（describe_image 工具用）。图片 + 一句提示发给视觉
    * 模型，返回文字描述；用量走同一本账（usage.record + checkCost），看不了图
    * 的模型直接拒绝（不静默降级成“只记元信息”）。
@@ -1581,21 +1683,26 @@ export class Agent {
     if (e.status === "priced") {
       this.emit("cost", { spent_usd: e.spentUsd, limit_usd: e.limitUsd, remaining_usd: e.remainingUsd });
     }
-    if (e.status === "priced" && e.spentUsd !== null && this.maxCostUsd !== null) {
-      // 单次硬顶按“本次运行全部花费”判定：主 agent + 已完成的子任务。
+    // 缺口 15：语音花费（STT 按分钟、TTS 按字数，不走 token 账）同样进硬顶：
+    // 单次上限按“token 花费 + 子任务 + 语音”合计判定；token 未计价时只要语音
+    // 已计价且超限，同样中止（不因 token 算不出就放过已知的语音花费）。
+    const voiceUsd = this.voiceSpentUsd;
+    if (this.maxCostUsd !== null && (e.status === "priced" ? e.spentUsd !== null : voiceUsd > 0)) {
+      // 单次硬顶按“本次运行全部花费”判定：主 agent + 已完成的子任务 + 语音。
       // 子任务自己也拿到了同一上限（见 delegate），两边都是硬停。
-      const runSpent = e.spentUsd + this.delegateSpentUsd;
+      const runSpent = (e.spentUsd ?? 0) + this.delegateSpentUsd + voiceUsd;
       if (runSpent > this.maxCostUsd) {
         throw new AgentError(
-          this.delegateSpentUsd > 0
-            ? `成本上限已超：已花费 $${runSpent.toFixed(4)}（上限 $${this.maxCostUsd.toFixed(2)}，其中子任务 $${this.delegateSpentUsd.toFixed(4)}），运行已中止`
-            : `成本上限已超：已花费 $${e.spentUsd.toFixed(4)}（上限 $${this.maxCostUsd.toFixed(2)}），运行已中止`,
+          this.delegateSpentUsd > 0 || voiceUsd > 0
+            ? `成本上限已超：已花费 $${runSpent.toFixed(4)}（上限 $${this.maxCostUsd.toFixed(2)}${this.delegateSpentUsd > 0 ? `，其中子任务 $${this.delegateSpentUsd.toFixed(4)}` : ""}${voiceUsd > 0 ? `，其中语音 $${voiceUsd.toFixed(4)}` : ""}），运行已中止`
+            : `成本上限已超：已花费 $${e.spentUsd!.toFixed(4)}（上限 $${this.maxCostUsd.toFixed(2)}），运行已中止`,
         );
       }
     }
-    if (this.monthlyCostLimitUsd !== null && e.status === "priced" && e.spentUsd !== null) {
+    if (this.monthlyCostLimitUsd !== null && ((e.status === "priced" && e.spentUsd !== null) || voiceUsd > 0)) {
       const before = this.monthlySpentBeforeUsd?.() ?? null;
-      const check = checkMonthlyCap(before?.spentUsd ?? null, e.spentUsd, this.monthlyCostLimitUsd);
+      // 缺口 15：月度“本次运行进行中的花费”同样含语音部分。
+      const check = checkMonthlyCap(before?.spentUsd ?? null, (e.spentUsd ?? 0) + voiceUsd, this.monthlyCostLimitUsd);
       this.lastMonthlySpentUsd = check.monthSpentUsd;
       if (check.exceeded && check.monthSpentUsd !== null) {
         const reset = nextMonthlyResetDate();
@@ -1625,6 +1732,8 @@ export class Agent {
       turn: this.turn, maxTurns: this.maxTurns, snapshot: this.usage.snapshot(), estimate: e,
       // 委派花费不能只出现在中止文案里：看板要报出来，否则「显示 .02 实际 .15」。
       delegateUsd: this.delegateSpentUsd,
+      // 缺口 15：语音花费同理进看板合计。
+      voiceUsd: this.voiceSpentUsd,
     });
     this.emit("cost_update", snap as unknown as Record<string, unknown>);
   }
@@ -1788,8 +1897,11 @@ export class Agent {
         const before = this.monthlySpentBeforeUsd?.() ?? null;
         const own = this.lastCost?.status === "priced" && this.lastCost.spentUsd !== null
           ? this.lastCost.spentUsd : null;
-        if (before === null || own === null) return null;
-        return { spentUsd: before.spentUsd + own, incomplete: before.incomplete };
+        // 缺口 15：父级进行中的语音花费同样算进子任务的“本月已花”。
+        const ownVoice = this.voiceSpentUsd;
+        const ownTotal = own === null ? (ownVoice > 0 ? ownVoice : null) : own + ownVoice;
+        if (before === null || ownTotal === null) return null;
+        return { spentUsd: before.spentUsd + ownTotal, incomplete: before.incomplete };
       }),
     });
     // 缺口 20/29：子任务用量记账（只记一次）：成功时在 child.run 返回后记，
@@ -1800,7 +1912,12 @@ export class Agent {
     const recordChildUsage = (): void => {
       if (delegateUsageRecorded) return;
       delegateUsageRecorded = true;
-      const childSpent = child.lastCost?.status === "priced" ? child.lastCost.spentUsd : null;
+      const childTokenSpent = child.lastCost?.status === "priced" ? child.lastCost.spentUsd : null;
+      // 缺口 15：子任务的语音花费（STT/TTS）同样进父级硬顶与账本。
+      const childVoiceSpent = child.voiceSpentUsd;
+      const childSpent = childTokenSpent === null
+        ? (childVoiceSpent > 0 ? childVoiceSpent : null)
+        : childTokenSpent + childVoiceSpent;
       childSpentUsd = childSpent;
       if (childSpent !== null) this.delegateSpentUsd += childSpent;
       this.emit("delegate_usage", {

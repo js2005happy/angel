@@ -120,6 +120,13 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 一次最多附几张图片（默认 5）；video_max_bytes = 单个视频上限（默认 50MB）；
   // max_videos = 一次最多附几个视频（默认 3）。数字不合法时回退默认值。
   vision: { max_bytes: 10 * 1024 * 1024, max_frames: 6, max_images: 5, video_max_bytes: 50 * 1024 * 1024, max_videos: 3 },
+  // 缺口 15：语音指挥（见 docs/voice.md）。max_bytes = 单段音频上限（默认
+  // 25MB）；max_seconds = 单段最长（默认 600 秒）；stt_model/tts_model =
+  // 云端语音模型（默认 whisper-1/tts-1）；tts_enabled = 任务跑完后自动回读
+  // （默认关）；stt_local_binary/stt_local_model = 本地 whisper.cpp 的二进
+  // 制与模型文件（都配好才走本地，否则走云端）；stt_language 默认 auto；
+  // tts_player = 回读播放器（不配只保存文件）；两个单价不配时花费记 null。
+  voice: { max_bytes: 25 * 1024 * 1024, max_seconds: 600, stt_model: "whisper-1", tts_model: "tts-1", tts_voice: "alloy", tts_enabled: false, stt_local_binary: null, stt_local_model: null, stt_language: "auto", tts_player: null, stt_price_per_min_usd: null, tts_price_per_1k_chars_usd: null },
   // 缺口 24：子 agent（delegate）独立的推理档位；不填沿用全局 reasoning_effort。
   delegate_reasoning_effort: null,
   // 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图）。enabled 默认关（显式 opt-in）；

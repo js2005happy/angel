@@ -39,7 +39,9 @@ export interface DashboardSnapshot {
    * 只报 spent_usd 会让人以为整轮才花了这么点——委派花费是旁路。
    */
   delegate_usd?: number | null;
-  /** spent_usd + delegate_usd（本次运行合计）；任一缺失则为 null。 */
+  /** 本次运行已计价的语音花费（缺口 15：agent 的 voiceSpentUsd）；不给则不报这一项。 */
+  voice_usd?: number | null;
+  /** spent_usd + delegate_usd + voice_usd（本次运行合计）；任一缺失则为 null。 */
   run_total_usd?: number | null;
   /** 算不出金额的原因（unpriced / missing 时有值）。 */
   reason?: string;
@@ -53,9 +55,13 @@ export function buildDashboardSnapshot(input: {
   estimate: CostEstimate;
   /** 已完成子任务的计价花费（agent 的 delegateSpentUsd）；不给则不报这一项。 */
   delegateUsd?: number | null;
+  /** 本次运行已计价的语音花费（agent 的 voiceSpentUsd）；不给则不报这一项。 */
+  voiceUsd?: number | null;
 }): DashboardSnapshot {
   const s = input.snapshot;
   const e = input.estimate;
+  const extraUsd = (typeof input.delegateUsd === "number" && Number.isFinite(input.delegateUsd) ? input.delegateUsd : 0)
+    + (typeof input.voiceUsd === "number" && Number.isFinite(input.voiceUsd) ? input.voiceUsd : 0);
   return {
     turn: input.turn,
     max_turns: input.maxTurns,
@@ -70,10 +76,11 @@ export function buildDashboardSnapshot(input: {
     missing_calls: s.missing_calls,
     context_window_tokens: s.context_window_tokens,
     context_remaining_tokens: s.context_remaining_tokens,
-    ...(typeof input.delegateUsd === "number" && Number.isFinite(input.delegateUsd) && input.delegateUsd > 0
+    ...(extraUsd > 0
       ? {
-        delegate_usd: input.delegateUsd,
-        run_total_usd: e.spentUsd === null ? null : e.spentUsd + input.delegateUsd,
+        ...(typeof input.delegateUsd === "number" && input.delegateUsd > 0 ? { delegate_usd: input.delegateUsd } : {}),
+        ...(typeof input.voiceUsd === "number" && input.voiceUsd > 0 ? { voice_usd: input.voiceUsd } : {}),
+        run_total_usd: e.spentUsd === null ? null : e.spentUsd + extraUsd,
       }
       : {}),
     ...(e.reason ? { reason: e.reason } : {}),

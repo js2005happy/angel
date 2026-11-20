@@ -129,6 +129,11 @@ vision_input: ["count", "hashes", "model", "kinds"],
 // 问题原文、答复原文与交接包内容。
 peer_asked: ["peer", "question_hash", "ok"],
 peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
+// 缺口 15：语音指挥进证据链——转写（多长、多少字、哪个引擎、花了多少、
+// 转写文本的指纹）与回读（多少字、哪个引擎、花了多少）。只记元数据与
+// 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。
+voice_input: ["seconds", "chars", "engine", "cost_usd", "text_hash"],
+voice_speak: ["chars", "engine", "cost_usd"],
 delegate_start: ["task_id", "model", "max_turns"],
 delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
 llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
@@ -675,6 +680,9 @@ private delegatePrompt = 0;
 private delegateCompletion = 0;
 private delegateTotal = 0;
 private delegateSpent: number | null = null;
+/** 缺口 15：语音已花费合计（voice_input/voice_speak 事件里 cost_usd 的累计）。 */
+private voiceSpent: number | null = null;
+private voiceCalls = 0;
 private previous: ((kind: string, data: Record<string, unknown>) => void) | null;
 private previousApproval: ((tool: string, approved: boolean | null) => void) | null;
 private previousFinal: AgentLike["onFinal"];
@@ -761,6 +769,8 @@ spent_usd: cost?.status === "priced" ? cost.spentUsd : null,
 cost_status: cost?.status ?? null,
 delegate_spent_usd: this.delegateSpent,
 delegate_calls: this.delegateCalls,
+voice_spent_usd: this.voiceSpent,
+voice_calls: this.voiceCalls,
 };
 this.store.update(this.runId, { usage_summary: summary });
 } catch { /* 摘要落盘失败不影响运行本身；统计头会显示未知 */ }
@@ -787,7 +797,15 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input"].includes(kind)) {
+// 缺口 15：语音花费进用量摘要（voice_input/voice_speak 事件里 cost_usd 的累计，
+// 与 delegate_spent_usd 同款）；未计价时 cost_usd 是 null，不记、不编数字。
+if (kind === "voice_input" || kind === "voice_speak") {
+  this.voiceCalls += 1;
+  if (typeof data.cost_usd === "number") {
+    this.voiceSpent = (this.voiceSpent ?? 0) + data.cost_usd;
+  }
+}
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);
@@ -1142,6 +1160,9 @@ export interface UsageSummary {
   /** 子任务已花费合计（有计价的子任务时才有值）；没有子任务/未计价时为 null。 */
   delegate_spent_usd: number | null;
   delegate_calls: number;
+  /** 语音已花费合计（缺口 15：STT/TTS 有计价时才有值）；没有语音调用/未计价时为 null。 */
+  voice_spent_usd: number | null;
+  voice_calls: number;
 }
 
 export interface RunStats {
@@ -1177,7 +1198,9 @@ export function statsFromState(state: Record<string, unknown>): RunStats {
   const summary = (state.usage_summary ?? {}) as Record<string, unknown>;
   const spent = numOrNull(summary.spent_usd);
   const delegateSpent = numOrNull(summary.delegate_spent_usd);
-  const total = spent !== null || delegateSpent !== null ? (spent ?? 0) + (delegateSpent ?? 0) : null;
+  const voiceSpent = numOrNull(summary.voice_spent_usd);
+  const total = spent !== null || delegateSpent !== null || voiceSpent !== null
+    ? (spent ?? 0) + (delegateSpent ?? 0) + (voiceSpent ?? 0) : null;
   return {
     durationMs: Number.isFinite(created) && Number.isFinite(updated) && updated >= created ? updated - created : null,
     turns: typeof state.turn === "number" ? state.turn : 0,
@@ -1186,7 +1209,7 @@ export function statsFromState(state: Record<string, unknown>): RunStats {
     toolErrors: null,
     runErrors: null,
     spentUsd: total,
-    costPartial: spent === null && delegateSpent !== null,
+    costPartial: spent === null && (delegateSpent !== null || voiceSpent !== null),
   };
 }
 
