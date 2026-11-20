@@ -112,7 +112,7 @@ export function resolveSandboxAllowNet(config?: Record<string, unknown> | null):
 // auto：Linux 且 bwrap 可用 → bwrap；否则 → 工具级（现有 workspace containment + shell 黑名单）。
 // local：显式只要工具级，即使用户机器上有 bwrap 也不用——这是退出 OS 沙箱的开关。
 // bwrap：强制要求 bwrap；找不到或非 Linux → 直接抛错（fail-closed），绝不静默降级。
-// e2b：保持不支持报错（文案写目标版本 0.5.1；VERSION 常量本身不动，总协调最后统一升版）。
+// e2b：保持不支持报错（文案写目标版本 0.5.2；VERSION 常量本身不动，总协调最后统一升版）。
 // danger-full-access 与沙箱互斥：显式 bwrap + danger 直接抛错；auto + danger 解析为工具级。
 export function resolveSandboxBackend(
   config?: Record<string, unknown> | null,
@@ -129,7 +129,7 @@ export function resolveSandboxBackend(
   const bwrapAvailable = detectBwrap();
 
   if (requested === "e2b") {
-    throw new Error("--sandbox e2b 在 0.5.1 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植）；当前只支持 auto、local、bwrap");
+    throw new Error("--sandbox e2b 在 0.5.2 暂不支持（Python 已移除，Node 版 E2B 后端尚未移植）；当前只支持 auto、local、bwrap");
   }
   if (requested === "bwrap" && mode === "danger-full-access") {
     throw new Error("danger-full-access 与沙箱互斥：该模式要求无限制执行，不能进 bwrap；如需无限制请用 --sandbox local 并自行承担风险");
