@@ -757,6 +757,8 @@ async function handleUi(argv: string[], workdir: string, home: string): Promise<
       profile: get("--profile") ?? null,
       verbose: has("--verbose"),
       config,
+      // 桌面外壳（Tauri）固定用 --print-url-json 启动网关：页面据此只在桌面端播入场动画。
+      shell: printJson ? "desktop" : null,
     });
   let info: { host: string; port: number; url: string };
   try {

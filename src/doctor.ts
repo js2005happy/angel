@@ -135,7 +135,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<{ checks: DoctorCh
   } else if (provider.name === "ollama") {
     checks.push({ name: "模型配置", ok: true, detail: `provider=ollama（本地模型，不需要 Key，默认 ${provider.baseUrl}）${winText}` });
   } else if (provider.hasKey) {
-    checks.push({ name: "模型配置", ok: true, detail: `provider=${provider.name}，模型 ${provider.model}，Key 已配置（来源：环境变量 ${provider.envKey}）${winText}` });
+    checks.push({ name: "模型配置", ok: true, detail: `provider=${provider.name}，模型 ${provider.model}，Key 已配置（来源：${provider.keySource === "file" ? "界面保存（keys.json）" : provider.keySource === "vault" ? "密码箱" : `环境变量 ${provider.envKey}`}）${winText}` });
   } else if (provider.keySource === "vault") {
     checks.push({
       name: "模型配置", ok: false,

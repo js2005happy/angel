@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getCredential } from "./vault.ts";
+import { getFileKey } from "./keystore.ts";
 
 import { effectiveValue } from "./enforcedConfig.ts";
 
@@ -244,7 +245,7 @@ export function knownProviderNames(config?: Record<string, unknown> | null): Set
   return new Set(Object.keys(getProviderPresets(config)));
 }
 
-export type KeySource = "env" | "vault" | "connector" | "none" | "local";
+export type KeySource = "env" | "vault" | "file" | "connector" | "none" | "local";
 
 export interface ResolvedProvider {
   name: string;
@@ -332,6 +333,21 @@ export function resolveProvider(opts: {
     if (fromVault) {
       apiKey = fromVault;
       keySource = "vault";
+    }
+  }
+  // 界面（首次引导 / 设置 → 模型）保存的 Key：密码箱已解锁时在密码箱里，否则在 keys.json（0600）。
+  // 连接器 provider 在 Node 侧没有凭证注入，所以用户在界面里填了 Key 也照样用上。
+  if (apiKey === null && envKey !== null) {
+    const fromVault = connectorName !== null ? getCredential(envKey, opts.home) : null;
+    if (fromVault) {
+      apiKey = fromVault;
+      keySource = "vault";
+    } else {
+      const fromFile = getFileKey(envKey, opts.home);
+      if (fromFile) {
+        apiKey = fromFile;
+        keySource = "file";
+      }
     }
   }
   let auth: ResolvedProvider["auth"];

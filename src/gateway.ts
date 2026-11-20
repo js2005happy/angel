@@ -62,6 +62,9 @@ import { decideSmartApproval, reviewerEnabled, smartApprovalConfig, readAudit } 
 import { reviewerStatus, resolveReviewerModel } from "./reviewer.ts";
 import { rewind as doRewind, storeHistoryToAgentMessages, type RewindAction } from "./rewind.ts";
 import { PAGE_HTML, MANIFEST, CSP, solidPng } from "./webuiPage.ts";
+import { keyStatus, setKey, removeKey, maskKey, validateKey, openVault, vaultState, migrateKeysToVault, keysPath } from "./keystore.ts";
+import { loadMcpServers } from "./mcp.ts";
+import { saveConfig, configPath } from "./config.ts";
 
 export const GATEWAY_DEFAULT_HOST = "127.0.0.1";
 export const GATEWAY_DEFAULT_PORT = 8765;
@@ -147,6 +150,8 @@ export interface GatewayOptions {
   config?: Record<string, unknown>;
   providerFactory?: () => ProviderLike;
   reviewerFactory?: () => { chat(messages: unknown[], tools?: unknown, timeout?: number): Promise<Record<string, unknown>> } | null;
+  /** 跑在哪个外壳里："desktop" = Tauri 桌面端（cli 在 --print-url-json 模式下传入），/api/info 回 shell 字段，页面据此决定是否播入场动画。 */
+  shell?: string | null;
 }
 
 export class Gateway {
@@ -185,6 +190,8 @@ export class Gateway {
   private schedulerTimer: ReturnType<typeof setInterval> | null = null;
   private discoverySocket: { close: () => void } | null = null;
   private projectsLock = false;
+  /** 外壳标记（见 GatewayOptions.shell）。 */
+  shell: string | null = null;
 
   constructor(opts: GatewayOptions = {}) {
     this.home = resolveNyraHome(opts.home);
@@ -218,6 +225,7 @@ export class Gateway {
     );
     this.providerFactory = opts.providerFactory;
     this.reviewerFactory = opts.reviewerFactory;
+    this.shell = opts.shell === "desktop" ? "desktop" : null;
     this.devices = new DeviceRegistry(defaultDevicesPath(this.home));
     // 群聊机器人走网关同一沙箱配置：这里只做配置解析（resolveSandbox 不查
     // 后端二进制是否存在），后端不可用时不拦网关启动，留给机器人跑 shell 时
@@ -547,6 +555,7 @@ export class Gateway {
   info(): Record<string, unknown> {
     const out: Record<string, unknown> = {
       version: VERSION, mode: this.mode, modes: [...VALID_MODES], workdir: this.workdir,
+      shell: this.shell, platform: process.platform,
     };
     try {
       const prov = this.provider();
@@ -1111,6 +1120,190 @@ export class Gateway {
     return new RuleStore(this.home).remove(ruleId, this.workdir);
   }
 
+  // -- 桌面端：首次引导 / API Key / 设置（src/webuiDesktop.ts 消费） ---------------------
+  /** 需要 Key 的 provider 清单 + 每个的 Key 来源（只给掩码）。密码箱只开一次（PBKDF2 很贵）。 */
+  keysView(): Record<string, unknown> {
+    const presets = getProviderPresets(this.config);
+    const vault = openVault(this.home);
+    const vstate = { exists: vaultState(this.home).exists, unlocked: vault !== null };
+    const providers = Object.entries(presets).map(([name, preset]) => {
+      const local = name === "ollama" || preset.auth === "cli";
+      const status = local ? { source: "none_needed", masked: "" } : keyStatus(preset.envKey, this.home, vault);
+      return {
+        provider: name, env_key: local ? null : preset.envKey ?? null, needs_key: !local && Boolean(preset.envKey),
+        default_model: preset.defaultModel ?? null, models: [...(preset.models ?? [])],
+        base_url: preset.baseUrl ?? null, local, ...status,
+      };
+    });
+    return { providers, vault: vstate, storage: vault ? "vault" : "file" };
+  }
+
+  /** 首次引导：当前 provider 没有可用 Key（且不是本地/CLI provider）时 needs_setup。 */
+  setupView(): Record<string, unknown> {
+    const info = this.info();
+    const keys = this.keysView();
+    return {
+      needs_setup: !info.credentials,
+      provider: info.provider ?? null, model: info.model ?? null,
+      provider_error: info.provider_error ?? null,
+      ...keys,
+    };
+  }
+
+  saveKey(provider: string, key: unknown): Record<string, unknown> {
+    const preset = getProviderPresets(this.config)[provider];
+    if (!preset) throw new Error(`未知的 provider：${provider}`);
+    if (!preset.envKey || provider === "ollama" || preset.auth === "cli") throw new Error("这个 provider 不使用 API Key");
+    const saved = setKey(preset.envKey, key, this.home);
+    this.providerInstance = null; // 下次用到时按新 Key 重建
+    for (const run of this.runs.values()) {
+      if (run.agent && run.status !== "running") { try { run.agent.provider = this.provider(); } catch { /* 还没配好也不拦 */ } }
+    }
+    return { provider, env_key: preset.envKey, ...saved, status: keyStatus(preset.envKey, this.home) };
+  }
+
+  deleteKey(provider: string): boolean {
+    const preset = getProviderPresets(this.config)[provider];
+    if (!preset || !preset.envKey) return false;
+    const ok = removeKey(preset.envKey, this.home);
+    this.providerInstance = null;
+    return ok;
+  }
+
+  /**
+   * 测试连接：真的请求一次 provider 的 GET {base_url}/models（OpenAI 兼容）。
+   * key 不给时用已保存的。返回只含掩码；错误信息里的 Key 一律替换掉。
+   */
+  async testKey(provider: string, key: unknown, model?: string | null): Promise<Record<string, unknown>> {
+    const presets = getProviderPresets(this.config);
+    if (!presets[provider]) throw new Error(`未知的 provider：${provider}`);
+    const resolved: ResolvedProvider = resolveProvider({ home: this.home, config: this.config, providerName: provider, model: model ?? undefined });
+    if (resolved.auth === "cli") return { ok: true, provider, masked: "", detail: "cli" };
+    let apiKey = resolved.apiKey;
+    if (typeof key === "string" && key.trim()) apiKey = validateKey(key);
+    const needsKey = provider !== "ollama" && Boolean(resolved.envKey);
+    if (needsKey && !apiKey) return { ok: false, provider, masked: "", status: null, error: "还没有 API Key" };
+    const cfg: ResolvedProvider = { ...resolved, apiKey, auth: apiKey ? "env" : "none", hasKey: true, keySource: resolved.keySource };
+    const masked = maskKey(apiKey);
+    const scrub = (text: string): string => (apiKey ? text.split(apiKey).join("[已隐藏]") : text);
+    const started = Date.now();
+    try {
+      const models = await new Provider(cfg).listModels(15);
+      return { ok: true, provider, masked, models: models.length, model_found: models.includes(cfg.model), ms: Date.now() - started };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = (err as { status?: unknown })?.status;
+      return { ok: false, provider, masked, status: typeof status === "number" ? status : null, error: scrub(msg).slice(0, 300) };
+    }
+  }
+
+  /** 设置页的通用 + 上下文开关（真后端：读写 config.json，与命令行共用）。 */
+  settingsView(): Record<string, unknown> {
+    const cfg = this.config;
+    const toolSearch = (cfg.tool_search && typeof cfg.tool_search === "object") ? cfg.tool_search as Record<string, unknown> : {};
+    const savedMode = typeof cfg.mode === "string" && (cfg.mode === "readonly" || cfg.mode === "auto") ? cfg.mode : "auto";
+    let servers: Record<string, unknown>[] = [];
+    try {
+      const all = loadMcpServers(cfg);
+      const routes = new Map<string, number>();
+      if (this.mcpManager) {
+        for (const s of this.mcpManager.toolSchemas) {
+          const r = this.mcpManager.routeFor(s.function.name);
+          if (r) routes.set(r[0], (routes.get(r[0]) ?? 0) + 1);
+        }
+      }
+      const custom = (cfg.mcp_servers && typeof cfg.mcp_servers === "object") ? Object.keys(cfg.mcp_servers as object) : [];
+      servers = Object.values(all).map((srv) => ({
+        name: srv.name, command: srv.command.split(/[\\/]/).pop() ?? srv.command,
+        preset: !custom.includes(srv.name), connected: routes.has(srv.name), tools: routes.get(srv.name) ?? 0,
+      }));
+    } catch { servers = []; }
+    return {
+      general: {
+        default_mode: savedMode, current_mode: this.mode,
+        max_turns: typeof cfg.max_turns === "number" ? cfg.max_turns : 20,
+        reasoning_effort: typeof cfg.reasoning_effort === "string" ? cfg.reasoning_effort : null,
+        language: typeof cfg.language === "string" ? cfg.language : null,
+      },
+      context: {
+        auto_compact_enabled: this.autoCompactEnabled,
+        auto_compact_threshold: this.autoCompactThreshold,
+        tool_search_enabled: Boolean(toolSearch.enabled),
+        context_window_tokens: this.contextWindowTokens,
+        context_window_source: this.contextWindowSource,
+      },
+      model: {
+        default_provider: typeof cfg.provider === "string" ? cfg.provider : null,
+        default_model: typeof cfg.model === "string" ? cfg.model : null,
+      },
+      mcp: { enabled: Boolean(cfg.mcp_enabled), active: Boolean(this.mcpManager), mode_allows: this.mode === "full", servers },
+      paths: { home: this.home, config: configPath(this.home), keys: keysPath(this.home) },
+    };
+  }
+
+  /** 改设置：只收白名单字段，逐个校验；写回 config.json 并在本进程立即生效。 */
+  applySettings(body: Record<string, unknown>): Record<string, unknown> {
+    const patch: Record<string, unknown> = {};
+    if ("default_mode" in body) {
+      const m = String(body.default_mode);
+      if (m !== "readonly" && m !== "auto") throw new Error("默认模式只能是 readonly 或 auto（完全访问不保存为默认）");
+      patch.mode = m;
+    }
+    if ("max_turns" in body) {
+      const n = Number(body.max_turns);
+      if (!Number.isInteger(n) || n < 1 || n > 200) throw new Error("max_turns 必须是 1–200 的整数");
+      patch.max_turns = n;
+    }
+    if ("reasoning_effort" in body) {
+      const v = body.reasoning_effort;
+      if (v !== null && !["minimal", "low", "medium", "high", "xhigh"].includes(String(v))) throw new Error("reasoning_effort 只允许 minimal|low|medium|high|xhigh 或 null");
+      patch.reasoning_effort = v === null ? null : String(v);
+    }
+    if ("language" in body) {
+      const v = body.language;
+      if (v !== null && v !== "zh" && v !== "en") throw new Error("language 只允许 zh、en 或 null（跟随系统）");
+      patch.language = v;
+    }
+    if ("auto_compact_enabled" in body) {
+      if (typeof body.auto_compact_enabled !== "boolean") throw new Error("auto_compact_enabled 必须是 true/false");
+      patch.auto_compact_enabled = body.auto_compact_enabled;
+    }
+    if ("auto_compact_threshold" in body) {
+      patch.auto_compact_threshold = validateAutoCompactThreshold(Number(body.auto_compact_threshold));
+    }
+    if ("tool_search_enabled" in body) {
+      if (typeof body.tool_search_enabled !== "boolean") throw new Error("tool_search_enabled 必须是 true/false");
+      const cur = (this.config.tool_search && typeof this.config.tool_search === "object") ? this.config.tool_search as Record<string, unknown> : {};
+      patch.tool_search = { top_k: 12, ...cur, enabled: body.tool_search_enabled };
+    }
+    if ("mcp_enabled" in body) {
+      if (typeof body.mcp_enabled !== "boolean") throw new Error("mcp_enabled 必须是 true/false");
+      patch.mcp_enabled = body.mcp_enabled;
+    }
+    if ("default_provider" in body) {
+      const name = String(body.default_provider);
+      const presets = getProviderPresets(this.config);
+      if (!presets[name]) throw new Error(`未知的 provider：${name}`);
+      patch.provider = name;
+      const model = typeof body.default_model === "string" && body.default_model.trim() ? body.default_model.trim().slice(0, 180) : presets[name].defaultModel ?? null;
+      patch.model = model;
+    }
+    const unknown = Object.keys(body).filter((k) => ![
+      "default_mode", "max_turns", "reasoning_effort", "language", "auto_compact_enabled", "auto_compact_threshold",
+      "tool_search_enabled", "mcp_enabled", "default_provider", "default_model",
+    ].includes(k));
+    if (unknown.length) throw new Error(`不支持的设置项：${unknown.join(", ")}`);
+    if (!Object.keys(patch).length) throw new Error("没有要保存的设置");
+    saveConfig(this.home, patch);
+    Object.assign(this.config, patch);
+    if ("auto_compact_enabled" in patch) this.autoCompactEnabled = Boolean(patch.auto_compact_enabled);
+    if ("auto_compact_threshold" in patch) this.autoCompactThreshold = patch.auto_compact_threshold as number;
+    if ("provider" in patch) {
+      try { this.setProvider(String(patch.provider), (patch.model as string | null) ?? null); } catch { /* 默认值已保存；当前运行沿用原 provider */ }
+    }
+    return this.settingsView();
+  }
+
   // -- pairing ------------------------------------------------------------------
   startPairing(): Record<string, unknown> {
     if (!this.pairOrigin) {
@@ -1126,6 +1319,8 @@ export class Gateway {
 
   // -- HTTP -----------------------------------------------------------------------
   async start(): Promise<{ host: string; port: number; url: string }> {
+    // 界面保存在 keys.json 里的 Key：密码箱此刻已解锁就搬进密码箱（只搬一次，失败不拦启动）。
+    try { migrateKeysToVault(this.home); } catch { /* ignore */ }
     await this.ensureMcpManager();
     const server = createServer((req, res) => { void this.handle(req, res); });
     this.server = server;
@@ -1485,6 +1680,14 @@ export class Gateway {
       this.sendJson(res, 200, this.rulesView(sid && SESSION_ID_RE.test(sid) ? sid : null));
       return;
     }
+    // 桌面端首次引导 / 设置：Key 只回掩码；改动类接口只给电脑本机（owner）。
+    if (method === "GET" && path === "/api/setup") { this.sendJson(res, 200, this.setupView()); return; }
+    if (method === "GET" && path === "/api/keys") {
+      if (!isOwner) { this.sendError(res, 403, "API Key 只能在电脑上管理"); return; }
+      this.sendJson(res, 200, this.keysView());
+      return;
+    }
+    if (method === "GET" && path === "/api/settings") { this.sendJson(res, 200, this.settingsView()); return; }
     if (method === "GET" && path === "/api/schedule") {
       try { this.sendJson(res, 200, { tasks: this.scheduleList() }); }
       catch (err) { this.sendError(res, 400, `定时任务读取失败：${err instanceof Error ? err.message : String(err)}`); }
@@ -1673,6 +1876,20 @@ export class Gateway {
       if (ruleRevokeMatch) {
         if (!this.revokeRule(ruleRevokeMatch[1])) { this.sendError(res, 404, "规则不存在"); return; }
         this.sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (path === "/api/keys" || path === "/api/keys/test" || path === "/api/keys/remove" || path === "/api/settings") {
+        if (!isOwner) { this.sendError(res, 403, path === "/api/settings" ? "设置只能在电脑上修改" : "API Key 只能在电脑上管理"); return; }
+        const provider = String(body.provider ?? "").trim();
+        try {
+          if (path === "/api/settings") { this.sendJson(res, 200, this.applySettings(body)); return; }
+          if (!provider) { this.sendError(res, 400, "请指定 provider"); return; }
+          if (path === "/api/keys") { this.sendJson(res, 200, this.saveKey(provider, body.key)); return; }
+          if (path === "/api/keys/remove") { this.sendJson(res, 200, { ok: this.deleteKey(provider) }); return; }
+          this.sendJson(res, 200, await this.testKey(provider, body.key, typeof body.model === "string" ? body.model : null));
+        } catch (err) {
+          this.sendError(res, 400, err instanceof Error ? err.message : String(err));
+        }
         return;
       }
       const revokeMatch = /^\/api\/devices\/([^/]+)\/revoke$/.exec(path);
