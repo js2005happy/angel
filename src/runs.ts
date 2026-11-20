@@ -134,6 +134,9 @@ peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。
 voice_input: ["seconds", "chars", "engine", "cost_usd", "text_hash"],
 voice_speak: ["chars", "engine", "cost_usd"],
+// 缺口 23：办公成品导出进证据链——格式、字节数、核查结论（已核实/未核实数、
+// 文件指纹）。只记元数据与指纹，不记文件全文与绝对路径。
+office_exported: ["format", "bytes", "verified", "unverified", "file_hash"],
 delegate_start: ["task_id", "model", "max_turns"],
 delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
 llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
@@ -805,7 +808,7 @@ if (kind === "voice_input" || kind === "voice_speak") {
     this.voiceSpent = (this.voiceSpent ?? 0) + data.cost_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input", "voice_input", "voice_speak", "office_exported"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

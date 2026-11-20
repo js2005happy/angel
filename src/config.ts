@@ -127,6 +127,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 制与模型文件（都配好才走本地，否则走云端）；stt_language 默认 auto；
   // tts_player = 回读播放器（不配只保存文件）；两个单价不配时花费记 null。
   voice: { max_bytes: 25 * 1024 * 1024, max_seconds: 600, stt_model: "whisper-1", tts_model: "tts-1", tts_voice: "alloy", tts_enabled: false, stt_local_binary: null, stt_local_model: null, stt_language: "auto", tts_player: null, stt_price_per_min_usd: null, tts_price_per_1k_chars_usd: null },
+  // 缺口 23：办公成品导出（见 docs/office.md）。max_bytes = 单个导出文件
+  // 上限（默认 10MB）；mark_unverified = 无来源的数字在正文里标“未核实”
+  // （默认开；关了也仍进核查小节与 office_exported 事件）。
+  office: { max_bytes: 10 * 1024 * 1024, mark_unverified: true },
   // 缺口 24：子 agent（delegate）独立的推理档位；不填沿用全局 reasoning_effort。
   delegate_reasoning_effort: null,
   // 缺口 24：轻量 Repo Map（规划阶段注入函数/类签名地图）。enabled 默认关（显式 opt-in）；

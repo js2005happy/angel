@@ -72,7 +72,7 @@ export interface ReviewerConfig {
 * 候选提案 1 的提交前核对把它当敏感动作过审查。
 */
 export const DEFAULT_REVIEWED_TOOLS: readonly string[] = [
-  "write_file", "edit_file", "apply_patch", "shell",
+  "write_file", "edit_file", "apply_patch", "shell", "export_office",
   "memory_forget", "memory_delete", "gmail_send", "http_post",
   // submit_bughunt_report 是虚拟敏感动作（不是 tools.ts 里的工具）：bughunt
   // 提交前核对把“提交漏洞报告”当敏感动作过审查，见 src/bughunt.ts 的

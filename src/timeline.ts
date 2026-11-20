@@ -181,6 +181,14 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `语音回读（${engine}）`, `${chars} 字${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
         break;
       }
+      case "office_exported": {
+        const format = str(ev.format) ?? "未知格式";
+        const bytes = num(ev.bytes) ?? 0;
+        const verified = num(ev.verified) ?? 0;
+        const unverified = num(ev.unverified) ?? 0;
+        push(at, "event", `导出办公成品（${format}）`, `${bytes} 字节 · 事实核查：${verified} 项已核实，${unverified} 项未核实`, null, null);
+        break;
+      }
       case "peer_asked": {
         const peer = str(ev.peer) ?? "未知对端";
         const ok = bool(ev.ok);
