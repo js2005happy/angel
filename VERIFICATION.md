@@ -1,3 +1,8 @@
+## 2026-11-20 — Windows claim 失败关闭门禁源码修复
+
+- 静态发现 `scripts/node_tool_claim.ts` 中注释包含字面量 `\\n`，将 Windows 拒绝分支和 `isAbsolute` 校验吞入单行注释；修复为真实源码换行，使两个检查成为独立语句。
+- **未运行编译、脚本、测试或 CI**；仍未验证 Windows/POSIX 文件系统语义、目录 TOCTOU、跨进程持久化或实际工具派发。此修复不代表 exactly-once。
+
 ## 2026-11-20 — Windows Node claim 失败关闭（静态审阅）
 
 - 读取开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python ToolJournal，并对照主分支 `src/agent.ts`、`src/tools.ts`；检查近期提交及开放 Issues/PR。此前提交 `ada0536` 的 GitHub status 列表为空，不能视为 CI 通过。
