@@ -303,3 +303,100 @@ export function describeRules(rules: RuleSet): string {
   for (const w of rules.warnings) lines.push(`warning: ${w}`);
   return lines.join("\n");
 }
+
+// ---- 规则体检（lint）：找出「写了但永远不会命中」的规则 ----
+// 来由：这个仓库连续踩了两次同类问题——shell 命令规则带 workdir 永不命中、
+// 裸主机名规则永不命中。两次的共同点都是 **规则写了、人以为挡住了、实际不生效**。
+// 既然能机械判定，就让工具去说，而不是等下一次事故。
+
+export type RuleLintCode = "unknown-tool" | "domain-on-non-url-tool" | "empty-specifier" | "bare-host-on-path-tool";
+
+export interface RuleLintFinding {
+  code: RuleLintCode;
+  /** 处在哪一组：allow / ask / deny。 */
+  action: PermissionAction;
+  /** 原始规则文本，便于人去改。 */
+  raw: string;
+  detail: string;
+}
+
+export interface RuleLintOptions {
+  /** 已知工具名（含别名，如 Bash/Edit/Write/Read）；不传则跳过 unknown-tool 检查。 */
+  knownTools?: readonly string[] | null;
+}
+
+/**
+ * 体检一组权限规则。纯函数，只做**确定能判**的检查：
+ *   - unknown-tool：工具名不在已知集合里（拼错了 → 这条规则永远不命中）
+ *   - domain-on-non-url-tool：`read_file(domain:x)` 这种把域名语法用在路径工具上
+ *   - bare-host-on-path-tool：`read_file(example.com)` 看起来是想写域名，但路径工具按 glob 处理
+ *   - empty-specifier：`Bash()` —— 与裸工具名等价，容易被误读成"什么都不匹配"
+ */
+export function lintRules(rules: RuleSet, opts: RuleLintOptions = {}): RuleLintFinding[] {
+  const findings: RuleLintFinding[] = [];
+  const known = opts.knownTools ? new Set(opts.knownTools.map((t) => normalizeToolName(t))) : null;
+  const out: { action: PermissionAction; rule: PermissionRule }[] = [
+    ...rules.allow.map((rule) => ({ action: "allow" as const, rule })),
+    ...rules.ask.map((rule) => ({ action: "ask" as const, rule })),
+    ...rules.deny.map((rule) => ({ action: "deny" as const, rule })),
+  ];
+  for (const { action, rule } of out) {
+    const tool = normalizeToolName(rule.tool);
+    const isUrlTool = URL_TOOLS.has(tool);
+    const isPathTool = PATH_TARGET_TOOLS.has(tool);
+
+    // MCP 通配与精确名：只要带 mcp__ 前缀就当作已知（server 名无法静态校验）
+    if (known && !known.has(tool) && !rule.tool.startsWith("mcp__")) {
+      findings.push({
+        code: "unknown-tool",
+        action, raw: rule.raw,
+        detail: `工具名 ${rule.tool} 不在已知工具里（拼错了？这条规则永远不会命中）`,
+      });
+    }
+    const spec = rule.specifier;
+    if (spec === null) {
+      // `Bash()` 解析后 specifier 也是 null（与裸工具名等价），但写法容易被误读成"什么都不匹配"。
+      if (/\(\s*\)\s*$/.test(rule.raw)) {
+        findings.push({
+          code: "empty-specifier",
+          action, raw: rule.raw,
+          detail: "括号里是空的：与裸工具名等价（命中该工具全部调用），确认这是你的意思",
+        });
+      }
+      continue;
+    }
+    if (spec.trim() === "") {
+      findings.push({
+        code: "empty-specifier",
+        action, raw: rule.raw,
+        detail: "specifier 为空：与裸工具名等价（命中该工具全部调用），确认这是你的意思",
+      });
+      continue;
+    }
+    if (spec.startsWith("domain:") && !isUrlTool) {
+      findings.push({
+        code: "domain-on-non-url-tool",
+        action, raw: rule.raw,
+        detail: `domain: 语法只对 URL 类工具生效（${[...URL_TOOLS].join("/")}），这条不会命中`,
+      });
+      continue;
+    }
+    // 看起来像裸域名（含点、不含通配与斜杠），却用在路径工具上
+    if (isPathTool && !/[*?/]/.test(spec) && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(spec)) {
+      findings.push({
+        code: "bare-host-on-path-tool",
+        action, raw: rule.raw,
+        detail: `${tool} 的目标是文件路径，按 glob 处理；${spec} 会被当成相对路径文件名而不是域名`,
+      });
+    }
+  }
+  return findings;
+}
+
+/** 人类可读（doctor / status 用）。 */
+export function formatRuleLint(findings: readonly RuleLintFinding[]): string {
+  if (!findings.length) return "权限规则体检：没有发现永不命中的规则";
+  const lines = [`权限规则体检：${findings.length} 处可疑`];
+  for (const f of findings) lines.push(`  ⚠️  [${f.action}] ${f.raw} —— ${f.detail}`);
+  return lines.join("\n");
+}

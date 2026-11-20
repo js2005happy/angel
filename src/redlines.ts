@@ -12,6 +12,7 @@
 import type { PermissionRule } from "./permissionRules.ts";
 import { t } from "./i18n.ts";
 import { resolveEnforced } from "./enforcedConfig.ts";
+import { lintRules, type RuleLintFinding } from "./permissionRules.ts";
 
 export type RedlineLevel = "ok" | "warn" | "fail";
 
@@ -62,6 +63,8 @@ export interface RedlineInput {
   thresholds?: RedlineThresholds | null;
   /** 明确忽略的检查项 code（config.redlines.ignore）；被忽略的项不会出现在结果里。 */
   ignore?: string[] | null;
+  /** 已知工具名（供权限规则体检判定拼写）；不传则跳过该判定。 */
+  knownTools?: readonly string[] | null;
 }
 
 export interface RedlineResult {
@@ -291,6 +294,30 @@ export function checkRedlines(input: RedlineInput): RedlineResult {
       detail: `${enf.rejectedKeys.join("、")} 不在可锁名单内，已被忽略`,
       fix: "只锁安全相关的键（见 ENFORCEABLE_KEYS），防止 enforced 变成第二份配置",
     });
+  }
+  // 11) 权限规则体检：写了但永远不会命中的规则（拼错工具名 / 语法用错工具）
+  if (input.permissions) {
+    const knownTools = input.knownTools ?? null;
+    const lint = lintRules(
+      { allow: input.permissions.allow, ask: input.permissions.ask, deny: input.permissions.deny, warnings: [] } as never,
+      { knownTools },
+    );
+    if (lint.length) {
+      add({
+        code: "permission-rules-dead",
+        level: "warn",
+        title: "权限规则",
+        detail: `${lint.length} 条规则永远不会命中：${lint.slice(0, 3).map((f) => f.raw).join("、")}${lint.length > 3 ? "…" : ""}`,
+        fix: "按 `nyra status` / docs/permissions.md 的语法修：工具名拼写、domain: 只给 URL 工具、路径工具用 glob",
+      });
+    } else {
+      add({
+        code: "permission-rules-lint",
+        level: "ok",
+        title: "权限规则",
+        detail: "已配置的规则都能命中（无拼错工具名 / 无语法错配）",
+      });
+    }
   }
   const fails = kept.filter((f) => f.level === "fail").length;
     const warns = kept.filter((f) => f.level === "warn").length;
