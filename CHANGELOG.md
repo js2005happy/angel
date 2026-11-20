@@ -1,3 +1,7 @@
+## 未发布（2026-11-21，Node claim 文件身份复核）
+
+- `scripts/node_tool_claim.ts`：写入并 fsync 后检查已打开文件与路径名称的设备/inode 一致、普通文件、单硬链接、当前用户所有、私有权限及预期长度；不一致时失败关闭并保留 unknown。仅静态审阅，未运行测试或 CI；仍存在路径 TOCTOU，未接入 Node 主运行时。
+
 ## 未发布（2026-11-21，Node claim 祖先目录权限门禁）
 
 - `scripts/node_tool_claim.ts`：POSIX 拒绝不可信所有者或 group/other 可写的祖先目录，包括 sticky 目录；叶目录继续要求当前用户私有。只改善前置检查，仍有 TOCTOU、Windows 禁用、未接入运行时；仅静态审阅，未运行测试/CI。
