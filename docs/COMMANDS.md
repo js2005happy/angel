@@ -14,6 +14,8 @@
 | `nyra guard [--strict]` | 门禁形态：red 时退出码 2（`--strict` 下 yellow 也拦） |
 | `nyra redlines [--json]` | 上线红线自检（证据/权限/沙箱/成本/钩子）；`--json` 给 CI 按 `code` 判定 |
 | `nyra evidence verify <运行 ID>` | 独立复核运行的证据链 |
+| `nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]` | 执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行） |
+| `nyra replay <运行 ID> [--verbose]` | 会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行） |
 | `nyra restore [检查点]` | 从影子快照恢复文件与会话 |
 
 ## 成本与用量
