@@ -14,7 +14,7 @@
 import { test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkUsageCoverage, formatUsageCheck, usageMentions } from "../../src/usageCheck.ts";
+import { checkUsageCoverage, formatUsageCheck, usageMentions, checkUsageTruth, formatUsageTruth, usageCommands } from "../../src/usageCheck.ts";
 import { SUBCOMMANDS } from "../../src/subcommands.ts";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -64,4 +64,44 @@ test("U5 缺某种语言时会指出是哪种", () => {
   expect(r.ok).toBe(false);
   expect(r.findings[0].langs).toEqual(["en"]);
   expect(formatUsageCheck(r)).toContain("nyra verdict");
+});
+
+// ---- 反向：帮助里写了但代码没有（"帮助骗人"）----
+// 比"命令隐形"更伤：用户照着敲，得到"未知命令"，然后开始怀疑整个工具。
+//
+// `interactive` 是真实存在的误报来源：en 帮助里有 `nyra       interactive mode (REPL)`
+// 这行正文，抽候选命令时会被当成一个叫 interactive 的子命令。这类**正文英文词**进白名单
+// 比改正则可靠——正则会越改越窄，最终漏掉真命令。
+const PROSE_WORDS = ["interactive"];
+
+test("U6 帮助里没有不存在的子命令（0 处骗人）", () => {
+  const result = checkUsageTruth(
+    [{ lang: "zh", text: grab("USAGE") }, { lang: "en", text: grab("USAGE_EN") }],
+    [...SUBCOMMANDS],
+    { ignore: PROSE_WORDS },
+  );
+  expect(formatUsageTruth(result)).toContain("通过");
+  expect(result.findings).toEqual([]);
+});
+
+test("U7 假命令会被抓出来（帮助有、代码没有）", () => {
+  const r = checkUsageTruth([{ lang: "zh", text: "  nyra ghostcmd --x\n" }], ["verdict"]);
+  expect(r.ok).toBe(false);
+  expect(r.findings).toEqual([{ code: "unknown-in-usage", command: "ghostcmd", lang: "zh" }]);
+  expect(formatUsageTruth(r)).toContain("ghostcmd");
+});
+
+test("U8 usageCommands 抽取候选：保序去重，不误抽正文", () => {
+  expect(usageCommands("nyra verdict x\nnyra guard\nyra verdict y\n")).toEqual(["verdict", "guard"]);
+  // 行中不出现 `nyra ` 前缀的英文词不会被抽
+  expect(usageCommands("just some text with status inside")).toEqual([]);
+});
+
+test("U9 白名单只排除指定词（不会顺带放行别的假命令）", () => {
+  const r = checkUsageTruth(
+    [{ lang: "en", text: "  nyra interactive mode\n  nyra ghostcmd\n" }],
+    [],
+    { ignore: PROSE_WORDS },
+  );
+  expect(r.findings.map((f) => f.command)).toEqual(["ghostcmd"]);
 });
