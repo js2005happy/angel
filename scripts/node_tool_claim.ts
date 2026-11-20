@@ -85,6 +85,18 @@ export function claimOperation(directory: string, operationId: string): Operatio
       offset += written;
     }
     fsyncSync(fd);
+    // Verify the reserved name still identifies the exact regular file we wrote.
+    // This detects some local replacement/tampering, not an atomic openat binding.
+    const opened = fstatSync(fd);
+    const named = lstatSync(path);
+    if (!opened.isFile() || !named.isFile() || named.isSymbolicLink() ||
+        opened.dev !== named.dev || opened.ino !== named.ino ||
+        opened.nlink !== 1 || named.nlink !== 1 ||
+        opened.uid !== process.getuid?.() || named.uid !== opened.uid ||
+        (opened.mode & 0o077) !== 0 || (named.mode & 0o077) !== 0 ||
+        opened.size !== data.length || named.size !== data.length) {
+      throw new ClaimUnavailable();
+    }
   } catch {
     // Never unlink: a partial claim is also a reason to block replay.
     throw new ClaimUnavailable();
