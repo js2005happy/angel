@@ -10,7 +10,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, writeSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 export class ClaimUnavailable extends Error {
   constructor() { super("Operation already claimed or claim storage is unsafe; manual reconciliation required"); }
@@ -59,7 +59,6 @@ export function claimOperation(directory: string, operationId: string): Operatio
   checkPrivateDirectory(directory);
   const filename = createHash("sha256").update(operationId).digest("hex") + ".claim";
   const claimId = randomUUID();
-  const path = join(directory, filename);
   // Bind the directory identity before creation, not only after writing.
   // This detects some replacements but is NOT an openat-style guarantee.
   // Linux procfs exposes a stable descriptor-relative path. Keep the directory
@@ -69,6 +68,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
   let before;
   let fd: number;
   let directoryFd: number;
+  let claimNameAtFd: string;
   try {
     directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
@@ -79,7 +79,8 @@ export function claimOperation(directory: string, operationId: string): Operatio
           before.uid !== process.getuid?.() || (before.mode & 0o077) !== 0) throw new ClaimUnavailable();
       // /proc/self/fd/N is resolved by the kernel against the open directory,
       // not by traversing the original directory pathname again.
-      fd = openSync(`/proc/self/fd/${directoryFd}/${filename}`,
+      claimNameAtFd = `/proc/self/fd/${directoryFd}/${filename}`;
+      fd = openSync(claimNameAtFd,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     } catch (error) { closeSync(directoryFd); throw error; }
   } catch { throw new ClaimUnavailable(); }
@@ -94,10 +95,12 @@ export function claimOperation(directory: string, operationId: string): Operatio
       offset += written;
     }
     fsyncSync(fd);
+    // Resolve the claim name against the still-open directory fd, not a pathname
+    // that could have been replaced after creation.
     // Verify the reserved name still identifies the exact regular file we wrote.
     // This detects some local replacement/tampering, not an atomic openat binding.
     const opened = fstatSync(fd);
-    const named = lstatSync(path);
+    const named = lstatSync(claimNameAtFd);
     if (!opened.isFile() || !named.isFile() || named.isSymbolicLink() ||
         opened.dev !== named.dev || opened.ino !== named.ino ||
         opened.nlink !== 1 || named.nlink !== 1 ||
@@ -134,9 +137,9 @@ export function claimOperation(directory: string, operationId: string): Operatio
       const after = lstatSync(directory);
       if (after.dev !== opened.dev || after.ino !== opened.ino ||
           !after.isDirectory() || after.isSymbolicLink()) throw new ClaimUnavailable();
-      // Recheck the claim name after syncing the directory. This only detects
+      // Recheck through the same directory fd after syncing. This only detects
       // replacement at this instant; it is not an openat-style atomic binding.
-      const claimNamed = lstatSync(path);
+      const claimNamed = lstatSync(claimNameAtFd);
       if (!claimNamed.isFile() || claimNamed.isSymbolicLink() ||
           claimNamed.dev !== claimFileIdentity.dev || claimNamed.ino !== claimFileIdentity.ino ||
           claimNamed.nlink !== 1 || claimNamed.uid !== process.getuid?.() ||
