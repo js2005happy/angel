@@ -1,4 +1,4 @@
-﻿// tests/node/test-mcp.test.ts — MCP 原生客户端专项（第 3 阶段）。
+// tests/node/test-mcp.test.ts — MCP 原生客户端专项（第 3 阶段）。
 // 假 MCP 服务器（stdio JSON-RPC）：现代版 discover、旧版 initialize 回退、
 // tools/list 分页、tools/call、多轮往返报错；预置清单；成本上限停手。
 import { test, expect } from "bun:test";
