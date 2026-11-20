@@ -1,3 +1,11 @@
+## 2026-11-20 — P0 静态审计证据可追溯性（本轮）
+
+- **仓库事实（2026-11-20）**：main 的 `package.json` 通过 `src/cli.ts` 构建 Bun CLI；`src/agent.ts` 导入 `executeTool`/`executeToolIdempotent`，`src/tools.ts` 明确 Python worker 已移除。开发分支仍是独立 Python Angel；开放 Issue/PR 搜索为空。main 最新查阅提交 [5539340](https://github.com/js2005happy/nyra/commit/553934084a7775cf30cb5caac7c16ed16e06dbbf)（2026-11-20 04:38 UTC）修改桌面端 API，未与本轮静态审计重复。
+- **已实现（价值高／难度低／风险低）**：升级 `scripts/audit_runtime_boundary.py` JSON schema v2，给出每项静态引用的行号（最多 30 条）、文件状态（missing/symlink/oversize/unreadable/ok）和审计不完整标记；拒绝把读取失败当作源码不存在。限制单文件 2 MiB，不运行目标代码。尚未运行测试。
+- **公开反馈（2026-11-19）**：[Codex #62611](https://github.com/openai/codex/issues/62611) 用户请求等待与安全恢复。**事实**：这是外部单例需求；**推断**：可复核的派发入口证据应先于跨进程锁和恢复承诺，不代表 Angel 已复现故障。
+- **后续排序（价值／难度／安全风险／依赖）**：P0 Node 多入口与结果持久化全链审计（高／中／低／主分支源码）；P0 原子执行所有权与崩溃 unknown（高／高／高／全入口审计及跨平台锁）；P1 权限拒绝结构化（高／中／中／审批路径）；P1 副作用凭证（高／高／高／可信适配器）；P2 事件等待与安全续跑（高／高／高／所有权、审批）；P2 成本硬停止（高／中／中／可信 usage）。
+- **边界**：文本命中和行号不是动态调用证明；文件读取检查也不是抵抗恶意本地文件系统竞争的安全边界。未运行测试/CI，不合并、不发布。
+
 ## 2026-11-20 — P0 前置：可复核的跨运行时静态清单
 
 - **本仓库事实**：开发分支包含 Python `angel/agent.py` 与 `angel/tool_journal.py`，缺少 Node `src/agent.ts`；主分支 Node `src/agent.ts` 静态引用 `executeTool`、`executeToolIdempotent`，并在 `src/tools.ts` 定义执行入口。开发分支的 Python 日志保护不能自动外推至 Node。
