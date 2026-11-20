@@ -19,7 +19,7 @@
 （JSON 里找最后一个 `{...}`，`decision: approve/deny` + `reason`）、
 `multiModelFactory` / delegate 便宜模型 / 主模型的 runner fallback 链、
 `src/runs.ts` 的事件注册口径。分开写的东西：结论语义（审调用 vs 验收产出）、
-检查清单（确定性四项，见下）、打回重做循环、群聊里的验收者角色。
+检查清单（确定性六项，见下）、打回重做循环、群聊里的验收者角色。
 合并队列不另建——复用 3b 的 review queue（enqueue → verify → decide → apply）。
 
 ## 默认关闭，怎么开
@@ -50,7 +50,7 @@
 队列与定时任务里不自动换模型、不自动放行审批——这条护城河对 verifier
 同样适用：它只验收、不代人批准，合入仍要 3b 的 review queue 逐项批。
 
-## 检查清单（确定性四项，先跑它）
+## 检查清单（确定性六项，先跑它）
 
 模型复核之前先跑纯函数 `runDeterministicChecks`，一项不过就不用调模型：
 
@@ -60,10 +60,18 @@
 | `files-exist` | 每个改动文件在 worktree / 工作目录里存在 | 列出缺的文件 |
 | `diff-stat` | 有改动文件时 diffStat 非空 | 有改动文件但 diffStat 为空 |
 | `evidence-complete` | 摘要非空、花费已结算（或未知） | 摘要为空、花费为负 |
+| `draft-labeled` | 非草稿，或已标草稿且未声称已完成 | 标题/摘要含草稿标记（草稿/草案/初稿/待完善/WIP/draft）却声称已完成（已完成/已搞定/已交付/ready/验收通过/测试通过） |
+| `ui-before-shot` | 无界面改动，或摘要已提 before/对比/截图 | 改了界面文件（`.tsx`/`.jsx`/`.vue`/`.svelte`/`.css`、`desktop/ui/`、`docs/design/` 下）但摘要里没提 before/对比/截图 |
+
+后两项是 DSH-5 的诚实交付口径：草稿不能按已完成验收，UI 改动没图不算
+ready。它们是**启发式文本判定**——只核对标题/摘要里的说法，不验截图像素
+真假（像素真假靠模型复核与人）；误判时用 `add-rule` 覆盖或人工批。
+模型复核的提示词里同样写了这两条（`VERIFIER_SYSTEM_PROMPT`），两道门
+口径一致。
 
 ## 验收结论
 
-- `verified`：确定性四项全过，且模型复核 approve（或无模型时只靠确定性，
+- `verified`：确定性六项全过，且模型复核 approve（或无模型时只靠确定性，
   方法记 `verifier-deterministic`，并在结论里写清“未跑测试、未审语义”，
   别把它当成“代码是对的”）。
 - `failed`：确定性不过（不调模型），或模型 deny（reason 原样写进结论）。
@@ -144,3 +152,9 @@ nyra verifier check --title <标题> --summary <摘要> --workdir <目录> \
   审两道门，但上下文是独立的（验收只看到任务、摘要与 diff）。
 - **验收模型调用不进用量账本**（与 reviewer 同款）；成本以 delegate
   记账为准，验收本身的 token 花费目前不单独结算。
+- **诚实交付两项是启发式文本判定**：`draft-labeled` 只看标题/摘要里有
+  没有草稿标记与完成声称，`ui-before-shot` 只看摘要里提没提 before/
+  对比/截图——它们核对的是“说法”，不验截图像素真假；一张 after 图冒充
+  before 图、或摘要里随手写一句“有截图”，确定性检查拦不住，要靠模型
+  复核与人的 review。误判（比如摘要里“草稿”指的不是本次产出）时，用
+  `verifier add-rule` 覆盖或人工批。
