@@ -87,20 +87,22 @@ export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
   {
     id: "shopify",
     displayName: "Shopify",
-    description: "用户自己的 Hollow & Scale 店铺：订单、库存、客户、折扣码（试点，下一批做深）。",
-    status: "pilot",
+    description: "用户自己的 Hollow & Scale 店铺：查商品、订单、库存（只读起步，缺口 44 第一批；不做任何写操作）。",
+    status: "available",
     scopes: {
-      read: ["read_orders", "read_products", "read_customers"],
-      write: ["write_orders", "write_discounts"],
+      read: ["read_products", "read_orders", "read_inventory"],
+      // 本批只读：写 scope 故意留空——任何写操作在调 API 之前就拒绝，
+      // 不存在“已声明写权限但没用上”的灰色地带。
+      write: [],
     },
     toolGroups: [
+      { name: "商品", tools: ["shopify_products"], access: "read" },
       { name: "订单", tools: ["shopify_orders"], access: "read" },
-      { name: "库存与商品", tools: ["shopify_products"], access: "read" },
-      { name: "客户", tools: ["shopify_customers"], access: "read" },
+      { name: "库存", tools: ["shopify_inventory"], access: "read" },
     ],
-    dataAccessed: ["店铺订单、库存、客户、折扣码"],
-    alwaysRequireApproval: ["退款", "改价", "发折扣码"],
-    alwaysForbidden: ["删单", "改客户支付信息"],
+    dataAccessed: ["店铺商品（标题、价格、库存数）", "订单（编号、金额、状态，不含客户邮箱与地址）", "库存水平（按地点与商品）"],
+    alwaysRequireApproval: ["改价", "改库存", "下单", "退款", "发折扣码"],
+    alwaysForbidden: ["改价", "改库存", "退款", "下单", "删单", "改客户支付信息"],
   },
   {
     id: "slack",
@@ -242,9 +244,11 @@ export class ConnectorAuthStore {
   }
 }
 
-export type ConnectorAuditAction = "authorized" | "expired" | "revoked" | "approved" | "denied";
+export type ConnectorAuditAction = "authorized" | "expired" | "revoked" | "approved" | "denied" | "call";
 
-/** 审计：只记动作、连接器、用户、指纹与原因，不记邮箱、不记 token、不记 scope 原文。 */
+/** 审计：只记动作、连接器、用户、指纹与原因，不记邮箱、不记 token、不记 scope 原文。
+ * "call" 是连接器的调用日志（缺口 44 第一批）：只记操作名、记录数、耗时，
+ * 不记响应内容、不记客户信息。 */
 export function appendConnectorAudit(
   home: string,
   entry: {
@@ -254,6 +258,9 @@ export function appendConnectorAudit(
     tokenFingerprint?: string;
     reason?: string;
     migrated?: boolean;
+    operation?: string;
+    records?: number;
+    durationMs?: number;
   },
 ): void {
   const line = JSON.stringify({
@@ -264,6 +271,9 @@ export function appendConnectorAudit(
     ...(entry.tokenFingerprint ? { token_fingerprint: entry.tokenFingerprint } : {}),
     ...(entry.reason ? { reason: entry.reason } : {}),
     ...(entry.migrated ? { migrated: true } : {}),
+    ...(entry.operation ? { operation: entry.operation } : {}),
+    ...(entry.records !== undefined ? { records: entry.records } : {}),
+    ...(entry.durationMs !== undefined ? { duration_ms: entry.durationMs } : {}),
   });
   const path = join(resolveNyraHome(home), CONNECTOR_AUDIT_FILE);
   try {
