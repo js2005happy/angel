@@ -1,3 +1,9 @@
+## 2026-11-20 — Node claim 目录同步身份复核（仅静态）
+
+- 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python ToolJournal，以及 main Node Agent、Tools、package.json；查询近期提交与开放 Issues/PR。
+- 静态审阅：目录 fd 使用 O_DIRECTORY|O_NOFOLLOW；fsync 前比较 fstat 与 lstat 的设备/inode、目录类型、UID、权限，fsync 后再次比较路径身份；失败不删除已有 claim，不允许自动重试。该改动只缩小部分路径替换窗口。
+- **未执行脚本、编译、测试或 CI**；未验证 Linux/macOS/Windows 行为。仍存在 TOCTOU、祖先替换与文件系统持久化限制；claim 尚未接入真实工具派发，不能宣称 exactly-once。
+
 ## 2026-11-20 — Windows claim 失败关闭门禁源码修复
 
 - 静态发现 `scripts/node_tool_claim.ts` 中注释包含字面量 `\\n`，将 Windows 拒绝分支和 `isAbsolute` 校验吞入单行注释；修复为真实源码换行，使两个检查成为独立语句。
