@@ -1,3 +1,11 @@
+## 2026-11-20 — P0 claim 存储目录预检（静态，未接入执行器）
+
+- **事实**：当前开发分支 `scripts/node_tool_claim.ts` 原先只检查叶目录不是符号链接，未拒绝可解析的符号链接祖先或 POSIX 共享目录。main 最近提交 [0856b0d](https://github.com/js2005happy/nyra/commit/0856b0d8c3f4ffcb7059b793d731a6785bae3dc9)（2026-11-20 11:37 UTC）涉及 Bot 通知及附件处理，不是跨进程工具 claim；开放 Issues/PR 搜索为空。
+- **本轮单项增量**：要求绝对 claim 目录，逐层 lstat 拒绝符号链接/非目录，POSIX 叶目录要求当前进程所有且无 group/other 权限；不自动创建或修改目录。价值高／难度低／风险中／依赖可信 OS 账户和本地文件系统。
+- **安全限制**：仅预检；Windows junction/reparse point 的完整识别、目录句柄绑定、祖先并发替换、fsync 可移植性、真实 Node 派发集成仍未完成。绝不宣称已实现 exactly-once。
+- **公开证据**：[Codex #62611](https://github.com/openai/codex/issues/62611)（2026-11-19，用户请求安全等待恢复）；[Codex #49743](https://github.com/openai/codex/issues/49743)（2026-10-07，重复投递报告）。事实为外部个案；**推断**为可靠恢复应先建立可信持久操作所有权，不是 Angel 已复现缺陷。
+- **后续排序（价值／难度／风险／依赖）**：P0 稳定目录句柄与 Windows reparse 防护（高／高／高／OS 语义）；P0 Node 派发集成（高／高／高／稳定 claim）；P1 MCP 工具目录版本检测（中高／中／中／MCP）；P1 可信副作用回执（高／高／高／工具适配器）；P2 人工对账恢复（高／高／高／P0）。未运行测试、编译或 CI。
+
 ## 2026-11-20 — Node 原子 claim 前置增量（未接入运行时）
 
 - **仓库事实**：2026-11-20 10:31 UTC main 最近提交 [b345eb5](https://github.com/js2005happy/nyra/commit/b345eb5ded215048e6f281dd0bc4af94e6d7ea48) 涉及 Telegram Bot 会话队列、去重和只读执行；这不是工具执行副作用的跨进程事务保证。开放 Issues/PR 查询为空。开发分支仍为 Python Angel，main 为 Bun/TypeScript Nyra。
