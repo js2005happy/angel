@@ -1,3 +1,7 @@
+## 未发布（2026-11-20，静态审计 v6）
+
+- scripts/audit_runtime_boundary.py：每个路径读取一次有界快照，文件状态和源码行号使用同一份内容；新增 source_sha256 便于审计输入版本复核，JSON schema v6。未运行测试或 CI，不提供原子执行所有权。
+
 ## 未发布（2026-11-20，静态审计 v5）
 
 - `scripts/audit_runtime_boundary.py`：必需的 Python/Node 入口文件缺失或不可读时失败关闭，新增 `missing_required_files`；统一 `audit_incomplete` 与非零退出码，JSON schema v5。仅静态修改，未运行测试；不提供运行时所有权保证。
