@@ -68,22 +68,28 @@ export const CONNECTOR_DECLARATIONS: ConnectorPermissionDeclaration[] = [
   {
     id: "gmail",
     displayName: "Gmail",
-    description: "Google 邮箱：读信、按 thread 回复、代发草稿（缺口 6 已落地）。",
+    description: "Google 邮箱：读信、按 thread 回复、代发草稿（缺口 6 已落地）；附件下载、标签、标已读、进回收站（缺口 44 第三批）。",
     status: "available",
     scopes: {
       read: ["https://www.googleapis.com/auth/gmail.readonly"],
       write: [
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.compose",
+        // 改标签、标已读、进回收站要 gmail.modify（缺口 44 第三批）。
+        "https://www.googleapis.com/auth/gmail.modify",
       ],
     },
     toolGroups: [
       { name: "读邮件", tools: ["gmail_search", "gmail_read"], access: "read" },
       { name: "发邮件", tools: ["gmail_send"], access: "write" },
+      { name: "附件", tools: ["gmail_attachment"], access: "read" },
+      { name: "标签", tools: ["gmail_labels", "gmail_label", "gmail_unlabel"], access: "write" },
+      { name: "已读", tools: ["gmail_mark_read", "gmail_mark_unread"], access: "write" },
+      { name: "回收站", tools: ["gmail_trash"], access: "write" },
     ],
-    dataAccessed: ["邮件元数据（发件人、主题、时间、摘要）", "邮件正文（仅按 id 读取时）", "账号邮箱地址"],
-    alwaysRequireApproval: ["gmail_send"],
-    alwaysForbidden: ["批量群发（一次只发一封）", "删除邮件", "越权访问他人邮箱"],
+    dataAccessed: ["邮件元数据（发件人、主题、时间、摘要）", "邮件正文（仅按 id 读取时）", "账号邮箱地址", "附件（文件名、大小；内容仅按 id 下载时）", "标签列表"],
+    alwaysRequireApproval: ["gmail_send", "gmail_label", "gmail_unlabel", "gmail_mark_read", "gmail_mark_unread", "gmail_trash"],
+    alwaysForbidden: ["批量群发（一次只发一封）", "永久删除邮件（只支持进回收站）", "转发给外部", "改他人标签", "越权访问他人邮箱"],
   },
   {
     id: "shopify",

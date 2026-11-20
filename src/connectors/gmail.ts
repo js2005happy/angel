@@ -13,9 +13,24 @@
 // - 本模块不做网络上的任何“聪明事”：URL 全部由固定 host + 校验过的
 //   message id 拼成，用户输入永远成不了 URL 的 host；token 刷新失败即
 //   报“授权失效、请重新授权”，不静默降级、不重试三次以上。
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+// - 缺口 44 第三批：OAuth 的 form POST 与回环服务器不再留第二份，统一走
+//   src/oauth.ts 的通用流程（postForm / startLoopbackCallbackServer /
+//   newAuthState / buildAuthUrl）；对外行为与合并前一字不差（错误仍报
+//   GmailError、文案仍是 Gmail 口径），见下面的 postForm 与
+//   startLoopbackCallbackServer 两个薄 wrapper。
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getCredential, Vault, vaultPath } from "../vault.ts";
+import { appendConnectorAudit } from "./registry.ts";
+import { formatBytes, sniffImageKind, TEXT_EXTENSIONS } from "../bot/attachments.ts";
+import {
+  buildAuthUrl as buildOAuthAuthUrl,
+  newAuthState as oauthNewAuthState,
+  postForm as oauthPostForm,
+  startLoopbackCallbackServer as oauthStartLoopback,
+  OAuthError,
+} from "../oauth.ts";
 import {
   CONNECTOR_AUTH_STATE_LABELS,
   ensureConnectorUsable,
@@ -30,12 +45,18 @@ export const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1";
 export const GMAIL_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const GMAIL_OAUTH_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 export const GMAIL_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-/** 申请的 scope：读邮件 + 发邮件 + 建草稿（缺口 6 第一批的全部能力）。 */
+/** 申请的 scope：读邮件 + 发邮件 + 建草稿（缺口 6 第一批的全部能力）；
+ * 缺口 44 第三批加 gmail.modify——改标签、标已读、进回收站都要它。 */
 export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/gmail.modify",
 ];
+/** 附件下载的硬顶（与 Bot Phase 3 的 attachment_max_bytes 默认值同口径）：
+ * 单个附件超 10MB 直接拒绝；文本文档提取进 CLI 输出最多 8000 字，超了截断并注明。 */
+export const GMAIL_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+export const GMAIL_ATTACHMENT_TEXT_CHARS = 8000;
 /** 密码箱条目名：token 与 OAuth 客户端各一条，名字明文、值加密（见 vault.ts）。 */
 export const GMAIL_VAULT_TOKENS_ENTRY = "gmail-oauth";
 export const GMAIL_VAULT_CLIENT_ENTRY = "gmail-oauth-client";
@@ -45,8 +66,6 @@ export const GMAIL_MAX_SEARCH_RESULTS = 25;
 export const GMAIL_DEFAULT_SEARCH_RESULTS = 10;
 /** 单次 API 请求超时（毫秒）；token 刷新、收发都走同一口径。 */
 export const GMAIL_REQUEST_TIMEOUT_MS = 30_000;
-/** 回环回调等待授权码的最长时长（毫秒）：用户要在浏览器里点完同意。 */
-export const GMAIL_AUTH_TIMEOUT_MS = 5 * 60_000;
 
 export class GmailError extends Error {
   constructor(message: string) {
@@ -106,12 +125,49 @@ export interface GmailSendOptions {
   threadId?: string;
 }
 
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+export interface GmailAttachment {
+  /** 附件原始字节（base64url 解码后）。 */
+  bytes: Buffer;
+  filename?: string;
+  mimeType?: string;
+  /** 字节数（与 bytes.length 一致，单独列出来方便审计与展示）。 */
+  size: number;
+}
+
 export interface GmailTransport {
   search(query: string, maxResults?: number, pageToken?: string): Promise<{ messages: GmailMessageSummary[]; nextPageToken?: string }>;
   get(id: string): Promise<GmailMessage>;
   send(opts: GmailSendOptions): Promise<{ id: string; threadId: string }>;
   createDraft(opts: GmailSendOptions): Promise<{ id: string }>;
+  /** 缺口 44 第三批：标签（只读列出）与写操作（改标签、标已读、进回收站）。
+   * 写操作在 CLI 层须用户显式确认，transport 本身只负责调 API。 */
+  listLabels(): Promise<GmailLabel[]>;
+  modifyLabels(id: string, addLabelIds: string[], removeLabelIds: string[]): Promise<{ id: string; labelIds: string[] }>;
+  markRead(id: string): Promise<{ id: string; labelIds: string[] }>;
+  markUnread(id: string): Promise<{ id: string; labelIds: string[] }>;
+  trash(id: string): Promise<{ id: string }>;
+  /** 附件下载：先读邮件全文找到附件所在的 part（文件名与 mime 类型都在
+   * part 上），再调 attachments.get 取原始字节。 */
+  getAttachment(messageId: string, attachmentId: string): Promise<GmailAttachment>;
 }
+
+/** 永久删除是硬红线（缺口 51）：Gmail 侧只提供进回收站，永久删除本批不提供。 */
+export function gmailWriteRefusal(operation: string): string {
+  return `Gmail 永久删除本批不提供（${operation}）：只支持进回收站（nyra gmail trash），想彻底删除请去 Gmail 网页端操作。`;
+}
+
+export function refuseGmailPermanentDelete(operation: string): never {
+  throw new GmailError(gmailWriteRefusal(operation));
+}
+
+/** CLI 上撞见写词直接拒绝的命令名（与 Slack 的 SLACK_WRITE_COMMANDS 同款）。 */
+export const GMAIL_WRITE_COMMANDS = ["delete", "purge"] as const;
 
 type FetchFn = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -131,6 +187,20 @@ export function isValidGmailMessageId(id: string): boolean {
 
 function assertMessageId(id: string): void {
   if (!isValidGmailMessageId(id)) throw new GmailError(`邮件 id 不合法：${id}`);
+}
+
+/** Gmail 标签 id 只允许 URL 安全字符（系统标签如 INBOX/UNREAD、用户标签
+ * 如 Label_123 都是这个字符集；用户输入永远拼不成越界路径）。 */
+export function isValidGmailLabelId(id: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(id);
+}
+
+function assertLabelId(id: string): void {
+  if (!isValidGmailLabelId(id)) throw new GmailError(`标签 id 不合法：${id}`);
+}
+
+function assertAttachmentId(id: string): void {
+  if (!isValidGmailMessageId(id)) throw new GmailError(`附件 id 不合法：${id}`);
 }
 
 function stripTags(html: string): string {
@@ -158,17 +228,23 @@ export function buildRawMessage(opts: GmailSendOptions): string {
   return b64urlEncode(lines.join("\r\n"));
 }
 
+/** 拼授权 URL：参数与合并前一字不差（client_id、redirect_uri、
+ * response_type=code、scope、access_type=offline、prompt=consent、state），
+ * 拼接本身走 oauth.ts 的通用 buildAuthUrl。 */
 export function buildAuthUrl(opts: { clientId: string; redirectUri: string; state: string; scopes?: string[] }): string {
-  const url = new URL(GMAIL_AUTH_URL);
-  url.searchParams.set("client_id", opts.clientId);
-  url.searchParams.set("redirect_uri", opts.redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", (opts.scopes ?? GMAIL_SCOPES).join(" "));
-  url.searchParams.set("access_type", "offline");
-  url.searchParams.set("prompt", "consent");
-  url.searchParams.set("state", opts.state);
-  return url.toString();
+  return buildOAuthAuthUrl(GMAIL_AUTH_URL, {
+    client_id: opts.clientId,
+    redirect_uri: opts.redirectUri,
+    response_type: "code",
+    scope: (opts.scopes ?? GMAIL_SCOPES).join(" "),
+    access_type: "offline",
+    prompt: "consent",
+    state: opts.state,
+  });
 }
+
+/** 授权流程用的随机 state（防 CSRF）：与 oauth.ts 同一个实现，不再留第二份。 */
+export const newAuthState = oauthNewAuthState;
 
 /** token 端点返回的 JSON 转 GmailTokens：缺字段即报错，不猜、不补默认值。 */
 export function parseTokens(data: unknown): GmailTokens {
@@ -185,31 +261,23 @@ export function parseTokens(data: unknown): GmailTokens {
   };
 }
 
+/** form POST 走 oauth.ts 的通用 postForm（缺口 44 第三批合并）；错误仍按
+ * Gmail 模块的口径报（token 端点失败 → GmailError“token 端点请求失败：…”），
+ * 调用方（exchangeCodeForTokens / refreshAccessToken / revokeRefreshToken）
+ * 的行为与合并前一字不差。 */
 async function postForm(url: string, params: Record<string, string>, fetchFn: FetchFn): Promise<unknown> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GMAIL_REQUEST_TIMEOUT_MS);
   try {
-    const res = await fetchFn(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(params).toString(),
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    let data: unknown = null;
-    try { data = JSON.parse(text); } catch { /* 非 JSON 响应按错误处理 */ }
-    if (!res.ok) {
-      const detail = data && typeof data === "object" && typeof (data as Record<string, unknown>).error_description === "string"
-        ? String((data as Record<string, unknown>).error_description)
-        : `HTTP ${res.status}`;
-      throw new GmailError(`token 端点请求失败：${detail}`);
-    }
-    return data;
+    return await oauthPostForm(
+      url,
+      params,
+      (u, init) => fetchFn(u, init as unknown as RequestInit),
+      GMAIL_REQUEST_TIMEOUT_MS,
+    );
   } catch (err: unknown) {
-    if (err instanceof GmailError) throw err;
-    throw new GmailError(`token 端点请求失败：${err instanceof Error ? err.message : String(err)}`);
-  } finally {
-    clearTimeout(timer);
+    if (err instanceof OAuthError) {
+      throw new GmailError(`token 端点请求失败：${err.message.replace(/^OAuth 请求失败：/, "")}`);
+    }
+    throw err;
   }
 }
 
@@ -268,7 +336,8 @@ function headerValue(headers: Array<{ name?: string; value?: string }>, name: st
 
 interface GmailPart {
   mimeType?: string;
-  body?: { data?: string };
+  filename?: string;
+  body?: { data?: string; attachmentId?: string };
   parts?: GmailPart[];
 }
 
@@ -330,6 +399,10 @@ export class GmailApiTransport implements GmailTransport {
   /** 缺口 44 第 0 批：refresh 失败（refresh token 坏了/被撤销）时回调，调用方
    * 把授权状态标过期——access token 过期不走这里（正常刷新能换回来）。 */
   private readonly onAuthFailure?: () => void;
+  /** 缺口 44 第三批：调用审计用的 home 与 userId（只记操作名、记录数、
+   * 耗时，不记 token、不记邮件内容；测试里直接 new 时不传，审计静默跳过）。 */
+  private readonly home?: string;
+  private readonly userId?: string;
 
   constructor(opts: {
     tokens: GmailTokens;
@@ -337,17 +410,36 @@ export class GmailApiTransport implements GmailTransport {
     fetchFn?: FetchFn;
     onTokensRefreshed?: (tokens: GmailTokens) => void;
     onAuthFailure?: () => void;
+    home?: string;
+    userId?: string;
   }) {
     this.tokens = opts.tokens;
     this.client = opts.client;
     this.fetchFn = opts.fetchFn ?? fetch;
     this.onTokensRefreshed = opts.onTokensRefreshed;
     this.onAuthFailure = opts.onAuthFailure;
+    this.home = opts.home;
+    this.userId = opts.userId;
   }
 
   /** 当前 token（测试与 CLI 状态展示用；调用方绝不能把它写进日志）。 */
   currentTokens(): GmailTokens {
     return this.tokens;
+  }
+
+  /** 每次调用记一行审计（与 Shopify/Slack 的 audit 同款）：只记操作名、
+   * 记录数、耗时，不记 token、不记邮件内容、不记附件内容。 */
+  private audit(operation: string, records: number, startedAt: number, reason?: string): void {
+    if (!this.home || !this.userId) return;
+    appendConnectorAudit(this.home, {
+      action: "call",
+      connector: "gmail",
+      userId: this.userId,
+      operation,
+      records,
+      durationMs: Date.now() - startedAt,
+      ...(reason ? { reason } : {}),
+    });
   }
 
   private async refresh(): Promise<void> {
@@ -463,6 +555,102 @@ export class GmailApiTransport implements GmailTransport {
     const data = await this.request("/users/me/profile", { method: "GET" }) as Record<string, unknown>;
     if (typeof data.emailAddress !== "string" || !data.emailAddress) throw new GmailError("Gmail 没有返回账号邮箱");
     return data.emailAddress;
+  }
+
+  /** 列出标签（只读）：id、名字、类型（system/user）三列，只取展示字段。 */
+  async listLabels(): Promise<GmailLabel[]> {
+    const startedAt = Date.now();
+    const data = await this.request("/users/me/labels", { method: "GET" }) as Record<string, unknown>;
+    const list = Array.isArray(data.labels) ? data.labels : [];
+    const labels = list
+      .filter((l): l is Record<string, unknown> => !!l && typeof l === "object" && typeof (l as Record<string, unknown>).id === "string")
+      .map((l) => ({
+        id: l.id as string,
+        name: typeof l.name === "string" ? l.name : (l.id as string),
+        ...(typeof l.type === "string" ? { type: l.type } : {}),
+      }));
+    this.audit("labels", labels.length, startedAt);
+    return labels;
+  }
+
+  /** 改标签：add 与 remove 至少给一个；空数组传了也无害，Gmail 直接忽略。 */
+  private async modify(id: string, addLabelIds: string[], removeLabelIds: string[], operation: string): Promise<{ id: string; labelIds: string[] }> {
+    assertMessageId(id);
+    for (const labelId of [...addLabelIds, ...removeLabelIds]) assertLabelId(labelId);
+    const startedAt = Date.now();
+    const data = await this.request(`/users/me/messages/${id}/modify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ addLabelIds, removeLabelIds }),
+    }) as Record<string, unknown>;
+    if (typeof data.id !== "string" || !data.id) throw new GmailError("Gmail 改标签后没有返回邮件 id");
+    const labelIds = Array.isArray(data.labelIds)
+      ? (data.labelIds as unknown[]).filter((x): x is string => typeof x === "string")
+      : [];
+    this.audit(operation, 1, startedAt);
+    return { id: data.id, labelIds };
+  }
+
+  async modifyLabels(id: string, addLabelIds: string[], removeLabelIds: string[]): Promise<{ id: string; labelIds: string[] }> {
+    return this.modify(id, addLabelIds, removeLabelIds, "modify_labels");
+  }
+
+  /** 标已读 = 去掉 UNREAD 标签；标未读 = 加上 UNREAD 标签。 */
+  async markRead(id: string): Promise<{ id: string; labelIds: string[] }> {
+    return this.modify(id, [], ["UNREAD"], "mark_read");
+  }
+
+  async markUnread(id: string): Promise<{ id: string; labelIds: string[] }> {
+    return this.modify(id, ["UNREAD"], [], "mark_unread");
+  }
+
+  /** 进回收站（不是永久删除）：须 CLI 层显式确认；永久删除本批不提供。 */
+  async trash(id: string): Promise<{ id: string }> {
+    assertMessageId(id);
+    const startedAt = Date.now();
+    const data = await this.request(`/users/me/messages/${id}/trash`, { method: "POST" }) as Record<string, unknown>;
+    if (typeof data.id !== "string" || !data.id) throw new GmailError("Gmail 移进回收站后没有返回邮件 id");
+    this.audit("trash", 1, startedAt);
+    return { id: data.id };
+  }
+
+  /** 在邮件全文里找附件所在的 part（文件名与 mime 类型都在 part 上）。 */
+  private findAttachmentPart(data: unknown, attachmentId: string): { filename?: string; mimeType?: string } | null {
+    const payload = ((data as Record<string, unknown> | null)?.payload ?? {}) as GmailPart;
+    const walk = (part: GmailPart): { filename?: string; mimeType?: string } | null => {
+      if (part.body?.attachmentId === attachmentId) {
+        return {
+          ...(part.filename ? { filename: part.filename } : {}),
+          ...(part.mimeType ? { mimeType: part.mimeType } : {}),
+        };
+      }
+      for (const sub of part.parts ?? []) {
+        const found = walk(sub);
+        if (found) return found;
+      }
+      return null;
+    };
+    return walk(payload);
+  }
+
+  /** 附件下载：先读邮件全文找 part，再调 attachments.get 取原始字节。 */
+  async getAttachment(messageId: string, attachmentId: string): Promise<GmailAttachment> {
+    assertMessageId(messageId);
+    assertAttachmentId(attachmentId);
+    const startedAt = Date.now();
+    const raw = await this.request(`/users/me/messages/${messageId}?format=full`, { method: "GET" });
+    const part = this.findAttachmentPart(raw, attachmentId);
+    if (!part) throw new GmailError(`邮件 ${messageId} 里没有找到附件 ${attachmentId}`);
+    const data = await this.request(`/users/me/messages/${messageId}/attachments/${attachmentId}`, { method: "GET" }) as Record<string, unknown>;
+    if (typeof data.data !== "string") throw new GmailError("Gmail 没有返回附件内容");
+    const bytes = b64urlDecode(data.data);
+    this.audit("attachment", 1, startedAt);
+    return {
+      bytes,
+      ...(part.filename ? { filename: part.filename } : {}),
+      ...(part.mimeType ? { mimeType: part.mimeType } : {}),
+      size: bytes.length,
+    };
   }
 }
 
@@ -611,6 +799,8 @@ export function createGmailTransport(home: string, config: Record<string, unknow
     tokens,
     client,
     fetchFn: opts?.fetchFn,
+    home,
+    userId,
     onTokensRefreshed: (next) => { persistGmailTokens(home, next); },
     onAuthFailure: () => {
       try { markConnectorExpired(home, "gmail", userId, "refresh token 失效"); } catch { /* 标过期失败不改变调用失败本身 */ }
@@ -619,9 +809,10 @@ export function createGmailTransport(home: string, config: Record<string, unknow
 }
 
 /**
- * 回环回调服务器（nyra gmail auth 用）：在 127.0.0.1 上起一个临时 HTTP
- * 服务等 Google 把授权码送回来；state 对不上直接拒绝（防 CSRF）。
- * 只在交互式授权时用，测试里同样可以起一个真服务再用 fetch 回调它。
+ * 回环回调服务器（nyra gmail auth 用）：走 oauth.ts 的通用实现（缺口 44
+ * 第三批合并），只在两处保留 Gmail 口径——浏览器里显示的成功/拒绝文案，
+ * 以及超时报错里的“请重新运行 nyra gmail auth”。其余行为（state 校验、
+ * 拒绝回调、超时关闭）与合并前一字不差。
  * 注意：函数返回时服务器已经 listen 好了，redirectUri 可以直接用。
  */
 export async function startLoopbackCallbackServer(opts: { state: string; timeoutMs?: number }): Promise<{
@@ -629,83 +820,103 @@ export async function startLoopbackCallbackServer(opts: { state: string; timeout
   waitForCode(): Promise<string>;
   close(): void;
 }> {
-  let server: ReturnType<typeof createServer> | null = null;
-  let settled = false;
-  let resolveCode: (code: string) => void = () => {};
-  let rejectCode: (err: Error) => void = () => {};
-  const promise = new Promise<string>((resolvePromise, rejectPromise) => {
-    resolveCode = resolvePromise;
-    rejectCode = rejectPromise;
+  const server = await oauthStartLoopback({
+    state: opts.state,
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    successText: "授权成功，可以关掉这个页面、回到终端了。",
+    deniedText: "授权被拒绝或失败，可以关掉这个页面了。",
   });
-  const timer = setTimeout(() => {
-    if (!settled) {
-      settled = true;
-      try { server?.close(); } catch { /* ignore */ }
-      rejectCode(new GmailError("等待授权回调超时（5 分钟）：请重新运行 nyra gmail auth，在浏览器里完成 Google 授权"));
-    }
-  }, opts.timeoutMs ?? GMAIL_AUTH_TIMEOUT_MS);
-  server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    try {
-      const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      if (url.pathname !== "/callback") {
-        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Not found");
-        return;
-      }
-      if (settled) {
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end("<p>授权已完成，可以关掉这个页面了。</p>");
-        return;
-      }
-      const errParam = url.searchParams.get("error");
-      const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
-      if (errParam) {
-        settled = true;
-        clearTimeout(timer);
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        res.end("<p>授权被拒绝或失败，可以关掉这个页面了。</p>");
-        rejectCode(new GmailError(`Google 授权失败：${errParam}`));
-        return;
-      }
-      if (state !== opts.state || !code) {
-        res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("state 不匹配或缺少授权码");
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end("<p>授权成功，可以关掉这个页面、回到终端了。</p>");
-      resolveCode(code);
-    } catch {
-      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Server error");
-    }
-  });
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server!.once("error", rejectListen);
-    server!.listen(0, "127.0.0.1", () => resolveListen());
-  });
-  const addr = server.address();
-  if (!addr || typeof addr === "string") {
-    clearTimeout(timer);
-    try { server.close(); } catch { /* ignore */ }
-    throw new GmailError("回环回调服务器启动失败");
-  }
   return {
-    redirectUri: `http://127.0.0.1:${addr.port}/callback`,
-    waitForCode: () => promise,
-    close: () => {
-      clearTimeout(timer);
-      try { server?.close(); } catch { /* ignore */ }
+    redirectUri: server.redirectUri,
+    waitForCode: async () => {
+      try {
+        return await server.waitForCode();
+      } catch (err: unknown) {
+        if (err instanceof OAuthError) {
+          if (err.message.includes("等待授权回调超时")) {
+            throw new GmailError("等待授权回调超时（5 分钟）：请重新运行 nyra gmail auth，在浏览器里完成 Google 授权");
+          }
+          throw new GmailError(err.message);
+        }
+        throw err;
+      }
     },
+    close: () => server.close(),
   };
 }
 
-/** 授权流程用的随机 state（防 CSRF）。 */
-export function newAuthState(): string {
-  return randomBytes(16).toString("hex");
+/** 附件下载与校验（与 Bot Phase 3 的 processAttachment 同款口径）：
+ * 取字节 → 空文件跳过 → 超限拒绝 → 落临时目录（0600）校验 → 图片只记
+ * 元信息、文本文档提取内容（超长截断并注明）、其他类型拒绝 → 删临时目录。
+ * 返回的 bytes 供调用方 --out 落盘；不 --out 时调用方只拿 notice 与
+ * extractedText，内容不进审计、不进日志。 */
+export interface GmailAttachmentOutcome {
+  kind: "image" | "text" | "unsupported";
+  /** 给用户的说明（失败/不支持时回这句；成功时为元信息行）。 */
+  notice: string;
+  /** 文本文档提取的内容（超长时已截断）；图片与不支持的类型没有。 */
+  extractedText?: string;
+  /** 审计用的元信息（文件名、类型、大小，不含内容）。 */
+  meta: { filename?: string; mimeType?: string; sizeBytes: number };
+  /** 附件原始字节（调用方 --out 落盘用；不传 --out 时忽略）。 */
+  bytes: Buffer;
+}
+
+export async function downloadGmailAttachment(
+  transport: GmailTransport,
+  messageId: string,
+  attachmentId: string,
+  opts?: { maxBytes?: number; textChars?: number },
+): Promise<GmailAttachmentOutcome> {
+  const maxBytes = opts?.maxBytes ?? GMAIL_ATTACHMENT_MAX_BYTES;
+  const textChars = opts?.textChars ?? GMAIL_ATTACHMENT_TEXT_CHARS;
+  const att = await transport.getAttachment(messageId, attachmentId);
+  const meta: GmailAttachmentOutcome["meta"] = {
+    ...(att.filename ? { filename: att.filename } : {}),
+    ...(att.mimeType ? { mimeType: att.mimeType } : {}),
+    sizeBytes: att.bytes.length,
+  };
+  if (att.bytes.length === 0) {
+    return { kind: "unsupported", notice: "附件是空文件，已跳过。", meta, bytes: att.bytes };
+  }
+  if (att.bytes.length > maxBytes) {
+    return { kind: "unsupported", notice: `附件太大（${formatBytes(att.bytes.length)}，超过 ${formatBytes(maxBytes)} 上限），已跳过。`, meta, bytes: att.bytes };
+  }
+  // 落临时目录再处理（文件名不用 Gmail 给的名字，防路径穿越）；无论成败都删。
+  const dir = mkdtempSync(join(tmpdir(), "nyra-gmail-attachment-"));
+  try {
+    writeFileSync(join(dir, "file"), att.bytes, { mode: 0o600 });
+    const data = readFileSync(join(dir, "file"));
+    const imageKind = sniffImageKind(data);
+    if (imageKind) {
+      return {
+        kind: "image",
+        notice: `收到一张图片（${imageKind}，${formatBytes(data.length)}）：本批暂不支持看图，已记录元信息。`,
+        meta,
+        bytes: att.bytes,
+      };
+    }
+    const base = (att.filename ?? "").split(/[\\/]/).pop() ?? "";
+    const dot = base.lastIndexOf(".");
+    const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+    const mime = (att.mimeType ?? "").toLowerCase();
+    const isText = TEXT_EXTENSIONS.includes(ext) || mime.startsWith("text/");
+    if (!isText) {
+      const shown = ext ? `.${ext}` : (mime || "未知类型");
+      return { kind: "unsupported", notice: `暂不支持解析这类文件（${shown}），请转成 .txt/.md 再取，或用 --out 原样保存。`, meta, bytes: att.bytes };
+    }
+    const decoded = new TextDecoder("utf-8", { fatal: false }).decode(data);
+    const truncated = decoded.length > textChars;
+    return {
+      kind: "text",
+      notice: `已读取附件 ${att.filename ?? "未命名文档"}（${formatBytes(data.length)}${truncated ? `，内容过长只取前 ${textChars} 字` : ""}）。`,
+      extractedText: truncated ? decoded.slice(0, textChars) : decoded,
+      meta,
+      bytes: att.bytes,
+    };
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
 }
 
 /** 搜索结果格式化（纯文本；调用方再按需包 wrapUntrusted——邮件元数据也是外部数据）。 */
@@ -731,5 +942,18 @@ export function formatGmailMessage(msg: GmailMessage): string {
     `threadId：${msg.threadId}`,
   ].join("\n");
   return `${head}\n\n${msg.bodyText || "（正文为空）"}`;
+}
+
+/** 标签列表格式化：一行一个“名字（id）[类型]”。 */
+export function formatGmailLabels(labels: GmailLabel[]): string {
+  if (!labels.length) return "没有标签。";
+  return labels.map((l) => `- ${l.name}（${l.id}）${l.type ? ` [${l.type}]` : ""}`).join("\n");
+}
+
+/** 附件下载结果格式化：说明行 + 文本文档提取的内容（有才附）。 */
+export function formatGmailAttachmentOutcome(outcome: GmailAttachmentOutcome): string {
+  const lines = [outcome.notice];
+  if (outcome.extractedText !== undefined) lines.push("", outcome.extractedText);
+  return lines.join("\n");
 }
 
