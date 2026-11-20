@@ -48,6 +48,7 @@ import { processAttachments } from "./attachments.ts";
 import { DedupStore, QuotaStore } from "./dedupAndQuota.ts";
 import { splitMessage } from "./formatter.ts";
 import { BotNotifier } from "./notifier.ts";
+import { botToolRedlineVerdict, handleBusinessRedlines } from "../businessRedlines.ts";
 
 /** 给 schedule daemon / task worker 共用（buildNotifierFromConfig 的返回类型）。 */
 export { BotNotifier } from "./notifier.ts";
@@ -265,6 +266,12 @@ export class BotRunner {
    */
   private approveViaBridge(sessionKey: string, profile: BotProfile): ApproveFn {
     return async (tool, summary, details) => {
+      // 缺口 51：业务动作硬红线——never 档直接拒绝、不建挂起审批（不浪费一次
+      // 人工审批；即使已批准也不放行）。approve 档走下面的正常审批链。
+      const redline = botToolRedlineVerdict(this.home, tool);
+      if (redline?.blocked) {
+        return { approved: false, feedback: `业务动作红线拦截：${redline.reason}` };
+      }
       if (!isToolAllowed(profile, tool)) {
         return { approved: false, feedback: `工具 ${tool} 不在你的角色（${profile.role}）白名单里，不能执行。` };
       }
@@ -798,9 +805,14 @@ function removePid(home: string): void {
 export async function handleBot(argv: string[], home: string): Promise<number> {
   const resolvedHome = home || resolveHome();
   const channel = argv[0];
+  // 缺口 51：业务动作硬红线表（`nyra bot redlines ...`；`nyra redlines` 是
+  // 另一条命令——上线红线自检，不要混用）。
+  if (channel === "redlines") {
+    return handleBusinessRedlines(argv.slice(1), resolvedHome);
+  }
   const action = argv[1];
   if (channel !== "telegram" || !action) {
-    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n");
+    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
     return 2;
   }
   if (action === "stop") {
@@ -867,6 +879,6 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     removePid(resolvedHome);
     return 0;
   }
-  process.stdout.write("用法：nyra bot telegram <start|stop|status>\n");
+  process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
   return 2;
 }
