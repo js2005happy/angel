@@ -124,7 +124,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用 → 产物 → 校验结果，详见 docs/evidence.md）
   nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
   nyra stats [--heatmap]         本月用量与每日用量热力图（详见 docs/cost.md）
-  nyra cost --show               定价、单次上限与月度上限（本月已花）
+  nyra cost --show [--json]      定价、单次上限与月度上限（本月已花）
   nyra --plan "任务"             只读分析，生成工作目录中的 plan.md，不执行
   nyra --execute-plan --approve-plan <SHA256>   执行经校验值批准的 plan.md
   nyra --verify "<命令>"         任务完成后运行验证命令（退出码 0 才算验证通过）
