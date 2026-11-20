@@ -62,3 +62,18 @@ nyra redlines                 # 红线自检里会报告权限规则的缺失/�
 nyra status                   # 诊断：被忽略的权限设置、永不匹配的 matcher
 nyra permissions              # Poppy 站点授权意向（本地账本，只记录不授权）
 ```
+
+## 规则体检：`nyra redlines` 会告诉你哪条规则永远不会命中
+
+`lintRules()` 做四类**能确定**的检查（不猜语义）：
+
+| code | 含义 | 后果 |
+|---|---|---|
+| `unknown-tool` | 工具名不在已知集合里 | **这条规则永远不会命中**（拼错了） |
+| `domain-on-non-url-tool` | `domain:` 用在路径工具上 | 不会命中（该语法只对 URL 类工具生效） |
+| `bare-host-on-path-tool` | `read_file(example.com)` 这种 | 会被当成相对路径文件名，不按域名匹配 |
+| `empty-specifier` | `Bash()` | 与裸工具名等价（命中全部调用），提醒确认意图 |
+
+`nyra redlines` 输出里的 `permission-rules-dead`（warn）/ `permission-rules-lint`（ok）
+就是它的结论。**为什么值得有**：本仓库连续踩了两次「规则写了但不生效」，而这类问题
+不跑就发现不了——现在配错会在红线自检里直接点名。

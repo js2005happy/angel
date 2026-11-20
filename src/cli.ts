@@ -3510,6 +3510,8 @@ export async function main(argv: string[]): Promise<number> {
       sandbox: { level: sandboxStatus.level, backend: String(sandboxStatus.backend) },
       permissions: { allow: perms.allow, ask: perms.ask, deny: perms.deny },
       hasCostLimit: typeof cfgRed.max_cost_usd === "number",
+      // 权限规则体检需要已知工具名（含别名），否则会误报拼写
+      knownTools: [...TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string), "Bash", "Edit", "Write", "Read", "sh", "zsh", "powershell"],
       // 阈值与忽略项：config.redlines（不同项目合理值不同）
       thresholds: (() => {
         const rl = cfgRed.redlines;
