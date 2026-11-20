@@ -16,6 +16,7 @@
 | `nyra evidence verify <运行 ID>` | 独立复核运行的证据链 |
 | `nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]` | 执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行） |
 | `nyra replay <运行 ID> [--verbose]` | 会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行） |
+| `nyra regression <list\|precipitate --run <运行 ID>\|remove <用例 id>\|status <用例 id> <open\|verified\|retired>>` | 回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 `docs/regression.md`） |
 | `nyra "任务" --image <图片路径> [--image ...] [--video <视频路径或链接>]` | 图像/视频输入：图片进首轮用户消息，视频先抽帧再进（模型须支持看图，详见 docs/vision.md） |
 | `nyra --voice <音频路径> ["任务"]` | 语音指挥：先转文字再当任务跑（本地 whisper 优先、云端兜底；详见 docs/voice.md） |
 | `nyra "任务" --speak` | 任务跑完后把结果读出来（默认关；只读结果前 500 字） |
@@ -66,6 +67,7 @@
 | `nyra mail-inbox <status\|enable\|disable\|allowlist\|set\|poll>` | 邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 `docs/mail-inbox.md`） |
 | `nyra responsibility <list\|add\|remove\|enable\|disable\|check>` | 常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 `docs/responsibilities.md`） |
 | `nyra bot telegram <start\|stop\|status>` | Bot 方向 Phase 1+2+3：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；角色路由与聊天内审批；主动推送 notifier 与附件处理，详见 `docs/bot.md`） |
+| `nyra bot discord <start\|stop\|status>` | Bot 方向：Discord 渠道（Gateway 收 MESSAGE_CREATE 事件、REST 发/编辑消息；需 Message Content Intent，详见 `docs/bot.md`） |
 | `nyra bot redlines <status\|list\|show\|tighten\|loosen\|set>` | Bot 缺口 51：业务动作硬红线表——发消息/付款/删除永远须人批，转钱/交易证券永远禁做（详见 `docs/business-redlines.md`） |
 | `nyra task <add\|list\|show\|cancel\|worker\|approve>` | 后台任务队列 |
 | `nyra review <list\|show\|approve\|reject\|apply…>` | 审阅队列：逐项批准并行线程与定时任务结果 |
