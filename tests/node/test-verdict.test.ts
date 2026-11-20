@@ -424,3 +424,36 @@ test("B5 通过率不被未完成/中断的运行灌水", () => {
   expect(t.unverified).toBe(1);
   expect(t.verifiedRate).toBeCloseTo(1 / 3, 10);
 });
+
+// ---- 结论措辞不能说谎（interrupted / incomplete 不是"跑完了"）----
+// 缺陷：`buildRunVerdict` 对未验证类统一说"跑完了，但证据不足以下结论"。
+// 但 `interrupted` / `incomplete` 是**没跑完**——用户看到"跑完了"会去怀疑校验命令，
+// 而真正的问题是运行根本没结束。措辞错误会把人引到错误的排查方向。
+
+const runOnly = (status: string) => ({
+  run_id: "r", status, verify_result: null, verify_cmd: null,
+  spent_usd: 0.01, delegate_spent_usd: 0, error: null,
+});
+
+test("W1 interrupted 的结论说没跑完，不说跑完了", () => {
+  const v = buildRunVerdict(runOnly("interrupted") as never);
+  expect(v.headline).toContain("没跑完");
+  expect(v.headline).not.toContain("跑完了");
+});
+
+test("W2 incomplete 同理（运行出错中断，不是跑完但没验证）", () => {
+  const v = buildRunVerdict(runOnly("incomplete") as never);
+  expect(v.headline).toContain("没跑完");
+  expect(v.headline).not.toContain("跑完了");
+});
+
+test("W3 completed_unverified 才该说跑完了（这个状态确实是跑完了没验证）", () => {
+  const v = buildRunVerdict(runOnly("completed_unverified") as never);
+  expect(v.headline).toContain("跑完了");
+});
+
+test("W4 三种未验证状态的等级一致（都是 yellow，措辞差异不该改变等级）", () => {
+  for (const st of ["interrupted", "incomplete", "completed_unverified"]) {
+    expect(buildRunVerdict(runOnly(st) as never).grade).toBe("yellow");
+  }
+});
