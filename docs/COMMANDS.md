@@ -17,6 +17,8 @@
 | `nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]` | 执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行） |
 | `nyra replay <运行 ID> [--verbose]` | 会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行） |
 | `nyra "任务" --image <图片路径> [--image ...] [--video <视频路径或链接>]` | 图像/视频输入：图片进首轮用户消息，视频先抽帧再进（模型须支持看图，详见 docs/vision.md） |
+| `nyra --voice <音频路径> ["任务"]` | 语音指挥：先转文字再当任务跑（本地 whisper 优先、云端兜底；详见 docs/voice.md） |
+| `nyra "任务" --speak` | 任务跑完后把结果读出来（默认关；只读结果前 500 字） |
 | `nyra restore [检查点]` | 从影子快照恢复文件与会话 |
 
 ## 成本与用量
@@ -82,6 +84,7 @@
 | `nyra slack <auth\|status\|channels\|history\|send\|card>` | Slack 连接器：读频道/消息、发消息（须显式批准）、发审批卡；删消息/改频道/管理成员一律拒绝（详见 `docs/connectors.md`） |
 | `nyra mcp server <status\|enable\|disable\|allow-writes-on\|allow-writes-off>` | 对外 MCP 服务开关：别的 agent 经网关 `POST /mcp` 调 Nyra 的记忆与任务（默认关闭；写操作须显式开且过独立审查，详见 `docs/mcp.md`） |
 | `nyra peer <status\|enable\|disable\|list\|auth\|ask\|handoff>` | 对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭；对外发送须开独立审查，详见 `docs/peer.md`） |
+| `nyra voice <status\|speak <文字>\|enable-tts\|disable-tts>` | 语音指挥：看配置与可用性、读一段文字、开关自动回读（默认关；详见 `docs/voice.md`） |
 
 ## 自检与运维
 
