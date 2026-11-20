@@ -6,6 +6,7 @@ call graph, lock coverage, or successful tool execution. No target code runs.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -59,10 +60,15 @@ def _source(root: Path, relative: str) -> tuple[str | None, str]:
 
 def inspect_tree(root: Path) -> dict[str, object]:
     """Report file status and line-numbered textual references."""
-    statuses = {key: _source(root, name)[1] for key, name in PATHS.items()}
+    # Read each path once: file status, fingerprint and probes share one snapshot.
+    snapshots = {name: _source(root, name) for name in set(PATHS.values())}
+    statuses = {key: snapshots[name][1] for key, name in PATHS.items()}
+    fingerprints = {key: (hashlib.sha256(snapshots[name][0].encode("utf-8")).hexdigest()
+                          if snapshots[name][0] is not None else None)
+                    for key, name in PATHS.items()}
     references = {}
     for key, (filename, token) in PROBES.items():
-        source, status = _source(root, filename)
+        source, status = snapshots[filename]
         references[key] = {
             "status": status,
             "lines": ([number for number, line in enumerate(source.splitlines(), 1)
@@ -74,6 +80,7 @@ def inspect_tree(root: Path) -> dict[str, object]:
         "root": str(root),
         "present": {key: status == "ok" for key, status in statuses.items()},
         "file_status": statuses,
+        "source_sha256": fingerprints,
         "text_references": references,
     }
 
@@ -112,7 +119,7 @@ def main() -> int:
     incomplete = (errors or not split or bool(missing_node_anchors)
                   or any(missing_required_files.values()))
     print(json.dumps({
-        "schema_version": 5,
+        "schema_version": 6,
         "development": development,
         "main": main,
         "runtime_split_detected": split if not errors else None,
