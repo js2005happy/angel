@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 Linux procfs 文件系统类型门禁（仅静态审阅）
+
+- **仓库事实**：实验性 Node claim 依赖 `/proc/self/fd/<fd>`，此前未检查该路径是否位于真正的 Linux procfs。本轮在打开 claim 目录前调用 Node 标准库 `statfsSync("/proc/self/fd")`，要求 `type === 0x9fa0`（Linux PROC_SUPER_MAGIC）；异常或不匹配即失败关闭，不执行 claim 创建。组件仍未接入真实 Node 派发。main 于 2026-11-20 23:32 UTC 的 [9230072](https://github.com/js2005happy/nyra/commit/9230072d35fcb32e6ffff6b160c0b10749dc4415) 是沙箱 CI 修复，非重复实现；开放 Issues/PR 检索为空。
+- **外部反馈（事实）**：[Codex #62853](https://github.com/openai/codex/issues/62853)（2026-11-20）报告断线/超时后交付不确定；[Codex #60104](https://github.com/openai/codex/issues/60104)（2026-11-07）报告重复返工及用量浪费。两者是外部个案，非 Angel 复现或频率统计。**工程推断**：在重试机制之前应加强持久操作标识的存储可信边界。
+- **候选排序（价值／难度／安全风险／依赖）**：本项 P0 高／低／低／Linux statfs（已提交、待测试）；P0 procfs 挂载竞态与异常路径验证 高／高／高／Linux mount namespace；P0 Windows reparse 原生句柄保护 高／高／高／Windows API；P0 真实 Node 工具派发集成 高／高／高／安全存储与审批；P1 MCP 工具目录变化检测 中高／中／中／MCP；P1 外部副作用可信回执 高／高／高／适配器。
+- **边界**：文件系统类型检查不锁定 mount namespace，不能证明 /proc/self/fd 在检查后不被替换，不能防范具有 mount 权限的攻击者；未运行测试、编译或 CI，不保证 exactly-once。
+
 ## 2026-11-21 — P0 Linux claim 名称复核绑定同一目录 fd（仅静态）
 
 - **仓库事实**：此前排他创建通过 `/proc/self/fd/<directoryFd>/...`，但写入后和目录 fsync 后的名称核对仍调用 `lstatSync(join(directory, filename))`，会重新解析原始路径。本轮两个核对点均改为同一已打开目录 fd 下的 procfs 路径，减少目录改名时检查错误对象的风险；不改变 claim 文件格式、工具派发或默认关闭策略。
