@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 Linux claim 同一目录 fd 持久化
+
+- 实验性 Node/Bun claim：保留 Linux 创建时的目录描述符直至目录 fsync 与最终名称核验，避免重新打开路径时同步被替换的目录。失败不自动删除 claim、不自动重放；无新增依赖。
+- 仅静态审阅，未运行测试或 CI；未接入 Node 工具派发，仍有 procfs/文件系统信任边界与竞态。
+
 ## Unreleased — 2026-11-21 Linux claim fd-relative creation
 
 - Node/Bun 实验性 claim：Linux 上使用已核验并保持打开的目录描述符，经 `/proc/self/fd` 执行排他创建，避免检查后关闭目录句柄再沿原路径创建；其他平台失败关闭。无新增强制依赖。
