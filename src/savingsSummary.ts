@@ -215,3 +215,68 @@ export function formatRedlinesWithSavings(
   const parts: string[] = [redlineText.trimEnd(), "", "—— 省钱机制（上了之后能省多少）——", formatSavings(savings)];
   return parts.join("\n");
 }
+
+// ---- 机器可读（nyra savings --json）----
+// 与 `nyra verdict --json` 同思路：人看单页，机器拿结构。
+// 契约：只加字段、不改名、不删字段；`tokensPerTurnSaved` 为 null 表示"算不出"（不是 0）。
+
+export const SAVINGS_JSON_SCHEMA = 1;
+
+export interface SavingsJson {
+  schema_version: number;
+  tokens_per_turn_total: number;
+  unknown_count: number;
+  lines: {
+    mechanism: string;
+    enabled: boolean;
+    tokens_per_turn_saved: number | null;
+    additive: boolean;
+    effect: string;
+    source: string;
+  }[];
+  /** 账本实测的辅助模型节省（没传则为 null）。 */
+  model_savings: {
+    main_model: string | null;
+    total_saved_usd: number;
+    unknown_calls: number;
+    main_spent_usd: number | null;
+    rows: {
+      model: string;
+      calls: number;
+      actual_usd: number | null;
+      counterfactual_usd: number | null;
+      saved_usd: number | null;
+    }[];
+  } | null;
+}
+
+export function toSavingsJson(summary: SavingsSummary, modelSavings?: ModelSavingsReport | null): SavingsJson {
+  return {
+    schema_version: SAVINGS_JSON_SCHEMA,
+    tokens_per_turn_total: summary.tokensPerTurnTotal,
+    unknown_count: summary.unknownCount,
+    lines: summary.lines.map((l) => ({
+      mechanism: l.mechanism,
+      enabled: l.enabled,
+      tokens_per_turn_saved: l.tokensPerTurnSaved,
+      additive: l.additive,
+      effect: l.effect,
+      source: l.source,
+    })),
+    model_savings: modelSavings
+      ? {
+        main_model: modelSavings.mainModel,
+        total_saved_usd: modelSavings.totalSavedUsd,
+        unknown_calls: modelSavings.unknownCalls,
+        main_spent_usd: modelSavings.mainSpentUsd,
+        rows: modelSavings.rows.map((r) => ({
+          model: r.model,
+          calls: r.calls,
+          actual_usd: r.actualUsd,
+          counterfactual_usd: r.counterfactualUsd,
+          saved_usd: r.savedUsd,
+        })),
+      }
+      : null,
+  };
+}

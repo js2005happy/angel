@@ -30,6 +30,7 @@ import { handleConfig } from "./configCli.ts";
 import { explainAll, explainOne, formatExplain } from "./configExplain.ts";
 import { summarizeSavings as summarizeCostSavings, formatSavings, formatRedlinesWithSavings } from "./savingsSummary.ts";
 import { summarizeModelSavings, formatModelSavings } from "./modelSavings.ts";
+import { toSavingsJson } from "./savingsSummary.ts";
 import { buildVerdict, buildRunVerdict, buildTrendVerdict, formatVerdict, toVerdictJson, guardExitCode, formatGuardLine, type Verdict as VerdictShape } from "./verdict.ts";
 import { subcommandSet } from "./subcommands.ts";
 import { checkDocs } from "./docCheck.ts";
@@ -3420,6 +3421,11 @@ export async function main(argv: string[]): Promise<number> {
       turns: typeof cfgSav.max_turns === "number" ? cfgSav.max_turns : 20,
       modelSavings,
     });
+    const savingsJson = (args.subArgs ?? []).includes("--json");
+    if (savingsJson) {
+      process.stdout.write(JSON.stringify(toSavingsJson(summary, modelSavings)) + "\n");
+      return EXIT_SUCCESS;
+    }
     process.stdout.write(formatSavings(summary) + "\n");
     // 逐模型明细：省了多少用真实账本反事实算，不写"算不出"。
     process.stdout.write("\n" + formatModelSavings(modelSavings) + "\n");
