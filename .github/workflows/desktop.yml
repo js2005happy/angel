@@ -249,4 +249,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: dist/*
+          # Windows 的 artifact 根目录是 bundle/（msi 与 nsis 的公共上级），
+          # merge-multiple 下载后是 dist/msi/*.msi、dist/nsis/*.exe；只写
+          # dist/* 会漏掉子目录里的 Windows 安装包（v0.5.3 首次 tag 构建即如此）。
+          files: |
+            dist/**/*.dmg
+            dist/**/*.msi
+            dist/**/*.exe
