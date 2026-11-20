@@ -104,6 +104,14 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // memory_forget/memory_delete/gmail_send/http_post）；rules 是用户用自然语言
   // 写的额外审查规则（审查提示里原样交给审查模型）。
   reviewer: { enabled: false, provider: null, model: null, tools: null, rules: [] },
+  // 缺口 11：技能自沉淀闭环（学 OpenClaw Skill Workshop / Hermes 自写技能）。
+  // 默认关闭（显式 opt-in）；开启后成功运行收尾时自动起草技能草稿（Markdown +
+  // frontmatter，附来源运行与质量分），低质草稿出生即归档；安装永远要人批准
+  // （`nyra skills approve`），自动起草 ≠ 自动安装。min_steps 是起草门槛
+  // （一次运行至少这么多次工具调用）；auto_archive_days 是已装技能多久没人用
+  // 就归档（`nyra skills sweep` 用）；require_verified 为 true 时只有 verified
+  // 的运行才能沉淀。
+  skill_sedimentation: { enabled: false, min_steps: 3, auto_archive_days: 30, require_verified: false },
 };
 
 export const VALID_MODES = ["readonly", "auto", "full", "creator"] as const;

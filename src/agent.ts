@@ -24,6 +24,7 @@ import {
 import { RepeatGuard } from "./repeatGuard.ts";
 import { SessionRules } from "./approvalRules.ts";
 import { loadSkills, canonicalSkillDirs, matchSkills, matchSkillsByPaths, parseSkillText, renderSkill, skillIndex, skillRenderOptionsFor, type Skill } from "./skills.ts";
+import { recordSkillUse } from "./skillUsage.ts";
 import { pluginSkillDirs } from "./plugins.ts";
 import { loadMemorySummary, loadAgentsMd, newSessionId, saveSession, buildMemorySection } from "./memory.ts";
 import { loadStyleProfile, buildStyleSection } from "./style.ts";
@@ -573,6 +574,14 @@ export class Agent {
     return full;
   }
 
+  /** 缺口 11：技能被注入提示词时记一次使用（每会话每技能只记第一次；账本写失败不拦运行）。 */
+  private skillsUsageRecorded = new Set<string>();
+  private noteSkillUsed(name: string): void {
+    if (!name || this.skillsUsageRecorded.has(name)) return;
+    this.skillsUsageRecorded.add(name);
+    try { recordSkillUse(this.home, name); } catch { /* 用量账本写失败不影响运行 */ }
+  }
+
   /**
    * 创造模式技能随二进制走（安装包不复制 skills/ 目录）；切出创造模式时撤下。
    * 磁盘上已有同名技能时以内嵌版不追加（磁盘版优先），避免同名技能重复出现。
@@ -1030,6 +1039,8 @@ export class Agent {
     // 调研报告第 2 项：技能渐进披露——本轮已注入过的路径触发技能（去重用）。
     // 关键词命中的技能已在 system prompt 全文段里，先记下来，路径触发不再重复注入。
     const injectedPathSkills = new Set(matchSkills(task, this.skills, 2).map((s) => s.name));
+    // 缺口 11：关键词命中的技能已注入 system prompt，记一次使用（sweep 靠它判断多久没人用）。
+    for (const name of injectedPathSkills) this.noteSkillUsed(name);
     for (let i = 0; i < this.maxTurns; i++) {
       let current = messages;
       if (this.autoCompactEnabled && !attemptedAutoCompact &&
@@ -1170,6 +1181,8 @@ export class Agent {
             .filter((s) => !injectedPathSkills.has(s.name));
           if (newly.length) {
             for (const s of newly) injectedPathSkills.add(s.name);
+            // 缺口 11：路径触发的技能同样记一次使用。
+            for (const s of newly) this.noteSkillUsed(s.name);
             result += "\n\n## 路径触发的技能（你刚触碰了匹配文件，按以下技能执行）\n" +
               newly.map((s) => renderSkill(s, skillRenderOptionsFor({ mode: this.mode, workdir: this.workdir, home: this.home }))).join("\n\n");
           }

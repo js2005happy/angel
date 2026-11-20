@@ -8,7 +8,7 @@ chmodSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync,
 readdirSync, renameSync, rmSync, statSync, writeFileSync, writeSync, fsyncSync,
 } from "node:fs";
 import { hostname} from "node:os";
-import { join, resolve, dirname, sep } from "node:path";
+import { join, resolve, dirname, sep, basename } from "node:path";
 import { enforcedOnly } from "./enforcedConfig.ts";
 import { pythonJsonDump} from "./pyjson.ts";
 import { ApprovalRequired} from "./tools.ts";
@@ -58,6 +58,15 @@ hook_blocked: ["event", "tool", "hook", "reason"],
 // 为什么放行/拦截、命中哪条确定性规则）。与缺口 3b 的 review_decision
 // （审阅队列的批复）是两个事件，不要混用。
 reviewer_verdict: ["tool", "decision", "reason", "reviewer_model", "rule"],
+// 缺口 11：技能自沉淀进证据链——起草（哪个草稿、源运行、质量分、出生状态）、
+// 批准（只记名字与源运行；安装路径是绝对路径、过 appendEvent 的 redact 会被
+// 掩掉，所以只写账本的 installed_path 字段，不进事件）、拒绝、归档（为什么
+// 归档、谁归的：起草时低质自动归档记 draft-quality，sweep 归档没有运行上下文、
+// 不记事件，只写 skills-archive.jsonl）。
+skill_draft_created: ["draft_name", "run_id", "quality", "status"],
+skill_draft_approved: ["draft_name", "run_id"],
+skill_draft_rejected: ["draft_name", "run_id"],
+skill_archived: ["draft_name", "reason", "source"],
 // 缺口 7：事件触发进证据链——哪个触发器、什么事件、谁发的、进了哪个任务、
 // 什么模式、什么鉴权。event_id 过长时只记指纹（见 eventTriggers.ts 的 shortEventId），
 // 完整 id 在 ~/.nyra/event-deliveries.json。
@@ -817,6 +826,18 @@ const result = this.continuing? await this.agent.resume(task): await this.agent.
 this.changed();
 this.recordFileHashes();
 this.recordUsageSummary();
+// 缺口 11：技能自沉淀——成功运行收尾时（且沉淀已开启时）自动起草技能草稿。
+// 只起草、不批准；安装仍须人工 `nyra skills approve`。钩子用动态 import
+// （避开 config.ts 的引用环），任何失败都吞掉、绝不破坏运行本身；
+// 只认标准的 runs 目录（store.baseDir 的 basename 是 runs 时 home 才是其父目录）。
+try {
+  if (basename(this.store.baseDir) === "runs") {
+    const { maybeAutoDraft } = await import("./skillDrafts.ts");
+    const { loadConfig } = await import("./config.ts");
+    const home = dirname(this.store.baseDir);
+    maybeAutoDraft(home, loadConfig(home), this.store, this.runId);
+  }
+} catch { /* 起草失败不影响运行结果 */ }
 const finalState = this.store.load(this.runId);
 return (result || "") + formatRunReport(finalState, computeRunStats(this.store, this.runId, finalState));
 } catch (err: unknown) {

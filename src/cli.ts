@@ -149,6 +149,7 @@ export const USAGE = `Nyra ${VERSION}（Node 运行时）
   nyra mail-inbox <status|enable|disable|allowlist|set|poll>   邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 docs/mail-inbox.md）
   nyra responsibility <list|add|remove|enable|disable|check>   常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 docs/responsibilities.md）
   nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
+  nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
   nyra kb <create|list|add|search|ask|remove>  本地知识库
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
   nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -218,6 +219,7 @@ Usage:
   nyra mail-inbox <status|enable|disable|allowlist|set|poll>   mail as task entry: allowlisted senders' mail enqueues tasks, results mailed back (see docs/mail-inbox.md)
   nyra responsibility <list|add|remove|enable|disable|check>   standing responsibilities: own a lasting duty, patrol on its own rhythm, forced read-only when unattended (see docs/responsibilities.md)
   nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
+  nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
   nyra kb <create|list|add|search|ask|remove>  local knowledge base
   nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
   nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -1392,6 +1394,117 @@ async function handleReviewer(argv: string[], workdir: string): Promise<number> 
       return verdict.decision === "BLOCK" ? 3 : 0;
     }
     process.stderr.write(`错误：未知子命令 reviewer ${action}\n`);
+    return 2;
+  } catch (err: unknown) {
+    process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+// ---- 子命令：skills（缺口 11：技能自沉淀闭环） ----
+// 起草是确定性的（只从运行记录提取，不调模型）；安装永远要人批准；
+// 低质草稿出生即归档，已装技能长期没人用由 sweep 归档。手动 draft 不依赖
+// 自动沉淀开关（显式的人工动作）；自动起草只在开关开启时由 RunRecorder 收尾钩子触发。
+async function handleSkills(argv: string[], home: string): Promise<number> {
+  const action = argv[0];
+  if (!action) {
+    process.stdout.write("用法：nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep> [选项]\n");
+    return 2;
+  }
+  try {
+    const mod = await import("./skillDrafts.ts");
+    const { loadSkillUsage } = await import("./skillUsage.ts");
+    const config = loadConfig(home);
+    const store = new RunStore(join(home, "runs"));
+    if (action === "status") {
+      const cfg = mod.skillSedimentationConfig(config);
+      const drafts = mod.listDrafts(home);
+      const pending = drafts.filter((d) => d.status === "pending").length;
+      const installed = drafts.filter((d) => d.status === "installed").length;
+      const archived = drafts.filter((d) => d.status === "archived").length;
+      const usage = loadSkillUsage(home);
+      process.stdout.write(`技能自沉淀：${cfg.enabled ? "启用" : "禁用（默认关闭）"}\n`);
+      process.stdout.write(`起草门槛：每次运行至少 ${cfg.min_steps} 次工具调用；只让已验证的运行沉淀：${cfg.require_verified ? "是" : "否"}；长期不用归档：${cfg.auto_archive_days} 天\n`);
+      process.stdout.write(`草稿：待批准 ${pending} 个、已安装 ${installed} 个、已归档 ${archived} 个（共 ${drafts.length} 个）\n`);
+      process.stdout.write(`用量账本：${Object.keys(usage).length} 个技能有使用记录\n`);
+      return 0;
+    }
+    if (action === "enable" || action === "disable") {
+      const cfg = mod.skillSedimentationConfig(config);
+      saveConfig(home, { skill_sedimentation: { ...cfg, enabled: action === "enable" } });
+      process.stdout.write(`已${action === "enable" ? "启用" : "禁用"}技能自沉淀${action === "enable" ? "（成功运行收尾时自动起草技能草稿；安装仍须人工批准）" : ""}\n`);
+      return 0;
+    }
+    if (action === "draft") {
+      const runId = argv[1];
+      if (!runId) { process.stderr.write("错误：用法：nyra skills draft <运行 ID>\n"); return 2; }
+      const { draft, reason } = mod.draftSkillFromRun(store, runId, { home, config });
+      if (!draft) {
+        process.stderr.write(`起草不了：${reason}\n`);
+        return 1;
+      }
+      if (draft.status === "archived") {
+        process.stdout.write(`草稿 ${draft.name} 已自动归档：${draft.archive_reason ?? ""}\n`);
+        return 0;
+      }
+      process.stdout.write(`已起草技能草稿 ${draft.name}（来源运行 ${runId}，质量分 ${draft.quality.score}）\n`);
+      process.stdout.write(`先通读一遍再批准：nyra skills show ${draft.name}；批准安装：nyra skills approve ${draft.name}\n`);
+      return 0;
+    }
+    if (action === "drafts") {
+      const drafts = mod.listDrafts(home);
+      if (!drafts.length) { process.stdout.write("还没有技能草稿（先开启沉淀跑一次成功任务，或 nyra skills draft <运行 ID> 手动起草）\n"); return 0; }
+      for (const d of drafts) {
+        process.stdout.write(`  ${d.name}  ${d.status}  质量分 ${d.quality.score}  来源 ${d.source_run_id}  ${d.created_at.slice(0, 10)}${d.archive_reason ? `  ${d.archive_reason}` : ""}\n`);
+      }
+      return 0;
+    }
+    if (action === "show") {
+      const name = argv[1];
+      if (!name) { process.stderr.write("错误：用法：nyra skills show <草稿名>\n"); return 2; }
+      const found = mod.findDraft(home, name);
+      if (!found) { process.stderr.write(`错误：没有名为 ${name} 的技能草稿\n`); return 1; }
+      const path = join(mod.skillDraftsDir(home), `${name}.md`);
+      if (!existsSync(path)) { process.stderr.write(`错误：草稿文件丢了：${path}\n`); return 1; }
+      process.stdout.write(readFileSync(path, "utf-8"));
+      return 0;
+    }
+    if (action === "approve") {
+      const name = argv[1];
+      if (!name) { process.stderr.write("错误：用法：nyra skills approve <草稿名>\n"); return 2; }
+      const { installedPath } = mod.approveDraft(home, name, store);
+      process.stdout.write(`已批准并安装技能 ${name} 到 ${installedPath}（下次同类任务会自动匹配）\n`);
+      return 0;
+    }
+    if (action === "reject") {
+      const name = argv[1];
+      if (!name) { process.stderr.write("错误：用法：nyra skills reject <草稿名>\n"); return 2; }
+      mod.rejectDraft(home, name, store);
+      process.stdout.write(`已拒绝草稿 ${name}（文件保留备查）\n`);
+      return 0;
+    }
+    if (action === "archive") {
+      const name = argv[1];
+      if (!name) { process.stderr.write("错误：用法：nyra skills archive <草稿名>\n"); return 2; }
+      const reason = argv.slice(2).join(" ").trim();
+      mod.archiveDraft(home, name, reason, store);
+      process.stdout.write(`已归档草稿 ${name}${reason ? `（${reason}）` : ""}\n`);
+      return 0;
+    }
+    if (action === "sweep") {
+      const dryRun = argv.includes("--dry-run");
+      const result = mod.sweepStaleSkills(home, { config, dryRun });
+      if (!result.archived.length) {
+        process.stdout.write(`没有要归档的技能（已装技能 ${result.kept} 个都在 ${mod.skillSedimentationConfig(config).auto_archive_days} 天内用过或改过）\n`);
+        return 0;
+      }
+      for (const a of result.archived) {
+        process.stdout.write(`  ${dryRun ? "将归档" : "已归档"} ${a.name}：${a.reason}\n`);
+      }
+      if (dryRun) process.stdout.write("（演练，未实际归档；去掉 --dry-run 真正执行）\n");
+      return 0;
+    }
+    process.stderr.write(`错误：未知子命令 skills ${action}\n`);
     return 2;
   } catch (err: unknown) {
     process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
@@ -3451,6 +3564,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "mail-inbox") return handleMailInbox(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "responsibility") return handleResponsibility(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
+  if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
