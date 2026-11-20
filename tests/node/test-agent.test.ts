@@ -70,16 +70,16 @@ test("AgentTest.test_delegation_budget", () => {
 test("AgentTest.test_tool_schemas_count_and_disabled", () => {
   const { home, workdir } = setup();
   const agent = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "full", skillsDirs: [] });
-  expect(agent.toolSchemas().length).toBe(34); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete；缺口 3a：新增 delegate_parallel；缺口 6：新增 gmail_search / gmail_read / gmail_send；缺口 24：新增 lsp_diagnostics / lsp_symbols。
+  expect(agent.toolSchemas().length).toBe(35); // 缺口 1 + 缺口 2：新增 memory_search / memory_forget / memory_delete；缺口 3a：新增 delegate_parallel；缺口 6：新增 gmail_search / gmail_read / gmail_send；缺口 24：新增 lsp_diagnostics / lsp_symbols；缺口 16：新增 describe_image。
   const noShell = new Agent(new FakeProvider([]) as never, {
     workdir, home, mode: "full", skillsDirs: [], disabledTools: ["shell", "write_file"],
   });
   const names = noShell.toolSchemas().map((s) => (s.function as Record<string, unknown>).name);
   expect(names).not.toContain("shell");
   expect(names).not.toContain("write_file");
-  expect(names.length).toBe(32);
+  expect(names.length).toBe(33);
   const poppy = new Agent(new FakeProvider([]) as never, { workdir, home, mode: "full", skillsDirs: [], poppyEnabled: true });
-  expect(poppy.toolSchemas().length).toBe(37); // 34 个基础工具 + 3 个 Poppy 工具。
+  expect(poppy.toolSchemas().length).toBe(38); // 35 个基础工具 + 3 个 Poppy 工具。
 });
 
 test("AgentTest.test_tool_schemas_no_apply_patch_with_backend", () => {
