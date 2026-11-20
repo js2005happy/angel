@@ -34,7 +34,7 @@ test("S2 Bash(...) 与 shell(...) 两种写法等价", () => {
   expect(normalizeToolName("Bash")).toBe("shell");
 });
 
-test("S2 不匹配的命令仍然不命中（别把修复做成"全都放行"）", () => {
+test("S2 不匹配的命令仍然不命中（别把修复做成「全都放行」）", () => {
   expect(ruleMatches(deny("shell(rm *)"), { tool: "shell", target: "git status", workdir: "/work" } as never)).toBe(false);
 });
 
