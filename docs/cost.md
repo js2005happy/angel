@@ -189,3 +189,29 @@ nyra savings --json
 
 - **`max_cost_usd` 没配是 `null`，不是 0**——写成 0 会让 CI 把「没设上限」读成「上限为 0 美元」，报警逻辑直接反转
 - **`invalid_pricing` 会点名**：配置里写了但解析失败的模型不再是"静默忽略"，CI 能直接报警
+
+## 机器可读：`nyra stats --json`
+
+成本侧第四个出口，回答「本月到底花了多少、每天花了多少」。
+
+```json
+{
+  "schema_version": 1,
+  "month": "2026-11",
+  "month_tokens": 12000,
+  "month_spent_usd": 1.5,
+  "incomplete": false,
+  "mcp_spent_usd": 0.2,
+  "monthly_limit_usd": 50,
+  "reset_at": "2026-12-01",
+  "today": { "date": "2026-11-20", "tokens": 800, "spent_usd": 0.1, "calls": 3 },
+  "days": [{ "date": "2026-11-19", "tokens": 900, "spent_usd": 0.2, "calls": 2 }]
+}
+```
+
+关键语义：**「有调用未计价」与「真没花钱」是两件事**——
+
+- 有调用但没配单价 → `month_spent_usd: null` + `incomplete: true`
+- 真没花钱 → `month_spent_usd: 0` + `incomplete: false`
+
+写成 0 会让看板显示「这个月免费」，把漏配单价彻底藏起来。

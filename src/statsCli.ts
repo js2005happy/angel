@@ -60,6 +60,36 @@ function printMonthSummary(home: string, now = new Date()): void {
 }
 
 export function handleStats(argv: string[], home: string): number {
+  // --json：成本侧第四个机读出口（与 savings / cost / verdict 同一套契约）。
+  if (argv.includes("--json")) {
+    const now = new Date();
+    const config = loadConfig(home);
+    const month = monthKeyString(now);
+    const ledger = new UsageLedger(home);
+    const llm = ledger.monthTotal(month);
+    const mcp = new McpCostTracker(home).monthTotalUsd(month);
+    const daily = ledger.dailyTotals(7, now);
+    const todayKey = localDateString(now);
+    const t0 = daily.get(todayKey);
+    const days = [...daily.entries()]
+      .filter(([, d2]) => d2.total > 0 || d2.calls > 0)
+      .sort((a, b2) => a[0].localeCompare(b2[0]))
+      .map(([date, d2]) => ({ date, tokens: d2.total, spent: d2.spent, calls: d2.calls }));
+    // 有调用没配单价时 spent 不完整：给 null 而不是 0（0 会被读成"这个月免费"）。
+    const spent = llm.incomplete ? null : llm.spentUsd + mcp;
+    process.stdout.write(JSON.stringify(buildStatsJson({
+      month,
+      monthTokens: llm.totalTokens,
+      monthSpentUsd: spent,
+      incomplete: llm.incomplete,
+      mcpSpentUsd: mcp,
+      monthlyLimitUsd: resolveMonthlyLimit(config),
+      resetAt: nextMonthlyResetDate(now),
+      today: t0 ? { date: todayKey, tokens: t0.total, spent: t0.spent, calls: t0.calls } : null,
+      days,
+    })) + "\n");
+    return 0;
+  }
   const heatmap = argv.includes("heatmap") || argv.includes("--heatmap");
   if (!heatmap) {
     if (argv.length) {
@@ -88,4 +118,63 @@ export function handleStats(argv: string[], home: string): number {
   const daily = ledger.dailyTotals(weeks * 7);
   process.stdout.write(formatHeatmap(daily, { weeks }) + "\n");
   return 0;
+}
+
+// ---- 机器可读（nyra stats --json）----
+// 成本侧第四个 JSON 出口，契约同 savings/cost/verdict：只加字段、不改名、不删字段。
+//
+// 两个刻意的取舍：
+//   · `spent_usd` 用 null 表示"本月有调用但没配单价"——不是 0。账本里这类调用只记 token
+//     不记金额，写成 0 会让看板以为"这个月免费"。
+//   · `incomplete: true` 单独给一个布尔——"有调用未计价"与"真没花钱"是两件事，
+//     消费方需要能一眼区分，而不是从 null 里猜。
+
+export const STATS_JSON_SCHEMA = 1;
+
+export interface StatsJson {
+  schema_version: number;
+  month: string;
+  month_tokens: number;
+  month_spent_usd: number | null;
+  /** 本月是否有调用没配单价（有 → spent 不完整）。 */
+  incomplete: boolean;
+  mcp_spent_usd: number | null;
+  monthly_limit_usd: number | null;
+  reset_at: string;
+  /** 今日（本地日期）。 */
+  today: { date: string; tokens: number; spent_usd: number | null; calls: number } | null;
+  /** 最近 N 天，按日期升序；只含真的有调用或 token 的天。 */
+  days: { date: string; tokens: number; spent_usd: number | null; calls: number }[];
+}
+
+/** 把 stats 要显示的东西整理成结构。账本读取与计价由调用方完成，这里只做整形。 */
+export function buildStatsJson(input: {
+  month: string;
+  monthTokens: number;
+  monthSpentUsd: number | null;
+  incomplete: boolean;
+  mcpSpentUsd: number | null;
+  monthlyLimitUsd: number | null;
+  resetAt: string;
+  today: { date: string; tokens: number; spent: number | null; calls: number } | null;
+  days: { date: string; tokens: number; spent: number | null; calls: number }[];
+}): StatsJson {
+  const day = (d: { date: string; tokens: number; spent: number | null; calls: number }) => ({
+    date: d.date,
+    tokens: d.tokens,
+    spent_usd: d.spent,
+    calls: d.calls,
+  });
+  return {
+    schema_version: STATS_JSON_SCHEMA,
+    month: input.month,
+    month_tokens: input.monthTokens,
+    month_spent_usd: input.monthSpentUsd,
+    incomplete: input.incomplete,
+    mcp_spent_usd: input.mcpSpentUsd,
+    monthly_limit_usd: input.monthlyLimitUsd,
+    reset_at: input.resetAt,
+    today: input.today ? day(input.today) : null,
+    days: input.days.map(day),
+  };
 }
