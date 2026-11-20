@@ -120,6 +120,10 @@ connector_revoked: ["connector", "user_id"],
 // delegate_start/end 只记元数据（不记任务文本）；llm_span 只记模型、耗时、
 // token 数（不记 prompt/回答内容）。子任务的 run 链靠 task_id 串联：父级
 // 事件里的 task_id 与子 agent 产出文本里的 [子任务 task-… 已完成] 同源。
+// 缺口 16：图像/视频输入进证据链——看了几张图（count）、图片指纹（hashes，
+// SHA-256 前 12 位逗号分隔）、哪个模型、什么来源（kinds：image/video-frame）。
+// 图片内容绝不进事件（字节进不来：字段只接受 string/boolean/number）。
+vision_input: ["count", "hashes", "model", "kinds"],
 delegate_start: ["task_id", "model", "max_turns"],
 delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
 llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
@@ -778,7 +782,7 @@ if (kind === "delegate_usage") {
     this.delegateSpent = (this.delegateSpent ?? 0) + data.spent_usd;
   }
 }
-if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span"].includes(kind)) {
+if (["tool_start", "tool_result", "final", "max_turns", "snapshot", "restore", "model_switch", "parallel_delegate", "hook_blocked", "reviewer_verdict", "patrol_write_blocked", "delegate_start", "delegate_end", "llm_span", "vision_input"].includes(kind)) {
 const fields = {...data};
 if (kind === "tool_start" && typeof data.id === "string" && data.arguments !== null && typeof data.arguments === "object" && !Array.isArray(data.arguments)) {
 const key = idempotencyKey(String(data.name ?? ""), data.arguments as Record<string, unknown>);

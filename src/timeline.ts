@@ -159,6 +159,13 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "llm", `模型调用 ${model}${ok === false ? "（失败）" : ""}`, detail, ok, num(ev.duration_ms));
         break;
       }
+      case "vision_input": {
+        const count = num(ev.count) ?? 0;
+        const kinds = str(ev.kinds) ?? "";
+        const model = str(ev.model) ?? "未知模型";
+        push(at, "event", `看了 ${count} 张图（${model}）`, kinds ? `来源：${kinds}` : null, null, null);
+        break;
+      }
       case "tool_start": {
         const id = str(ev.id) ?? "";
         const name = str(ev.name) ?? "未知工具";

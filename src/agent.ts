@@ -47,6 +47,10 @@ import type { ReviewerLike } from "./reviewer.ts";
 import { loadConfig } from "./config.ts";
 import { buildRepoMap } from "./repoMap.ts";
 import {
+  buildVisionUserMessage, DEFAULT_VISION_CONFIG, modelSupportsVision, visionGateMessage,
+  type VisionConfig, type VisionImageInput,
+} from "./vision.ts";
+import {
   verifyOutput,
   verifierConfig,
   type VerifierConfig,
@@ -244,6 +248,14 @@ export interface AgentOptions {
     execute(name: string, args: Record<string, unknown>): Promise<string> | string;
   } | null;
   multiModelFactory?: ToolContext["multiModelFactory"];
+  /**
+   * 缺口 16：本次运行附带的图片（CLI --image/--video 备好后传入；直接构造
+   * Agent 的测试也可传）。只在首轮、非续跑时拼进第一条用户消息；用完即清，
+   * 不会重发。模型看不了图时 runLoop 在首轮调用前直接拒绝（不烧 token）。
+   */
+  visionInputs?: VisionImageInput[] | null;
+  /** 缺口 16：视觉输入的配置（上限等）；不传用默认值，CLI 从 config.json 解析后传入。 */
+  visionConfig?: VisionConfig | null;
 }
 
 // 调研报告第 3 项：上下文补齐（学 Claude Code）——/context 可视化的 breakdown。
@@ -398,6 +410,10 @@ export class Agent {
   interactive: boolean;
   sessionId: string;
   messages: Record<string, unknown>[];
+  /** 缺口 16：本次运行附带的图片（首轮拼进第一条用户消息，用完即清）。 */
+  visionInputs: VisionImageInput[] = [];
+  /** 缺口 16：视觉输入的配置（上限等）。 */
+  private visionConfig: VisionConfig = DEFAULT_VISION_CONFIG;
   skillsDirs: string[];
   skills: Skill[];
   // 调研报告第 2 项：技能渐进披露——技能索引缓存。技能集合以数组引用标识：
@@ -459,6 +475,10 @@ export class Agent {
     this.interactive = opts.interactive ?? true;
     this.sessionId = opts.sessionId ?? newSessionId();
     this.messages = opts.messages ? [...opts.messages] : [];
+    /** 缺口 16：本次运行附带的图片（首轮拼进第一条用户消息，用完即清）。 */
+    this.visionInputs = opts.visionInputs ? [...opts.visionInputs] : [];
+    /** 缺口 16：视觉输入的配置（上限等）；describe_image 工具共用同一份。 */
+    this.visionConfig = opts.visionConfig ?? DEFAULT_VISION_CONFIG;
     // 调研报告第 2 项：技能渐进披露——分层加载。loadSkills 是“先加载的赢”
     // （seen 去重：同名技能只保留第一次出现的），所以数组顺序即优先级顺序：
     // 项目层（<workdir>/skills、<workdir>/.nyra/skills）在前、全局层
@@ -514,6 +534,10 @@ export class Agent {
       // 失败，阻塞型事件上 fail-closed。
       hookPromptRunner: (input) => this.runHookPrompt(input),
       hookAgentRunner: (input) => this.runHookAgent(input),
+      // 缺口 16：describe_image 工具用的视觉调用（与 hookPromptRunner 同款
+      // 闭包注入；工具层拿不到 provider 时靠它看图）。
+      visionRunner: (input) => this.describeImages(input.images, input.prompt),
+      visionConfig: this.visionConfig,
       // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——沙箱配置透传给工具层。
       sandbox: opts.sandbox ?? null,
     });
@@ -1199,7 +1223,21 @@ export class Agent {
     const repeatGuard = new RepeatGuard();
     const messages: Record<string, unknown>[] = [{ role: "system", content: system }, ...this.messages];
     if (!resume) {
-      messages.push({ role: "user", content: task });
+      if (this.visionInputs.length > 0) {
+        // 缺口 16：首轮带图——先过模型门禁（看不了图直接拒绝，不烧 token），
+        // 再把图片拼进第一条用户消息；看了哪张图只记指纹进证据链。
+        const vProvider = this.visionProvider();
+        const vModel = typeof (vProvider as { model?: unknown }).model === "string"
+          ? (vProvider as { model: string }).model
+          : this.provider.model;
+        const gate = modelSupportsVision(vModel, vProvider.name);
+        if (!gate.supported) throw new AgentError(visionGateMessage(vModel, vProvider.name));
+        messages.push(buildVisionUserMessage(task, this.visionInputs));
+        this.emitVisionInput(this.visionInputs, vModel);
+        this.visionInputs = [];
+      } else {
+        messages.push({ role: "user", content: task });
+      }
     } else if (this.messages.length && this.messages[this.messages.length - 1].role === "assistant" &&
       !(this.messages[this.messages.length - 1].tool_calls as unknown[] | undefined)?.length) {
       messages.push({ role: "user", content: "（续跑）请继续完成原任务；先核实当前状态。" });
@@ -1457,6 +1495,54 @@ export class Agent {
     } catch {
       return this.provider;
     }
+  }
+
+  /**
+   * 缺口 16：视觉调用用的 provider（Act 模型优先，与 runLoop 首轮同一口径；
+   * 没配 Act 分模型时就是主 provider）。
+   */
+  private visionProvider(): ProviderLike {
+    return this.actProvider();
+  }
+
+  /** 缺口 16：看了哪张图进证据链——只记张数、指纹、模型与来源种类，不记图片内容。 */
+  private emitVisionInput(images: VisionImageInput[], model: string): void {
+    try {
+      this.emit("vision_input", {
+        count: images.length,
+        hashes: images.map((i) => i.sha256.slice(0, 12)).join(","),
+        model,
+        kinds: [...new Set(images.map((i) => i.sourceKind))].join(","),
+      });
+    } catch { /* 记账失败绝不破坏主循环 */ }
+  }
+
+  /**
+   * 缺口 16：单次视觉调用（describe_image 工具用）。图片 + 一句提示发给视觉
+   * 模型，返回文字描述；用量走同一本账（usage.record + checkCost），看不了图
+   * 的模型直接拒绝（不静默降级成“只记元信息”）。
+   */
+  async describeImages(images: VisionImageInput[], prompt: string): Promise<string> {
+    if (!images.length) throw new AgentError("没有可看的图片");
+    const provider = this.visionProvider();
+    const model = typeof (provider as { model?: unknown }).model === "string"
+      ? (provider as { model: string }).model
+      : this.provider.model;
+    const gate = modelSupportsVision(model, provider.name);
+    if (!gate.supported) throw new AgentError(visionGateMessage(model, provider.name));
+    const msg = buildVisionUserMessage(prompt, images);
+    const resp = await provider.chat([msg] as never, null);
+    this.usage.record(resp as never);
+    this.checkCost();
+    this.emitVisionInput(images, model);
+    if (resp && typeof resp === "object" && typeof (resp as Record<string, unknown>).usage === "object") {
+      this.emit("usage", this.usage.snapshot() as unknown as Record<string, unknown>);
+    }
+    const choices = (resp.choices as Record<string, unknown>[]) ?? [];
+    const content = ((choices[0]?.message ?? {}) as Record<string, unknown>).content;
+    const text = typeof content === "string" ? content : "";
+    if (!text.trim()) throw new AgentError("视觉模型没有返回描述，请重试");
+    return text;
   }
   /**
    * P2-2：每次上报 usage 后检查成本上限。超限直接抛错中止运行——这是"硬顶"，
