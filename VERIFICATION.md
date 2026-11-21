@@ -1,3 +1,9 @@
+## 2026-11-22 — Conflicting acceptance receipt contexts (static-only)
+
+- Reviewed README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests, Agent/Tools, latest repository commits, open Issues/PR and commit status. External evidence: [Codex #61857](https://github.com/openai/codex/issues/61857) (opened 2026-11-16) and [Codex #42080](https://github.com/openai/codex/issues/42080), reviewed 2026-11-22. Reports are not Angel reproductions.
+- Static inspection: a receipt with multiple distinct (revision, environment) pairs is now marked `reference_context_conflict` and cannot count toward reported completion; an independent nonconflicting receipt may still count. Added two regression test cases in `tests/test_acceptance_evidence.py` but **did not run them**.
+- No tests, builds, scripts, CI, install, main merge or deployment were performed. The read-only module is not wired into the Agent loop; self-reported references remain untrusted. Runtime correctness and CI status are not established by static review.
+
 ## 2026-11-21 — Shared target receipt ambiguity (static-only)
 
 - Reviewed development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests and Agent/Tools, repository branch and open Issues/PR. Public report: [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16), reviewed 2026-11-21; implementation rationale is an inference, not an Angel reproduction.
