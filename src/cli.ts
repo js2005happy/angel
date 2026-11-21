@@ -71,6 +71,7 @@ import { handleVerifier, resolveVerifierModel, verifierConfig } from "./verifier
 import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
 import { handleFanout } from "./fanout.ts";
+import { handleTeam, type TeamDispatchPlan } from "./team.ts";
 import { handleSubagent } from "./resume.ts";
 import { handleRoster } from "./roster.ts";
 import { handleSideEffects } from "./sideEffects.ts";
@@ -165,6 +166,7 @@ nyra roster <list|show>   实时花名册：每个子 agent 一行——状态 +
 nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   静默巡查：无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 docs/heartbeat.md）
 nyra fanout <list|show|recover>   后台扇出：顶层委派立即回 handle，跑完单条回填收件箱；跑一半的进程退出后须 recover 回收（详见 docs/merge-fanout.md）
+nyra team <create|list|show|add|remove|dissolve|dispatch|handover>   团队模式（新缺口 52）：参谋长独占入口，只拆解、分派、汇总；成员须有完整 Charter 才能接单；交接走 inbox/outbox/变更日志；对外动作一律回参谋长/人批（详见 docs/team.md）
 nyra governance <policy|mandate|mode|dry-runs>   企业治理：版本化策略 + 不可变授权 + observe/auto 接单模式 + 干跑记录（详见 docs/governance.md）
 nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   分层成本上限：按 Bot/角色/团队/人设设月度上限，触顶进可恢复暂停态
 nyra governance audit <export|verify>   审计导出：治理审计日志导出给 SIEM（JSONL + 哈希链，可验证）
@@ -223,7 +225,7 @@ nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>
 nyra status                    诊断清单：损坏的配置、不可用沙箱、被忽略的权限设置、永不匹配的 hook matcher（只读，详见 docs/status.md）
 nyra creator "<一句话需求>" [--yes]   创造模式：一句话搓出插件（先验证、经确认才安装）
 nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆交换与检索/删除
-nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul 身份层：每 agent 的身份与 Tenets（不变量进规则层、代码拦截；详见 docs/soul.md）
+nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul 身份层：每 agent 的身份与 Tenets（不变量进规则层、代码拦截；Charter 角色契约见 nyra soul charter <set|show|clear>，详见 docs/soul.md 与 docs/team.md）
 nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
 nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
 nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
@@ -274,6 +276,7 @@ nyra roster <list|show>   live roster: one line per sub-agent — status + elaps
 nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   silent patrol: quiet when nothing is wrong, findings go to evidence first then inbox; inferred commitments need one user confirmation and auto-expire (see docs/heartbeat.md)
 nyra fanout <list|show|recover>   background fan-out: top-level delegation returns a handle immediately, results backfill the inbox as one message; half-run fan-outs need recover after the process exits (see docs/merge-fanout.md)
+nyra team <create|list|show|add|remove|dissolve|dispatch|handover>   team mode (new gap 52): the chief is the single entry point — splits, dispatches and summarizes only; members need a complete Charter to take work; handovers go through inbox/outbox/change log; outbound actions always go back to the chief / a human for approval (see docs/team.md)
 nyra governance <policy|mandate|mode|dry-runs>   enterprise governance: versioned policy + immutable mandates + observe/auto intake modes + dry-run ledger (see docs/governance.md)
 nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   tiered cost caps: monthly USD/token limits per Bot/role/team/persona, over-cap tasks pause recoverably
 nyra governance audit <export|verify>   audit export: governance audit logs to SIEM (JSONL + hash chain, verifiable)
@@ -335,7 +338,7 @@ nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, s
 nyra status                    diagnose broken configs, unavailable sandbox, ignored permission rules, never-matching hook matchers (read-only, see docs/status.md)
 nyra creator "<one-line idea>" [--yes]   creator mode: build a plugin from one sentence (verified, installed only after you confirm)
 nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory exchange, search and forget
-nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul identity layer: per-agent identity and Tenets (invariants compile into the rule layer and are enforced by code; see docs/soul.md)
+nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul identity layer: per-agent identity and Tenets (invariants compile into the rule layer and are enforced by code; role Charter via nyra soul charter <set|show|clear>, see docs/soul.md and docs/team.md)
 nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
 nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
 nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
@@ -639,7 +642,7 @@ interface BuiltAgent {
   onModelSwitch: (record: SwitchRecord) => void;
 }
 
-async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void; agentId?: string | null }): Promise<BuiltAgent> {
+async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void; agentId?: string | null; soulAgent?: string | null; teamId?: string | null; teamRole?: "chief" | "member" | null }): Promise<BuiltAgent> {
   const home = resolveHome();
   const config = loadConfig(home);
   const profile = resolveProfile(args.profile ?? null, config);
@@ -785,8 +788,12 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       visionConfig: resolveVisionConfig(config),
       // 缺口 15：语音的配置（上限、模型、单价等）。
       voiceConfig: resolveVoiceConfig(config),
-      // 缺口 28：Soul 身份层——当前运行用哪个 Soul（config.soul.agent，默认 default）。
-      soulAgent: resolveSoulAgentId(config),
+      // 缺口 28：Soul 身份层——当前运行用哪个 Soul（config.soul.agent，默认 default；
+      // 团队分派时由调用方显式指定参谋长/成员的 Soul）。
+      soulAgent: opts?.soulAgent ?? resolveSoulAgentId(config),
+      // GROK-1：常驻团队模式——不在团队里时两者都为 null（普通运行行为不变）。
+      teamId: opts?.teamId ?? null,
+      teamRole: opts?.teamRole ?? null,
       // 缺口 24：子 agent 独立推理档位（delegate_reasoning_effort）。
       delegateReasoningEffort: typeof config.delegate_reasoning_effort === "string" ? config.delegate_reasoning_effort : null,
       // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
@@ -4391,6 +4398,49 @@ async function attachVoiceInput(args: CliArgs, agent: Agent, config: Record<stri
 export { attachVoiceInput };
 
 // ---- 一次性任务 ----
+/** GROK-1：`nyra team ...`——团队模式的 CLI 入口。create/list/show/add/remove/
+ * handover 是纯本地操作（不建 agent、不烧 token）；只有 dispatch 跑模型：
+ * 建一个参谋长 Agent（Soul = 参谋长、teamId = 团队、teamRole = chief，工作
+ * 目录落在参谋长自己的电脑 workspace 里），跑 buildChiefTask 的任务文本。
+ * 分派前 planTeamDispatch 已做过三道门（团队 active、Charter 齐全、月度硬顶）。 */
+async function handleTeamCommand(args: CliArgs, home: string): Promise<number> {
+  const subArgs = args.subArgs ?? [];
+  // handleTeam 在分派前发的团队事件（team_dispatched）先收下来，等 chief
+  // Agent 建好后再进运行证据链——子命令本身没有运行记录，不能直接丢。
+  const pendingEvents: Array<{ kind: string; data: Record<string, unknown> }> = [];
+  const runChief = async (plan: TeamDispatchPlan, chiefTask: string): Promise<string> => {
+    const config = loadConfig(home);
+    const { workdir } = resolveAgentWorkdir(home, plan.chief, resolve(args.workdir));
+    const trustExit = await ensureWorkspaceTrusted(workdir, args, config, home);
+    if (trustExit !== null) throw new Error("工作目录未通过信任检查");
+    const built = await buildAgent({ ...args, workdir, task: chiefTask }, {
+      interactive: true,
+      agentId: plan.chief,
+      soulAgent: plan.chief,
+      teamId: plan.team.id,
+      teamRole: "chief",
+      onRetry: (r) => process.stderr.write(t("spinner.cooldown", { provider: r.provider, attempt: r.attempt, seconds: Math.max(1, Math.ceil(r.delayMs / 1000)) }) + "\n"),
+    });
+    const { agent } = built;
+    const flusher = makeUsageFlusher(built);
+    const store = new RunStore(join(home, "runs"));
+    const printer = new ToolPrinter();
+    agent.onEvent = (kind, data) => { flusher.flush(agent, kind, data); printer.call(kind, data); };
+    for (const e of pendingEvents) {
+      try { agent.emit(e.kind, e.data); } catch { /* ignore */ }
+    }
+    const recorder = new RunRecorder(store, agent, chiefTask, { verifyCmd: null });
+    built.tieredCtx.runId = recorder.runId;
+    const output = await recorder.run(chiefTask);
+    flusher.flushNow(agent);
+    return output;
+  };
+  return handleTeam(subArgs, home, {
+    onEvent: (kind, data) => { pendingEvents.push({ kind, data }); },
+    runChief,
+  });
+}
+
 async function runOneShot(args: CliArgs): Promise<number> {
   const home = resolveHome();
   const config = loadConfig(home);
@@ -5498,6 +5548,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
+  if (args.subcommand === "team") return handleTeamCommand(args, home);
   if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
   if (args.subcommand === "roster") return handleRoster(args.subArgs ?? [], home);
   if (args.subcommand === "side-effects") return handleSideEffects(args.subArgs ?? [], home);

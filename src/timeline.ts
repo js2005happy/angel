@@ -547,6 +547,50 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `Soul invariant 拦截：${agent} 的不变量拦住了${tool ? `工具 ${tool}` : "一次调用"}${rule ? `（规则 ${rule}）` : ""}`, null, false, null);
         break;
       }
+      // GROK 批：Charter 与团队模式进时间线——只记元数据，不记任务原文。
+      case "soul_charter_set":
+        push(at, "event", `Soul ${str(ev.agent) ?? "未知 Soul"} 写了角色契约（Charter）`, null, null, null);
+        break;
+      case "soul_charter_cleared":
+        push(at, "event", `Soul ${str(ev.agent) ?? "未知 Soul"} 清掉了角色契约（该 agent 不能再接团队单）`, null, null, null);
+        break;
+      case "team_created":
+        push(at, "event", `团队已建：${str(ev.team_id) ?? "?"}（参谋长 ${str(ev.chief) ?? "?"}，${num(ev.members) ?? "?"} 个成员）`, null, null, null);
+        break;
+      case "team_member_added":
+        push(at, "event", `团队 ${str(ev.team_id) ?? "?"} 加了成员 ${str(ev.agent) ?? "?"}`, null, null, null);
+        break;
+      case "team_member_removed":
+        push(at, "event", `团队 ${str(ev.team_id) ?? "?"} 移除了成员 ${str(ev.agent) ?? "?"}`, null, null, null);
+        break;
+      case "team_dissolved":
+        push(at, "event", `团队 ${str(ev.team_id) ?? "?"} 已解散`, null, null, null);
+        break;
+      case "team_dispatched":
+        push(at, "event", `团队 ${str(ev.team_id) ?? "?"} 已分派（参谋长 ${str(ev.chief) ?? "?"}，${num(ev.members) ?? "?"} 个成员）`, null, null, null);
+        break;
+      case "team_handover_sent":
+        push(at, "event", `交接已发出：${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}`, str(ev.handover_id) ? `交接包 ${str(ev.handover_id)}` : null, null, null);
+        break;
+      case "team_handover_received":
+        push(at, "event", `交接已到 inbox：${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}`, str(ev.handover_id) ? `交接包 ${str(ev.handover_id)}` : null, null, null);
+        break;
+      case "team_handover_accepted":
+        push(at, "event", `交接已接下：${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}`, str(ev.handover_id) ? `交接包 ${str(ev.handover_id)}` : null, null, null);
+        break;
+      case "team_approval_requested":
+        push(at, "event", `团队审批：${str(ev.agent) ?? "?"} 替团队 ${str(ev.team_id) ?? "?"} 申请 ${str(ev.tool) ?? "?"}（回参谋长 ${str(ev.chief) ?? "?"} / 人批）`, null, null, null);
+        break;
+      case "team_approval_decided": {
+        const approved = bool(ev.approved);
+        push(at, "event", `团队审批${approved === true ? "通过" : approved === false ? "被拒" : "已定夺"}：${str(ev.agent) ?? "?"} 申请 ${str(ev.tool) ?? "?"}`, null, approved, null);
+        break;
+      }
+      case "team_charter_verified": {
+        const passed = bool(ev.passed);
+        push(at, "event", `Charter 抽查${passed === true ? "通过" : passed === false ? "未通过" : "已定夺"}：成员 ${str(ev.agent) ?? "?"}`, str(ev.run_id) ? `运行 ${str(ev.run_id)}` : null, passed, null);
+        break;
+      }
       case "tool_start": {
         const id = str(ev.id) ?? "";
         const name = str(ev.name) ?? "未知工具";

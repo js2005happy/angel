@@ -79,11 +79,36 @@ export interface SoulMemoryFile {
   updated_at: string;
 }
 
+/**
+ * GROK-2：Charter 角色契约（六行合同，进 Soul，与 Tenet 并列）。
+ * 正文五项——负责什么（own）、信息来源（sources）、输出格式（output）、
+ * 审批门（approval）、停下条件（stop），连同角色名一行共六行。只借机制，
+ * 不搬任何 Grok Bot 模板文案与 charter 原文：字段名与写法是 Nyra 自己的。
+ * 契约是“可检查的合同”：建 agent 接单须有完整 charter（team.ts 的
+ * requireCharter），交付时配 verifier 抽查（team.ts 的
+ * verifyCharterCompliance）；合同写得再好模型也可能不遵守，抽查与审计
+ * 是第二道防线，不是摆设。
+ */
+export interface SoulCharter {
+  /** 负责什么：一两句话，如“只负责查数，不写稿、不对外发”。 */
+  own: string;
+  /** 信息来源：从哪拿数/拿材料，如 ["Shopify 订单 API（只读）", "任务板"]。 */
+  sources: string[];
+  /** 输出格式：交付物长什么样，如“以 `## 结论` 开头，附证据链接”。 */
+  output: string;
+  /** 审批门：什么事须先批，如“对外发消息与花钱先过参谋长/人批”。 */
+  approval: string;
+  /** 停下条件：什么时候停下问人，如“数据对不上、权限不够就停下，不猜”。 */
+  stop: string;
+}
+
 export interface SoulFile {
   version: 1;
   agent: string;
   identity: SoulIdentity;
   tenets: SoulTenet[];
+  /** 角色契约（GROK-2）：没有 = null；有就必须是五项齐全的有效契约。 */
+  charter?: SoulCharter | null;
   memory_index: { files: SoulMemoryFile[] };
 }
 
@@ -135,8 +160,72 @@ export function defaultSoul(agent: string): SoulFile {
     agent,
     identity: { name: agent === "default" ? "Nyra" : agent, persona: "", goal: "" },
     tenets: [],
+    charter: null,
     memory_index: { files: [] },
   };
+}
+
+/** Charter 各字段上限：正文单项最长 1000 字，来源每条最长 200 字、最多 10 条。 */
+export const CHARTER_FIELD_MAX = 1000;
+export const CHARTER_SOURCES_MAX = 10;
+export const CHARTER_SOURCE_MAX = 200;
+
+/**
+ * 校验一份 Charter：五项齐全、非空、在上限内才算有效；返回错误文案，
+ * 有效返回 null。写坏了在 set 之前就拒绝，不落盘、不留半份契约。
+ */
+export function validateCharter(input: unknown): string | null {
+  if (!isRecord(input)) return "Charter 不是一个对象（须有 own / sources / output / approval / stop 五项）";
+  for (const field of ["own", "output", "approval", "stop"] as const) {
+    const v = input[field];
+    if (typeof v !== "string" || !v.trim()) return `Charter 的 ${field} 不能为空`;
+    if (v.trim().length > CHARTER_FIELD_MAX) return `Charter 的 ${field} 超过 ${CHARTER_FIELD_MAX} 字`;
+  }
+  const sources = input.sources;
+  if (!Array.isArray(sources) || sources.length === 0) return "Charter 的 sources 至少要有一条信息来源";
+  if (sources.length > CHARTER_SOURCES_MAX) return `Charter 的 sources 最多 ${CHARTER_SOURCES_MAX} 条`;
+  for (const s of sources) {
+    if (typeof s !== "string" || !s.trim()) return "Charter 的 sources 里有空条目";
+    if (s.trim().length > CHARTER_SOURCE_MAX) return `Charter 的 sources 单条超过 ${CHARTER_SOURCE_MAX} 字`;
+  }
+  return null;
+}
+
+/** 严格解析一份 Charter（parseSoulFile 用）：结构不对直接抛错。 */
+export function parseCharter(raw: unknown): SoulCharter {
+  const err = validateCharter(raw);
+  if (err) throw new SoulError(`Charter 格式不对：${err}`);
+  const rec = raw as Record<string, unknown>;
+  return {
+    own: (rec.own as string).trim(),
+    sources: (rec.sources as string[]).map((s) => s.trim()),
+    output: (rec.output as string).trim(),
+    approval: (rec.approval as string).trim(),
+    stop: (rec.stop as string).trim(),
+  };
+}
+
+/** 一份 Soul 的 Charter 是否齐全有效（缺 = false；写坏了的 parse 时就抛了，到不了这里）。 */
+export function charterComplete(soul: SoulFile): boolean {
+  return soul.charter != null && validateCharter(soul.charter) === null;
+}
+
+/** 写一份 Charter（覆盖旧的；五项须齐全有效，写坏了拒绝落盘）。 */
+export function setCharter(home: string, agent: string, input: unknown): SoulCharter {
+  const charter = parseCharter(input);
+  const soul = loadSoul(home, agent);
+  soul.charter = charter;
+  saveSoul(home, soul);
+  return charter;
+}
+
+/** 清掉一份 Charter（删了就没契约：该 agent 不能再接团队单，直到重写一份）。 */
+export function clearCharter(home: string, agent: string): boolean {
+  const soul = loadSoul(home, agent);
+  if (soul.charter == null) return false;
+  soul.charter = null;
+  saveSoul(home, soul);
+  return true;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -192,11 +281,14 @@ export function parseSoulFile(raw: unknown): SoulFile {
       updated_at: typeof f.updated_at === "string" ? f.updated_at : "",
     })).filter((f) => f.path !== "");
   }
+  // GROK-2：Charter 没有 = null（老文件没这字段照常读）；写了就必须五项齐全有效。
+  const charter = raw.charter === undefined || raw.charter === null ? null : parseCharter(raw.charter);
   return {
     version: 1,
     agent: raw.agent,
     identity: { name, persona, goal },
     tenets,
+    charter,
     memory_index: { files: memoryFiles },
   };
 }
@@ -476,6 +568,18 @@ export function buildSoulSection(soul: SoulFile): string {
     lines.push("硬约束（由代码在工具调用前强制执行，违反时工具调用会被拦截——不是靠自觉）：");
     for (const t of invariants) lines.push(`- ${t.text}`);
   }
+  // GROK-2：Charter 进提示词——角色边界从“提示词里的一句话”变成“可检查的
+  // 合同”。合同本身不强制执行（模型也可能不遵守），执行靠 invariant、
+  // 团队审批门与交付时的 verifier 抽查；这里只让模型看得见自己的合同。
+  if (soul.charter) {
+    const c = soul.charter;
+    lines.push("角色契约（Charter：可检查的合同，出问题先查合同——只做合同里的事，合同外的事停下问人）：");
+    lines.push(`- 负责：${c.own}`);
+    lines.push(`- 信息来源：${c.sources.join("、")}`);
+    lines.push(`- 输出格式：${c.output}`);
+    lines.push(`- 审批门：${c.approval}`);
+    lines.push(`- 停下条件：${c.stop}`);
+  }
   if (!lines.length) return "";
   return `## Soul（身份层：换模型不换魂，身份与规则存在 ~/.nyra/souls/${soul.agent}.json，与模型配置分文件）\n${lines.join("\n")}`;
 }
@@ -537,6 +641,9 @@ const SOUL_USAGE = "用法：\n"
   + "  nyra soul edit <tenet id> [--text \"新正文\"] [--deny \"规则\" ...]   改一条 Tenet（deny 只对 invariant 有效）\n"
   + "  nyra soul export [agent] [--out <路径>]                 导出 Soul 文件（JSON，默认打印到终端；不上传）\n"
   + "  nyra soul import <路径> [--agent <名字>] [--yes]         导入 Soul 文件（替换同名文件，须确认）\n"
+  + "  nyra soul charter set <agent> --own \"负责什么\" --sources \"来源1、来源2\" --output \"输出格式\" --approval \"审批门\" --stop \"停下条件\" [--yes]   写一份角色契约（五项齐全才落盘）\n"
+  + "  nyra soul charter show [agent]                          看某个 agent 的角色契约\n"
+  + "  nyra soul charter clear <agent> [--yes]                 清掉角色契约（清掉后该 agent 不能再接团队单，直到重写一份）\n"
   + "invariant 的 deny 规则用权限规则语法，如 \"shell(rm *)\"、\"write_file(**/.env)\"；prior 不带 deny，只进提示词。\n"
   + "Tenet 的增删改都要你确认（交互问一次，或 --yes），改动记进 soul-audit.jsonl 与证据链。\n"
   + "详见 docs/soul.md";
@@ -600,6 +707,18 @@ function formatSoul(soul: SoulFile, exists: boolean, warnings: string[]): string
     }
   } else {
     lines.push("  记忆索引：未同步（nyra soul show 时自动同步，或等下次改动）");
+  }
+  // GROK-2：show 时把 Charter 也亮出来（没有就写没有，别让人以为有合同）。
+  if (soul.charter) {
+    const c = soul.charter;
+    lines.push("  角色契约（Charter）：");
+    lines.push(`    负责：${c.own}`);
+    lines.push(`    信息来源：${c.sources.join("、")}`);
+    lines.push(`    输出格式：${c.output}`);
+    lines.push(`    审批门：${c.approval}`);
+    lines.push(`    停下条件：${c.stop}`);
+  } else {
+    lines.push("  角色契约：没有（团队接单须有完整 Charter，nyra soul charter set 写一份）");
   }
   for (const w of warnings) lines.push(`  ⚠️  ${w}`);
   return lines.join("\n");
@@ -781,6 +900,73 @@ export async function handleSoul(argv: string[], home: string, input?: SoulCliIn
       }
       process.stdout.write(text);
       return 0;
+    }
+    // GROK-2：Charter 子命令——set 写一份（五项齐全才落盘）、show 看、clear 清掉。
+    if (cmd === "charter") {
+      const sub = argv[1];
+      if (sub === "show") {
+        const agent = argv[2] ?? "default";
+        validateSoulAgentId(agent);
+        const soul = loadSoul(home, agent);
+        if (!soul.charter) {
+          process.stdout.write(`Soul ${agent} 还没有角色契约（团队接单须有完整 Charter，nyra soul charter set 写一份）。\n`);
+          return 0;
+        }
+        const c = soul.charter;
+        process.stdout.write(
+          `角色契约（${agent}）：\n  负责：${c.own}\n  信息来源：${c.sources.join("、")}\n  输出格式：${c.output}\n  审批门：${c.approval}\n  停下条件：${c.stop}\n`,
+        );
+        return 0;
+      }
+      if (sub === "set") {
+        const agent = argv[2];
+        const yes = argv.includes("--yes");
+        if (!agent) { process.stderr.write("用法：nyra soul charter set <agent> --own \"负责什么\" --sources \"来源1、来源2\" --output \"输出格式\" --approval \"审批门\" --stop \"停下条件\" [--yes]\n"); return 2; }
+        validateSoulAgentId(agent);
+        const sourcesRaw = flagValue(argv, "--sources") ?? "";
+        const charterInput = {
+          own: flagValue(argv, "--own") ?? "",
+          sources: sourcesRaw.split(/[,、]/).map((s) => s.trim()).filter(Boolean),
+          output: flagValue(argv, "--output") ?? "",
+          approval: flagValue(argv, "--approval") ?? "",
+          stop: flagValue(argv, "--stop") ?? "",
+        };
+        const err = validateCharter(charterInput);
+        if (err) { process.stderr.write(`Charter 写坏了，没落盘：${err}\n`); return 2; }
+        if (!yes) {
+          process.stdout.write(`将给 Soul ${agent} 写一份角色契约：\n  负责：${charterInput.own}\n  信息来源：${charterInput.sources.join("、")}\n  输出格式：${charterInput.output}\n  审批门：${charterInput.approval}\n  停下条件：${charterInput.stop}\n`);
+          const choice = await askApproval("确认写这份 Charter 吗？");
+          if (choice !== "yes") { process.stdout.write("已取消，未写任何东西。\n"); return 0; }
+        }
+        setCharter(home, agent, charterInput);
+        appendSoulAudit(home, { kind: "charter_set", agent });
+        emitSoulEvent(input, "soul_charter_set", { agent });
+        process.stdout.write(`已给 Soul ${agent} 写好角色契约（五项齐全）。\n`);
+        return 0;
+      }
+      if (sub === "clear") {
+        const agent = argv[2];
+        const yes = argv.includes("--yes");
+        if (!agent) { process.stderr.write("用法：nyra soul charter clear <agent> [--yes]\n"); return 2; }
+        validateSoulAgentId(agent);
+        const soul = loadSoul(home, agent);
+        if (!soul.charter) {
+          process.stdout.write(`Soul ${agent} 本来就没有角色契约，不用清。\n`);
+          return 0;
+        }
+        if (!yes) {
+          process.stdout.write(`将清掉 Soul ${agent} 的角色契约（清掉后该 agent 不能再接团队单，直到重写一份）。\n`);
+          const choice = await askApproval("确认清掉这份 Charter 吗？");
+          if (choice !== "yes") { process.stdout.write("已取消，未清任何东西。\n"); return 0; }
+        }
+        clearCharter(home, agent);
+        appendSoulAudit(home, { kind: "charter_cleared", agent });
+        emitSoulEvent(input, "soul_charter_cleared", { agent });
+        process.stdout.write(`已清掉 Soul ${agent} 的角色契约。\n`);
+        return 0;
+      }
+      process.stderr.write("用法：nyra soul charter <set|show|clear> [agent]\n");
+      return 2;
     }
     if (cmd === "import") {
       const file = argv[1];

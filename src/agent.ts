@@ -46,6 +46,7 @@ import { runHooks, type RunHooksContext } from "./hooks.ts";
 import type { ReviewerLike } from "./reviewer.ts";
 import { loadConfig } from "./config.ts";
 import { buildSoulSection, loadSoul } from "./soul.ts";
+import { getTeam, requireCharter, verifyCharterCompliance, formatCharterCheckLine } from "./team.ts";
 import { buildRepoMap, isCodeRelatedTask, listRepoMapFiles, computeFingerprint, type RepoMapCache } from "./repoMap.ts";
 import {
   buildVisionUserMessage, DEFAULT_VISION_CONFIG, modelSupportsVision, visionGateMessage,
@@ -178,6 +179,10 @@ export interface AgentOptions {
   systemInstructions?: string;
   /** 缺口 28：当前运行用的 Soul（~/.nyra/souls/<soulAgent>.json）；不传默认 "default"。 */
   soulAgent?: string;
+  /** GROK-1：常驻团队模式——本 Agent 跑在哪个团队里（teamId 为 null = 不在团队里）。 */
+  teamId?: string | null;
+  /** GROK-1：团队里的角色（chief = 参谋长，独占入口；member = 下游成员，只做执行）。 */
+  teamRole?: "chief" | "member" | null;
   memoryPath?: string | null;
   /** 缺口 4：分应用文风学习——当前代笔渠道（如 gmail）；null = 不注入文风画像。 */
   channel?: string | null;
@@ -393,6 +398,10 @@ export class Agent {
   systemInstructions: string;
   /** 缺口 28：当前运行用的 Soul；不传默认 "default"。 */
   soulAgent: string;
+  /** GROK-1：常驻团队模式——本 Agent 跑在哪个团队里（null = 不在团队里）。 */
+  teamId: string | null;
+  /** GROK-1：团队里的角色（chief = 参谋长；member = 下游成员；null = 不在团队里）。 */
+  teamRole: "chief" | "member" | null;
   memoryPath: string;
   /** 缺口 4：当前代笔渠道；null = 不注入文风画像。 */
   channel: string | null;
@@ -506,6 +515,9 @@ export class Agent {
     this.systemInstructions = opts.systemInstructions ?? "";
     // 缺口 28：Soul 身份层——换模型不换魂：身份与规则从 Soul 文件来，模型从配置来。
     this.soulAgent = opts.soulAgent ?? "default";
+    // GROK-1：常驻团队模式（不在团队里时两者都为 null，行为与以前一致）。
+    this.teamId = opts.teamId ?? null;
+    this.teamRole = opts.teamRole ?? null;
     this.home = opts.home ?? process.env.NYRA_HOME ?? join(process.env.HOME ?? "", ".nyra");
     this.memoryPath = opts.memoryPath ?? join(this.home, "MEMORY.md");
     this.channel = opts.channel ?? null;
@@ -589,12 +601,17 @@ export class Agent {
       memoryPath: this.memoryPath,
       // 缺口 28：Soul invariant 拦截要知道当前用哪个 Soul（checkApproval 里按它读规则）。
       soulAgent: this.soulAgent,
+      // GROK-1：团队审批门（GROK-3）要知道当前 Agent 在哪个团队、扮演谁。
+      teamId: this.teamId,
       sessionId: this.sessionId,
       skillsDir: join(this.home, "skills"),
       // 调研报告第 2 项：技能渐进披露——read_skill 按需读全文时用 Agent 当前
       // 的技能集合（闭包活读 this.skills，setMode 换创造模式技能后同样有效）。
       getSkills: () => this.skills,
-      delegateFn: (task, maxTurns) => this.delegate(task, maxTurns),
+      // GROK-1：delegate 工具层调用 delegateDetailed 时把 opts 原样透传——
+      // 旧代码丢掉了 opts（agent / output_schema / isolation / tools / model
+      // 全部到不了 delegateDetailed），团队分派的 agent 参数就是在这里被丢掉的。
+      delegateFn: (task, maxTurns, opts) => this.delegate(task, maxTurns, opts ?? {}),
       // 缺口 3a：并行 delegate——工具层 delegate_parallel 的入口，返回格式化文本。
       delegateParallelFn: (tasks, opts) =>
         this.delegateParallel(tasks, opts).then((r) => formatParallelResults(r)),
@@ -1893,6 +1910,21 @@ export class Agent {
       return delegateFailed(`错误：子任务 max_turns 必须在 1 到 ${MAX_DELEGATE_TURNS} 之间`);
     }
     if (this.delegateDepth >= MAX_DELEGATE_DEPTH) return delegateFailed(`错误：子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`);
+    // GROK-1：团队模式下的分派门——只有参谋长能分派，agent 只认团队成员，
+    // 成员接单须有完整 Charter；内部机械步（合并子 agent）走 internal 旁路。
+    // 门在预算之前：被门拒绝的分派不占子 agent 预算。
+    if (this.teamId && !opts.internal) {
+      const team = (() => { try { return getTeam(this.home, this.teamId!); } catch { return null; } })();
+      if (!team || team.status !== "active") return delegateFailed("错误：团队模式已失效（团队不存在或已解散），分派被拒绝");
+      if (this.teamRole !== "chief") return delegateFailed("错误：团队模式下只有参谋长能分派——下游之间不直接互发指令，成员之间要交接走 beads 或找参谋长");
+      if (opts.agent === undefined) return delegateFailed(`错误：团队模式下分派须指定 agent（成员名，只认 ${team.members.join("、")}）`);
+      if (!team.members.includes(opts.agent)) return delegateFailed(`错误：delegate 的 agent 只认团队 ${team.name} 的成员（${team.members.join("、")}），${opts.agent} 不在里面`);
+      try {
+        requireCharter(this.home, opts.agent, "分派");
+      } catch (err: unknown) {
+        return delegateFailed(`错误：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (!this.delegateBudget.consume()) return delegateFailed(`错误：本次任务最多创建 ${MAX_DELEGATE_CALLS} 个子 Agent`);
 
     // H-4：契约本身写坏了要在委派前拒绝，不等跑完才发现。
@@ -2050,6 +2082,12 @@ export class Agent {
       verifierModel: this.verifierModelName,
       home: this.home,
       disabledTools,
+      // GROK-1：子 agent 跑谁的 Soul、哪个团队、什么角色——分派指定了 agent
+      // 时子级就用该成员的 Soul（换魂不换队：teamId 一路传下去，角色是 member）；
+      // 没指定时沿用父级 Soul（非团队模式的老行为）。
+      soulAgent: opts.agent ?? this.soulAgent,
+      teamId: this.teamId,
+      teamRole: this.teamId ? "member" : null,
       multiModelFactory: this.ctx.multiModelFactory,
       // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——子 agent 继承父级的沙箱配置。
       sandbox: this.ctx.sandbox ?? null,
@@ -2228,6 +2266,17 @@ export class Agent {
         } catch { /* 观察器故障绝不破坏主流程 */ }
       }
       recordChildUsage();
+      // GROK-2：团队模式下对成员交付物做 Charter 抽查（确定性检查，只核
+      // 说法不验语义）；结论行贴在交回文本末尾，与 H-4 的 schema 行同款口径。
+      // 抽查过了不等于守合同了，内容对错仍由验收与人批负责。
+      let charterLine = "";
+      if (this.teamId && opts.agent !== undefined && !stoppedByRequest) {
+        try {
+          const compliance = verifyCharterCompliance(this.home, opts.agent, summary);
+          charterLine = `\n\n角色契约抽查：${formatCharterCheckLine(compliance)}（只核说法不验语义，内容对错仍由验收与人批负责）`;
+          try { this.emit("team_charter_verified", { team_id: this.teamId, agent: opts.agent, run_id: taskId, passed: compliance.passed }); } catch { /* 观察器故障绝不破坏主流程 */ }
+        } catch { /* 抽查本身失败不破坏交付（账本读失败时跳过） */ }
+      }
       // H-3：已请求停止而提前交回的行不标 completed——停没停下以人的
       // confirm-stopped 确认为准，行留在 running + stopRequestedAt。
       if (registered && !stoppedByRequest) finishSubagentRun(this.home, taskId, "completed");
@@ -2251,14 +2300,14 @@ export class Agent {
         : "";
       const schemaOverride = schemaResult ? { schema: schemaResult } : {};
       if (!worktreePath) {
-        return detail(head + summary + cleanedNote + verdictLine + schemaLine, { verification, ...schemaOverride });
+        return detail(head + summary + cleanedNote + verdictLine + schemaLine + charterLine, { verification, ...schemaOverride });
       }
       return detail(
         head + summary +
         `\n\n（worktree 隔离：改动留在独立工作树，主工作区未受影响）\n路径：${worktreePath}\n` +
         (diffStat ? `diffstat：\n${diffStat}` : "") +
         `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"` +
-        verdictLine + schemaLine,
+        verdictLine + schemaLine + charterLine,
         { worktreePath, changedFiles, diffStat: diffStat || null, verification, ...schemaOverride },
       );
     } catch (err: unknown) {
@@ -2356,6 +2405,8 @@ export class Agent {
           ...(Array.isArray(spec.tools) ? { tools: spec.tools } : {}),
           ...(typeof spec.model === "string" && spec.model.trim() ? { model: spec.model.trim() } : {}),
           ...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
+          // GROK-1：并行线程的成员分派（没给 agent 时团队模式下照样被门拒绝）。
+          ...(typeof spec.agent === "string" && spec.agent.trim() ? { agent: spec.agent.trim() } : {}),
           parallel: { index, total: tasks.length },
         });
         return {
@@ -2471,7 +2522,7 @@ export class Agent {
       this.emit("merge_finished", { verified: false, checks_passed: 0, checks_failed: 0, review_item_id: "" });
       return merged;
     }
-    const d = await this.delegateDetailed(buildMergeTask(result, title, format), 6, { tools: ["read_file"] });
+    const d = await this.delegateDetailed(buildMergeTask(result, title, format), 6, { tools: ["read_file"], internal: true });
     if (!d.ok) {
       const merged: MergedDeliverable = {
         ok: false, title, text: "", error: d.text, verified: false, checks: [],

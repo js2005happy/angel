@@ -248,6 +248,24 @@ soul_tenet_added: ["agent", "tenet_id", "kind"],
 soul_tenet_removed: ["agent", "tenet_id", "remaining"],
 soul_tenet_changed: ["agent", "tenet_id", "change"],
 soul_invariant_blocked: ["agent", "tenet_id", "tool", "rule"],
+// GROK 批（Charter + 团队模式，新缺口 52）：Charter 写/清（哪个 Soul）、
+// 团队建/加人/移人/解散/分派（哪个团队、参谋长、几人）、文件交接发/到/
+// 接下（哪个交接包、谁发给谁）、团队审批门申请/定夺（哪个团队、谁替谁、
+// 哪个工具、批没批）、Charter 交付抽查（哪个团队、哪个成员、哪个运行、
+// 过没过）。只记元数据与 id，不记任务原文、不记交接包内容、不记绝对路径。
+soul_charter_set: ["agent"],
+soul_charter_cleared: ["agent"],
+team_created: ["team_id", "chief", "members"],
+team_member_added: ["team_id", "agent"],
+team_member_removed: ["team_id", "agent"],
+team_dissolved: ["team_id"],
+team_dispatched: ["team_id", "chief", "members"],
+team_handover_sent: ["handover_id", "from", "to"],
+team_handover_received: ["handover_id", "from", "to"],
+team_handover_accepted: ["handover_id", "from", "to"],
+team_approval_requested: ["team_id", "agent", "chief", "tool"],
+team_approval_decided: ["team_id", "agent", "tool", "approved"],
+team_charter_verified: ["team_id", "agent", "run_id", "passed"],
 // 缺口 15：语音指挥进证据链——转写（多长、多少字、哪个引擎、花了多少、
 // 转写文本的指纹）与回读（多少字、哪个引擎、花了多少）。只记元数据与
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。

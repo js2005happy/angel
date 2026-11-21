@@ -33,6 +33,8 @@ tools?: string[];
 model?: string;
 /** H-4：结构化输出契约（JSON Schema），与 delegate 的 output_schema 同义。 */
 outputSchema?: Record<string, unknown>;
+/** GROK-1：团队模式下这条线程分派给哪个成员（Soul agent 名）；只认团队成员。 */
+agent?: string;
 }
 
 export type ParallelThreadStatus = "ok" | "failed" | "timeout" | "rejected";

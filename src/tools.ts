@@ -29,6 +29,11 @@ import { runHooks } from "./hooks.ts";
 import { reviewToolCall, reviewerConfig, type ReviewerLike } from "./reviewer.ts";
 import { redlineNeverBlock, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { appendSoulAudit, resolveSoulAgentId, soulInvariantBlock } from "./soul.ts";
+// 注意：team.ts 不在这里静态导入——team.ts → governance.ts → tasks.ts →
+// agent.ts → creator.ts → tools.ts 是一条循环链，而 creator.ts 在模块求值时
+// 就读 TOOL_SCHEMAS（KNOWN_TOOLS）；tools.ts 先被加载时静态导入 team.ts
+// 会让 creator.ts 在 TOOL_SCHEMAS 初始化前求值，直接 ReferenceError。
+// checkApproval 是 async，团队门在运行时动态 import（模块已初始化完，不循环）。
 import { effectiveStringList, effectiveValue } from "./enforcedConfig.ts";
 // 调研报告第 9 项：OS 级分级沙箱（学 Codex CLI）——shell 的两处执行点统一走这里解析后端。
 // 审批仍在 checkApproval，钩子仍在宿主机跑（hooks.ts 不动），沙箱内只跑命令本身。
@@ -124,6 +129,12 @@ export interface DelegateOptions {
   /** H-4：结构化输出契约（JSON Schema）：子 agent 的最终回答里必须包含
    * 符合它的 JSON；父级校验，失败给一次有界纠正轮，仍失败标 schema_valid: false 并保留原文。 */
   outputSchema?: Record<string, unknown>;
+  /** GROK-1：团队模式下分派给哪个成员（Soul agent 名）；只认团队成员，
+   * 没指定时团队模式拒绝分派（非团队模式忽略）。 */
+  agent?: string;
+  /** GROK-1：内部机械步（合并子 agent）——不走团队分派门，只做只读汇总。
+   * 只有 agent.ts 内部调用才传，模型调 delegate 工具永远不传。 */
+  internal?: boolean;
 }
 
 export interface ToolContext {
@@ -150,6 +161,8 @@ export interface ToolContext {
   home?: string;
   /** 缺口 28：当前运行用的 Soul（~/.nyra/souls/<soulAgent>.json）；不传默认 "default"。 */
   soulAgent?: string;
+  /** GROK-1：当前 Agent 跑在哪个团队里（null = 不在团队里）；团队审批门（GROK-3）按它判定。 */
+  teamId?: string | null;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
   /** 缺口 3a：并行委派入口（Agent.delegateParallel 的格式化版，返回汇总文本）。 */
   delegateParallelFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number; merge?: boolean; mergeTitle?: string; mergeFormat?: "plan" | "report" | "file" }) => Promise<string>) | null;
@@ -347,7 +360,7 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("read_skill", "按名读取一个技能的全文（描述、适用时机与完整步骤）。只读，不改文件、不需审批；不存在的技能名会返回可用技能列表",
     { name: { type: "string", description: "技能名，如 debugging" } },
     ["name"]),
-  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响；output_schema 给了时子 agent 的最终回答里必须包含符合该 JSON Schema 的 JSON，父级校验、失败给一次有界纠正轮",
+  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响；output_schema 给了时子 agent 的最终回答里必须包含符合该 JSON Schema 的 JSON，父级校验、失败给一次有界纠正轮。GROK-1：团队模式下 agent 填成员名（只认团队成员），分派给该成员的 Soul 跑；团队模式不填 agent 会被拒绝",
     {
       task: { type: "string", minLength: 1 },
       max_turns: { type: "integer", default: 6, minimum: 1, maximum: 12 },
@@ -355,6 +368,7 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
       tools: { type: "array", items: { type: "string" } },
       model: { type: "string" },
       output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象）" },
+      agent: { type: "string", description: "团队模式下分派给哪个成员（Soul agent 名）；只认团队成员" },
     },
     ["task"]),
   schema("delegate_parallel", "把多个互不依赖的子任务并行交给子 agent 跑并汇总结果（缺口 3a，opt-in：只有显式调这个工具才并行）。默认最多 5 个同时跑（硬顶，给再大也只按 5 跑）、单个子任务 10 分钟超时；失败/超时的线程不拖垮其他线程，只返回成功者的结果并注明失败原因与已花成本。每个线程继承 delegate 的工具白名单与 worktree 隔离，收敛规则写进子任务系统提示；本批不做自动验证，验证结论待 review queue 验收。H-6：background 默认 true——立即回 handle（后台跑，等回填），不阻塞聊天，全部跑完以单条消息回填收件箱（nyra fanout show <id> 查进度，任务板上有行）；要等结果传 background: false。H-5：merge: true 时批跑完再跑一个合并步（只读合成子 agent 把各线程结果合成为一份交付物，确定性检查后进审阅队列），合并要花一次模型调用，成本如实记账",
@@ -370,9 +384,10 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
             tools: { type: "array", items: { type: "string" } },
             model: { type: "string" },
             output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象），与 delegate 同义" },
+            agent: { type: "string", description: "团队模式下这条线程分派给哪个成员（Soul agent 名），与 delegate 的 agent 同义" },
           },
         },
-        description: "并行子任务列表（每项至少含 task；isolation/tools/model/output_schema 与 delegate 同义）",
+        description: "并行子任务列表（每项至少含 task；isolation/tools/model/output_schema/agent 与 delegate 同义）",
       },
       max_concurrency: { type: "integer", default: 5, minimum: 1, maximum: 5, description: "同时跑的线程数上限，默认 5，也是硬顶" },
       timeout_ms: { type: "integer", default: 600000, minimum: 1000, description: "单个子任务超时（毫秒），默认 600000（10 分钟），到点即判该线程超时" },
@@ -697,6 +712,58 @@ export async function checkApproval(
       } catch { /* 审计落盘失败不破坏拦截 */ }
     }
     throw new ToolError(`Soul 的 invariant 拦截了 ${toolName}：${soulBlock.reason}`);
+  }
+
+  // GROK-3：团队审批门——团队模式下，下游成员的对外动作（对外通信、采购、
+  // 删除、发布）一律回参谋长/人批，不由子代理自批。位置在 Soul invariant
+  // 之后、权限规则 allow 快路与幂等重试短路之前：deny 规则仍生效（下面照
+  // 常跑），allow 快路与幂等短路不走，full 模式同样不放行。门本身不判断
+  // 对错，只拦住等人看；审批卡上写清“谁替谁申请、为什么”。本地读写与
+  // shell 不在门内。无审批的自主团队绝不允许：没审批桥又非交互时直接拒绝。
+  const teamGate = await (async () => {
+    // 动态导入（见文件头注释：静态导入会与 creator.ts 循环，导致 TOOL_SCHEMAS
+    // 初始化前求值）。没进团队模式时不导入——单机运行零额外开销。
+    if (!ctx.teamId) return null;
+    const team = await import("./team.ts");
+    return team.teamApprovalRequired(ctx.home ?? null, ctx.teamId, ctx.soulAgent ?? "default", toolName);
+  })();
+  if (teamGate) {
+    const { teamApprovalSummary, appendTeamAudit } = await import("./team.ts");
+    const gatedSummary = teamApprovalSummary(teamGate, summary);
+    try { ctx.onEvent?.("team_approval_requested", { team_id: teamGate.team.id, agent: teamGate.agent, chief: teamGate.chief, tool: toolName }); } catch { /* 观察器故障不破坏拦截 */ }
+    if (ctx.home) {
+      try { appendTeamAudit(ctx.home, { kind: "approval_requested", team_id: teamGate.team.id, agent: teamGate.agent, tool: toolName }); } catch { /* 审计落盘失败不破坏拦截 */ }
+    }
+    const decideTeamApproval = (approved: boolean): void => {
+      try { ctx.onEvent?.("team_approval_decided", { team_id: teamGate.team.id, agent: teamGate.agent, tool: toolName, approved }); } catch { /* ignore */ }
+      if (ctx.home) {
+        try { appendTeamAudit(ctx.home, { kind: "approval_decided", team_id: teamGate.team.id, agent: teamGate.agent, tool: toolName, approved }); } catch { /* ignore */ }
+      }
+    };
+    // 有审批桥（Bot / 网页端）时走它；批了就放行（不记“始终允许”规则——
+    // 团队门每次都要人看），拒了按拒绝文案抛错。
+    if (ctx.approveFn) {
+      observeApproval(ctx, toolName, null);
+      const approved = await ctx.approveFn(toolName, gatedSummary, {
+        command: opts?.command, cwd: opts?.cwd, fileTarget: opts?.fileTarget, timeout: opts?.timeout,
+        suggestion: suggestionFor(toolName, opts?.command),
+      });
+      const ok = approved && typeof approved === "object" ? Boolean(approved.approved) : Boolean(approved);
+      observeApproval(ctx, toolName, ok);
+      decideTeamApproval(ok);
+      if (!ok) throw new ToolError(approved && typeof approved === "object" ? rejectionMessage(approved.feedback) : "用户拒绝执行");
+      return;
+    }
+    // 没审批桥时：非交互下没人能批，直接拒绝；交互下走终端人工确认。
+    if (!ctx.interactive) {
+      throw new ToolError("团队模式下对外动作须回参谋长/人批：非交互模式下没有审批人，拒绝执行");
+    }
+    console.log(gatedSummary);
+    const choice = await askApproval(tr("approval.question"));
+    observeApproval(ctx, toolName, choice === "yes" || choice === "always");
+    decideTeamApproval(choice === "yes");
+    if (choice === "yes") return;
+    throw new ToolError("用户拒绝执行");
   }
 
   // P0-5：权限规则语言。deny > ask > allow，空规则集时行为与之前完全一致。
@@ -2079,6 +2146,8 @@ async function toolDelegateParallel(
     if (raw.output_schema && typeof raw.output_schema === "object" && !Array.isArray(raw.output_schema)) {
       spec.outputSchema = raw.output_schema as Record<string, unknown>;
     }
+    // GROK-1：并行线程的成员分派（与 delegate 的 agent 同义）。
+    if (typeof raw.agent === "string" && raw.agent.trim()) spec.agent = raw.agent.trim();
     tasks.push(spec);
   }
   const merge = extra.merge === true;
@@ -2546,6 +2615,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
           ...(typeof args.model === "string" && args.model.trim() ? { model: args.model.trim() } : {}),
           ...(args.output_schema && typeof args.output_schema === "object" && !Array.isArray(args.output_schema)
             ? { outputSchema: args.output_schema as Record<string, unknown> } : {}),
+          // GROK-1：团队分派的成员名（非团队模式忽略；团队模式下门在 delegateDetailed 里校验）。
+          ...(typeof args.agent === "string" && args.agent.trim() ? { agent: args.agent.trim() } : {}),
         },
       );
       case "delegate_parallel": return await toolDelegateParallel(
