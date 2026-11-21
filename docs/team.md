@@ -43,11 +43,13 @@ nyra soul charter clear <agent> [--yes] # 清掉后该 agent 不能再接团队�
 交接包（`handover/inbox/<ho_id>.json`）：id、时间、谁发给谁、一句话任务、备注、文件清单。文件只内联小文本（≤ 8 KiB、最多 5 个内联），大文件与二进制只记 SHA-256 指纹、不复制内容。路径只认交出方 workspace 内的相对路径：绝对路径、`..` 逃逸、符号链接一律拒绝（交接包不能成为读 workspace 外文件的旁路）。
 
 ```bash
-nyra team handover send --from <agent> --to <agent> --task "一句话" [--note "备注"] [--file <相对路径>...]
+nyra team handover send --from <agent> --to <agent> --task "一句话" [--note "备注"] [--file <相对路径>...] [--contract <契约 id>]
 nyra team handover list <agent> [--box inbox|outbox]
 nyra team handover show <agent> <id>
-nyra team handover ack <agent> <id> # 接收方确认接下（只是“接了”，内容对错仍由 verifier + 人批负责）
+nyra team handover ack <agent> <id> [--workdir <目录>] # 接收方确认接下（没挂契约：只是“接了”，内容对错仍由 verifier + 人批负责；挂了契约：先程序验收，过了才接下）
 ```
+
+挂了交接契约的包（Pi Bot 借鉴第 2 条，详见 `docs/handover-contract.md`）：发包时契约须存在、待验收、from/to 与本次交接一致；`ack` 时先跑程序验收——全过才接下，不过打回（包保持待接，对方改完再 `ack`）、轮次用完停下等人（须人 `nyra handover contract resolve --yes` 认下或 `close --yes` 放弃）；验收地默认交出方电脑的 workdir（`--workdir` 可指定别处）。挂到包上的契约只用文件类与内置 checker，`output-contains` / `trajectory-contains` 类 checker 请走 `nyra handover contract check` 单独验。
 
 交接事件进证据链（`team_handover_sent` / `team_handover_received` / `team_handover_accepted`，只记 id 与双方名），beads 账本（`peer-handoffs.jsonl`）记一条 handoff。
 
