@@ -855,5 +855,5 @@ export function parseShellScript(command: string, cwd: string, workdir: string):
   } catch {
     return null;
   }
-  return { language, code, file: real, args: parts.slice(1) };
+  return { language, code, file: resolved, args: parts.slice(1) };
 }
