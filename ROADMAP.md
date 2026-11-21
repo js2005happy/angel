@@ -1,3 +1,10 @@
+## 2026-11-21 — Shared target receipt ambiguity (static-only)
+
+- **External report (fact):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, describes unsupported completion claims and overlapping task ownership; reviewed 2026-11-21. This is one external report, not an Angel reproduction or frequency estimate.
+- **Engineering inference:** the same target-verification reference appearing under two requirements is ambiguous even when the caller has not configured optional reference scopes. The read-only assessor now fails closed for both; a distinct eligible receipt may still satisfy its own requirement. No independent source verification is claimed.
+- **Ranking (value / difficulty / risk / dependencies):** P1 shared-reference rejection high / low / low / existing assessor (implemented, tests unrun); P1 trusted provenance adapter high / medium / medium / independent CI or target authority (open); P1 durable task contract high / medium / medium / privacy controls (open); P1 no-progress detector medium-high / medium / medium / trustworthy events (open); P0 claim dispatch high / high / high / trusted storage and approvals (blocked).
+- **Scope:** no runtime wiring, network, filesystem, replay, new dependency, or production release. Static inspection only; no tests or CI run.
+
 ## 2026-11-21 — Requirement-scoped acceptance references (static-only)
 
 - **External user report (fact):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, reports unsupported completion claims and overlapping task ownership; retrieved 2026-11-21. This is a single report, not an Angel reproduction or prevalence estimate.
