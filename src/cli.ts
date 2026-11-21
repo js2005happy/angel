@@ -208,7 +208,7 @@ nyra vault <...>                凭据保险箱（加密存储，权限 0600）
 nyra gmail <status|auth|search|read|send|labels|label|mark-read|mark-unread|trash|attachment|revoke>   Gmail 原生连接器：读信 / 回复 / 代发草稿 / 附件 / 标签 / 已读 / 回收站
 nyra shopify <auth|status|products|product|orders|order|inventory>   Shopify 原生连接器（只读）：查商品 / 订单 / 库存（详见 docs/connectors.md）
 nyra slack <auth|status|channels|history|send|card>   Slack 原生连接器：读频道 / 消息、发消息（须显式批准）、发审批卡（详见 docs/connectors.md）
-nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
+nyra connector <status|list|approve|revoke|auth|install|uninstall|usage>   连接器目录：安装 / 一键授权 / 撤销 / 用量（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra peer <status|enable|disable|list|auth|ask|handoff|card|code|add|request|accept|friends|block|circle|share>   对端协作：问别的 Nyra 实例、交接运行上下文、名片加好友（默认关闭，详见 docs/peer.md）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
@@ -331,7 +331,7 @@ nyra vault <...>               credential vault (encrypted at rest, mode 0600)
 nyra gmail <status|auth|search|read|send|labels|label|mark-read|mark-unread|trash|attachment|revoke>   native Gmail connector: read / reply / draft / attachments / labels / read-state / trash
 nyra shopify <auth|status|products|product|orders|order|inventory>   native Shopify connector (read-only): products / orders / inventory (see docs/connectors.md)
 nyra slack <auth|status|channels|history|send|card>   native Slack connector: read channels / messages, send messages (explicit approval required), post approval cards (see docs/connectors.md)
-nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
+nyra connector <status|list|approve|revoke|auth|install|uninstall|usage>   connector directory: install / one-click auth / revoke / usage (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra peer <status|enable|disable|list|auth|ask|handoff|card|code|add|request|accept|friends|block|circle|share>   peer collaboration: ask another Nyra instance, hand off run context, agent card and friends (off by default, see docs/peer.md)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
@@ -3681,8 +3681,13 @@ export async function handleConnector(argv: string[], home: string): Promise<num
   + "  nyra connector status [连接器]                   查看一个/全部连接器的授权状态与权限声明\n"
   + "  nyra connector approve <连接器>                  显式批准一次：批准后同应用同用户不再重复问\n"
   + "  nyra connector revoke <连接器> [--yes]           撤销授权（立即失效；Gmail 吊销远端 token 并删除本地 token；Shopify/Slack 删除本地凭证）\n"
+  + "  nyra connector auth <连接器>                     一键连接：走该连接器自己的授权流程（OAuth 登录即用）\n"
+  + "  nyra connector install <连接器>                  安装到目录：把连接器登记进你的目录（只装声明里有的；试点装不了）\n"
+  + "  nyra connector uninstall <连接器> [--yes]        从目录卸载：同时撤销授权，访问立即断\n"
+  + "  nyra connector usage [连接器]                    用量：每个连接器的调用次数（总次数、分操作次数、最后调用时间）\n"
   + "详见 docs/connectors.md";
   const reg = await import("./connectors/registry.ts");
+  const dirMod = await import("./connectors/directory.ts");
   const gmailMod = await import("./connectors/gmail.ts");
   const shopifyMod = await import("./connectors/shopify.ts");
   const slackMod = await import("./connectors/slack.ts");
@@ -3704,8 +3709,13 @@ export async function handleConnector(argv: string[], home: string): Promise<num
     const state = reg.peekConnectorState(home, connectorId, userId, { hasTokens: hasTokensEvidence(connectorId) });
     const record = new reg.ConnectorAuthStore(home).get(connectorId, userId);
     const pilot = decl.status === "pilot" ? "（试点：尚未接入）" : "";
-    process.stdout.write(`${decl.displayName}（${decl.id}）：${reg.CONNECTOR_AUTH_STATE_LABELS[state]}${pilot}\n`);
+    const installed = dirMod.isConnectorInstalled(home, connectorId);
+    const usage = dirMod.getConnectorUsage(home, connectorId);
+    process.stdout.write(`${decl.displayName}（${decl.id}）：${reg.CONNECTOR_AUTH_STATE_LABELS[state]}${pilot}、${installed ? "已安装" : "未安装"}、调用 ${usage.totalCalls} 次\n`);
     if (!detailed) return;
+    const dirRecord = new dirMod.ConnectorDirectoryStore(home).get(connectorId);
+    if (dirRecord?.installedAt) process.stdout.write(`  安装于：${dirRecord.installedAt}\n`);
+    if (usage.lastCalledAt) process.stdout.write(`  最后调用：${usage.lastCalledAt}\n`);
     if (record?.approvedAt) process.stdout.write(`  批准于：${record.approvedAt}\n`);
     if (record?.tokenFingerprint) process.stdout.write(`  token 指纹：${record.tokenFingerprint}…\n`);
     if (record?.scopes) process.stdout.write(`  scope：${record.scopes}\n`);
@@ -3867,6 +3877,101 @@ export async function handleConnector(argv: string[], home: string): Promise<num
         process.stdout.write("注意：本地凭证已删，但 Slack 后台的 app 仍在——想彻底作废 token，请去 Slack 后台撤销该 app 的 Bot token。\n");
       }
       process.stdout.write(`${decl.displayName} 的授权已撤销，立即失效。\n`);
+      return 0;
+    }
+    if (cmd === "auth") {
+      // 缺口 44 第一批：统一的一键连接入口——OAuth 登录即用；具体流程复用各
+      // 连接器自己的授权实现（Gmail 的 loopback 回调、Shopify 的粘贴 token、
+      // Slack 的粘贴 Bot token），这里只做路由，不另起一套 OAuth。
+      const target = argv[1];
+      if (!target) {
+        process.stderr.write("用法：nyra connector auth <连接器>\n");
+        return 2;
+      }
+      const decl = reg.getDeclaration(target);
+      if (!decl) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      if (decl.status === "pilot") {
+        process.stderr.write(`${decl.displayName} 连接器尚未接入（试点），下一批做深连接器时开放。\n`);
+        return 1;
+      }
+      if (target === "gmail") return handleGmail(["auth"], home);
+      if (target === "shopify") return handleShopify(["auth"], home);
+      if (target === "slack") return handleSlack(["auth"], home);
+      process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+      return 2;
+    }
+    if (cmd === "install") {
+      const target = argv[1];
+      if (!target) {
+        process.stderr.write("用法：nyra connector install <连接器>\n");
+        return 2;
+      }
+      const decl = reg.getDeclaration(target);
+      if (!decl) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      const record = dirMod.installConnector(home, target, userId);
+      process.stdout.write(`已安装 ${decl.displayName} 到目录（安装于 ${record.installedAt}）。\n`);
+      process.stdout.write(`  读：${decl.scopes.read.join("、") || "无"}\n`);
+      process.stdout.write(`  写：${decl.scopes.write.join("、") || "无"}\n`);
+      process.stdout.write(`  永远须人批：${decl.alwaysRequireApproval.join("、") || "无"}\n`);
+      process.stdout.write(`  永远禁做：${decl.alwaysForbidden.join("、")}\n`);
+      process.stdout.write(`下一步：运行 nyra connector auth ${target} 完成授权。\n`);
+      return 0;
+    }
+    if (cmd === "uninstall") {
+      const target = argv[1];
+      if (!target) {
+        process.stderr.write("用法：nyra connector uninstall <连接器> [--yes]\n");
+        return 2;
+      }
+      const decl = reg.getDeclaration(target);
+      if (!decl) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      if (!dirMod.isConnectorInstalled(home, target)) {
+        process.stderr.write(`${decl.displayName} 还没安装，无需卸载。\n`);
+        return 1;
+      }
+      if (!argv.includes("--yes")) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const ans = (await new Promise<string>((resolvePromise) => {
+          rl.question(`确认卸载 ${decl.displayName}？卸载后授权同时撤销、访问立即断（[y/N] `, (a) => { rl.close(); resolvePromise(a); });
+        })).trim().toLowerCase();
+        if (ans !== "y" && ans !== "yes") {
+          process.stdout.write("已取消。\n");
+          return 1;
+        }
+      }
+      dirMod.uninstallConnector(home, target, userId);
+      process.stdout.write(`${decl.displayName} 已从目录卸载，授权同时撤销、访问立即断。\n`);
+      return 0;
+    }
+    if (cmd === "usage") {
+      const target = argv[1];
+      const showOne = (connectorId: string): void => {
+        const decl = reg.getDeclaration(connectorId);
+        if (!decl) return;
+        const usage = dirMod.getConnectorUsage(home, connectorId);
+        process.stdout.write(`${decl.displayName}（${connectorId}）：调用 ${usage.totalCalls} 次`);
+        process.stdout.write(usage.lastCalledAt ? `，最后调用 ${usage.lastCalledAt}\n` : "，尚未调用过\n");
+        const ops = Object.entries(usage.operations).sort((a, b) => b[1] - a[1]);
+        for (const [op, count] of ops) process.stdout.write(`  ${op}：${count} 次\n`);
+      };
+      if (!target) {
+        for (const decl of reg.listDeclarations()) showOne(decl.id);
+        return 0;
+      }
+      if (!reg.getDeclaration(target)) {
+        process.stderr.write(`未知连接器：${target}（已知：${knownIds}）\n`);
+        return 2;
+      }
+      showOne(target);
       return 0;
     }
     process.stderr.write(`未知命令：${cmd}\n${CONNECTOR_USAGE}\n`);

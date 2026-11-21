@@ -270,6 +270,12 @@ contract_verified: ["contract_id", "verdict", "passed", "total"],
 connector_authorized: ["connector", "user_id", "scopes_hash"],
 connector_expired: ["connector", "user_id", "reason"],
 connector_revoked: ["connector", "user_id"],
+// 缺口 44 第一批：连接器目录进证据链——安装/卸载（哪个连接器、哪个用户）与
+// 每次调用（哪个连接器、哪个操作、几条记录、耗时几毫秒）。只记操作名与计数，
+// 不记 token、不记响应内容、不记客户信息。
+connector_installed: ["connector", "user_id"],
+connector_uninstalled: ["connector", "user_id"],
+connector_call: ["connector", "operation", "records", "duration_ms"],
 // 缺口 21：多 agent 执行时间线——子任务起止与单次模型调用 span。
 // delegate_start/end 只记元数据（不记任务文本）；llm_span 只记模型、耗时、
 // token 数（不记 prompt/回答内容）。子任务的 run 链靠 task_id 串联：父级
