@@ -251,6 +251,12 @@ workflow_failed: ["workflow_run_id", "workflow", "error"],
 workflow_coordinator_decision: ["workflow_run_id", "workflow", "round", "action", "step", "spent_usd"],
 workflow_dynamic_step: ["workflow_run_id", "workflow", "step_id", "step_type"],
 workflow_coordinator_ask: ["workflow_run_id", "workflow", "round", "review_item_id"],
+// 缺口 29：交付契约进证据链——挂到运行（哪个契约、哈希前 12 位见账本，
+// 事件里只记契约 id 与完整哈希）、逐项验收结论（哪个契约、结论、过了几项）；
+// Golden 集跑分（哪次跑分、几个用例、过了几个、均分）。契约正文与逐项明细
+// 在 ~/.nyra/contracts.json 账本里，事件是审计副本；不记任务原文。
+contract_attached: ["contract_id", "contract_hash"],
+contract_verified: ["contract_id", "verdict", "passed", "total"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得
@@ -505,7 +511,7 @@ function lastLines(text: string, count = 20): string {
 return (text || "").split("\n").slice(-count).join("\n");
 }
 
-export function formatRunReport(state: Record<string, unknown>, stats?: RunStats): string {
+export function formatRunReport(state: Record<string, unknown>, stats?: RunStats, contractHeader?: { costPerAccepted: string | null; consistency: string | null } | null): string {
 const status = state.status as string;
 const files = (state.changed_files as string[])?? [];
 const result = (state.verify_result as Record<string, unknown>)?? {};
@@ -513,6 +519,21 @@ const cmd = state.verify_cmd as string | null;
 const lines = ["", "----", formatRunStatsHeader(stats ?? statsFromState(state))];
 if (status === "verified") lines.push("运行状态：verified（已验证）");
 else lines.push(`运行状态：${status}`);
+// 缺口 29：挂了交付契约时报告顶部加三数——检查通过率 + 每被接受任务成本 +
+// 三次复核一致性（后两项由调用方从契约账本算好传进来；没挂契约不写这行）。
+const contractId = typeof state.contract_id === "string" ? state.contract_id : null;
+if (contractId) {
+  const passed = typeof state.contract_passed === "number" ? state.contract_passed : null;
+  const total = typeof state.contract_total === "number" ? state.contract_total : null;
+  const verdict = typeof state.contract_verdict === "string" ? state.contract_verdict : null;
+  const verdictWord = verdict === "accepted" ? "已接受" : verdict === "rejected" ? "未接受" : verdict === "pending" ? "待定" : "未验收";
+  const rate = passed !== null && total !== null ? `检查通过 ${passed}/${total}` : "检查未打分";
+  const extra = [
+    contractHeader?.costPerAccepted ? `每被接受任务成本 ${contractHeader.costPerAccepted}` : null,
+    contractHeader?.consistency ? `三次复核一致性 ${contractHeader.consistency}` : null,
+  ].filter((x): x is string => x !== null).join(" · ");
+  lines.push(`交付契约：${contractId} ${rate}，结论：${verdictWord}${extra ? ` · ${extra}` : ""}`);
+}
 lines.push("改动文件：" + (files.length? files.join("、"): "（无）"));
 const modified = testsModified(files);
 if (modified.length) lines.push("【测试文件被修改】" + modified.join("、"));
@@ -625,8 +646,15 @@ verify_result: Record<string, unknown> | null;
 changed_files: string[];
 /** P1-2：运行结束时为每个改动文件记的 sha256（证据链的“产物”一环）。旧运行没有该字段。 */
 file_hashes?: Record<string, string>;
-/** 缺口 20：运行结束时记的用量摘要（统计头“花费”的来源）。旧运行没有该字段；新运行创建时为 null。 */
-usage_summary?: UsageSummary | null;
+/** 缺口 29：交付契约挂到运行上时写（旧运行没有这些字段）。 */
+contract_id?: string | null;
+/** 契约正文的 SHA-256（挂契约时冻结；改了契约就是另一份）。 */
+contract_hash?: string | null;
+/** 最近一次逐项验收的结论（accepted/rejected/pending；未验收时为 null）。 */
+contract_verdict?: string | null;
+/** 最近一次验收过了几项 / 共几项（未验收时为 null）。 */
+contract_passed?: number | null;
+contract_total?: number | null;
 error: string | null;
 pid: number;
 host: string;
@@ -683,7 +711,7 @@ if (typeof state.status!== "string" ||!RUN_STATUSES.has(state.status)) {
 throw new Error("运行状态无效");
 }
 const required = new Set(["session_id", "task", "workdir", "mode", "turn", "max_turns", "created_at", "updated_at", "verify_cmd", "verify_result", "changed_files", "error", "pid", "host"]);
-const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes", "usage_summary", "unattended"]);
+const allowed = new Set([...required, "schema_version", "run_id", "status", "pending_approval", "file_hashes", "usage_summary", "unattended", "contract_id", "contract_hash", "contract_verdict", "contract_passed", "contract_total"]);
 const keys = Object.keys(state);
 if (keys.some((k) =>!allowed.has(k)) || ![...required].every((k) => keys.includes(k)) ||!Array.isArray(state.changed_files)) {
 throw new Error("运行记录字段无效");
@@ -705,7 +733,12 @@ if (!strKeys.every((k) => typeof state[k] === "string") ||
   (state.usage_summary as Record<string, unknown>)[k] === null || typeof (state.usage_summary as Record<string, unknown>)[k] === "number") ||
 typeof (state.usage_summary as Record<string, unknown>).cost_status !== "string" && (state.usage_summary as Record<string, unknown>).cost_status !== null)) ||
 (state.pending_approval!== undefined && state.pending_approval!== null && (typeof state.pending_approval!== "object" || Array.isArray(state.pending_approval))) ||
-(state.unattended!== undefined && typeof state.unattended!== "boolean")) {
+(state.unattended!== undefined && typeof state.unattended!== "boolean") ||
+(state.contract_id!== undefined && state.contract_id!== null && typeof state.contract_id!== "string") ||
+(state.contract_hash!== undefined && state.contract_hash!== null && typeof state.contract_hash!== "string") ||
+(state.contract_verdict!== undefined && state.contract_verdict!== null && typeof state.contract_verdict!== "string") ||
+(state.contract_passed!== undefined && state.contract_passed!== null && typeof state.contract_passed!== "number") ||
+(state.contract_total!== undefined && state.contract_total!== null && typeof state.contract_total!== "number")) {
 throw new Error("运行记录字段类型无效");
 }
 return state as unknown as RunState;
@@ -760,6 +793,7 @@ task: redact(task)?? "", workdir: String(workdir), mode, status,
 unattended: extra?.unattended ?? false,
 turn: 0, max_turns: maxTurns, created_at: nowIso(), updated_at: nowIso(),
 verify_cmd: verifyCmd?? null, verify_result: null, changed_files: [], file_hashes: {}, usage_summary: null, error: null,
+contract_id: null, contract_hash: null, contract_verdict: null, contract_passed: null, contract_total: null,
 pid: process.pid, host: hostname(),
 };
 this.write(state);
@@ -787,7 +821,9 @@ return states.sort((a, b) => (a.created_at < b.created_at? 1: -1));
 
 update(runId: string, fields: Record<string, unknown>): RunState {
 const state = this.load(runId);
-const mutable = new Set([...Object.keys(state), "pending_approval"]);
+// 缺口 29：契约五字段即使旧运行记录里没有也可以写（挂契约、写结论时用；
+// validate 的 allowed 集已经放行，只差这一道可写检查）。
+const mutable = new Set([...Object.keys(state), "pending_approval", "contract_id", "contract_hash", "contract_verdict", "contract_passed", "contract_total"]);
 for (const k of ["schema_version", "run_id", "created_at", "updated_at"]) mutable.delete(k);
 for (const k of Object.keys(fields)) {
 if (!mutable.has(k)) throw new Error("未知或不可修改的运行字段");
@@ -1123,6 +1159,36 @@ const result = this.continuing? await this.agent.resume(task): await this.agent.
 this.changed();
 this.recordFileHashes();
 this.recordUsageSummary();
+// 缺口 29：交付契约——运行挂了契约时收尾逐项打分（确定性项 + 人工项；模型项
+// 在收尾没有运行实例，记 skipped，等 `nyra contract verify` 再补评）。
+// 钩子用动态 import（避开 runs.ts 与 contract.ts 的静态引用环），任何失败都
+// 吞掉、绝不破坏运行本身；只认标准的 runs 目录（store.baseDir 的 basename
+// 是 runs 时 home 才是其父目录）。
+try {
+  if (basename(this.store.baseDir) === "runs") {
+    const home = dirname(this.store.baseDir);
+    const st = this.store.load(this.runId);
+    if (typeof st.contract_id === "string" && st.contract_id) {
+      const { verifyContract } = await import("./contract.ts");
+      const hashes = st.file_hashes ?? {};
+      const diffStat = Object.entries(hashes).map(([f, h]) => `${f} (${String(h).slice(0, 8)})`).join("\n") || null;
+      const trajectory = this.store.readEvents(this.runId)
+        .filter((e) => e.type === "tool_start" && typeof (e as Record<string, unknown>).name === "string")
+        .map((e) => (e as Record<string, unknown>).name as string);
+      const usage = st.usage_summary as { spent_usd?: unknown } | null | undefined;
+      await verifyContract(home, st.contract_id, {
+        workdir: st.workdir,
+        changedFiles: st.changed_files ?? [],
+        diffStat,
+        title: st.task,
+        outputText: result || "",
+        summary: result || "",
+        trajectory,
+        spentUsd: typeof usage?.spent_usd === "number" ? usage.spent_usd : null,
+      }, { runId: this.runId });
+    }
+  }
+} catch { /* 打分失败不影响运行结果；契约状态不动，等人工 verify */ }
 // 缺口 11：技能自沉淀——成功运行收尾时（且沉淀已开启时）自动起草技能草稿。
 // 只起草、不批准；安装仍须人工 `nyra skills approve`。钩子用动态 import
 // （避开 config.ts 的引用环），任何失败都吞掉、绝不破坏运行本身；
@@ -1136,7 +1202,18 @@ try {
   }
 } catch { /* 起草失败不影响运行结果 */ }
 const finalState = this.store.load(this.runId);
-return (result || "") + formatRunReport(finalState, computeRunStats(this.store, this.runId, finalState));
+// 缺口 29：报告顶部的契约三数（每被接受任务成本 + 三次复核一致性从账本算；
+// 检查通过率 formatRunReport 直接从 state 的 contract_passed/total 读）。
+let contractHeader: { costPerAccepted: string | null; consistency: string | null } | null = null;
+try {
+  if (basename(this.store.baseDir) === "runs" && typeof finalState.contract_id === "string" && finalState.contract_id) {
+    const home = dirname(this.store.baseDir);
+    const { contractHeaderForRun } = await import("./contract.ts");
+    const header = contractHeaderForRun(home, finalState as unknown as Record<string, unknown>);
+    contractHeader = { costPerAccepted: header.costPerAccepted, consistency: header.consistency };
+  }
+} catch { /* 账本读失败时报告不写后两项，不破坏运行结果 */ }
+return (result || "") + formatRunReport(finalState, computeRunStats(this.store, this.runId, finalState), contractHeader);
 } catch (err: unknown) {
 if (err instanceof ApprovalRequired) {
 this.changed();

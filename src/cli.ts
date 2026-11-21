@@ -73,6 +73,8 @@ import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
 import { handleGoal } from "./goal.ts";
 import { handleWorkflow } from "./workflow.ts";
+import { attachContractToRun, handleContract } from "./contract.ts";
+import { handleGolden, stripRunReport, type GoldenRunner } from "./golden.ts";
 import { handleFanout } from "./fanout.ts";
 import { handleTeam, type TeamDispatchPlan } from "./team.ts";
 import { handleSubagent } from "./resume.ts";
@@ -165,6 +167,9 @@ nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用
 nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]   执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行，详见 docs/timeline.md）
 nyra replay <运行 ID> [--verbose]   会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行）
 nyra regression <list|precipitate --run <运行 ID>|remove <用例 id>|status <用例 id> <open|verified|retired>>   回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 docs/regression.md）
+nyra contract <create|list|show|activate|attach|verify|mark-item|remove|stats>   交付契约（缺口 29）：接单时先定验收标准（交付物 + 检查清单），跑完逐项打分，全部通过才算被接受（详见 docs/delivery-contract.md）
+nyra golden <add|list|show|remove|run|rescore>   Golden 测试集（G-2）：固定输入 + 期望输出 + 期望工具轨迹，跑分看结果分与轨迹分（详见 docs/delivery-contract.md）
+nyra "任务" --contract <契约 id>   本次运行挂上已激活的交付契约，收尾逐项打分进运行报告
 nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   持久任务板：任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 docs/kanban.md）
 nyra goal <create|list|show|add-item|start-item|verify-item|complete|pause|resume|cancel|instruct|link|split>   长目标对象：目标陈述 + 动态进度清单 + 逐项验证，全部通过才标完成；中途加指令不丢目标，可暂停/恢复/取消（详见 docs/goal-object.md）
 nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop|steer>   崩溃自续：子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑 + 单点停止 + 单点引导（详见 docs/kanban.md、docs/roster.md 与 docs/steer-schema.md）
@@ -279,6 +284,9 @@ nyra evidence verify <run id>  independently re-check a run's evidence chain (se
 nyra timeline <run id> [--verbose] [--json] [--out <path>]   rebuild one multi-agent run as a timeline (read-only replay, no re-execution, see docs/timeline.md)
 nyra replay <run id> [--verbose]   replay one run step by step, grouped by turn (read-only, no re-execution)
 nyra regression <list|precipitate --run <run id>|remove <case id>|status <case id> <open|verified|retired>>   regression case library: precipitate failed steps of a run into cases (metadata only, no model calls, no auto re-run, see docs/regression.md)
+nyra contract <create|list|show|activate|attach|verify|mark-item|remove|stats>   delivery contract (gap 29): set acceptance criteria at intake (deliverables + checklist), score item by item after the run; accepted only when all pass (see docs/delivery-contract.md)
+nyra golden <add|list|show|remove|run|rescore>   Golden test set (G-2): fixed inputs + expected outputs + expected tool trajectories, scored on result and trajectory (see docs/delivery-contract.md)
+nyra "<task>" --contract <contract id>   attach an activated delivery contract to this run; item scores go into the run report
 nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   durable task board: tasks are ledger rows, crash-safe, circuit-breaker to blocked, completion needs verification evidence (see docs/kanban.md)
 nyra goal <create|list|show|add-item|start-item|verify-item|complete|pause|resume|cancel|instruct|link|split>   long goal object: goal statement + live checklist + per-item verification, all must pass before completion; mid-course instructions don't lose the goal, pause/resume/cancel supported (see docs/goal-object.md)
 nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop|steer>   crash resume: persistent sub-agent rows + heartbeat checkpoints + boot sweep + verify-before-resume + per-child stop + per-child steer (see docs/kanban.md, docs/roster.md and docs/steer-schema.md)
@@ -386,6 +394,8 @@ export interface CliArgs {
   compact: string | null; resume: string | null; resumeRun: string | null;
   planMode: boolean; executePlan: boolean; approvePlan: string | null;
   verify: string | null; verifyTimeout: number | null; verifyRetries: number | null;
+  /** 缺口 29：本次运行挂的交付契约 id；null = 不挂契约。 */
+  contract: string | null;
   /** P2-2：本次运行的成本上限（美元）；null = 不设上限。 */
   maxCost: number | null;
   /** 缺口 29：本次运行的月度支出上限（美元）；null = 按配置（默认不设上限）。 */
@@ -428,7 +438,7 @@ export function parseArgs(argv: string[]): CliArgs {
     listSkills: false, listSessions: false, listMcp: false,
     compact: null, resume: null, resumeRun: null,
     planMode: false, executePlan: false, approvePlan: null,
-    verify: null, verifyTimeout: null, verifyRetries: null, maxCost: null, monthlyMaxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [], addDirs: [],
+    verify: null, verifyTimeout: null, verifyRetries: null, contract: null, maxCost: null, monthlyMaxCost: null, disableTools: [], enableFeatures: [], disableFeatures: [], addDirs: [],
     trustAgentsVerify: false, jsonMode: false, autoCompact: false,
     autoCompactThreshold: null, poppy: false, fallback: false, noFallback: false,
     discoverPoppy: null, inspectPoppyIdentity: null,
@@ -441,6 +451,7 @@ export function parseArgs(argv: string[]): CliArgs {
   const valueFlags = new Set([
       "--provider", "--model", "--profile", "--mode", "--max-turns", "--context-window",
       "--compact", "--resume", "--resume-run", "--verify", "--verify-timeout", "--verify-retries", "--monthly-max-cost",
+      "--contract",
       "--auto-compact-threshold", "--discover-poppy", "--inspect-poppy-identity",
       "--approve-plan", "--workdir", "--sandbox", "--sandbox-id", "--sandbox-template", "--sandbox-timeout",
       "--lang", "--channel", "--image", "--video", "--voice",
@@ -496,6 +507,7 @@ export function parseArgs(argv: string[]): CliArgs {
         case "--resume": args.resume = value; break;
         case "--resume-run": args.resumeRun = value; break;
         case "--verify": args.verify = value; break;
+        case "--contract": args.contract = value; break;
         case "--max-cost": args.maxCost = parseFloat(value); break;
         case "--monthly-max-cost": args.monthlyMaxCost = parseFloat(value); break;
         case "--disable-tool": args.disableTools.push(value); break;
@@ -4317,6 +4329,14 @@ async function runJson(args: CliArgs): Promise<number> {
     const recorder = new RunRecorder(store, agent, args.task ?? "", {
         verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
       });
+    // 缺口 29：--contract 挂交付契约——挂不上（契约不存在/不是 active）直接报错，不跑任务。
+    if (args.contract) {
+      try {
+        attachContractToRun(home, recorder.runId, args.contract);
+      } catch (err: unknown) {
+        return lines.failed("contract_attach_failed", err instanceof Error ? err.message : String(err), EXIT_RUNTIME, { class: "tool_error", retryable: false, errorName: "ContractError" });
+      }
+    }
     // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
     built.tieredCtx.runId = recorder.runId;
     // 备用模型切换通知：切换审计里的 run_id 与 stderr 提示后的运行 id 从这里来。
@@ -4466,6 +4486,30 @@ async function handleTeamCommand(args: CliArgs, home: string): Promise<number> {
   });
 }
 
+/**
+ * 缺口 29（G-2）：Golden 集真跑一个用例——起真实 agent 跑固定输入，取最终输出
+ *（剥掉运行报告）+ 工具轨迹（tool_start 事件）+ 花费。调模型花真钱，调用方
+ *（`nyra golden run`）须先让用户 --yes 确认；本函数不自己再问。
+ */
+async function runGoldenCaseReal(home: string, input: string): Promise<{ output: string; trajectory: string[]; spentUsd: number | null }> {
+  const caseArgs = parseArgs(["--json", input]);
+  const built = await buildAgent(caseArgs, { interactive: false });
+  const { agent } = built;
+  const store = new RunStore(join(home, "runs"));
+  const recorder = new RunRecorder(store, agent, input, { verifyCmd: null });
+  const raw = await recorder.run(input);
+  const trajectory = store.readEvents(recorder.runId)
+    .filter((e) => e.type === "tool_start" && typeof (e as Record<string, unknown>).name === "string")
+    .map((e) => (e as Record<string, unknown>).name as string);
+  const final = store.load(recorder.runId);
+  const summary = final.usage_summary as { spent_usd?: unknown } | null | undefined;
+  return {
+    output: stripRunReport(raw),
+    trajectory,
+    spentUsd: typeof summary?.spent_usd === "number" ? summary.spent_usd : null,
+  };
+}
+
 async function runOneShot(args: CliArgs): Promise<number> {
   const home = resolveHome();
   const config = loadConfig(home);
@@ -4609,6 +4653,15 @@ async function runOneShot(args: CliArgs): Promise<number> {
     const recorder = new RunRecorder(store, agent, args.task ?? "", {
         verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
       });
+    // 缺口 29：--contract 挂交付契约——挂不上（契约不存在/不是 active）直接报错，不跑任务。
+    if (args.contract) {
+      try {
+        attachContractToRun(home, recorder.runId, args.contract);
+      } catch (err: unknown) {
+        process.stderr.write(`错误：${err instanceof Error ? err.message : String(err)}\n`);
+        return 1;
+      }
+    }
     // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
     built.tieredCtx.runId = recorder.runId;
     // 备用模型切换通知：切换审计里的 run_id 与 stderr 提示后的运行 id 从这里来。
@@ -5576,6 +5629,8 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "timeline") return handleTimeline(args.subArgs ?? [], home);
   if (args.subcommand === "replay") return handleReplay(args.subArgs ?? [], home);
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
+  if (args.subcommand === "contract") return handleContract(args.subArgs ?? [], home);
+  if (args.subcommand === "golden") return handleGolden(args.subArgs ?? [], home, (input) => runGoldenCaseReal(home, input));
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
   if (args.subcommand === "goal") return handleGoal(args.subArgs ?? [], home);
   if (args.subcommand === "workflow") return handleWorkflow(args.subArgs ?? [], home);
