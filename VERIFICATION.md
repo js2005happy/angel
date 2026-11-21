@@ -1,3 +1,9 @@
+## 2026-11-21 — Shared target receipt ambiguity (static-only)
+
+- Reviewed development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests and Agent/Tools, repository branch and open Issues/PR. Public report: [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16), reviewed 2026-11-21; implementation rationale is an inference, not an Angel reproduction.
+- Source-only inspection: a reused target reference across requirements is marked ambiguous and cannot satisfy either requirement; distinct eligible evidence remains usable. Added regression cases but **did not execute** them. Self-reported evidence remains untrusted.
+- **Not run:** tests, compilation, scripts, CI, platform checks or deployment. No main merge or production release.
+
 ## 2026-11-21 — Requirement-scoped acceptance references (static-only)
 
 - Reviewed development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests, Agent/Tools, recent commits, open Issues/PR and commit status. External source: [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16), retrieved 2026-11-21; inference separated from report.
