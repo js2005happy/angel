@@ -1,3 +1,10 @@
+## 2026-11-22 — Receipt artifact identity pinning (static-only)
+
+- **Public feedback (fact, reviewed 2026-11-22):** [Codex #61857](https://github.com/openai/codex/issues/61857) (opened 2026-11-16) describes unsupported claims of deployed/device acceptance; [Codex #59492](https://github.com/openai/codex/issues/59492) (opened 2026-11-04) describes reports that look like evidence without corresponding primary-source proof. These are external user reports, not Angel reproductions or frequency measurements.
+- **Inference:** a correctly authenticated statement for requirement/revision/environment may still refer to an artifact other than the one the verifier intended to check. Pinning an externally chosen artifact reference closes that local context mismatch, not issuer trust, CI authenticity, test execution, revocation or replay.
+- **Priority (value / difficulty / safety / dependencies):** P1 receipt reference pinning high / low / low / existing offline verifier (**implemented, regression source unexecuted**); P1 trusted issuer and key rotation high / high / high / external authority (**open**); P1 replay and revocation high / high / high / trusted store (**open**); P1 durable task contract high / medium / medium / privacy design (**open**); P0 claim dispatch high / high / high / platform isolation and approvals (**blocked**).
+- **Scope:** optional `expected_reference` exact match; no network, key management, runtime integration, new dependencies, tests, CI, merge or release.
+
 ## 2026-11-22 — Offline authenticated acceptance receipt (static-only)
 
 - **External reports (facts):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, reports unsupported target verification claims; [Codex #60258](https://github.com/openai/codex/issues/60258), opened 2026-11-08, reports premature stopping in multi-step tasks. Reviewed 2026-11-22. Individual reports, not Angel reproductions or prevalence estimates.
