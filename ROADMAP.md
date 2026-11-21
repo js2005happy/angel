@@ -1,3 +1,10 @@
+## 2026-11-21 — Requirement-scoped acceptance references (static-only)
+
+- **External user report (fact):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, reports unsupported completion claims and overlapping task ownership; retrieved 2026-11-21. This is a single report, not an Angel reproduction or prevalence estimate.
+- **Engineering inference:** an approved reference may be reused to claim completion of unrelated requirements. Optional `reference_scopes` now binds each recognized receipt to one exact requirement; wrong-scope claims stay incomplete. Scopes are supplied by the caller, not independently authenticated.
+- **Priority (value / difficulty / security risk / dependency):** P1 scope gate high / low / low / existing assessor (implemented, unexecuted tests); P1 independently verified evidence adapter high / medium / medium / trusted CI or target service (open); P1 durable task contract high / medium / medium / privacy model (open); P1 no-progress detector medium-high / medium / medium / reliable events (open); P0 claim dispatch high / high / high / secure storage and approvals (blocked).
+- No runtime integration, filesystem, network, tool execution, replay, or new dependency. Cross-requirement reuse is rejected only when the caller opts into scopes.
+
 ## 2026-11-21 — Opt-in acceptance reference allowlist (static-only)
 
 - **External user reports (facts, retrieved 2026-11-21):** [Codex #61857](https://github.com/openai/codex/issues/61857) reports unsupported completion claims; [Codex #62682](https://github.com/openai/codex/issues/62682) reports premature stopping before end-to-end deployment verification. These are individual reports, not Angel reproductions or prevalence measurements.
