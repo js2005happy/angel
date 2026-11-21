@@ -259,7 +259,7 @@ export class ConnectorAuthStore {
   }
 }
 
-export type ConnectorAuditAction = "authorized" | "expired" | "revoked" | "approved" | "denied" | "call";
+export type ConnectorAuditAction = "authorized" | "expired" | "revoked" | "approved" | "denied" | "call" | "installed" | "uninstalled";
 
 /** 审计：只记动作、连接器、用户、指纹与原因，不记邮箱、不记 token、不记 scope 原文。
  * "call" 是连接器的调用日志（缺口 44 第一批）：只记操作名、记录数、耗时，
@@ -306,7 +306,7 @@ export function appendConnectorAudit(
 export function recordConnectorEvent(
   home: string,
   runId: string | null,
-  type: "connector_authorized" | "connector_expired" | "connector_revoked",
+  type: "connector_authorized" | "connector_expired" | "connector_revoked" | "connector_installed" | "connector_uninstalled" | "connector_call",
   fields: Record<string, unknown>,
 ): "events" | "evidence" | "none" {
   const nyraHome = resolveNyraHome(home);

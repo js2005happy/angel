@@ -30,6 +30,7 @@ import {
   tokenFingerprint,
   type ConnectorAuthState,
 } from "./registry.ts";
+import { recordConnectorCall } from "./directory.ts";
 
 /** Slack Web API 根地址（固定，不接受调用方传入任意 URL）。 */
 export const SLACK_API_BASE = "https://slack.com/api";
@@ -248,6 +249,8 @@ export class SlackApiClient {
       durationMs: Date.now() - startedAt,
       ...(reason ? { reason } : {}),
     });
+    // 缺口 44 第一批：调用计数进用量账本与运行记录（最佳努力，记不上不拦调用）。
+    recordConnectorCall(this.home, { connector: "slack", operation, records, durationMs: Date.now() - startedAt });
   }
 
   private async callApi(method: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {

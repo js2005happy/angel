@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCredential, Vault, vaultPath } from "../vault.ts";
 import { appendConnectorAudit } from "./registry.ts";
+import { recordConnectorCall } from "./directory.ts";
 import { formatBytes, sniffImageKind, TEXT_EXTENSIONS } from "../bot/attachments.ts";
 import {
   buildAuthUrl as buildOAuthAuthUrl,
@@ -440,6 +441,8 @@ export class GmailApiTransport implements GmailTransport {
       durationMs: Date.now() - startedAt,
       ...(reason ? { reason } : {}),
     });
+    // 缺口 44 第一批：调用计数进用量账本与运行记录（最佳努力，记不上不拦调用）。
+    recordConnectorCall(this.home, { connector: "gmail", operation, records, durationMs: Date.now() - startedAt });
   }
 
   private async refresh(): Promise<void> {

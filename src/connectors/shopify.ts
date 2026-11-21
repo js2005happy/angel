@@ -25,6 +25,7 @@ import {
   tokenFingerprint,
   type ConnectorAuthState,
 } from "./registry.ts";
+import { recordConnectorCall } from "./directory.ts";
 
 /** Shopify Admin REST API 版本（已发布的稳定版；升版时连同测试里的断言一起改）。 */
 export const SHOPIFY_API_VERSION = "2025-10";
@@ -280,6 +281,8 @@ export class ShopifyApiClient {
       records,
       durationMs: Date.now() - startedAt,
     });
+    // 缺口 44 第一批：调用计数进用量账本与运行记录（最佳努力，记不上不拦调用）。
+    recordConnectorCall(this.home, { connector: "shopify", operation, records, durationMs: Date.now() - startedAt });
   }
 
   private async get(path: string, query: Record<string, string>): Promise<{ data: unknown; link: string | null; ms: number }> {
