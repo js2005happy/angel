@@ -178,7 +178,7 @@ nyra workflow activate <名字> --yes                  # 人工确认后激活
 ```
 
 1. `trial` 拿真实数据真执行一遍——写/发动作都会真发生，所以必须加 `--yes`。跑通才记 `trial_passed`（注册表里记试跑运行 id 与时间）。
-2. `activate` 人工确认后才标 `active`。没试跑通过的激活不了。
+2. `activate` 人工确认后才标 `active`。没试跑通过的激活不了。激活时还会把工作流里纯脚本的摘要钉死（`script:<SHA-256>`，详见 `docs/script-purity.md`）：纯脚本跑的时候不用每次都问，改了内容授权自动失效、跑就拒绝；已激活的老工作流用 `nyra script preauth grant --yes` 补钉。
 3. 只有 `active` 的工作流才能挂触发器。**触发器执行本身是下一批**：本批 DSL 里只声明 + 校验触发器入口（`schedule` 须是 5 字段 cron，`event` 须给事件名），不重做事件系统、不真的挂定时/事件触发。
 
 ## 账本
