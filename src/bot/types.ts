@@ -80,7 +80,7 @@ export interface InboundMessage {
   /** 正文（无正文时为空串；纯附件消息走 attachments）。 */
   text: string;
   /** 附件：类型与平台侧 file_id + 平台给的元信息（大小/类型/图片尺寸）；内容 Phase 3 才下载。 */
-  attachments: { kind: string; fileId: string; name?: string; sizeBytes?: number; mimeType?: string; width?: number; height?: number }[];
+  attachments: { kind: string; fileId: string; name?: string; sizeBytes?: number; mimeType?: string; width?: number; height?: number; durationSeconds?: number }[];
   chatType: BotChatType;
   /** 平台侧时间戳（毫秒）。 */
   timestamp: number;

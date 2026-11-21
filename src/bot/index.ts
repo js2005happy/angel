@@ -37,6 +37,14 @@
 // 聊天里的 /computer-shell <id|own> <命令> 让机主/管理员在指定电脑上跑 shell：
 // 跨电脑写操作走 checkComputerAccess（deny 拒绝、ask 走 approvalBridge 审批、
 // allow 直接跑），--cred 把 Vault 凭证代填进沙箱环境变量，回显前脱敏。
+//
+// 缺口 27（常驻多渠道网关，见 src/channels/）：BotRunner 按绑定建——
+// 绑定 id、沙箱档位、语音云端开关、mentionOnly 覆盖都经 BotRunnerOptions 传
+// 进来；startServices/stopServices 从 startPolling/stopPolling 里抽出来，
+// 供网关复用（网关只调 handleMessage，不调 startPolling）；语音附件经
+// transcribeVoiceAttachment 转文字当任务（本地优先，云端须绑定显式开）。
+// 路由决定本身由网关写 bot-audit.jsonl（outcome routed/dropped，带
+// binding_id/rule/reason），本文件的 audit 闭包只给每条记录补 binding_id。
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Agent, type ApproveFn } from "../agent.ts";
@@ -52,6 +60,11 @@ import { resolveReviewerModel } from "../reviewer.ts";
 import { monthKeyString, UsageLedger } from "../usageLedger.ts";
 import { makeTieredCapCheck, type TieredCtxHolder } from "../costCaps.ts";
 import type { UsageSnapshot } from "../usage.ts";
+// 缺口 27：语音入口（语音指挥）与绑定级沙箱档位。voice.ts 与 channels/bindings.ts
+// 都不 import bot/index.ts，没有循环导入。
+import { estimateSttCostUsd, httpEndpointOf, resolveVoiceConfig, sniffAudioKind, transcribeAudio } from "../voice.ts";
+import { createHash } from "node:crypto";
+import { configWithSandboxTier, type BindingSandboxTier } from "../channels/bindings.ts";
 import { ApprovalBridge, approvalArgsHash } from "./approvalBridge.ts";
 import { resolveBotComputer, type BotComputerBinding } from "./binding.ts";
 import { processAttachments } from "./attachments.ts";
@@ -134,7 +147,21 @@ export interface BotRunnerOptions {
   agentRun?: AgentRunFn;
   /** 本 Bot 的 Soul 身份（测试里模拟不同 agent 用；不传读 config 的 bot.agent）。 */
   agent?: string;
+  // 缺口 27：渠道网关（src/channels/gateway.ts）按绑定建 runner 时传。
+  /** 这台 runner 归属的绑定 id（进 bot-audit.jsonl 的 binding_id，供路由回放关联）。 */
+  bindingId?: string;
+  /** 绑定级沙箱档位（strict/standard/open；不传用全局 config 的沙箱设置）。 */
+  sandboxOverride?: BindingSandboxTier;
+  /** 语音消息是否允许走云端转写（默认只走本地 whisper.cpp；云端须绑定显式开）。 */
+  voiceCloud?: boolean;
+  /** 注入的语音转写（测试用假转写；不传走默认实现：下载 → 本地优先/云端）。 */
+  voiceTranscribe?: VoiceTranscriber;
+  /** 策略覆盖（目前只用 mentionOnly：绑定的 mentionOnly 优先于全局 config）。 */
+  policyOverride?: { mentionOnly?: boolean };
 }
+
+/** 语音转写器：给一段语音字节与 mime 类型，返回转写文本与引擎名；转不了返回 null。 */
+export type VoiceTranscriber = (bytes: Buffer, mimeType: string, fileName?: string) => Promise<{ text: string; engine: string } | null>;
 
 export interface BotStatus {
   running: boolean;
@@ -163,6 +190,15 @@ interface AuditRecord {
   tool?: string;
   decided_by?: string;
   event_channel?: string;
+  /** 缺口 27：路由审计——命中哪条绑定、哪条规则、为什么（dropped 时是丢弃原因）。 */
+  binding_id?: string;
+  rule?: string;
+  reason?: string;
+}
+
+/** 渠道审计写一行（网关写路由决定用；BotRunner 内部走私有的 appendAudit）。 */
+export function appendBotAudit(home: string, rec: AuditRecord): void {
+  appendAudit(home, rec);
 }
 
 function appendAudit(home: string, rec: AuditRecord): void {
@@ -216,6 +252,13 @@ export class BotRunner {
   readonly notifier: BotNotifier;
   readonly modelName: string | null;
   private readonly agentRunFn: AgentRunFn;
+  /** 缺口 27：渠道网关按绑定建 runner 时传（见 BotRunnerOptions）。 */
+  readonly bindingId: string | null;
+  readonly sandboxOverride: BindingSandboxTier | null;
+  readonly voiceCloud: boolean;
+  private readonly voiceTranscribeFn: VoiceTranscriber | null;
+  /** 云端转写用的 provider endpoint（懒建、建一次；建不出来记 null，不再重试）。 */
+  private voiceEndpointCache: { done: boolean; endpoint: { baseUrl: string; apiKey: string } | null } = { done: false, endpoint: null };
   /** 每会话一个 Agent 实例；角色变了就重建（画像、mode、白名单都跟着角色走）。 */
   private agents = new Map<string, { agent: Agent; role: BotRole }>();
   /** 每会话上次 flush 的用量快照（delta 制记账，与 CLI 的 makeUsageFlusher 同口径）。 */
@@ -240,7 +283,15 @@ export class BotRunner {
     this.home = opts.home;
     this.workdir = opts.workdir;
     this.config = opts.config;
-    this.policy = botPolicyFromConfig(opts.config);
+    // 缺口 27：绑定级 mentionOnly 覆盖全局 config（绑定的口径优先于全局；
+    // 不传覆盖时行为与以前一致）。
+    this.policy = opts.policyOverride?.mentionOnly !== undefined
+      ? { ...botPolicyFromConfig(opts.config), mentionOnly: opts.policyOverride.mentionOnly }
+      : botPolicyFromConfig(opts.config);
+    this.bindingId = opts.bindingId ?? null;
+    this.sandboxOverride = opts.sandboxOverride ?? null;
+    this.voiceCloud = opts.voiceCloud ?? false;
+    this.voiceTranscribeFn = opts.voiceTranscribe ?? null;
     this.adapter = opts.adapter;
     // 缺口 42 第二批：BotRunner 接电脑。构造时定死绑定（运行中换电脑要重启）；
     // 没接上（没 Soul 或建电脑失败）时任务仍在启动目录跑，并打一条提示——
@@ -297,6 +348,7 @@ export class BotRunner {
           tool: typeof extra.tool === "string" ? extra.tool : undefined,
           decided_by: typeof extra.decided_by === "string" ? extra.decided_by : undefined,
           event_channel: typeof extra.event_channel === "string" ? extra.event_channel : undefined,
+          ...(this.bindingId ? { binding_id: this.bindingId } : {}),
         });
       },
     });
@@ -315,6 +367,7 @@ export class BotRunner {
           session_key: typeof extra.session_key === "string" ? extra.session_key : "",
           message_id: "",
           outcome,
+          ...(this.bindingId ? { binding_id: this.bindingId } : {}),
         });
       },
       state: () => {
@@ -408,7 +461,10 @@ export class BotRunner {
     if (typeof hasCredentials === "function" && !hasCredentials.call(provider)) {
       throw new Error("未找到可用的模型 API 凭据：请先配好 provider 的 Key");
     }
-    const sandbox = resolveSandbox(this.config);
+    // 缺口 27：绑定级沙箱档位覆盖全局 config（NYRA_SANDBOX* 环境变量仍
+    // 最高，见 resolveSandbox；没绑定档位时行为与以前一致）。
+    const agentConfig = this.sandboxOverride ? configWithSandboxTier(this.config, this.sandboxOverride) : this.config;
+    const sandbox = resolveSandbox(agentConfig);
     const monthlyLimit = resolveMonthlyLimit(this.config);
     const monthlySpentBeforeUsd = monthlyLimit === null ? null : () => this.monthSpentBeforeUsd();
     // 缺口 43 第三批：分层成本上限——Bot 的 agent id 就是 this.agent（BotRunner
@@ -467,6 +523,69 @@ export class BotRunner {
       this.lastSnap.set(sessionKey, snap);
       this.lastSpent.set(sessionKey, spent);
     } catch { /* 账本写失败不破坏回复 */ }
+  }
+
+  /**
+   * 缺口 27：云端转写用的 provider endpoint（懒建、建一次；建不出来记 null，
+   * 不再重试——没凭据时本地转写仍可走，不因云端建不出来而挡住本地路）。
+   */
+  private voiceEndpoint(): { baseUrl: string; apiKey: string } | null {
+    if (this.voiceEndpointCache.done) return this.voiceEndpointCache.endpoint;
+    this.voiceEndpointCache.done = true;
+    try {
+      const primaryCfg = resolveProvider({ home: this.home, config: this.config });
+      const provider = buildProviderChain(primaryCfg, [primaryCfg.name], null, {
+        resolver: (name: string) => resolveProvider({ home: this.home, config: this.config, providerName: name }),
+      });
+      this.voiceEndpointCache.endpoint = httpEndpointOf(provider);
+    } catch {
+      this.voiceEndpointCache.endpoint = null;
+    }
+    return this.voiceEndpointCache.endpoint;
+  }
+
+  /**
+   * 缺口 27：转写一条语音附件。注入的转写器优先（测试用）；默认实现下载
+   * 音频后走 transcribeAudio（本地 whisper.cpp 优先，云端只在绑定显式开
+   * voiceCloud 时走）。返回 ok:false 时调用方直接回说明、不进模型。
+   */
+  private async transcribeVoiceAttachment(
+    att: InboundMessage["attachments"][number],
+  ): Promise<{ ok: true; text: string; engine: string; costUsd: number | null } | { ok: false; error: string }> {
+    try {
+      // downloadFile 是可选方法：这个渠道的适配器没实现就直说不支持。
+      if (typeof this.adapter.downloadFile !== "function") {
+        return { ok: false, error: "这个渠道不支持下载语音文件" };
+      }
+      const downloaded = await this.adapter.downloadFile(att.fileId);
+      const mimeType = att.mimeType ?? downloaded.mimeType ?? "audio/ogg";
+      if (this.voiceTranscribeFn) {
+        const res = await this.voiceTranscribeFn(downloaded.bytes, mimeType, att.name ?? downloaded.fileName);
+        if (!res) return { ok: false, error: "语音转写不可用（转写器返回空）" };
+        return { ok: true, text: res.text, engine: res.engine, costUsd: null };
+      }
+      const voiceConfig = resolveVoiceConfig(this.config);
+      const sniffed = sniffAudioKind(downloaded.bytes);
+      const kind = sniffed ?? (mimeType === "audio/mpeg" || mimeType === "audio/mp3" ? "mp3" : mimeType === "audio/wav" || mimeType === "audio/x-wav" ? "wav" : "ogg");
+      const endpoint = this.voiceCloud ? this.voiceEndpoint() : null;
+      const transcription = await transcribeAudio({
+        input: {
+          bytes: downloaded.bytes,
+          kind,
+          sha256: createHash("sha256").update(downloaded.bytes).digest("hex"),
+          source: att.name ?? downloaded.fileName ?? "语音消息",
+          durationSeconds: typeof att.durationSeconds === "number" ? att.durationSeconds : null,
+        },
+        config: voiceConfig,
+        endpoint,
+      });
+      const costUsd = transcription.engine.startsWith("cloud:")
+        ? estimateSttCostUsd(transcription.seconds, voiceConfig)
+        : null;
+      return { ok: true, text: transcription.text, engine: transcription.engine, costUsd };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /**
@@ -805,7 +924,7 @@ export class BotRunner {
       return;
     }
     const audit = (outcome: string, extra?: Partial<AuditRecord>): void => {
-      appendAudit(this.home, { ts: new Date().toISOString(), channel: msg.channel, session_key: key, message_id: msg.messageId, outcome, ...extra });
+      appendAudit(this.home, { ts: new Date().toISOString(), channel: msg.channel, session_key: key, message_id: msg.messageId, outcome, ...(this.bindingId ? { binding_id: this.bindingId } : {}), ...extra });
     };
     // 角色路由（Phase 2）：画像跟着发信人走，guest 默认只读。
     const profile = profileForRole(resolveRole(msg, this.policy), this.policy, msg.chatId);
@@ -857,10 +976,13 @@ export class BotRunner {
     // Phase 3：附件处理（配额与月度预检之后——附件下载也要受配额约束，
     // 否则光发附件就能绕过限额刷下载）。文本文档提取进上下文，图片只
     // 记元信息；没正文、又没提取出可用内容时只回说明，不进模型。
+    // 语音附件不进 processAttachments（它是“语音指挥”入口，见下）。
     let effectiveText = msg.text;
     let attachmentNotices: string[] = [];
-    if (msg.attachments.length > 0) {
-      const attRes = await processAttachments(this.adapter, msg.attachments, {
+    const voiceAtts = msg.attachments.filter((a) => a.kind === "voice");
+    const otherAtts = msg.attachments.filter((a) => a.kind !== "voice");
+    if (otherAtts.length > 0) {
+      const attRes = await processAttachments(this.adapter, otherAtts, {
         maxBytes: this.policy.attachmentMaxBytes,
         textChars: this.policy.attachmentTextChars,
       });
@@ -870,11 +992,33 @@ export class BotRunner {
           ? `${effectiveText}\n\n${attRes.extractedText}`
           : attRes.extractedText;
       }
-      if (!effectiveText.trim()) {
-        await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: attachmentNotices.join("\n") });
-        audit("notice:attachment");
+    }
+    // 缺口 27：语音入口——“语音指挥”（说一句话、干完回文字汇报）。只转写
+    // 第一条语音（多条时其余忽略并说明）；转写失败直接回说明，不进模型；
+    // 转写出的文字就是任务文本。语音不碰支付与对外发送（缺口 15 的边界，
+    // 沿用至今：那两类动作在 Agent 层同样要过审批门，这里不另开口子）。
+    // 转写原文不进审计（只记引擎与花费），与转写账本同口径。
+    if (voiceAtts.length > 0) {
+      const voice = await this.transcribeVoiceAttachment(voiceAtts[0]);
+      if (!voice.ok) {
+        await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: `语音转写失败：${voice.error}` });
+        audit("error:voice-transcribe", { error: voice.error });
         return;
       }
+      if (!voice.text.trim()) {
+        await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: "语音里没识别出文字，请再说一次。" });
+        audit("notice:voice-empty");
+        return;
+      }
+      attachmentNotices.unshift(`已把语音转成文字（${voice.engine}）`);
+      if (voiceAtts.length > 1) attachmentNotices.unshift("只转写了第一条语音，其余忽略。");
+      effectiveText = effectiveText.trim() ? `${effectiveText}\n\n${voice.text}` : voice.text;
+      if (voice.costUsd !== null) this.quota.recordSpent(voice.costUsd);
+    }
+    if (!effectiveText.trim()) {
+      await this.adapter.sendText({ chatId: msg.chatId, threadId: msg.threadId, text: attachmentNotices.join("\n") });
+      audit("notice:attachment");
+      return;
     }
     // 先发占位，再排队（排队久的用户也知道 Bot 收到了）。
     let placeholderId: string;
@@ -938,17 +1082,22 @@ export class BotRunner {
 
   // -- 轮询循环 ----
 
-  async startPolling(): Promise<void> {
-    if (this.running) return;
-    this.running = true;
-    this.stopController = new AbortController();
+  /**
+   * 缺口 27：启动后台服务（审批过期扫荡 + 电脑休眠扫荡 + 主动推送巡查）。
+   * startPolling 调它（notifier 默认开）；渠道网关按绑定建 runner 时也调它，
+   * 但 notifier 只在默认绑定的 runner 上开——同一渠道多个 runner 各起一个
+   * 推送巡查会重复推送（notifier 的状态文件有冷却，但两个进程/实例会竞写）。
+   */
+  startServices(opts?: { notifier?: boolean }): void {
     // 过期扫荡：把没人等、到期的挂起审批标 expired（等人的那个由 waitForDecision 自己的定时器处理）。
     this.bridge.sweepExpired();
-    this.sweepTimer = setInterval(() => { this.bridge.sweepExpired(); }, 30000);
-    if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => { this.bridge.sweepExpired(); }, 30000);
+      if (typeof this.sweepTimer.unref === "function") this.sweepTimer.unref();
+    }
     // Phase 3：主动推送巡查（notifier 没开时不建定时器；tick 内部还会再
     // 认一次 enabled / owner / target，缺一个就不推）。
-    if (this.policy.notifier.enabled) {
+    if (this.policy.notifier.enabled && opts?.notifier !== false && !this.notifyTimer) {
       this.notifyTimer = setInterval(() => {
         void this.notifier.tick().catch((err) => {
           process.stderr.write(`Bot 推送巡查失败：${err instanceof Error ? err.message : String(err)}\n`);
@@ -958,8 +1107,33 @@ export class BotRunner {
     }
     // 缺口 42 第二批：电脑闲置休眠扫荡（5 分钟一次；先扫一次再起定时器）。
     this.sweepSleepDue();
-    this.computerSweepTimer = setInterval(() => { this.sweepSleepDue(); }, 5 * 60 * 1000);
-    if (typeof this.computerSweepTimer.unref === "function") this.computerSweepTimer.unref();
+    if (!this.computerSweepTimer) {
+      this.computerSweepTimer = setInterval(() => { this.sweepSleepDue(); }, 5 * 60 * 1000);
+      if (typeof this.computerSweepTimer.unref === "function") this.computerSweepTimer.unref();
+    }
+  }
+
+  /** 停掉 startServices 起的三个定时器（stopPolling 与渠道网关共用）。 */
+  stopServices(): void {
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+    if (this.notifyTimer) {
+      clearInterval(this.notifyTimer);
+      this.notifyTimer = null;
+    }
+    if (this.computerSweepTimer) {
+      clearInterval(this.computerSweepTimer);
+      this.computerSweepTimer = null;
+    }
+  }
+
+  async startPolling(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    this.stopController = new AbortController();
+    this.startServices();
     try {
       await this.adapter.getMe?.();
     } catch { /* username 拿不到不影响运行：@ 判定退化为看文本里的 @ */ }
@@ -984,18 +1158,7 @@ export class BotRunner {
 
   stopPolling(): void {
     this.running = false;
-    if (this.sweepTimer) {
-      clearInterval(this.sweepTimer);
-      this.sweepTimer = null;
-    }
-    if (this.notifyTimer) {
-      clearInterval(this.notifyTimer);
-      this.notifyTimer = null;
-    }
-    if (this.computerSweepTimer) {
-      clearInterval(this.computerSweepTimer);
-      this.computerSweepTimer = null;
-    }
+    this.stopServices();
     this.stopController?.abort();
     this.stopController = null;
   }
@@ -1166,6 +1329,16 @@ export function handleBotStatus(home: string): number {
     }
     process.stdout.write(`${meta.label} Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}，Token：${tokenLine}\n`);
   }
+  // 缺口 27：渠道网关运行态（只读 pidfile，不 import channels/gateway.ts——
+  // 那边 import bot/index.ts，反向 import 会成循环导入）。
+  let gwPid: number | null = null;
+  try {
+    const raw = Number(readFileSync(join(resolveNyraHome(resolvedHome), "channel-gateway.pid"), "utf-8").trim());
+    if (Number.isInteger(raw) && raw > 0) {
+      try { process.kill(raw, 0); gwPid = raw; } catch { /* 进程已死 */ }
+    }
+  } catch { /* 没有 pidfile */ }
+  process.stdout.write(`渠道网关：${gwPid !== null ? `运行中（pid ${gwPid}）` : "未运行"}（nyra channels status 看详情）\n`);
   const summary = computerResourceSummary(resolvedHome);
   process.stdout.write(`电脑：${summary.computers} 台（醒着 ${summary.active}，休眠 ${summary.sleeping}），已声明内存 ${summary.declaredMemoryMb} MB / 上限 ${summary.memoryCapMb} MB（系统 ${summary.systemMemoryMb} MB 的 80%）\n`);
   if (summary.cpuOverSubscribed) {
