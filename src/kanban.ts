@@ -29,7 +29,7 @@ export class KanbanError extends Error {
   }
 }
 
-export type KanbanStatus = "queued" | "working" | "blocked" | "review" | "done";
+export type KanbanStatus = "queued" | "working" | "blocked" | "review" | "done" | "paused";
 export type KanbanKind = "task" | "delegate" | "heartbeat" | "commitment";
 
 export interface KanbanVerification {
@@ -235,6 +235,35 @@ export function failKanbanTask(home: string, id: string, error: string): KanbanT
   return transition(home, id, "queued", `失败 ${task.attempts}/${task.maxAttempts} 次，回队列：${task.lastError.slice(0, 100)}`);
 }
 
+/**
+ * 缺口 43 第三批：分层成本上限触顶时的可恢复暂停态。
+ * 暂停不是失败：attempts 不动（不进熔断计数），lastError 记触顶原因，
+ * 恢复后回 queued 等下一轮 tick。只能从 working/queued 暂停（已在
+ * working 的任务是上限回调直接停的；queued 的是手动暂停）。
+ */
+export function pauseKanbanTask(home: string, id: string, reason: string): KanbanTask {
+  const store = loadKanbanStore(home);
+  const task = getTask(store, id);
+  if (task.status !== "working" && task.status !== "queued") {
+    throw new KanbanError(`只能暂停 working 或 queued 状态的任务，当前为 ${task.status}`);
+  }
+  task.lastError = String(reason).slice(0, 300);
+  task.updatedAt = nowIso();
+  saveKanbanStore(home, store);
+  return transition(home, id, "paused", `分层成本上限暂停：${task.lastError.slice(0, 100)}`);
+}
+
+/** 从 paused 恢复：回 queued（不重置 attempts，下一轮 tick 再跑）。 */
+export function resumeKanbanTask(home: string, id: string): KanbanTask {
+  const store = loadKanbanStore(home);
+  const task = getTask(store, id);
+  if (task.status !== "paused") throw new KanbanError(`只能恢复 paused 状态的任务，当前为 ${task.status}`);
+  task.lastError = null;
+  task.updatedAt = nowIso();
+  saveKanbanStore(home, store);
+  return transition(home, id, "queued", "分层上限放行，恢复进队列");
+}
+
 export function requestKanbanReview(home: string, id: string, by: string): KanbanTask {
   const store = loadKanbanStore(home);
   const task = getTask(store, id);
@@ -343,10 +372,13 @@ export function kanbanTick(
 }
 
 /** 扫荡：working 任务绑的运行已进终态失败（failed/interrupted/
- * verify_failed）时走 fail 路径；runStatus 由调用方提供（假函数可测）。 */
+ * verify_failed）时走 fail 路径；runStatus 由调用方提供（假函数可测）。
+ * 缺口 43 第三批：运行因分层成本上限已超而失败时不走 fail 路径（不进
+ * 熔断计数），走暂停路径——runError 由调用方提供（返回运行的 error 原文）。 */
 export function sweepStaleWorking(
   home: string,
   runStatus: (runId: string) => string | null,
+  runError?: (runId: string) => string | null,
 ): { swept: number; failed: string[] } {
   const working = listKanbanTasks(home, { status: "working" });
   const failed: string[] = [];
@@ -354,6 +386,12 @@ export function sweepStaleWorking(
     if (!task.runId) continue;
     const status = runStatus(task.runId);
     if (status === "failed" || status === "interrupted" || status === "verify_failed") {
+      const err = runError?.(task.runId) ?? null;
+      if (err && err.includes("分层成本上限已超")) {
+        pauseKanbanTask(home, task.id, err);
+        failed.push(task.id);
+        continue;
+      }
       failKanbanTask(home, task.id, `运行 ${task.runId} 状态 ${status}`);
       failed.push(task.id);
     }
@@ -362,12 +400,14 @@ export function sweepStaleWorking(
 }
 
 const USAGE =
-  "用法：nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep> [选项]\n" +
+  "用法：nyra kanban <create|list|show|start|fail|pause|resume|review|decide|verify|done|reset|remove|tick|sweep> [选项]\n" +
   "  create \"<标题>\" [--kind task|delegate|heartbeat|commitment] [--agent <名字>] [--workdir <目录>] [--max-attempts N]\n" +
-  "  list [--status queued|working|blocked|review|done] [--agent <名字>] [--json]\n" +
+  "  list [--status queued|working|blocked|review|done|paused] [--agent <名字>] [--json]\n" +
   "  show <任务 id> [--json]\n" +
   "  start <任务 id> [--run <运行 id>]\n" +
   "  fail <任务 id> \"<原因>\"\n" +
+  "  pause <任务 id> \"<原因>\"    分层成本上限暂停（可恢复，attempts 不动）\n" +
+  "  resume <任务 id>              从 paused 恢复回 queued\n" +
   "  review <任务 id> [--by <名字>]\n" +
   "  decide <任务 id> <approve|reject> [--note \"<说明>\"]\n" +
   "  verify <任务 id> --method \"<方法>\" --summary \"<结论>\" [--passed|--failed]\n" +
@@ -431,6 +471,17 @@ export function handleKanban(argv: string[], home: string): number {
     if (action === "fail") {
       const task = failKanbanTask(resolvedHome, argv[1] ?? "", argv[2] ?? "未说明原因");
       process.stdout.write(`${task.id} ${task.status}（失败 ${task.attempts}/${task.maxAttempts} 次）\n`);
+      return 0;
+    }
+    // 缺口 43 第三批：分层成本上限暂停（可恢复，attempts 不动）。
+    if (action === "pause") {
+      const task = pauseKanbanTask(resolvedHome, argv[1] ?? "", argv[2] ?? "分层成本上限已超");
+      process.stdout.write(`${task.id} 已暂停（${task.status}，恢复用 nyra kanban resume ${task.id}）\n`);
+      return 0;
+    }
+    if (action === "resume") {
+      const task = resumeKanbanTask(resolvedHome, argv[1] ?? "");
+      process.stdout.write(`${task.id} 已恢复回队列（${task.status}）\n`);
       return 0;
     }
     if (action === "review") {
@@ -501,9 +552,13 @@ export function handleKanban(argv: string[], home: string): number {
     }
     if (action === "sweep") {
       const store = new RunStore(join(resolvedHome, "tasks"));
-      const byId = new Map(listTasks(store).map((s) => [s.run_id, s.status]));
-      const report = sweepStaleWorking(resolvedHome, (runId) => byId.get(runId) ?? null);
-      process.stdout.write(report.swept ? `扫荡完成：${report.swept} 个 working 任务绑的运行已失败，走 fail 路径。\n` : "扫荡完成：没有 working 任务绑的运行已失败。\n");
+      const states = listTasks(store);
+      const byId = new Map(states.map((s) => [s.run_id, s.status]));
+      // 缺口 43 第三批：sweep 顺带把运行的 error 原文递进去——因分层成本
+      // 上限已超而失败的走暂停路径（不进熔断计数），不是 fail 路径。
+      const byErr = new Map(states.map((s) => [s.run_id, s.error ?? null]));
+      const report = sweepStaleWorking(resolvedHome, (runId) => byId.get(runId) ?? null, (runId) => byErr.get(runId) ?? null);
+      process.stdout.write(report.swept ? `扫荡完成：${report.swept} 个 working 任务绑的运行已失败，走 fail/暂停路径。\n` : "扫荡完成：没有 working 任务绑的运行已失败。\n");
       return 0;
     }
     process.stderr.write(`错误：未知子命令 kanban ${action}\n${USAGE}`);

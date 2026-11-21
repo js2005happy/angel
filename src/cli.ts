@@ -74,6 +74,7 @@ import { handleSubagent } from "./resume.ts";
 import { handleSideEffects } from "./sideEffects.ts";
 import { handleHeartbeat } from "./heartbeat.ts";
 import { handleGovernance } from "./governance.ts";
+import { makeTieredCapCheck, type TieredCtxHolder } from "./costCaps.ts";
 import { handleOptimize } from "./optimizer.ts";
 import { handleSso } from "./sso.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
@@ -156,6 +157,8 @@ nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   崩溃自续
 nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   静默巡查：无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 docs/heartbeat.md）
 nyra governance <policy|mandate|mode|dry-runs>   企业治理：版本化策略 + 不可变授权 + observe/auto 接单模式 + 干跑记录（详见 docs/governance.md）
+nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   分层成本上限：按 Bot/角色/团队/人设设月度上限，触顶进可恢复暂停态
+nyra governance audit <export|verify>   审计导出：治理审计日志导出给 SIEM（JSONL + 哈希链，可验证）
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   带人批的自优化环：只起草改指令建议，须人批才生效，三数据集 + holdout 定放行（详见 docs/governance.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
@@ -254,6 +257,8 @@ nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   crash resume
 nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   silent patrol: quiet when nothing is wrong, findings go to evidence first then inbox; inferred commitments need one user confirmation and auto-expire (see docs/heartbeat.md)
 nyra governance <policy|mandate|mode|dry-runs>   enterprise governance: versioned policy + immutable mandates + observe/auto intake modes + dry-run ledger (see docs/governance.md)
+nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   tiered cost caps: monthly USD/token limits per Bot/role/team/persona, over-cap tasks pause recoverably
+nyra governance audit <export|verify>   audit export: governance audit logs to SIEM (JSONL + hash chain, verifiable)
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   human-approved self-optimization loop: drafts instruction changes only, needs approval to apply, three datasets + holdout decide release (see docs/governance.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
@@ -598,6 +603,10 @@ interface BuiltAgent {
   providerName: string;
   config: Record<string, unknown>;
   home: string;
+  /** 缺口 43 第三批：本次运行归属的 Bot agent id（定时任务 --agent / 显式传入时才有；CLI 交互运行为 null，不进分层账）。 */
+  agentId: string | null;
+  /** 缺口 43 第三批：分层上限回调的上下文 holder（调用方知道 runId 时填进去，触顶暂停记录就带上）。 */
+  tieredCtx: TieredCtxHolder;
   /** 缺口 20/29：用量账本与本次运行已落盘的 LLM 花费 holder（月度口径要扣掉它，避免重复计）。 */
   monthly: { ledger: UsageLedger; flushed: { flushedUsd: number } };
   /**
@@ -607,7 +616,7 @@ interface BuiltAgent {
   onModelSwitch: (record: SwitchRecord) => void;
 }
 
-async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void }): Promise<BuiltAgent> {
+async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void; agentId?: string | null }): Promise<BuiltAgent> {
   const home = resolveHome();
   const config = loadConfig(home);
   const profile = resolveProfile(args.profile ?? null, config);
@@ -689,6 +698,11 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       return null;
     }
   };
+  // 缺口 43 第三批：分层成本上限回调（定时任务 --agent 等知道 agent id 时才接；
+  // CLI 交互运行没有 agent id，不接——组织级月度硬顶照样管它）。
+  const tieredCtx: TieredCtxHolder = {};
+  const agentId = opts?.agentId ?? null;
+  const tieredCapCheck = agentId ? makeTieredCapCheck(home, agentId, tieredCtx) : null;
   // 缺口 24：多模型工厂——Plan/Act 分模型与 compact/delegate/reviewer/verifier
   // 便宜模型的共同前提。此前没接，这些模型切换都静默回退到了主模型。
   const multiModelFactory = makeModelFactory({ home, config, primaryName: primaryCfg.name });
@@ -725,6 +739,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       // 缺口 29：月度支出硬顶（与 --max-cost 同级硬停；默认不设上限，见 docs/cost.md）。
       monthlyCostLimitUsd: monthlyLimit,
       monthlySpentBeforeUsd,
+      // 缺口 43 第三批：分层成本上限（与月度硬顶同级硬停；只有知道 agent id 时才接）。
+      tieredCapCheck,
       // 辅助任务走便宜模型（对齐 Alma 的 Tool Model）：压缩与子任务默认模型。
       auxModels: (() => { const r = resolveAuxRouting(config, provider.model); return { compact: r.compact, delegate: r.delegate }; })(),
       // 缺口 24：多模型工厂（Plan/Act 分模型 + compact/delegate/reviewer/verifier
@@ -800,7 +816,7 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       },
     });
   switchAgent.current = agent;
-  return { agent, providerName: primaryCfg.name, config, home, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed }, onModelSwitch };
+  return { agent, providerName: primaryCfg.name, config, home, agentId, tieredCtx, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed }, onModelSwitch };
 }
 
 // ---- 缺口 20：用量账本 flush ----
@@ -821,7 +837,8 @@ function makeUsageFlusher(built: BuiltAgent): {
     const tokenSpent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
     const voiceSpent = agent.voiceSpentUsd ?? 0;
     const spent = tokenSpent === null ? (voiceSpent > 0 ? voiceSpent : null) : tokenSpent + voiceSpent;
-    const rec = ledger.recordDelta(snap, lastSnap, spent, lastSpent, agent.provider.model);
+    // 缺口 43 第三批：知道 agent id 时按 agent 归属记账（分层上限用）；不知道时不记归属。
+    const rec = ledger.recordDelta(snap, lastSnap, spent, lastSpent, agent.provider.model, undefined, built.agentId ?? null);
     // 只有主 agent 自己的已落盘花费才进 flushedUsd：月度口径 = 账本 - flushedUsd
     // + 本次运行进行中花费；子任务的花费已在账本里、但不在主 agent 快照里，
     // 不能扣，扣了就会漏计子任务。
@@ -836,7 +853,8 @@ function makeUsageFlusher(built: BuiltAgent): {
           const snap = data.snapshot as unknown as UsageSnapshot | undefined;
           if (snap && typeof snap === "object") {
             const spent = typeof data.spent_usd === "number" ? data.spent_usd : null;
-            ledger.recordDelta(snap, null, spent, null, typeof data.model === "string" ? data.model : null);
+            // 缺口 43 第三批：子任务的用量同样按父级 agent 归属记账（与 tieredCapCheck 的继承口径一致）。
+            ledger.recordDelta(snap, null, spent, null, typeof data.model === "string" ? data.model : null, undefined, built.agentId ?? null);
           }
         } else if (kind === "usage" || kind === "cost_update") {
           recordOwn(agent);
@@ -1093,7 +1111,7 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           }
           taskWorkdir = resolved.workdir;
         }
-        const { agent } = await buildAgent({ ...parseArgs([]), workdir: taskWorkdir, mode: task.mode }, { interactive: false });
+        const { agent } = await buildAgent({ ...parseArgs([]), workdir: taskWorkdir, mode: task.mode }, { interactive: false, agentId: task.agent ?? null });
         return agent.run(task.prompt);
       };
       // 缺口 7：守护进程每轮顺带跑应用事件源轮询（本批先做 Gmail 新邮件）。
@@ -4246,6 +4264,8 @@ async function runJson(args: CliArgs): Promise<number> {
     const recorder = new RunRecorder(store, agent, args.task ?? "", {
         verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
       });
+    // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
+    built.tieredCtx.runId = recorder.runId;
     const result = await recorder.run(args.task ?? "");
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
@@ -4386,6 +4406,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
       const recorder = new RunRecorder(store, agent, state.task, {
           state, interruptedToolCalls: count, verifyTimeout: timeout, verifyRetries: retries,
         });
+      // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
+      builtResume.tieredCtx.runId = recorder.runId;
       const output = await recorder.run(state.task);
       flusherResume.flushNow(agent);
       process.stdout.write(output + "\n");
@@ -4441,6 +4463,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
         agent.onEvent = (kind, data) => flusherPlan.flush(agent, kind, data);
         const store = new RunStore(join(home, "runs"));
         const recorder = new RunRecorder(store, agent, task, { verifyCmd: null });
+        // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
+        builtPlan.tieredCtx.runId = recorder.runId;
         const output = await recorder.run(task);
         flusherPlan.flushNow(agent);
         process.stdout.write(output + "\n");
@@ -4487,6 +4511,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
     const recorder = new RunRecorder(store, agent, args.task ?? "", {
         verifyCmd: command, verifySkipReason: skipReason, verifyTimeout: timeout, verifyRetries: retries,
       });
+    // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
+    built.tieredCtx.runId = recorder.runId;
     const result = await recorder.run(args.task ?? "");
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);

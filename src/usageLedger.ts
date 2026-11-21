@@ -52,6 +52,14 @@ export interface LedgerRecord {
   /** 本笔增量的已花费（美元）；未计价（没配单价/没报 usage）时为 null。 */
   spent_usd: number | null;
   model: string | null;
+  /**
+   * 缺口 43 第三批：分层成本上限的归属——这笔增量是哪个 agent 花的。
+   * 只有调用方知道 agent id 时才记（Bot 运行、带 --agent 的定时任务）；
+   * 不知道时不记（CLI 交互运行、网关会话），这类行算“未归属”，组织级
+   * 月度口径照样计入，分层口径里只能当下界（见 monthSpendByAgent）。
+   * 旧行没有这个字段，读时按未归属处理，不改写历史。
+   */
+  agent?: string | null;
 }
 
 export interface DayTotal {
@@ -63,6 +71,13 @@ export interface DayTotal {
   spent: number | null;
   /** 当日是否有未计价的用量（有则花费只是下界）。 */
   incomplete: boolean;
+}
+
+/** 缺口 43 第三批：某 agent 某自然月的花费（分层上限用）。 */
+export interface AgentMonthSpend {
+  spentUsd: number;
+  totalTokens: number;
+  calls: number;
 }
 
 function zeroDay(): DayTotal {
@@ -82,6 +97,9 @@ export class UsageLedger {
    * 该累计第一次记，全量当增量，例如子任务的独立快照）。
    * spentUsd / prevSpentUsd 与 token 数一一对应（同一次 estimateCost 的结果）。
    * 增量全为 0 时不写行（返回 null）；写盘失败返回 null，绝不抛错。
+   * agentId（缺口 43 第三批）：调用方知道 agent id 时传，分层上限按它
+   * 归属；不知道时传 null/不传，记为未归属——账本写失败与否都不抛错，
+   * 归属字段更不会破坏运行。
    */
   recordDelta(
     snapshot: UsageSnapshot,
@@ -90,6 +108,7 @@ export class UsageLedger {
     prevSpentUsd: number | null,
     model: string | null,
     now = new Date(),
+    agentId?: string | null,
   ): LedgerRecord | null {
     const delta = (cur: number | null, old: number | null): number => {
       const c = typeof cur === "number" && Number.isFinite(cur) ? cur : 0;
@@ -115,6 +134,8 @@ export class UsageLedger {
       calls,
       spent_usd: spentDelta,
       model: model ?? null,
+      // agent 归属：只认合法的 agent id 格式，其他值按未归属处理（不抛错）。
+      agent: typeof agentId === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(agentId) ? agentId : null,
     };
     try {
       mkdirSync(this.home, { recursive: true, mode: 0o700 });
@@ -179,6 +200,43 @@ export class UsageLedger {
       else incomplete = true;
     }
     return { spentUsd: spent, incomplete, totalTokens, calls };
+  }
+
+  // ---- 缺口 43 第三批：分层成本上限的按 agent 花费 ----
+  // 一次读全月记录，按 agent 归属分组；没有 agent 字段的行（旧行与调用方
+  // 不知道 agent 的行）进 unattributed。分层口径的诚实边界与月度硬顶同款：
+  // 某 agent 的花费只是下界（未归属的部分分不下去），只会晚触发、不会误触发.
+
+  /** 某自然月按 agent 分组的花费 + 未归属部分（一次读盘）。 */
+  monthSpendByAgent(month: string): { byAgent: Map<string, AgentMonthSpend>; unattributed: AgentMonthSpend } {
+    const byAgent = new Map<string, AgentMonthSpend>();
+    const unattributed: AgentMonthSpend = { spentUsd: 0, totalTokens: 0, calls: 0 };
+    for (const rec of this.readAll()) {
+      if (rec.month !== month) continue;
+      const target = typeof rec.agent === "string" && rec.agent
+        ? (byAgent.get(rec.agent) ?? { spentUsd: 0, totalTokens: 0, calls: 0 })
+        : unattributed;
+      if (typeof rec.agent === "string" && rec.agent) byAgent.set(rec.agent, target);
+      target.totalTokens += rec.total_tokens || 0;
+      target.calls += rec.calls || 0;
+      if (typeof rec.spent_usd === "number") target.spentUsd += rec.spent_usd;
+    }
+    return { byAgent, unattributed };
+  }
+
+  /** 某 agent 某自然月的花费；incomplete=true 表示当月有未归属/未计价的
+   * 花费，该 agent 的数字只是下界（与 monthTotal 的 incomplete 同口径）。 */
+  monthAgentTotal(month: string, agent: string): { spentUsd: number; incomplete: boolean; totalTokens: number; calls: number } {
+    const { byAgent, unattributed } = this.monthSpendByAgent(month);
+    const mine = byAgent.get(agent) ?? { spentUsd: 0, totalTokens: 0, calls: 0 };
+    let incomplete = unattributed.spentUsd > 0 || unattributed.totalTokens > 0;
+    if (!incomplete) {
+      for (const rec of this.readAll()) {
+        if (rec.month !== month) continue;
+        if (rec.agent === agent && typeof rec.spent_usd !== "number" && (rec.total_tokens || 0) > 0) { incomplete = true; break; }
+      }
+    }
+    return { spentUsd: mine.spentUsd, incomplete, totalTokens: mine.totalTokens, calls: mine.calls };
   }
 }
 

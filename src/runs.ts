@@ -173,6 +173,15 @@ scim_group_updated: ["group_id"],
 scim_group_deleted: ["group_id"],
 account_suspended: ["account_id"],
 account_reactivated: ["account_id"],
+// 缺口 43 第三批（分层成本上限 + 审计导出）：上限设置/放宽（哪个范围、哪项、
+// 从多少到多少）、暂停/恢复/放弃（哪个暂停记录、哪个 agent、哪一层）。
+// 只记元数据与数字，不记原因原文、不记绝对路径。审计导出本身没有运行上下
+// 文，不镜像运行事件——governance-audit.jsonl 里那条 audit_exported 就是记录。
+cost_cap_set: ["scope", "field"],
+cost_cap_relaxed: ["scope", "field", "old_value", "new_value"],
+cost_cap_paused: ["pause_id", "agent", "scope"],
+cost_cap_resumed: ["pause_id", "agent"],
+cost_cap_discarded: ["pause_id", "agent"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

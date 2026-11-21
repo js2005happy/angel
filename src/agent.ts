@@ -195,6 +195,14 @@ export interface AgentOptions {
    */
   monthlySpentBeforeUsd?: (() => { spentUsd: number; incomplete: boolean } | null) | null;
   /**
+   * 缺口 43 第三批：分层成本上限回调（CLI / Bot 传入，网关不传）。
+   * 每次用量上报后调用一次：入参是本次运行进行中的美元花费（未计价时
+   * 为 null，此时美元层跳过、只判 token）与 token 数；返回超限信息时
+   * checkCost 抛错中止（与月度硬顶同级硬停）。回调本身绝不抛错——判定
+   * 出错返回 null（不挡运行），暂停记录写不上也不拦中止。
+   */
+  tieredCapCheck?: ((runSpentUsd: number | null, runTokens: number) => { exceeded: boolean; message: string } | null) | null;
+  /**
    * 工具检索（延迟加载）。两档行为：
    * - 默认：MCP 工具 > MCP_LAZY_LOAD_THRESHOLD 个时自动开（见 toolSchemas）
    * - 显式开启（config.tool_search.enabled 或 features.tool_search=true）：
@@ -375,6 +383,8 @@ export class Agent {
   /** 缺口 29：月度上限与本月已花（不含本次运行）；见 AgentOptions。 */
   private monthlyCostLimitUsd: number | null;
   private monthlySpentBeforeUsd: AgentOptions["monthlySpentBeforeUsd"];
+  /** 缺口 43 第三批：分层成本上限回调（见 AgentOptions）；子任务继承同一份。 */
+  private tieredCapCheck: AgentOptions["tieredCapCheck"];
   /** 辅助任务模型（压缩 / 子任务）；缺省则沿用主模型。 */
   private auxModels: { compact?: string; delegate?: string };
   /** 缺口 24：Plan/Act 分模型（规划 / 执行）；缺省则沿用主模型。 */
@@ -483,6 +493,7 @@ export class Agent {
     this.pricing = opts.pricing ?? null;
     this.monthlyCostLimitUsd = typeof opts.monthlyCostLimitUsd === "number" ? opts.monthlyCostLimitUsd : null;
     this.monthlySpentBeforeUsd = opts.monthlySpentBeforeUsd ?? null;
+    this.tieredCapCheck = opts.tieredCapCheck ?? null;
     this.auxModels = opts.auxModels ?? {};
     this.planActModels = opts.planActModels ?? {};
     this.repoMap = {
@@ -1699,7 +1710,7 @@ export class Agent {
    * AgentError 中止，报错里写清已花多少、上限多少、哪天重置、怎么放宽。
    */
   private checkCost(): void {
-    if (this.maxCostUsd === null && this.pricing === null && this.monthlyCostLimitUsd === null) return;
+    if (this.maxCostUsd === null && this.pricing === null && this.monthlyCostLimitUsd === null && this.tieredCapCheck == null) return;
     const e = estimateCost(this.usage.snapshot(), this.pricing, this.maxCostUsd);
     this.lastCost = e;
     if (e.status === "priced") {
@@ -1739,6 +1750,23 @@ export class Agent {
           "\n" + t("cost.monthlyRelax"),
         );
       }
+    }
+    // 缺口 43 第三批：分层成本上限（与月度硬顶同级硬停）。回调收本次运行
+    // 进行中的花费：美元未计价时传 null（美元层跳过、只判 token），token
+    // 只计主 agent 快照（子任务的 token 不在父快照里，见 costCaps 文档）。
+    // 回调本身绝不抛错；超了才抛错中止（暂停记录由回调里建）。
+    if (this.tieredCapCheck) {
+      const runUsd = e.status === "priced" && e.spentUsd !== null
+        ? e.spentUsd + this.delegateSpentUsd + voiceUsd
+        : (voiceUsd > 0 ? voiceUsd : null);
+      const runTokens = this.usage.snapshot().total_tokens ?? 0;
+      let verdict: { exceeded: boolean; message: string } | null = null;
+      try {
+        verdict = this.tieredCapCheck(runUsd, runTokens);
+      } catch {
+        verdict = null;
+      }
+      if (verdict?.exceeded) throw new AgentError(verdict.message);
     }
   }
 
@@ -1915,6 +1943,17 @@ export class Agent {
       maxCostUsd: this.maxCostUsd,
       pricing: this.pricing,
       monthlyCostLimitUsd: this.monthlyCostLimitUsd,
+      // 缺口 43 第三批：子任务继承分层上限回调（与月度上限同款，无豁免口子）。
+      // 子任务花的钱算进父级的层：回调入参 = 父级进行中 + 已完成子任务 +
+      // 本子任务进行中（美元未计价时传 null，只判 token）。
+      tieredCapCheck: this.tieredCapCheck ? (childSpentUsd, childTokens) => {
+        const parentUsd = this.lastCost?.status === "priced" && this.lastCost.spentUsd !== null ? this.lastCost.spentUsd : null;
+        const combinedUsd = childSpentUsd === null && parentUsd === null
+          ? null
+          : (childSpentUsd ?? 0) + (parentUsd ?? 0) + this.delegateSpentUsd + this.voiceSpentUsd;
+        const parentTokens = this.usage.snapshot().total_tokens ?? 0;
+        return this.tieredCapCheck!(combinedUsd, parentTokens + childTokens);
+      } : null,
       monthlySpentBeforeUsd: this.monthlyCostLimitUsd === null ? null : (() => {
         const before = this.monthlySpentBeforeUsd?.() ?? null;
         const own = this.lastCost?.status === "priced" && this.lastCost.spentUsd !== null

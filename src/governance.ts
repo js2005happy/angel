@@ -30,6 +30,7 @@ import { McpCostTracker } from "./mcpCost.ts";
 import { businessActionForTool, resolveRedlineTier } from "./businessRedlines.ts";
 import { listKanbanTasks } from "./kanban.ts";
 import { appendInbox } from "./tasks.ts";
+import { evaluateTieredCaps, handleCaps, handleAudit } from "./costCaps.ts";
 
 export class GovernanceError extends Error {}
 
@@ -685,6 +686,23 @@ export function checkAutoAllowed(home: string, _agent: string): AutoAllowed {
       reason: `月度硬顶已触顶（本月已花 $${spent.toFixed(2)} / 上限 $${(limit ?? 0).toFixed(2)}），不接单`,
     };
   }
+  // 缺口 43 第三批：同一位置再套分层上限（组织级已在上面判过，这里判
+  // team/role/agent/persona 层；role 层没账号上下文，跳过——见 costCaps）。
+  // 分层没配就不挡人，配了且已触顶同样不接单。
+  try {
+    const tiered = evaluateTieredCaps(home, { agent: _agent });
+    if (!tiered.allowed) {
+      return {
+        allowed: false,
+        monthSpentUsd: spent,
+        limitUsd: limit,
+        reason: `分层成本上限已触顶（${tiered.bindingReason}），不接单`,
+      };
+    }
+  } catch {
+    // 分层判定本身出问题（账本损坏等）不拦接单——月度硬顶已在上面判过，
+    // 分层是叠加的第二道门，不是第一道门的替代。
+  }
   return {
     allowed: true,
     monthSpentUsd: spent,
@@ -818,9 +836,13 @@ export function handleGovernance(args: string[], home: string): number {
   const [group, ...rest] = args;
   const json = hasFlag(args, "--json");
   if (!group) {
-    console.log("用法：nyra governance <policy|mandate|mode|dry-runs> ...（详见 docs/governance.md）");
+    console.log("用法：nyra governance <policy|mandate|mode|dry-runs|caps|audit> ...（详见 docs/governance.md）");
     return 0;
   }
+
+  // 缺口 43 第三批：分层成本上限与审计导出（见 src/costCaps.ts）。
+  if (group === "caps") return handleCaps(rest, home);
+  if (group === "audit") return handleAudit(rest, home);
 
   if (group === "policy") {
     const sub = rest[0];
@@ -1003,5 +1025,5 @@ export function handleGovernance(args: string[], home: string): number {
     throw new GovernanceError("用法：nyra governance dry-runs <list|show|promote|discard> ...");
   }
 
-  throw new GovernanceError("用法：nyra governance <policy|mandate|mode|dry-runs> ...（详见 docs/governance.md）");
+  throw new GovernanceError("用法：nyra governance <policy|mandate|mode|dry-runs|caps|audit> ...（详见 docs/governance.md）");
 }
