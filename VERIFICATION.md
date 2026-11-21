@@ -1,3 +1,9 @@
+## 2026-11-21 — procfs fd 身份校验（仅静态）
+
+- 已核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python Agent/Tools，近期提交与开放 Issues/PR。近期仓库提交 [410cf32](https://github.com/js2005happy/nyra/commit/410cf32c4f869e0c8b074cfcf0b225b0e49af387) 为 peer-card 文档，与本次独立增量不重复。
+- 静态核对新增 `statSync('/proc/self/fd/<directoryFd>')` 对目录类型、dev、ino、uid 的比较，失败关闭，不自动重放。
+- **未执行**测试、编译、脚本、故障注入或 CI；尚未验证 procfs 挂载竞态、Windows 或真实 Node 派发；不保证 exactly-once。
+
 ## 2026-11-21 — Linux claim 非规范路径拒绝（仅静态）
 
 - 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim；main TypeScript Agent/Tools、近期提交、开放 Issues/PR 和提交状态。main 最新检索提交 [e3f8c78](https://github.com/js2005happy/nyra/commit/e3f8c7801dbf1a1bf040198de173fb8d10f30158)（2026-11-21 04:35 UTC），涉及 Slack 审批按钮，与本增量不重复；开放 Issues/PR 查询为空，combined status 空不等于 CI 通过。
