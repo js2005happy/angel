@@ -306,6 +306,12 @@ export interface RunSandboxedOptions {
   timeout?: number;
   /** 流式回显：每收到一块输出就回调（stream 为 stdout/stderr）。 */
   onStream?: (stream: "stdout" | "stderr", text: string) => void;
+  /**
+   * 额外环境变量（缺口 42 第二批：电脑 Vault 代填凭证用）。只做浅合并覆盖
+   * process.env——bwrap 默认透传环境变量（不加 --clearenv），所以填进去
+   * 的变量能进沙箱里的 /bin/sh；不传时行为与原来完全一致。
+   */
+  env?: Record<string, string>;
 }
 
 export interface RunSandboxedResult {
@@ -330,7 +336,7 @@ export async function runSandboxed(
     const child = spawn("bwrap", args.slice(1), {
       cwd: opts.workdir,
       detached: process.platform !== "win32",
-      env: process.env,
+      env: opts.env ? { ...process.env, ...opts.env } : process.env,
     });
     let stdout = "";
     let stderr = "";
