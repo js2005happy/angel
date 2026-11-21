@@ -1,3 +1,10 @@
+## 2026-11-21 — Read-only acceptance evidence primitive (implemented, untested)
+
+- **External fact (report dated 2026-11-16):** [Codex #61872](https://github.com/openai/codex/issues/61872) describes a long UI integration task with many passing local checks but incomplete delivery. This is one external report, not a reproduced Angel defect or prevalence measurement.
+- **Engineering inference:** explicit per-requirement evidence levels help distinguish source edits, static review, tests and target-environment acceptance. The new `angel/acceptance_evidence.py` supplies a pure read-only classifier; it does not inspect artifacts, persist sensitive content, grant approval, or integrate into the Agent loop. A reported `target_verified` level remains self-reported and `independently_verified` is always false.
+- **Ranking (value / effort / security risk / dependencies):** P1 read-only acceptance classifier high / low / low / Python stdlib (implemented, not tested); P1 task contract persistence high / medium / medium / privacy design; P1 bounded no-progress detection high / medium / medium / trustworthy progress events; P0 real claim dispatch high / high / high / trusted storage and approvals (blocked); P0 Linux privileged mount race high / high / high / threat model (blocked); P0 Windows reparse handle defense high / high / high / native API (blocked); P1 MCP catalog invalidation medium-high / medium / medium / MCP.
+- **Next:** add isolated static review of evidence provenance and tests before any runtime integration; never promote supplied evidence to verified execution automatically.
+
 ## 2026-11-21 — Agent long-task convergence evidence and safety gate (research only)
 
 - **External report (fact, 2026-11-16):** [Codex #61872](https://github.com/openai/codex/issues/61872) describes a long Windows autonomous coding session that accumulated extensive tests and documentation without completing requested UI integration and delivery. It reports 11 compactions and distinguishes passing scoped tests from unfinished release work. This is one externally reported case, not an Angel reproduction or prevalence estimate.
