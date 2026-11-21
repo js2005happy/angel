@@ -102,6 +102,26 @@ class AcceptanceProvenanceTests(unittest.TestCase):
                 assess_acceptance(["checkout"], {}, recognized_references=["receipt-1"],
                                   reference_scopes=scopes)
 
+    def test_shared_target_reference_fails_closed_without_scopes(self):
+        entry = {"level": "target_verified", "reference": "same-receipt",
+                 "revision": "abc", "environment": "staging"}
+        result = assess_acceptance(["checkout", "refund"],
+                                   {"checkout": [entry], "refund": [entry]})
+        self.assertEqual(result["incomplete"], ["checkout", "refund"])
+        self.assertFalse(result["reported_complete"])
+        self.assertTrue(result["requirements"][0]["reported_target_contexts"][0]["reference_shared"])
+
+    def test_distinct_receipt_still_satisfies_requirement(self):
+        shared = {"level": "target_verified", "reference": "same-receipt",
+                  "revision": "abc", "environment": "staging"}
+        unique = {"level": "target_verified", "reference": "checkout-only",
+                  "revision": "abc", "environment": "staging"}
+        result = assess_acceptance(["checkout", "refund"],
+                                   {"checkout": [shared, unique], "refund": [shared]})
+        self.assertEqual(result["incomplete"], ["refund"])
+        self.assertTrue(result["requirements"][0]["reported_target_verified"])
+        self.assertFalse(result["independently_verified"])
+
     def test_lower_levels_remain_backward_compatible(self):
         result = assess_acceptance(["checkout"], {"checkout": [
             {"level": "static_reviewed", "reference": "review-1"},
