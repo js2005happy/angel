@@ -1,3 +1,7 @@
+## Unreleased — 2026-11-21 shared target receipt ambiguity
+
+- Reject self-reported target receipts reused across distinct requirements, including when optional reference scopes are absent. A distinct eligible receipt can still count as reported completion; independent verification remains false. Added unexecuted regression cases. No runtime integration, new dependencies, or release.
+
 ## 2026-11-21 — Requirement-scoped acceptance references (static-only)
 
 - Added optional, bounded per-requirement scoping for acceptance references. A receipt assigned to one requirement cannot count toward another when enabled. Caller scopes remain untrusted; no independent verification or runtime wiring. Added regression cases, not executed. No dependencies or deployment.
