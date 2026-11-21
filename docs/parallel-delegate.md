@@ -20,7 +20,9 @@
 ```
 
 每项子任务的字段与 `delegate` 同义：`task`（必填）、`max_turns`（1–12，默认 6）、
-`isolation`（`none` / `worktree`）、`tools`（白名单）、`model`（子任务模型）。
+`isolation`（`none` / `worktree`）、`tools`（白名单）、`model`（子任务模型）、
+`output_schema`（结构化输出契约，见 `docs/steer-schema.md`：校验失败给一次
+有界纠正轮，仍失败按失败走）。
 也可以在代码里直接调 `Agent.delegateParallel(tasks, opts)`，返回结构化结果
 （`ParallelDelegateResult`，见 `src/parallelDelegate.ts`）。
 
