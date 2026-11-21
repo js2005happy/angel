@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 experimental Linux claim descriptor inheritance hardening (static-only)
+
+- **Repository fact:** `scripts/node_tool_claim.ts` opens the claim directory and exclusive claim file; this increment explicitly adds Linux `O_CLOEXEC` to both opens to request close-on-exec and reduce accidental descriptor inheritance into child processes. Node/libuv may already apply close-on-exec; this is an explicit defense-in-depth contract, not a proven exploit fix. No runtime integration or dependencies.
+- **External report, not Angel reproduction:** 2026-11-18 [Codex #62230](https://github.com/openai/codex/issues/62230) describes inaccurate cross-client live-agent status; 2026-08-25 [Codex #40646](https://github.com/openai/codex/issues/40646) describes unsupported execution claims. **Engineering inference:** trusted operation state and resource isolation deserve priority, but these reports do not establish claim-fd leakage or prevalence.
+- **Priority (value / effort / security risk / dependency):** this explicit fd hygiene P0 medium / low / low / Linux O_CLOEXEC (implemented, untested); privileged mount race P0 high / high / high / OS namespace trust; Windows reparse handle P0 high / high / high / Win32; real dispatch integration P0 high / high / high / trusted claim + approvals; MCP catalog invalidation P1 medium-high / medium / medium / MCP; external-effect receipts P1 high / high / high / adapters.
+- **Validation:** static inspection only; no compilation, tests, CI, or runtime confirmation. Linux-only experimental primitive, no exactly-once claim.
+
 
 ## 2026-11-21 — P0 Linux claim procfs final descriptor revalidation (static review only)
 
