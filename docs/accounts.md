@@ -59,6 +59,7 @@
 - 同一个 provider + sub 只能属于一个账号（已绑到别的账号上 → 拒绝，不静默合并）。
 - 账号 id 是 16 位 hex（随机 8 字节）；事件与审计里只出现这个 id，不出现邮箱——`appendEvent` 的 redact 会把 ≥32 字连续词串当疑似密钥掩掉，16 位 hex 安全。
 - 邮箱只做大小写归一（转小写、去首尾空白），不做格式之外的猜测；无效邮箱拒绝。
+- **账号状态（缺口 43 第二批，SSO/SCIM）**：`status`（`"active" | "suspended"`，老文件没有这个字段按 active 处理）+ `suspended_at` + `external_id`（SCIM 外部标识）；`LinkedIdentity` 加可选 `issuer`（SSO 身份提供方，只有 provider 为 `"sso"` 时有）。停用即失能：改状态 → 撤销该账号全部会话 → 记审计；网关 `accountFromSession` 验过会话后也查一次 status；`upsertAccount` 找到已停用账号时直接抛错（覆盖四条登录链 + link 流程）；恢复只改状态，不恢复已撤销的会话。详见 `docs/sso.md`。
 
 ## 4. 会话模型
 
@@ -149,7 +150,7 @@ export interface MagicLinkDirectory {
 
 用户 2026-11-20 拍板：客户数据库先用 Neon 免费档起步（Postgres，新加坡，$0，开发/测试库）；以后上线迁阿里云 RDS PG Serverless 时走 pg_dump / pg_restore。Neon 项目还没开（需要用户的 Neon 账号），所以本批先做到“接上连接串就能跑”，不因为没库停下。
 
-### 表结构（v1，`src/accountsDb.ts` 的 `ACCOUNTS_SCHEMA_STATEMENTS`）
+### 表结构（v2，`src/accountsDb.ts` 的 `ACCOUNTS_SCHEMA_STATEMENTS`）
 
 | 表 | 内容 | 备注 |
 |---|---|---|
@@ -158,7 +159,9 @@ export interface MagicLinkDirectory {
 | `account_sessions` | 会话（只存 token 的 SHA-256） | 与文件版同款 TTL/失活规则 |
 | `magic_links` | magic link 令牌（只存 SHA-256） | 兑换一条 UPDATE 原子认领 |
 | `account_audit` | 审计行 | 只记动作、provider、账号 id；不记邮箱、不记 token |
-| `schema_migrations` | 已应用的表结构版本 | 当前 v1 |
+| `schema_migrations` | 已应用的表结构版本 | 当前 v2 |
+
+v2（缺口 43 第二批，SSO/SCIM）：`accounts` 加 `status`（`'active' | 'suspended'`，默认 active）/ `suspended_at` / `external_id`（SCIM 外部标识），`account_identities` 加 `issuer`（SSO 身份提供方）；迁移语句全部 `ADD COLUMN IF NOT EXISTS`，老库直接跑。详见 `docs/sso.md`。
 
 迁移友好（为 pg_dump / pg_restore 留的）：只用最标准的 Postgres 类型（text / timestamptz），不用任何扩展（不用 citext、不用 pgcrypto），id 全部由应用层生成（不依赖序列），建表语句全部幂等（`IF NOT EXISTS` + 版本行 `ON CONFLICT DO NOTHING`）。
 

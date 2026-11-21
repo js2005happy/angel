@@ -42,7 +42,8 @@
 | `nyra models [list\|show\|refresh]` | 模型上下文窗口查询与刷新 |
 | `nyra reviewer <status\|enable\|disable\|set-model\|add-rule\|remove-rule\|list-rules\|check>` | 独立审查层：敏感工具调用先过独立审查 agent，审查失败即拦截（详见 `docs/reviewer.md`） |
 | `nyra verifier <status\|enable\|disable\|set-model\|rework-on\|rework-off\|add-rule\|remove-rule\|list-rules\|check>` | 验收者：并行产出合入前先验收，不通过打回重做，结论进证据链（详见 `docs/verifier.md`） |
-| `nyra account <status\|login\|logout\|list\|revoke\|link>` | 用户账号登录：Google / GitHub / 邮箱（邮箱随网关兑换端点在下一批），账号身份 + 会话（详见 `docs/accounts.md`） |
+| `nyra account <status\|login\|logout\|list\|revoke\|link\|suspend\|reactivate>` | 用户账号登录：Google / GitHub / 邮箱 / SSO，账号身份 + 会话（详见 `docs/accounts.md`） |
+| `nyra sso <provider\|login\|status\|scim>` | 缺口 43 第二批：企业 SSO——OIDC 身份提供方注册与登录、SCIM 账号开通（详见 `docs/sso.md`） |
 
 ## 记忆与复用
 
