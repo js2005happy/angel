@@ -1096,16 +1096,34 @@ function toolActionKind(toolName: string, args: Record<string, unknown>): DryRun
  *  协调者还能再生成的新步骤不在这里，其动作在 dryRunPlan 里另记一条。 */
 function planSteps(steps: WorkflowStep[], scope: EvalScope, actions: DryRunAction[], skipped: string[], depth: number, mode: WorkflowMode = "fixed"): void {
   const candidate = mode === "fixed" ? "" : "（候选步骤：协调者运行中决定是否执行）";
+  // dry-run 不知道前面步骤的输出是什么：给每个走过的步骤记一个占位输出，
+  // 后面的步骤引用 {{steps.<id>.output}} 时按占位渲染，不炸；占位进计划文本，
+  // 使用者一眼能看出这是未知值，不会当成真内容。
+  const setStepOutput = (s: EvalScope, id: string, note: string): void => {
+    const stepOutputs = s.steps as Record<string, ScopeValue>;
+    stepOutputs[id] = { output: note };
+  };
   for (const step of steps) {
+    // if 引用了前面步骤的输出时 dry-run 无法判定真假：按会执行列出并注明，
+    // 不直接炸掉整个计划；真正写错的 if（语法错、类型错）仍抛错。
+    let ifUndecidable = false;
     if (step.if !== undefined) {
       let cond: boolean;
       try {
         cond = evalCondition(step.if, scope);
       } catch (err: unknown) {
-        throw new WorkflowError(`dry-run 失败（步骤 ${step.id} 的 if 求值出错）：${err instanceof Error ? err.message : String(err)}`);
+        // 引用了前面步骤的输出（占位是字符串，求值报“不存在”或“须是布尔值”）
+        // 都算无法判定；真正写错的 if（语法错、类型错）仍抛错。
+        if (err instanceof Error && (err.message.includes("不存在") || err.message.includes("须是布尔值"))) {
+          ifUndecidable = true;
+          cond = true;
+        } else {
+          throw new WorkflowError(`dry-run 失败（步骤 ${step.id} 的 if 求值出错）：${err instanceof Error ? err.message : String(err)}`);
+        }
       }
       if (!cond) { skipped.push(step.id); continue; }
     }
+    const undecidableNote = ifUndecidable ? "（if 条件在 dry-run 里无法判定，按会执行列出）" : "";
     // 循环步骤：dry-run 不知道循环跑几轮，只按一轮列动作；循环变量用占位符渲染，
     // 让使用者一眼看出这是每轮都会做的动作（不静默当成只做一次）。
     const stepScope: EvalScope = step.for_each
@@ -1113,13 +1131,16 @@ function planSteps(steps: WorkflowStep[], scope: EvalScope, actions: DryRunActio
       : scope;
     if (step.type === "tool") {
       const args = (renderValue(step.args ?? {}, stepScope) as Record<string, unknown>);
-      actions.push({ nodeId: step.id, kind: toolActionKind(step.tool ?? "", args), detail: `${step.tool} ${stableStringify(args)}${step.for_each ? "（每轮一次）" : ""}${candidate}` });
+      actions.push({ nodeId: step.id, kind: toolActionKind(step.tool ?? "", args), detail: `${step.tool} ${stableStringify(args)}${step.for_each ? "（每轮一次）" : ""}${candidate}${undecidableNote}` });
+      setStepOutput(stepScope, step.id, "<工具输出，dry-run 未知>");
     } else if (step.type === "llm" || step.type === "delegate" || step.type === "skill") {
-      actions.push({ nodeId: step.id, kind: "unknown-model-action", detail: `${step.type} 节点的动作由模型临场决定，dry-run 无法枚举（可能产生写/发动作）${step.for_each ? "（每轮一次）" : ""}${candidate}` });
+      actions.push({ nodeId: step.id, kind: "unknown-model-action", detail: `${step.type} 节点的动作由模型临场决定，dry-run 无法枚举（可能产生写/发动作）${step.for_each ? "（每轮一次）" : ""}${candidate}${undecidableNote}` });
+      setStepOutput(stepScope, step.id, "<模型输出，dry-run 未知>");
     } else if (step.type === "knowledge") {
-      actions.push({ nodeId: step.id, kind: "read", detail: `知识检索 ${step.base ?? ""}：${String(renderTemplate(step.query ?? "", stepScope))}${candidate}` });
+      actions.push({ nodeId: step.id, kind: "read", detail: `知识检索 ${step.base ?? ""}：${String(renderTemplate(step.query ?? "", stepScope))}${candidate}${undecidableNote}` });
+      setStepOutput(stepScope, step.id, "<知识检索结果，dry-run 未知>");
     } else if (step.type === "approve") {
-      actions.push({ nodeId: step.id, kind: "read", detail: `审批节点（人工批复，dry-run 不进审阅队列）：${step.title ?? ""}${candidate}` });
+      actions.push({ nodeId: step.id, kind: "read", detail: `审批节点（人工批复，dry-run 不进审阅队列）：${step.title ?? ""}${candidate}${undecidableNote}` });
     } else if (step.type === "parallel") {
       if (depth >= MAX_PARALLEL_DEPTH) throw new WorkflowError(`dry-run 失败（步骤 ${step.id}）：并行嵌套超过 ${MAX_PARALLEL_DEPTH} 层`);
       for (const branch of step.branches ?? []) planSteps(branch, stepScope, actions, skipped, depth + 1, mode);

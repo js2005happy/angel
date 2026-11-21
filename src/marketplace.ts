@@ -1,9 +1,11 @@
 // src/marketplace.ts — 内置机器人市场（第一阶段：静态策展仓库 + 本地客户端）。
 //
-// 只卖两样文件（本地优先：分享配置与技能，不分享电脑）：
+// 只卖三样文件（本地优先：分享配置与技能，不分享电脑）：
 //   - 技能包（Skill）：单文件 .md，与缺口 11 沉淀出的技能同格式，可直接进 ~/.nyra/skills/
 //   - 机器人配置（Bot）：一个目录（bot.json + skills/*.md + 可选 routines.json），
 //     即创造模式的插件形态（plugin.json + skills），安装复用 src/plugins.ts 的路径。
+//   - 业务流程模板（Template，缺口 46）：单文件 .yaml/.json，声明式纯文本，
+//     进 ~/.nyra/templates/，激活前须试跑 + 人工确认（见 src/templates.ts）。
 // 不卖：整台电脑/云电脑共享、真实凭证与账号信息、无许可证内容。
 //
 // 一键安装走三道门（缺口 10 的复用）：清单校验（verifyStagedPlugin / 技能解析）
@@ -35,6 +37,11 @@ import { installPlugin, uninstallPlugin, pluginDir, sha256File, PLUGIN_NAME_RE, 
 import { reviewToolCall, buildReviewerRunner, type ReviewerLike, type ReviewVerdict } from "./reviewer.ts";
 import { parseSkillFile, parseSkillText } from "./skills.ts";
 import { checkEvidenceHygiene } from "./bughunt.ts";
+import {
+  parseTemplateText, validateTemplateDefinition, templateWorkflowTools,
+  collectWorkflowTools, templateSlug, templatesDir, importTemplateText,
+  getTemplateEntry, removeTemplateEntry, type TemplateDefinition,
+} from "./templates.ts";
 import { type RunStore } from "./runs.ts";
 
 export class MarketplaceError extends Error {
@@ -51,7 +58,7 @@ export class MarketplaceError extends Error {
 export const MARKET_WARNING =
 "社区内容是不受信任的第三方配置；导入前检查，只读起步，发送/购买/删除留在审批后。";
 
-export type MarketKind = "skill" | "bot";
+export type MarketKind = "skill" | "bot" | "template";
 
 export interface MarketEntryMeta {
   id: string;
@@ -286,7 +293,7 @@ export function loadMarketIndex(sourceDir: string): MarketIndex {
     if (!e || typeof e !== "object" || typeof e.id !== "string" || !ENTRY_ID_RE.test(e.id)) {
       throw new MarketplaceError(`市场索引里有无效条目 id：${JSON.stringify(e?.id ?? null)}（只允许小写字母、数字、- 和 _）`);
     }
-    if (e.kind !== "skill" && e.kind !== "bot") throw new MarketplaceError(`条目 ${e.id} 的 kind 只允许 skill|bot`);
+    if (e.kind !== "skill" && e.kind !== "bot" && e.kind !== "template") throw new MarketplaceError(`条目 ${e.id} 的 kind 只允许 skill|bot|template`);
     if (typeof e.name !== "string" || !e.name || typeof e.version !== "string" || !e.version || typeof e.path !== "string" || !e.path) {
       throw new MarketplaceError(`条目 ${e.id} 缺少 name/version/path`);
     }
@@ -518,7 +525,7 @@ export function verifyMarketplaceEntry(resolved: ResolvedEntry): EntryVerificati
   let permissions: string[] = [];
   let routines: BotRoutine[] = [];
   const { entry, dir } = resolved;
-  if (entry.kind === "skill") {
+  if (entry.kind === "skill" || entry.kind === "template") {
     files.push(entry.path);
   } else {
     try {
@@ -540,6 +547,30 @@ export function verifyMarketplaceEntry(resolved: ResolvedEntry): EntryVerificati
         skillNames = [parsed.name];
       } catch (err: unknown) {
         errors.push(`技能解析失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { ok: errors.length === 0, errors, warnings, manifest, skillNames, tools, permissions, highPrivilegeTools: [], files, routines };
+  }
+  if (entry.kind === "template") {
+    if (!existsSync(dir) || !statSync(dir).isFile()) {
+      errors.push(`模板文件不存在：${entry.path}`);
+    } else {
+      try {
+        const def = validateTemplateDefinition(
+          parseTemplateText(readFileSync(dir, "utf-8"), entry.path), KNOWN_TOOLS, null,
+        );
+        if (def.name !== entry.name) errors.push(`模板文件里的 name 是 ${def.name}，与索引不一致`);
+        if (def.version !== entry.version) errors.push(`模板文件里的 version 是 ${def.version}，与索引不一致`);
+        tools = templateWorkflowTools(def);
+        permissions = [
+          ...def.connectors.map((c) => `connector:${c}`),
+          ...def.approve_actions.map((a) => `approve:${a}`),
+          ...def.never_actions.map((a) => `never:${a}`),
+        ];
+        if (!def.acceptance.length) warnings.push("模板没有验收标准（acceptance 为空），试跑时无法打分");
+        if (!def.trial?.inputs && !def.trial_files?.length) warnings.push("模板没有试跑数据（trial.inputs 与 trial_files 都为空）");
+      } catch (err: unknown) {
+        errors.push(`模板解析失败：${err instanceof Error ? err.message : String(err)}`);
       }
     }
     return { ok: errors.length === 0, errors, warnings, manifest, skillNames, tools, permissions, highPrivilegeTools: [], files, routines };
@@ -704,6 +735,21 @@ export function scanMarketplaceEntry(resolved: ResolvedEntry): ScanHit[] {
     pushFile(dir, entry.path);
     return hits;
   }
+  if (entry.kind === "template") {
+    if (existsSync(dir) && statSync(dir).isFile()) {
+      const text = readFileSync(dir, "utf-8");
+      hits.push(...scanMarketplaceText(text, entry.path));
+      // 第三方模板禁 shell 与 http_post：业务流程不该跑任意命令或对外发请求。
+      try {
+        const def = validateTemplateDefinition(parseTemplateText(text, entry.path), KNOWN_TOOLS, null);
+        for (const t of collectWorkflowTools(def.workflow)) {
+          if (t.tool === "shell") hits.push({ rule: "template-shell", where: `${entry.path}:${t.id}`, reason: "模板流程里不许用 shell 工具（第三方模板不得跑任意命令）" });
+          if (t.tool === "http_post") hits.push({ rule: "template-http-post", where: `${entry.path}:${t.id}`, reason: "模板流程里不许用 http_post 工具（第三方模板不得对外发请求）" });
+        }
+      } catch { /* 清单校验已报错，这里不重复报 */ }
+    }
+    return hits;
+  }
   const skillsDir = join(dir, "skills");
   if (existsSync(skillsDir)) {
     for (const f of readdirSync(skillsDir).sort()) {
@@ -781,6 +827,10 @@ function newestMtimeMs(dir: string): number | null {
 
 /** 列表用的评分：只读索引元数据 + 条目文件（不调模型、不联网）。 */
 export function computeBotReadyForDir(entry: MarketEntryMeta, dir: string): BotReady {
+  // 模板不参与 Bot Ready 评分：模板的“就绪”是试跑 + 人工确认，不是静态分。
+  if (entry.kind === "template") {
+    return { score: 0, missing: ["模板不参与 Bot Ready 评分（须试跑 + 人工确认后才激活）"] };
+  }
   let skillsOk = false;
   let toolsKnown = true;
   let scanHits = 0;
@@ -900,12 +950,16 @@ export function describeInstallPlan(prepared: InstallPrepared): string {
   const lines: string[] = [];
   lines.push(MARKET_WARNING);
   const e = prepared.entry;
-  lines.push(`条目：${e.name} v${e.version}（${e.kind === "skill" ? "技能包" : "机器人配置"}，来源 ${prepared.source.name}:${e.id}）`);
+  lines.push(`条目：${e.name} v${e.version}（${e.kind === "skill" ? "技能包" : e.kind === "template" ? "业务流程模板" : "机器人配置"}，来源 ${prepared.source.name}:${e.id}）`);
   if (e.description) lines.push(`说明：${e.description}`);
-  lines.push(`装到：${e.kind === "skill" ? `~/.nyra/skills/${e.name}.md` : `~/.nyra/plugins/${e.name}/`}`);
+  lines.push(`装到：${e.kind === "skill" ? `~/.nyra/skills/${e.name}.md` : e.kind === "template" ? `~/.nyra/templates/${templateSlug(e.name)}${/\.json$/i.test(e.path) ? ".json" : ".yaml"}` : `~/.nyra/plugins/${e.name}/`}`);
   lines.push(`声明的工具：${prepared.verification.tools.join("、") || "未声明"}`);
   lines.push(`声明的权限：${prepared.verification.permissions.join("、") || "未声明"}`);
-  lines.push(`模式：${e.mode ?? "readonly"}（新装机器人默认只读起步，写操作须用户显式放开）`);
+  if (e.kind === "template") {
+    lines.push("模板只装草稿：激活前须试跑 + 人工确认（nyra template trial/activate），激活后每次执行仍走审批，发出须人批。");
+  } else {
+    lines.push(`模式：${e.mode ?? "readonly"}（新装机器人默认只读起步，写操作须用户显式放开）`);
+  }
   if (prepared.verification.highPrivilegeTools.length) {
     lines.push(`⚠ 高权限工具：${prepared.verification.highPrivilegeTools.join("、")}——装完后每次调用仍需审批，请确认你真的需要它。`);
   }
@@ -1032,6 +1086,26 @@ export function executeMarketplaceInstall(
     writeFileSync(installedPath, readFileSync(prepared.dir, "utf-8"), { encoding: "utf-8", mode: 0o600 });
     overwritten = existed;
     files.push(`skills/${entry.name}.md`);
+  } else if (entry.kind === "template") {
+    // 模板只装草稿（状态 draft）：文件进 ~/.nyra/templates/，账本记 draft，
+    // 激活前须试跑 + 人工确认（模板自己的两道门，市场安装不代劳）。
+    const text = readFileSync(prepared.dir, "utf-8");
+    const existing = getTemplateEntry(home, entry.name);
+    if (existing && !opts?.force) {
+      throw new MarketplaceError(`模板 ${entry.name} 已安装（先删掉旧版或加 --force 覆盖）`);
+    }
+    if (existing && opts?.force) {
+      removeTemplateEntry(home, entry.name);
+    }
+    let ledgerEntry;
+    try {
+      ledgerEntry = importTemplateText(home, text, basename(prepared.dir), entry.id, KNOWN_TOOLS);
+    } catch (err: unknown) {
+      throw new MarketplaceError(`模板导入失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+    installedPath = join(templatesDir(home), ledgerEntry.file);
+    overwritten = Boolean(existing);
+    files.push(`templates/${ledgerEntry.file}`);
   } else {
     const manifest = prepared.verification.manifest;
     if (!manifest) throw new MarketplaceError("机器人清单缺失，无法安装（先重新核对条目）");
@@ -1059,7 +1133,7 @@ export function executeMarketplaceInstall(
   }
   const hashes: Record<string, string> = {};
   for (const rel of files) {
-    const abs = entry.kind === "skill" ? join(home, rel) : join(installedPath, rel);
+    const abs = entry.kind === "skill" || entry.kind === "template" ? join(home, rel) : join(installedPath, rel);
     try { hashes[rel] = sha256File(abs); } catch { /* 缺文件时不记哈希 */ }
   }
   const record: InstalledEntry = {
@@ -1105,7 +1179,15 @@ export function uninstallMarketplaceEntry(
   if (!record) throw new MarketplaceError(`没有已安装的市场条目 ${name}（先 nyra market installed 看看）`);
   let removed: string[] = [];
   let kept: string[] = [];
-  if (record.kind === "skill") {
+  if (record.kind === "template") {
+    try {
+      const entry = getTemplateEntry(home, name);
+      removeTemplateEntry(home, name);
+      if (entry) removed.push(`templates/${entry.file}`);
+    } catch {
+      kept.push(`templates/${name}（模板已不在）`);
+    }
+  } else if (record.kind === "skill") {
     const path = join(home, "skills", `${name}.md`);
     const expected = record.files[`skills/${name}.md`];
     if (!existsSync(path)) {
@@ -1242,14 +1324,30 @@ export function packSkillAsEntry(home: string, skillName: string): string {
 
 export async function publishMarketplaceEntry(
   home: string,
-  input: { dir: string } | { skill: string },
+  input: { dir: string } | { skill: string } | { template: string },
   opts: { config: Record<string, unknown>; runner?: ReviewerLike | null; dryRun?: boolean; outDir?: string; license?: string; store?: RunStore; runId?: string },
 ): Promise<PublishResult> {
   let kind: MarketKind;
   let pkgDir: string;
   let skillFile: string | null = null;
+  let templateFile: string | null = null;
+  let templateDef: TemplateDefinition | null = null;
   let manifest: BotManifest | null = null;
-  if ("skill" in input) {
+  if ("template" in input) {
+    kind = "template";
+    const given = input.template;
+    if (existsSync(given) && statSync(given).isFile()) {
+      templateFile = resolve(given);
+    } else {
+      const entry = getTemplateEntry(home, given);
+      if (!entry) throw new MarketplaceError(`没有这个模板：${given}（传模板文件路径，或先装好的模板名）`);
+      templateFile = join(templatesDir(home), entry.file);
+    }
+    pkgDir = dirname(templateFile);
+    templateDef = validateTemplateDefinition(
+      parseTemplateText(readFileSync(templateFile, "utf-8"), basename(templateFile)), KNOWN_TOOLS, null,
+    );
+  } else if ("skill" in input) {
     kind = "skill";
     skillFile = packSkillAsEntry(home, input.skill);
     pkgDir = dirname(skillFile);
@@ -1268,7 +1366,7 @@ export async function publishMarketplaceEntry(
       throw new MarketplaceError(`发布目录既不是机器人目录（须含 bot.json）也不是单个技能文件（.md）：${dir}`);
     }
   }
-  const files = collectPublishFiles(kind === "bot" ? pkgDir : skillFile!, kind);
+  const files = collectPublishFiles(kind === "bot" ? pkgDir : (skillFile ?? templateFile)!, kind);
   // 打包脱敏检查：含密钥/绝对路径直接拒绝发布。
   const warnings: string[] = [];
   for (const f of files) {
@@ -1279,8 +1377,8 @@ export async function publishMarketplaceEntry(
     }
     for (const x of w) warnings.push(`${f.rel}：${x.label}（第 ${x.lines.join("、")} 行，仅提醒，不拦发布）`);
   }
-  // 许可证必填（机器人看 bot.json，技能看 --license）。
-  const license = manifest?.license ?? opts.license;
+  // 许可证必填（机器人看 bot.json，技能看 --license，模板看模板文件里的 license）。
+  const license = manifest?.license ?? templateDef?.license ?? opts.license;
   if (!license) throw new MarketplaceError("许可证必填（bot.json 写 license，或发布时加 --license <许可证>），无许可证不让发", "license");
   // 本地三道门（与安装同一套门，工具名换成 marketplace_publish）。
   let verification: EntryVerification;
@@ -1296,6 +1394,15 @@ export async function publishMarketplaceEntry(
         toolsDeclared: false, toolsKnown: true, scanHits: scanHits.length,
         updatedAt: null, newestMtimeMs: statSync(skillFile!).mtimeMs,
       });
+  } else if (kind === "template") {
+    const fakeEntry: MarketEntryMeta = {
+      id: templateDef!.name, kind: "template", name: templateDef!.name, version: templateDef!.version,
+      description: templateDef!.description, author: templateDef!.author, license,
+      source: "", path: basename(templateFile!),
+    };
+    verification = verifyMarketplaceEntry({ entry: fakeEntry, source: { name: "self", kind: "local", path: pkgDir, added_at: "" }, dir: templateFile! });
+    scanHits = scanMarketplaceEntry({ entry: fakeEntry, source: { name: "self", kind: "local", path: pkgDir, added_at: "" }, dir: templateFile! });
+    botReady = computeBotReadyForDir(fakeEntry, templateFile!);
   } else {
     const fakeEntry: MarketEntryMeta = {
       id: manifest!.name, kind: "bot", name: manifest!.name, version: manifest!.version,
@@ -1313,19 +1420,19 @@ export async function publishMarketplaceEntry(
   if (scanHits.length) {
     throw new MarketplaceError(`确定性规则拦截，拒绝发布：\n${scanHits.map((h) => `- ${h.where}：${h.reason}`).join("\n")}`, "deterministic");
   }
-  const itemName = kind === "skill" ? basename(skillFile!, ".md") : manifest!.name;
-  const version = kind === "skill" ? "0.1.0" : manifest!.version;
+  const itemName = kind === "skill" ? basename(skillFile!, ".md") : kind === "template" ? templateDef!.name : manifest!.name;
+  const version = kind === "skill" ? "0.1.0" : kind === "template" ? templateDef!.version : manifest!.version;
   const review = await reviewMarketplaceAction({
       config: opts.config,
       home,
       action: "marketplace_publish",
       itemName,
       kind,
-      author: manifest?.author,
+      author: templateDef?.author ?? manifest?.author,
       license,
       tools: verification.tools,
       permissions: verification.permissions,
-      mode: manifest?.mode ?? "readonly",
+      mode: templateDef ? "template" : (manifest?.mode ?? "readonly"),
       runner: opts.runner,
     });
   if (review.decision === "BLOCK") {
@@ -1346,11 +1453,11 @@ export async function publishMarketplaceEntry(
       kind,
       name: itemName,
       version,
-      description: manifest?.description,
-      author: manifest?.author,
+      description: templateDef?.description ?? manifest?.description,
+      author: templateDef?.author ?? manifest?.author,
       license,
       source: manifest?.homepage ?? "",
-      path: kind === "bot" ? "." : `${itemName}.md`,
+      path: kind === "bot" ? "." : kind === "template" ? basename(templateFile!) : `${itemName}.md`,
       tools: verification.tools,
       permissions: verification.permissions,
       mode: manifest?.mode ?? "readonly",

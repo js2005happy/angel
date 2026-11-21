@@ -73,6 +73,7 @@ import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
 import { handleGoal } from "./goal.ts";
 import { handleWorkflow } from "./workflow.ts";
+import { handleTemplate } from "./templates.ts";
 import { handleScript } from "./scriptCli.ts";
 import { handleHandover } from "./handoverCli.ts";
 import { handleReconciler } from "./reconciler.ts";
@@ -188,6 +189,7 @@ nyra governance audit <export|verify>   审计导出：治理审计日志导出�
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   带人批的自优化环：只起草改指令建议，须人批才生效，三数据集 + holdout 定放行（详见 docs/governance.md）
 nyra trust <register|list|show|evidence|promote|demote|review|check>   信任阶梯（GROK-6，缺口 43 治理深化）：新 agent / 新技能默认只读，攒够 N 次连续成功且零违规才升一级；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做（详见 docs/trust-ladder.md）
 nyra workflow <import|list|show|run|dry-run|resume|trial|activate|remove|verify>   声明式可复用工作流（缺口 25）：YAML/JSON 定义 + 三种执行形态（固定图/协调者/动态）+ 审批节点 + dry-run，激活前须真实数据试跑 + 人工确认（详见 docs/workflow.md）
+nyra template <list|show|builtin|import|trial|activate|run|dry-run|remove|publish|install>   业务流程模板库（缺口 46）：流程 DSL + 连接器 + 验收标准 + 试跑数据，激活前须真实数据试跑 + 人工确认，随机器人市场分发（详见 docs/templates.md）
 nyra script check <文件> [--language python|javascript|lua|php]   判定一个脚本纯不纯（白名单静态分析）：纯返回 0，不纯返回 1
 nyra script preauth <list|grant|revoke> --workflow <名字>   脚本摘要预授权：激活时自动钉纯脚本摘要，内容一改授权失效；只在例行里有效（详见 docs/script-purity.md）
 nyra handover contract <create|list|show|check|resolve|close>   交接契约的程序化验收（Pi Bot 借鉴第 2 条）：交付物 + 验收项 + 修正轮次上限；验收是程序核对，不调模型，不过打回、轮次用完停下等人（详见 docs/handover-contract.md）
@@ -240,7 +242,7 @@ nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|c
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   验收者：并行产出合入前先过验收门（确定性检查 + 便宜模型复核），未通过打回重做（详见 docs/verifier.md）
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
 nyra bughunt <install|status|scope|template|check>   授权漏洞挖掘技能包：范围卡 + 证伪验证 + 提交前七问 + 证据卫生，提交前核对（详见 docs/bughunt.md）
-nyra market <list|show|source|install|uninstall|installed|publish|template>   内置机器人市场：浏览、安装、发布技能包与机器人配置（第一阶段：静态策展仓库 + 本地客户端，详见 docs/marketplace.md）
+nyra market <list|show|source|install|uninstall|installed|publish|template>   内置机器人市场：浏览、安装、发布技能包、机器人配置与业务流程模板（第一阶段：静态策展仓库 + 本地客户端，详见 docs/marketplace.md）
 nyra account <status|login|logout|list|revoke|link|suspend|reactivate>   用户账号登录：Google / GitHub / 邮箱 / SSO，账号身份 + 会话（详见 docs/accounts.md）
 nyra sso <provider|login|status|scim>   企业 SSO：OIDC 身份提供方注册与登录、SCIM 账号开通（详见 docs/sso.md）
 nyra kb <create|list|add|search|ask|remove>  本地知识库
@@ -311,6 +313,7 @@ nyra governance audit <export|verify>   audit export: governance audit logs to S
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   human-approved self-optimization loop: drafts instruction changes only, needs approval to apply, three datasets + holdout decide release (see docs/governance.md)
 nyra trust <register|list|show|evidence|promote|demote|review|check>   trust ladder (GROK-6, gap 43 governance): new agents / skills start read-only, earn one level per N consecutive successes with zero violations; each recorded success may be randomly spot-checked and only counts after review; demotion any time (see docs/trust-ladder.md)
 nyra workflow <import|list|show|run|dry-run|resume|trial|activate|remove|verify>   declarative reusable workflows (gap 25): YAML/JSON definitions + three execution modes (fixed graph / coordinator / dynamic) + approval nodes + dry-run; activation needs a real-data trial run + human confirmation (see docs/workflow.md)
+nyra template <list|show|builtin|import|trial|activate|run|dry-run|remove|publish|install>   business process template library (gap 46): workflow DSL + connectors + acceptance criteria + trial data, distributed through the robot market; activation needs a real-data trial run + human confirmation (see docs/templates.md)
 nyra script check <file> [--language python|javascript|lua|php]   judge whether a script is pure (allowlist static analysis): exit 0 if pure, 1 if not
 nyra script preauth <list|grant|revoke> --workflow <name>   script digest pre-authorization: pure script digests are pinned at activation, a changed script voids the grant; routine-only (see docs/script-purity.md)
 nyra handover contract <create|list|show|check|resolve|close>   programmatic acceptance of handover contracts (Pi Bot idea 2): deliverables + checks + a fix-round cap; acceptance is a deterministic program check, not a model call — a failed check sends the work back, out of rounds stops for a human (see docs/handover-contract.md)
@@ -366,7 +369,7 @@ nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|c
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   verifier: parallel output passes an acceptance gate before merging (deterministic checks + cheap-model review); failures are sent back for rework (see docs/verifier.md)
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
 nyra bughunt <install|status|scope|template|check>   authorized bug-hunting skill pack: scope card + falsification + pre-submit seven questions + evidence hygiene, pre-submit gate (see docs/bughunt.md)
-nyra market <list|show|source|install|uninstall|installed|publish|template>   built-in bot marketplace: browse, install and publish skill packs and bot configs (phase 1: static curated repo + local client, see docs/marketplace.md)
+nyra market <list|show|source|install|uninstall|installed|publish|template>   built-in bot marketplace: browse, install and publish skill packs, bot configs and business process templates (phase 1: static curated repo + local client, see docs/marketplace.md)
 nyra account <status|login|logout|list|revoke|link|suspend|reactivate>   user account login: Google / GitHub / email / SSO, account identity + sessions (see docs/accounts.md)
 nyra sso <provider|login|status|scim>   enterprise SSO: OIDC identity provider registration and login, SCIM provisioning (see docs/sso.md)
 nyra kb <create|list|add|search|ask|remove>  local knowledge base
@@ -2432,7 +2435,7 @@ async function handleMarket(argv: string[], home: string): Promise<number> {
       if (!entries.length) { process.stdout.write("市场里没有条目\n"); return 0; }
       for (const l of entries) {
         const e = l.entry;
-        process.stdout.write(`- ${e.id}（${e.kind === "skill" ? "技能包" : "机器人配置"}）v${e.version} — ${e.description ?? "（无说明）"} — Bot Ready ${l.botReady.score}/100 — ${e.license ?? "无许可证"} — 来源 ${l.source}\n`);
+        process.stdout.write(`- ${e.id}（${e.kind === "skill" ? "技能包" : e.kind === "template" ? "业务流程模板" : "机器人配置"}）v${e.version} — ${e.description ?? "（无说明）"} — Bot Ready ${l.botReady.score}/100 — ${e.license ?? "无许可证"} — 来源 ${l.source}\n`);
       }
       return 0;
     }
@@ -2446,7 +2449,7 @@ async function handleMarket(argv: string[], home: string): Promise<number> {
       const botReady = mod.computeBotReadyForDir(resolved.entry, resolved.dir);
       process.stdout.write(`${mod.MARKET_WARNING}\n`);
       const e = resolved.entry;
-      process.stdout.write(`条目：${e.name} v${e.version}（${e.kind === "skill" ? "技能包" : "机器人配置"}，来源 ${resolved.source.name}:${e.id}）\n`);
+      process.stdout.write(`条目：${e.name} v${e.version}（${e.kind === "skill" ? "技能包" : e.kind === "template" ? "业务流程模板" : "机器人配置"}，来源 ${resolved.source.name}:${e.id}）\n`);
       if (e.description) process.stdout.write(`说明：${e.description}\n`);
       if (e.author) process.stdout.write(`作者：${e.author}\n`);
       process.stdout.write(`许可证：${e.license ?? "未声明"}\n`);
@@ -2540,7 +2543,7 @@ async function handleMarket(argv: string[], home: string): Promise<number> {
       const entries = mod.listInstalled(home);
       if (!entries.length) { process.stdout.write("还没有从市场安装过任何东西\n"); return 0; }
       for (const e of entries) {
-        process.stdout.write(`- ${e.item_name}（${e.kind === "skill" ? "技能包" : "机器人配置"}）v${e.version} — 来源 ${e.source} — ${e.status}${e.status === "uninstalled" && e.uninstalled_at ? `（${e.uninstalled_at} 卸载）` : ""} — Bot Ready ${e.bot_ready}/100 — ${e.installed_at}\n`);
+        process.stdout.write(`- ${e.item_name}（${e.kind === "skill" ? "技能包" : e.kind === "template" ? "业务流程模板" : "机器人配置"}）v${e.version} — 来源 ${e.source} — ${e.status}${e.status === "uninstalled" && e.uninstalled_at ? `（${e.uninstalled_at} 卸载）` : ""} — Bot Ready ${e.bot_ready}/100 — ${e.installed_at}\n`);
       }
       return 0;
     }
@@ -2563,7 +2566,7 @@ async function handleMarket(argv: string[], home: string): Promise<number> {
       }
       const { store, runId } = newRun(`marketplace publish ${"skill" in input ? input.skill : input.dir}`);
       const result = await mod.publishMarketplaceEntry(home, input, { config, dryRun, outDir, license, store, runId });
-      process.stdout.write(`${dryRun ? "试运行（未写出任何文件，未记账本）" : "已打包"}：${result.itemName} v${result.version}（${result.kind === "skill" ? "技能包" : "机器人配置"}）\n`);
+      process.stdout.write(`${dryRun ? "试运行（未写出任何文件，未记账本）" : "已打包"}：${result.itemName} v${result.version}（${result.kind === "skill" ? "技能包" : result.kind === "template" ? "业务流程模板" : "机器人配置"}）\n`);
       process.stdout.write(`输出目录：${result.outDir}\n`);
       process.stdout.write(`文件：${result.files.join("、")}\n`);
       process.stdout.write(`Bot Ready 自评：${result.botReady.score}/100${result.botReady.missing.length ? `（缺：${result.botReady.missing.join("、")}）` : "（满分）"}\n`);
@@ -5823,6 +5826,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
   if (args.subcommand === "goal") return handleGoal(args.subArgs ?? [], home);
   if (args.subcommand === "workflow") return handleWorkflow(args.subArgs ?? [], home);
+  if (args.subcommand === "template") return handleTemplate(args.subArgs ?? [], home);
   if (args.subcommand === "script") return handleScript(args.subArgs ?? [], home);
   if (args.subcommand === "handover") return handleHandover(args.subArgs ?? [], home);
   if (args.subcommand === "reconciler") return handleReconciler(args.subArgs ?? [], home);
