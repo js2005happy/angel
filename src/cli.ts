@@ -126,6 +126,7 @@ import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
 import { listPresets } from "./mcpPresets.ts";
 import { buildNotifierFromConfig, handleBot, type BotNotifier } from "./bot/index.ts";
+import { handleChannels } from "./channels/cli.ts";
 import { resolveAgentWorkdir } from "./bot/binding.ts";
 import {
   PluginError, installPlugin, uninstallPlugin, listPlugins, verifyPlugin,
@@ -218,6 +219,7 @@ nyra bot slack <start|stop|status>   Bot 渠道：Slack（Socket Mode 收事件 
 nyra bot whatsapp <start|stop|status>   Bot 渠道：WhatsApp（Cloud API 发消息 + webhook 收消息，需 access token + 号码 id + 公网入口，详见 docs/bot.md）
 nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>   Bot 缺口 42：每 Bot 一台持久电脑（持久 workspace + 浏览器 profile + 凭证 Vault + 隔离分级，详见 docs/bot-computer.md）
 nyra bot status   Bot 总览：Telegram/Discord/Slack/WhatsApp 运行态 + 电脑数量与资源
+nyra channels <start|stop|status|health|bindings|explain>   缺口 27：常驻多渠道网关（四渠道一个进程、bindings 确定性路由、渠道会话默认进沙箱、每条入站路由进证据链，详见 docs/channels.md）
 nyra bot redlines <status|list|show|tighten|loosen|set>   Bot 缺口 51：业务动作硬红线表——发消息/付款/删除永远须人批，转钱/交易证券永远禁做（详见 docs/business-redlines.md）
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   独立审查层：敏感工具调用先过独立审查 agent（便宜模型、独立上下文），审查失败即拦截（详见 docs/reviewer.md）
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   验收者：并行产出合入前先过验收门（确定性检查 + 便宜模型复核），未通过打回重做（详见 docs/verifier.md）
@@ -334,6 +336,7 @@ nyra bot slack <start|stop|status>   bot channel: Slack (Socket Mode receive + W
 nyra bot whatsapp <start|stop|status>   bot channel: WhatsApp (Cloud API send + webhook receive, needs access token + phone number id + public entry, see docs/bot.md)
 nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>   bot gap 42: one persistent computer per Bot (persistent workspace + browser profile + credential vault + isolation tiers, see docs/bot-computer.md)
 nyra bot status   bot overview: Telegram/Discord/Slack/WhatsApp state + computer count and resources
+nyra channels <start|stop|status|health|bindings|explain>   gap 27: persistent multi-channel gateway (four channels in one process, bindings-based deterministic routing, channel sessions sandboxed by default, every inbound route in the evidence chain, see docs/channels.md)
 nyra bot redlines <status|list|show|tighten|loosen|set>   bot gap 51: business-action hard redlines — sending messages / payments / deletions always need approval, moving money / trading securities are always forbidden (see docs/business-redlines.md)
 nyra reviewer <status|enable|disable|set-model|add-rule|remove-rule|list-rules|check>   independent review layer: sensitive tool calls go through an independent reviewer agent first (cheap model, independent context); review failure blocks (see docs/reviewer.md)
 nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|remove-rule|list-rules|check>   verifier: parallel output passes an acceptance gate before merging (deterministic checks + cheap-model review); failures are sent back for rework (see docs/verifier.md)
@@ -5527,6 +5530,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "mail-inbox") return handleMailInbox(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "responsibility") return handleResponsibility(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "bot") return handleBot(args.subArgs ?? [], home);
+  if (args.subcommand === "channels") return handleChannels(args.subArgs ?? [], home);
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "verifier") return handleVerifier(args.subArgs ?? [], home);
   if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);

@@ -732,6 +732,8 @@ export const AUDIT_SOURCES: AuditSource[] = [
   { file: "trust-ladder-audit.jsonl", label: "trust" },
   // 备用模型切换通知：每次真切换记一行模型切换审计，进同一份 SIEM 导出。
   { file: "model-switch-audit.jsonl", label: "model_switch" },
+  // 缺口 27：渠道路由审计（每条入站的路由决定：routed/dropped + 绑定/规则/原因）也是治理审计日志，进同一份 SIEM 导出。
+  { file: "bot-audit.jsonl", label: "bot" },
 ];
 
 /** 稳定序列化（键排序，递归）：同一条记录在任何机器上算出的哈希都一样。 */
