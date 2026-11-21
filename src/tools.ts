@@ -135,6 +135,12 @@ export interface DelegateOptions {
   /** GROK-1：内部机械步（合并子 agent）——不走团队分派门，只做只读汇总。
    * 只有 agent.ts 内部调用才传，模型调 delegate 工具永远不传。 */
   internal?: boolean;
+  /**
+   * H-7：orchestrator 授予——为 true 时这个子 agent 可以再委派（嵌套编排
+   * opt-in）。默认不开：子 agent 是 flat 的，再调 delegate 直接被拒。
+   * 只由父级本次委派显式授予；子 agent 不能给自己开，也不能替别人开。
+   */
+  orchestrator?: boolean;
 }
 
 export interface ToolContext {
@@ -360,7 +366,7 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("read_skill", "按名读取一个技能的全文（描述、适用时机与完整步骤）。只读，不改文件、不需审批；不存在的技能名会返回可用技能列表",
     { name: { type: "string", description: "技能名，如 debugging" } },
     ["name"]),
-  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响；output_schema 给了时子 agent 的最终回答里必须包含符合该 JSON Schema 的 JSON，父级校验、失败给一次有界纠正轮。GROK-1：团队模式下 agent 填成员名（只认团队成员），分派给该成员的 Soul 跑；团队模式不填 agent 会被拒绝",
+  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每层最多 8 个子 agent（每层独立记账），最多嵌套 2 层（config.delegate_max_depth 可配 1–5），单个子任务最多 12 轮。子 agent 默认不能再委派（flat）：委派时传 orchestrator: true 才允许它再派子 agent（嵌套编排 opt-in）；循环委派（派回已在委派链里的人）直接拒绝。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响；output_schema 给了时子 agent 的最终回答里必须包含符合该 JSON Schema 的 JSON，父级校验、失败给一次有界纠正轮。GROK-1：团队模式下 agent 填成员名（只认团队成员），分派给该成员的 Soul 跑；团队模式不填 agent 会被拒绝",
     {
       task: { type: "string", minLength: 1 },
       max_turns: { type: "integer", default: 6, minimum: 1, maximum: 12 },
@@ -369,6 +375,7 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
       model: { type: "string" },
       output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象）" },
       agent: { type: "string", description: "团队模式下分派给哪个成员（Soul agent 名）；只认团队成员" },
+      orchestrator: { type: "boolean", default: false, description: "H-7：授予这个子 agent 的 orchestrator 角色，允许它再委派（嵌套编排 opt-in）；默认 false，子 agent 是 flat 的" },
     },
     ["task"]),
   schema("delegate_parallel", "把多个互不依赖的子任务并行交给子 agent 跑并汇总结果（缺口 3a，opt-in：只有显式调这个工具才并行）。默认最多 5 个同时跑（硬顶，给再大也只按 5 跑）、单个子任务 10 分钟超时；失败/超时的线程不拖垮其他线程，只返回成功者的结果并注明失败原因与已花成本。每个线程继承 delegate 的工具白名单与 worktree 隔离，收敛规则写进子任务系统提示；本批不做自动验证，验证结论待 review queue 验收。H-6：background 默认 true——立即回 handle（后台跑，等回填），不阻塞聊天，全部跑完以单条消息回填收件箱（nyra fanout show <id> 查进度，任务板上有行）；要等结果传 background: false。H-5：merge: true 时批跑完再跑一个合并步（只读合成子 agent 把各线程结果合成为一份交付物，确定性检查后进审阅队列），合并要花一次模型调用，成本如实记账",
@@ -385,9 +392,10 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
             model: { type: "string" },
             output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象），与 delegate 同义" },
             agent: { type: "string", description: "团队模式下这条线程分派给哪个成员（Soul agent 名），与 delegate 的 agent 同义" },
+            orchestrator: { type: "boolean", default: false, description: "H-7：授予这条线程的子 agent 的 orchestrator 角色，允许它再委派，与 delegate 的 orchestrator 同义" },
           },
         },
-        description: "并行子任务列表（每项至少含 task；isolation/tools/model/output_schema/agent 与 delegate 同义）",
+        description: "并行子任务列表（每项至少含 task；isolation/tools/model/output_schema/agent/orchestrator 与 delegate 同义）",
       },
       max_concurrency: { type: "integer", default: 5, minimum: 1, maximum: 5, description: "同时跑的线程数上限，默认 5，也是硬顶" },
       timeout_ms: { type: "integer", default: 600000, minimum: 1000, description: "单个子任务超时（毫秒），默认 600000（10 分钟），到点即判该线程超时" },
@@ -2148,6 +2156,8 @@ async function toolDelegateParallel(
     }
     // GROK-1：并行线程的成员分派（与 delegate 的 agent 同义）。
     if (typeof raw.agent === "string" && raw.agent.trim()) spec.agent = raw.agent.trim();
+    // H-7：并行线程的 orchestrator 授予（只认 true；没给就是 flat）。
+    if (raw.orchestrator === true) spec.orchestrator = true;
     tasks.push(spec);
   }
   const merge = extra.merge === true;
@@ -2617,6 +2627,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
             ? { outputSchema: args.output_schema as Record<string, unknown> } : {}),
           // GROK-1：团队分派的成员名（非团队模式忽略；团队模式下门在 delegateDetailed 里校验）。
           ...(typeof args.agent === "string" && args.agent.trim() ? { agent: args.agent.trim() } : {}),
+          // H-7：orchestrator 授予（只认 true；没给就是 flat）。
+          ...(args.orchestrator === true ? { orchestrator: true } : {}),
         },
       );
       case "delegate_parallel": return await toolDelegateParallel(

@@ -16,7 +16,7 @@ import {
   listProfiles, validateMode, resolveSandbox, PROVIDERS, VERSION, envVar, getProviderPresets, saveConfig,
 } from "./config.ts";
 import { Provider, FallbackProvider, buildProviderChain, makeModelFactory, ProviderError, switchTriggerFor, type RetryRecord, type SwitchRecord } from "./providers.ts";
-import { Agent, AgentError, type ContextUsage } from "./agent.ts";
+import { Agent, AgentError, resolveMaxDelegateDepth, type ContextUsage } from "./agent.ts";
 import { RunStore, RunRecorder, prepareResume, loadCompletedWriteKeys, resolveVerifyOrigin, acceptVerifyCommand, resolveVerifySettings, downgradeCompletionClaim, formatRunReport, verifyEvidenceChain, formatEvidenceReport, computeRunStats } from "./runs.ts";
 import { buildTimeline, formatTimelineText, formatReplayText, exportTimelineMarkdown } from "./timeline.ts";
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
@@ -796,6 +796,8 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       teamRole: opts?.teamRole ?? null,
       // 缺口 24：子 agent 独立推理档位（delegate_reasoning_effort）。
       delegateReasoningEffort: typeof config.delegate_reasoning_effort === "string" ? config.delegate_reasoning_effort : null,
+      // H-7：嵌套委派深度上限（config.delegate_max_depth，默认 2，可配 1–5）。
+      maxDelegateDepth: resolveMaxDelegateDepth((config as Record<string, unknown>).delegate_max_depth),
       // 缺口 10：独立审查层用的模型名（reviewer.model / smart_approvals
       // reviewer_model / 默认 deepseek-flash，见 reviewer.ts）。
       reviewerModel: resolveReviewerModel(config).model,

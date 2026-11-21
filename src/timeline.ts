@@ -622,8 +622,18 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       }
       case "delegate_start": {
         const taskId = str(ev.task_id) ?? "?";
-        const step = push(at, "delegate", `子任务 ${taskId} 启动（模型 ${str(ev.model) ?? "未知"}，最多 ${num(ev.max_turns) ?? "?"} 轮）`, null, null, null);
+        const depth = num(ev.depth);
+        const layerRemaining = num(ev.layer_remaining);
+        const depthNote = depth !== null ? `第 ${depth} 层` : "";
+        const budgetNote = layerRemaining !== null ? `，本层预算剩 ${layerRemaining}` : "";
+        const step = push(at, "delegate", `子任务 ${taskId} 启动（${depthNote ? depthNote + "，" : ""}模型 ${str(ev.model) ?? "未知"}，最多 ${num(ev.max_turns) ?? "?"} 轮${budgetNote}）`, null, null, null);
         pendingDelegates.set(taskId, step);
+        break;
+      }
+      case "delegate_rejected": {
+        const taskId = str(ev.task_id) ?? "?";
+        const depth = num(ev.depth);
+        push(at, "delegate", `委派被拒：子任务 ${taskId}${depth !== null ? `（第 ${depth} 层）` : ""}——${str(ev.reason) ?? "原因未记"}`, null, false, null);
         break;
       }
       case "delegate_end": {

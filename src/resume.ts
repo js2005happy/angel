@@ -57,6 +57,9 @@ export interface SubagentRun {
   mandateId: string | null;
   /** H-3：父运行 id（可空）。子树停用时沿 parentRunId 递归。 */
   parentRunId: string | null;
+  /** H-7：委派层级（可空，老行没有）：delegate 派出的子 agent 是第几层
+   * （根 agent 的直接子任务是第 1 层）；花名册详情里可见。 */
+  delegateDepth: number | null;
   /** H-3：已请求停止的时间 / 发起人 / 备注（可空）。请求是请求，不是已停。 */
   stopRequestedAt: string | null;
   stopRequestedBy: string | null;
@@ -167,7 +170,7 @@ export function findRunStore(home: string, runId: string): { store: RunStore; st
 
 export function registerSubagentRun(
   home: string,
-  opts: { runId: string; agent?: string; sessionId?: string; workdir?: string; mode?: string; autoResume?: boolean; unattended?: boolean; mandateId?: string; parentRunId?: string },
+  opts: { runId: string; agent?: string; sessionId?: string; workdir?: string; mode?: string; autoResume?: boolean; unattended?: boolean; mandateId?: string; parentRunId?: string; delegateDepth?: number },
 ): SubagentRun {
   const registry = loadSubagentRegistry(home);
   const existing = registry.runs.find((r) => r.runId === opts.runId);
@@ -181,6 +184,8 @@ export function registerSubagentRun(
     autoResume: opts.autoResume ?? false, unattended: opts.unattended ?? false,
     mandateId: opts.mandateId ?? null,
     parentRunId: opts.parentRunId ?? null,
+    // H-7：委派层级（老行没有时为 null，由花名册按 parentRunId 现算兜底）。
+    delegateDepth: opts.delegateDepth ?? null,
     stopRequestedAt: null, stopRequestedBy: null, stopNote: null, stoppedAt: null,
     steerQueue: [],
     createdAt: at, updatedAt: at,

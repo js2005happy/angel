@@ -35,6 +35,8 @@ model?: string;
 outputSchema?: Record<string, unknown>;
 /** GROK-1：团队模式下这条线程分派给哪个成员（Soul agent 名）；只认团队成员。 */
 agent?: string;
+/** H-7：授予这条线程的子 agent 的 orchestrator 角色（允许它再委派）；默认不开。 */
+orchestrator?: boolean;
 }
 
 export type ParallelThreadStatus = "ok" | "failed" | "timeout" | "rejected";

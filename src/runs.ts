@@ -309,8 +309,13 @@ office_exported: ["format", "bytes", "verified", "unverified", "file_hash"],
 // 转写来源、转写文本指纹、云端花费。只记元数据与 SHA-256 前 12 位指纹，
 // 不记字幕/转写原文、不记完整 URL（查询串里可能带 token）、不记 cookies。
 media_ingested: ["host", "title_hash", "duration_seconds", "bytes", "source", "text_hash", "cost_usd"],
-delegate_start: ["task_id", "model", "max_turns"],
+// H-7：delegate_start 加 depth（子级是第几层）与 layer_remaining（本层
+// 预算剩余，每层独立记账的可见落点）；delegate_rejected 是 H-7 四道门
+// （深度上限 / flat / 循环 / 本层预算）的拒绝记录——哪个任务、为什么、
+// 哪一层。只记元数据，不记任务文本。
+delegate_start: ["task_id", "model", "max_turns", "depth", "layer_remaining"],
 delegate_end: ["task_id", "ok", "turns", "spent_usd", "verification"],
+delegate_rejected: ["task_id", "reason", "depth"],
 llm_span: ["model", "duration_ms", "prompt_tokens", "completion_tokens", "total_tokens", "ok"],
 final: [],
 max_turns: [],

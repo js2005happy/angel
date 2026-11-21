@@ -34,6 +34,8 @@ export interface RosterRow {
   parentRunId: string | null;
   kanbanTaskId: string | null;
   depth: number;
+  /** H-7：委派层级（注册表里记的 delegateDepth；老行没有时为 null）。 */
+  delegateDepth: number | null;
 }
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "stopped"]);
@@ -69,6 +71,9 @@ function rowFromRegistry(r: SubagentRun, nowMs: number): RosterRow {
     currentAction: r.lastStep ? r.lastStep.slice(0, 60) : null,
     stopRequested, parentRunId: r.parentRunId ?? null,
     kanbanTaskId: null, depth: 0,
+    // H-7：老行没有 delegateDepth 字段时按 parentRunId 现算的层级兜底
+    // （buildRoster 里统一回填，这里先置 null）。
+    delegateDepth: typeof r.delegateDepth === "number" ? r.delegateDepth : null,
   };
 }
 
@@ -85,6 +90,7 @@ function rowFromKanbanTask(t: KanbanTask, nowMs: number): RosterRow {
     status: t.status, stage, elapsedMs,
     currentAction: t.lastError ? t.lastError.slice(0, 60) : t.title.slice(0, 60),
     stopRequested: false, parentRunId: null, kanbanTaskId: t.id, depth: 0,
+    delegateDepth: null,
   };
 }
 
@@ -183,6 +189,7 @@ export function formatRosterDetailText(detail: RosterDetail): string {
     `阶段：${stageDisplay(row.stage)}`,
     `状态：${row.status}${row.stopRequested ? "（已请求停止）" : ""}`,
     `agent：${row.agent}${row.parentRunId ? ` · 父运行：${row.parentRunId}` : ""}${row.kanbanTaskId ? ` · 任务板：${row.kanbanTaskId}` : ""}`,
+    `委派层级：${row.delegateDepth !== null ? `第 ${row.delegateDepth} 层` : "未记（老行）"}`,
     `已耗时：${formatDurationMs(row.elapsedMs)}`,
     `当前动作：${row.currentAction ?? "未记"}`,
     `运行记录状态：${runStatus ?? "找不到运行记录"}`,

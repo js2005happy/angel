@@ -95,9 +95,20 @@ export class AgentError extends Error {
 
 // 单个根任务内的递归委派与计费上限；所有子级共享同一个计数器，
 // 每个新根任务重新获得一份额度。
-export const MAX_DELEGATE_DEPTH = 3;
+// H-7：嵌套深度上限默认 2（以前是 3，行为变化是有意的）；可配
+// config.delegate_max_depth（整数 1–5，非法回 2）。
+export const MAX_DELEGATE_DEPTH = 2;
+export const MAX_DELEGATE_DEPTH_LIMIT = 5;
 export const MAX_DELEGATE_CALLS = 8;
 export const MAX_DELEGATE_TURNS = 12;
+
+/** H-7：解析 delegate_max_depth 配置——整数 1–5 有效，其余回默认 2。 */
+export function resolveMaxDelegateDepth(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw)) return MAX_DELEGATE_DEPTH;
+  if (raw < 1) return 1;
+  if (raw > MAX_DELEGATE_DEPTH_LIMIT) return MAX_DELEGATE_DEPTH_LIMIT;
+  return raw;
+}
 
 // P3 延迟加载：MCP 工具超过这个数时只发最相关的前 8 个，其余靠 search_tools 拉回。
 export const MCP_LAZY_LOAD_THRESHOLD = 8;
@@ -119,21 +130,41 @@ export function toTouchedPath(workdir: string, raw: string): string {
   return norm.replace(/^\.\//, "");
 }
 
+/**
+ * H-7：每层独立记账的子 agent 预算——每层（委派深度）各有 MAX_DELEGATE_CALLS
+ * 个名额，互不挤占；同一计数器对象沿委派链往下传（新根任务重置）。
+ * 旧版是一个全树共用的计数器：深层嵌套会把顶层的名额吃光，层与层之间
+ * 互相挤占；现按层分开，失败时报错写清是哪一层满了。
+ */
 export class DelegationBudget {
-  remaining = MAX_DELEGATE_CALLS;
-  reset(): void { this.remaining = MAX_DELEGATE_CALLS; }
-  consume(): boolean {
-    if (this.remaining <= 0) return false;
-    this.remaining -= 1;
+  private usedByLayer = new Map<number, number>();
+  /** 占第 depth 层一个名额；满了返回 false（不占）。depth 缺省 = 0（顶层）。 */
+  consume(depth = 0): boolean {
+    const used = this.usedByLayer.get(depth) ?? 0;
+    if (used >= MAX_DELEGATE_CALLS) return false;
+    this.usedByLayer.set(depth, used + 1);
     return true;
   }
+  /** 第 depth 层还剩几个名额；缺省 = 0（顶层）。 */
+  remaining(depth = 0): number {
+    return MAX_DELEGATE_CALLS - (this.usedByLayer.get(depth) ?? 0);
+  }
+  /** 各层用量快照（按层升序）：第几层、已用几个、还剩几个。 */
+  layerUsage(): { depth: number; used: number; remaining: number }[] {
+    return [...this.usedByLayer.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([depth, used]) => ({ depth, used, remaining: MAX_DELEGATE_CALLS - used }));
+  }
+  reset(): void { this.usedByLayer.clear(); }
 }
 
 export const SYSTEM_PROMPT_BASE =
   "你是 Nyra，一个全能 AI 助手，通过调用工具完成任务，而不是只靠说话。\n" +
   "多步骤任务先调用 plan 写计划，再按计划执行；复杂子任务可以用 delegate 交给子 agent；" +
   "多个互不依赖的子任务可以用 delegate_parallel 并行跑（默认最多 5 个同时跑、单个子任务 10 分钟超时，失败的线程不拖垮其他线程）；" +
-  "每次任务最多 8 个子 agent，最多嵌套 3 层，每个子任务最多 12 轮。\n" +
+  "每次任务最多 8 个子 agent，最多嵌套 2 层，每个子任务最多 12 轮。\n" +
+  "子 agent 默认不能再委派（flat）：只有被授予 orchestrator 角色的子 agent\n" +
+  "才能再派子 agent（委派时传 orchestrator: true 显式开启，每层预算独立记账）。\n" +
   "需要读取文件、执行命令、联网查资料时直接调用工具；不要猜测文件内容，不要编造信息。\n" +
   "修改文件前先调用 read_file 了解现状；edit_file 的 old_text 必须精确匹配且唯一。\n" +
   "shell 命令保持简单、安全，不执行破坏性命令。\n" +
@@ -173,6 +204,21 @@ export interface AgentOptions {
   sessionRules?: SessionRules | null;
   delegateDepth?: number;
   delegateBudget?: DelegationBudget | null;
+  /**
+   * H-7：orchestrator 角色——为 true 时这个子 agent 可以再委派（嵌套编排
+   * opt-in）。默认 false：子 agent 是 flat 的，再调 delegate 直接被拒。
+   * 根 agent（delegateDepth 0）不受此限，它是用户的 agent，本来就能委派。
+   * 只有父级委派时显式传 orchestrator: true 才能授予，模型不能自封。
+   */
+  orchestrator?: boolean;
+  /** H-7：嵌套深度上限（默认 2，config.delegate_max_depth 可配 1–5）；子级继承父级的值。 */
+  maxDelegateDepth?: number;
+  /**
+   * H-7：委派链——从根 agent 到本 agent 的 Soul 名（防递归用）。根默认
+   * [自己的 Soul]；子级是 [...父级链, 自己的 Soul]。分派时目标 agent
+   * 已在链里就是循环委派，直接拒绝。
+   */
+  delegateChain?: string[];
   /** H-2/H-3：本 Agent 在子 agent 注册表里的运行 id——只对 delegate 派出的
    * 子 agent 设；设了才跑委派检查点（引导消费 + 停止响应 + 心跳），主 agent 不设。 */
   subagentRunId?: string | null;
@@ -407,6 +453,12 @@ export class Agent {
   channel: string | null;
   delegateDepth: number;
   private delegateBudget: DelegationBudget;
+  /** H-7：本 agent 有没有 orchestrator 角色（子 agent 再委派的开关）。 */
+  orchestrator: boolean;
+  /** H-7：本 agent 的嵌套深度上限（默认 2，config 可配 1–5）。 */
+  maxDelegateDepth: number;
+  /** H-7：从根 agent 到本 agent 的 Soul 名链（防循环委派）。 */
+  delegateChain: string[];
   private maxCostUsd: number | null;
   private pricing: Pricing | null;
   /** 缺口 29：月度上限与本月已花（不含本次运行）；见 AgentOptions。 */
@@ -523,6 +575,11 @@ export class Agent {
     this.channel = opts.channel ?? null;
     this.delegateDepth = opts.delegateDepth ?? 0;
     this.delegateBudget = opts.delegateBudget ?? new DelegationBudget();
+    // H-7：orchestrator 角色（默认不开）+ 深度上限（默认 2）+ 委派链
+    // （默认只有自己的 Soul；显式给了链就用给的——子级由父级传进来）。
+    this.orchestrator = opts.orchestrator ?? false;
+    this.maxDelegateDepth = resolveMaxDelegateDepth(opts.maxDelegateDepth);
+    this.delegateChain = opts.delegateChain ?? [this.soulAgent];
     // H-2/H-3：委派检查点认这个 id——delegateDetailed 派子 agent 时传 taskId。
     this.subagentRunId = opts.subagentRunId ?? null;
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
@@ -1909,14 +1966,31 @@ export class Agent {
       !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_DELEGATE_TURNS) {
       return delegateFailed(`错误：子任务 max_turns 必须在 1 到 ${MAX_DELEGATE_TURNS} 之间`);
     }
-    if (this.delegateDepth >= MAX_DELEGATE_DEPTH) return delegateFailed(`错误：子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`);
+    // taskId 提早生成：H-7 的门拒绝也要进证据链（delegate_rejected 事件认它）。
+    const taskId = `task-${randomBytes(4).toString("hex")}`;
+    // H-7：被拒的委派进证据链（哪个任务、为什么、哪一层；不记任务文本）。
+    // 观察器故障绝不破坏主流程。
+    const emitRejected = (reason: string): void => {
+      try { this.emit("delegate_rejected", { task_id: taskId, reason, depth: this.delegateDepth }); } catch { /* ignore */ }
+    };
+    const reject = (reason: string): DelegateResult => {
+      emitRejected(reason);
+      return delegateFailed(`错误：${reason}`);
+    };
+    // H-7：深度上限（默认 2，config.delegate_max_depth 可配 1–5）；内部机械步
+    // （H-5 合并子 agent，只读合成、不再委派）不占这道门。
+    if (!opts.internal && this.delegateDepth >= this.maxDelegateDepth) {
+      return reject(`子任务已达到最大委派深度（${this.maxDelegateDepth} 层）`);
+    }
     // GROK-1：团队模式下的分派门——只有参谋长能分派，agent 只认团队成员，
     // 成员接单须有完整 Charter；内部机械步（合并子 agent）走 internal 旁路。
+    // H-7：被授予 orchestrator 角色的成员也可以再往下分派（仍须指定 agent、
+    // 仍须完整 Charter）；默认仍是只有参谋长能分派。
     // 门在预算之前：被门拒绝的分派不占子 agent 预算。
     if (this.teamId && !opts.internal) {
       const team = (() => { try { return getTeam(this.home, this.teamId!); } catch { return null; } })();
       if (!team || team.status !== "active") return delegateFailed("错误：团队模式已失效（团队不存在或已解散），分派被拒绝");
-      if (this.teamRole !== "chief") return delegateFailed("错误：团队模式下只有参谋长能分派——下游之间不直接互发指令，成员之间要交接走 beads 或找参谋长");
+      if (this.teamRole !== "chief" && !this.orchestrator) return delegateFailed("错误：团队模式下只有参谋长能分派——下游之间不直接互发指令，成员之间要交接走 beads 或找参谋长；被授予 orchestrator 角色的成员除外");
       if (opts.agent === undefined) return delegateFailed(`错误：团队模式下分派须指定 agent（成员名，只认 ${team.members.join("、")}）`);
       if (!team.members.includes(opts.agent)) return delegateFailed(`错误：delegate 的 agent 只认团队 ${team.name} 的成员（${team.members.join("、")}），${opts.agent} 不在里面`);
       try {
@@ -1925,7 +1999,23 @@ export class Agent {
         return delegateFailed(`错误：${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    if (!this.delegateBudget.consume()) return delegateFailed(`错误：本次任务最多创建 ${MAX_DELEGATE_CALLS} 个子 Agent`);
+    // H-7：默认 flat——子 agent 再委派须有 orchestrator 角色；根 agent
+    // （第 0 层）不受此限。内部机械步同样走旁路（它本来就不再委派）。
+    // 团队门先于 flat 门：团队成员收到的应是更具体的团队门文案。
+    if (!opts.internal && this.delegateDepth >= 1 && !this.orchestrator) {
+      return reject("子 agent 默认不能再委派（flat 模式）：只有被授予 orchestrator 角色的子 agent 才能再派子 agent；父级委派时传 orchestrator: true 显式开启");
+    }
+    // H-7：防循环委派——目标 agent 已在当前委派链里就是环（A 派 B、B 派 A
+    // 或更长的环），直接拒绝。只对显式指定的 agent 查：没指定时子级继承
+    // 父级的 Soul，继承不是循环（那只是深度）。门在预算之前，不占预算。
+    if (opts.agent !== undefined && opts.agent.trim() && this.delegateChain.includes(opts.agent.trim())) {
+      return reject(`循环委派被拒绝：${opts.agent.trim()} 已在当前委派链（${this.delegateChain.join(" → ")}）里`);
+    }
+    // H-7：每层独立记账——占的是本层的名额（每层最多 MAX_DELEGATE_CALLS 个，
+    // 互不挤占）；满了报错写清是哪一层。
+    if (!this.delegateBudget.consume(this.delegateDepth)) {
+      return reject(`第 ${this.delegateDepth} 层子 agent 预算已用完（每层最多 ${MAX_DELEGATE_CALLS} 个，独立记账）`);
+    }
 
     // H-4：契约本身写坏了要在委派前拒绝，不等跑完才发现。
     let schema: Record<string, unknown> | null = null;
@@ -1935,7 +2025,6 @@ export class Agent {
       schema = opts.outputSchema;
     }
 
-    const taskId = `task-${randomBytes(4).toString("hex")}`;
     const notes: string[] = [];
 
     // S4-1：工具白名单。子 Agent 默认继承父级工具集；给了 tools 就只保留名单内的，
@@ -2036,12 +2125,25 @@ export class Agent {
       registerSubagentRun(this.home, {
         runId: taskId, agent: this.soulAgent, workdir: childWorkdir, mode: this.mode,
         parentRunId: this.subagentRunId ?? undefined,
+        // H-7：注册表记下子级的委派层级（花名册详情里可见）。
+        delegateDepth: this.delegateDepth + 1,
       });
       registered = true;
     } catch (err: unknown) {
       notes.push(`子 agent 注册表写入失败，本次无花名册/停止/引导支持：${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // H-7：子级的 Soul 名（分派指定了 agent 时用该成员的 Soul，没指定沿用
+    // 父级）与委派链（父级链 + 子级 Soul；防循环委派认它）。
+    const childSoul = opts.agent ?? this.soulAgent;
+    // H-7：被授予 orchestrator 角色的子级要在系统提示里看到这件事（它能
+    // 再委派、最多嵌套几层、不要循环委派），否则角色只是个空开关。
+    let childSystemInstructions = opts.parallel
+      ? `${this.systemInstructions}\n${parallelConvergenceNote(opts.parallel.index, opts.parallel.total)}`
+      : this.systemInstructions;
+    if (opts.orchestrator) {
+      childSystemInstructions += `\n（你是 orchestrator：你可以把子任务再派给别的子 agent，但最多嵌套 ${this.maxDelegateDepth} 层；不要把任务派回已经在委派链里的人，不要循环委派。）`;
+    }
     const child = new Agent(provider, {
       workdir: childWorkdir,
       mode: this.mode,
@@ -2058,14 +2160,17 @@ export class Agent {
       sessionRules: this.ctx.sessionRules ?? null,
       delegateDepth: this.delegateDepth + 1,
       delegateBudget: this.delegateBudget,
+      // H-7：orchestrator 角色只由父级本次委派显式授予（默认不开）；深度上限
+      // 与委派链一路传下去。
+      orchestrator: opts.orchestrator ?? false,
+      maxDelegateDepth: this.maxDelegateDepth,
+      delegateChain: [...this.delegateChain, childSoul],
       // H-2/H-3：子 agent 的注册表行 id——检查点（引导消费 + 停止响应 +
       // 心跳）认它；没注册成功时传 null，检查点不跑。
       subagentRunId: registered ? taskId : null,
       // 缺口 3a：并行线程的收敛规则写进子任务的系统提示（只做自己那件任务、
       // 不碰别线程的文件、收尾写收敛小结）；串行 delegate 不受影响。
-      systemInstructions: opts.parallel
-        ? `${this.systemInstructions}\n${parallelConvergenceNote(opts.parallel.index, opts.parallel.total)}`
-        : this.systemInstructions,
+      systemInstructions: childSystemInstructions,
       memoryPath: this.memoryPath,
       contextWindowTokens: this.usage.configuredWindow,
       contextWindowSource: this.usage.windowSource,
@@ -2085,7 +2190,7 @@ export class Agent {
       // GROK-1：子 agent 跑谁的 Soul、哪个团队、什么角色——分派指定了 agent
       // 时子级就用该成员的 Soul（换魂不换队：teamId 一路传下去，角色是 member）；
       // 没指定时沿用父级 Soul（非团队模式的老行为）。
-      soulAgent: opts.agent ?? this.soulAgent,
+      soulAgent: childSoul,
       teamId: this.teamId,
       teamRole: this.teamId ? "member" : null,
       multiModelFactory: this.ctx.multiModelFactory,
@@ -2178,7 +2283,8 @@ export class Agent {
       // 两次运行的钱都在里面，只记一次才不会 double-count。
       // 缺口 21：子任务起止进父级事件链（只记 task_id/模型/轮数上限，不记任务文本）。
       try {
-        this.emit("delegate_start", { task_id: taskId, model: child.provider.model ?? null, max_turns: maxTurns });
+        // H-7：启动事件记下子级的层级与本层预算剩余（每层独立记账的可见落点）。
+        this.emit("delegate_start", { task_id: taskId, model: child.provider.model ?? null, max_turns: maxTurns, depth: this.delegateDepth + 1, layer_remaining: this.delegateBudget.remaining(this.delegateDepth) });
       } catch { /* 观察器故障绝不破坏主流程 */ }
       const vcfg = this.verifierCfg();
       const reworkOn = vcfg.enabled && vcfg.rework;
@@ -2373,13 +2479,13 @@ export class Agent {
     const emptyIndex = tasks.findIndex((t) => !t || typeof t.task !== "string" || !t.task.trim());
     if (emptyIndex >= 0) throw new Error(`并行委派第 ${emptyIndex + 1} 个子任务为空`);
     // 深度已满：一个线程都不启动，全部被拒（不消耗预算）。
-    if (this.delegateDepth >= MAX_DELEGATE_DEPTH) {
+    if (this.delegateDepth >= this.maxDelegateDepth) {
       const results: ParallelThreadResult[] = tasks.map((t, i) => ({
         index: i,
         task: t.task,
         status: "rejected",
         summary: null,
-        error: `子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`,
+        error: `子任务已达到最大委派深度（${this.maxDelegateDepth} 层）`,
         durationMs: 0,
         model: null,
         evidence: emptyParallelThreadEvidence(),
@@ -2394,10 +2500,36 @@ export class Agent {
         reviewEnqueued: [], reviewEnqueueError: null, merged: null,
       };
     }
-    // 预算：本次任务最多 MAX_DELEGATE_CALLS 个子 agent；超出的线程直接被拒，不启动。
-    // delegateDetailed 里每次还会再 consume 一次——两者一致（主 agent 在等工具结果，
-    // 期间没有别的调用能插队消耗预算），被拒的线程不占预算。
-    const startable = Math.min(tasks.length, this.delegateBudget.remaining);
+    // H-7：默认 flat——子 agent 再并行委派须有 orchestrator 角色；一个线程
+    // 都不启动，全部被拒（不消耗预算）。深度门先于 flat 门（与 delegateDetailed
+    // 同序）：深度已满的 agent 收到的应是深度文案。
+    if (this.delegateDepth >= 1 && !this.orchestrator) {
+      const flatError = "子 agent 默认不能再委派（flat 模式）：只有被授予 orchestrator 角色的子 agent 才能再派子 agent；父级委派时传 orchestrator: true 显式开启";
+      const results: ParallelThreadResult[] = tasks.map((t, i) => ({
+        index: i,
+        task: t.task,
+        status: "rejected",
+        summary: null,
+        error: flatError,
+        durationMs: 0,
+        model: null,
+        evidence: emptyParallelThreadEvidence(),
+        schemaValid: null,
+      }));
+      return {
+        results, succeeded: 0, failed: 0, timedOut: 0, rejected: tasks.length,
+        totalSpentUsd: null, totalDurationMs: 0,
+          pendingAfterTimeout: 0,
+        maxConcurrency: resolved.maxConcurrency, timeoutMs: resolved.timeoutMs,
+        maxConcurrencyClamped: resolved.maxConcurrencyClamped,
+        reviewEnqueued: [], reviewEnqueueError: null, merged: null,
+      };
+    }
+    // 预算：本层最多 MAX_DELEGATE_CALLS 个子 agent（每层独立记账）；超出的
+    // 线程直接被拒，不启动。delegateDetailed 里每次还会再 consume 一次——
+    // 两者一致（主 agent 在等工具结果，期间没有别的调用能插队消耗预算），
+    // 被拒的线程不占预算。
+    const startable = Math.min(tasks.length, this.delegateBudget.remaining(this.delegateDepth));
     const ran = await runParallelDelegate(
       async (spec, index): Promise<ParallelThreadOutcome> => {
         const d = await this.delegateDetailed(spec.task, spec.maxTurns ?? 6, {
@@ -2407,6 +2539,8 @@ export class Agent {
           ...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
           // GROK-1：并行线程的成员分派（没给 agent 时团队模式下照样被门拒绝）。
           ...(typeof spec.agent === "string" && spec.agent.trim() ? { agent: spec.agent.trim() } : {}),
+          // H-7：并行线程的 orchestrator 授予（只认 true；没给就是 flat）。
+          ...(spec.orchestrator === true ? { orchestrator: true } : {}),
           parallel: { index, total: tasks.length },
         });
         return {
@@ -2433,7 +2567,7 @@ export class Agent {
         task: tasks[i].task,
         status: "rejected",
         summary: null,
-        error: `超出本次任务的子 agent 总数上限（最多 ${MAX_DELEGATE_CALLS} 个，本批只放行前 ${startable} 个）`,
+        error: `超出第 ${this.delegateDepth} 层子 agent 预算（每层最多 ${MAX_DELEGATE_CALLS} 个，独立记账，本批只放行前 ${startable} 个）`,
         durationMs: 0,
         model: null,
         evidence: emptyParallelThreadEvidence(),

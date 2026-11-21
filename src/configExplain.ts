@@ -192,6 +192,22 @@ export function explainAll(input: ExplainInput): CapabilityExplain[] {
     });
   }
 
+  // 9) H-7：嵌套编排深度上限（默认 flat，orchestrator 显式开）
+  {
+    const raw = pick(cfg, "delegate_max_depth");
+    // 与 src/agent.ts 的 resolveMaxDelegateDepth 同款口径（整数 1–5 有效，
+    // 其余回默认 2）；改一处改两处。
+    const valid = typeof raw === "number" && Number.isInteger(raw) && raw >= 1 && raw <= 5;
+    const depth = valid ? (raw as number) : 2;
+    out.push({
+      capability: "nested_delegate",
+      effective: `${depth} 层`,
+      source: valid ? "config" : "default",
+      keys: ["delegate_max_depth"],
+      note: "子 agent 默认不能再委派（flat）；委派时传 orchestrator: true 才允许嵌套，最多嵌套这么多层，每层预算独立记账",
+    });
+  }
+
   return out;
 }
 
