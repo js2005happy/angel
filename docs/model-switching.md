@@ -64,16 +64,39 @@ Nyra 的模型面比别家广（14 个 provider + 本地 Ollama + Codex 登录�
 请求、安全拦截、用户中断——直接失败。全部备用都失败时，报错里列出
 每一家失败的原因。
 
-**换模型时用户会看到什么**：终端 stderr 一行，例如
+**换模型时用户会看到什么**：切换发生的同一次运行里就有一条通知，绝不
+静默。三个面：
+
+- **终端**：stderr 一行，例如
 
 ```
-模型切换（用量触顶）：deepseek 失败（用量上限 (HTTP 429)：…），已切换到 xai 继续
+模型切换（用量触顶）：deepseek 失败（用量上限 (HTTP 429)：…），已切换到 xai 继续（运行 run_xxx，2026-11-21 19:40）
 ```
 
 括号里是触发原因（用量触顶 / 请求过于频繁 / 服务端错误 / 请求超时 /
-网络错误 / 调用失败），不是让用户从报错原文里猜。`--json` 模式发
-`model_switch` 事件（见 `docs/json-events.md`）；群聊机器人的切换记在
-当条消息的 `model_switches` 里。
+网络错误 / 调用失败），不是让用户从报错原文里猜；行尾附运行 id 与本地
+时间，REPL 里没有 RunRecorder 时只附时间。`--json` 模式发
+`model_switch` 事件（见 `docs/json-events.md`）。
+- **网关（`nyra ui`）**：切换记进在跑会话的事件流，网页端经 SSE 立刻
+  看到同一条 `model_switch` 事件（带时间戳）；`/status` 里 `model_switches`
+  列出本进程的切换记录，`fallback_chain` 列出当前链。
+- **群聊机器人**：切换附在当轮回复前面发出去（与终端同款文案），用户
+  当轮就看到；当条消息的 `model_switches` 里照旧记结构化记录，供事后核对。
+  私聊 Bot 目前只用主模型、不走兜底链（也就不会触发切换）；队列/定时任务
+  同样不切换（见下）。
+
+**切换审计**：每次真切换记一行 `~/.nyra/model-switch-audit.jsonl`
+（append-only 0600，写失败不拦运行）：时间、运行 id（有才记）、机器人 id
+（群聊才有）、从谁切到谁、触发原因、报错原文（已脱敏：home 目录换
+`[home]`、Key 样字符串与 ≥32 字连续词串换 `<redacted>`、超 500 字截断）。
+审计是 SIEM 导出第 7 个来源（`nyra governance audit export` 可指定
+`--sources model_switch` 只导它；导出前同样脱敏）。
+
+**用量汇总里可见**：本月切过模型时，`nyra stats`、运行结束汇总、
+`nyra cost --show`（文本与 `--json` 的 `monthly.model_switches`）里多一行
+切换统计——本月次数、触发原因分布、最近一次从谁切到谁；0 次时不打印。
+`nyra models fallback` 一次看清开关、链顺序与本月切换统计（含最近一次
+的报错原文）。
 
 ## 对话中途换模型：`/model`
 

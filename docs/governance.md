@@ -245,17 +245,18 @@ nyra governance caps discard <暂停 id> --yes
 ## 审计导出（缺口 43 第三批）
 
 导出给 SIEM 的格式只一种：**JSONL**。每条记录带可验证的完整性——
-哈希链：第一行是 `export_header`（含 5 份治理审计日志与策略/
+哈希链：第一行是 `export_header`（含 7 份治理审计日志与策略/
 授权文件的 SHA-256 指纹、导出时间、导出范围），之后每行带
 `seq` / `prev_hash` / `hash`（SHA-256，稳定序列化后算）；导出后
 能验出篡改（`audit verify` 验头部哈希、seq 连续、prev_hash 衔接、
 hash 重算；来源文件漂移只警告，不判失败——导出那一刻的指纹在
 头部里，事后文件变了是正常的追加）。
 
-覆盖的 5 份治理审计日志：`governance-audit.jsonl`（策略/授权/
+覆盖的 7 份治理审计日志：`governance-audit.jsonl`（策略/授权/
 模式/干跑/提议 + 本批的上限与暂停）、`sso-audit.jsonl`、
 `accounts-audit.jsonl`、`business-redlines-audit.jsonl`、
-`soul-audit.jsonl`。策略文件（`governance-policy.json`、
+`soul-audit.jsonl`、`trust-ladder-audit.jsonl`（信任阶梯）、
+`model-switch-audit.jsonl`（备用模型切换）。策略文件（`governance-policy.json`、
 `governance-mandates.json`）与上限账本（`cost-caps.json`、
 `cost-pauses.json`）只导出指纹，不导出正文。运行级证据链
 （`runs/` 下的 `events.jsonl`）不在本导出里——那是运行证据，
