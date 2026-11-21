@@ -1,3 +1,8 @@
+## 未发布（2026-11-21，Node claim close 异常清理）
+
+- 修复实验性 Linux Node/Bun claim 在 claim 文件 `closeSync(fd)` 抛错时可能遗留目录 fd 的异常路径：尝试释放目录 fd 并统一失败关闭，不自动重放；正常目录同步逻辑不变，无新增依赖。
+- 仅静态检查，未运行测试/编译/CI；未接入真实工具派发，不提供 exactly-once 保证。
+
 ## 未发布（2026-11-21，Node claim 目录参数失败关闭）
 
 - 实验性 `claimOperation` 在进入目录预检前拒绝非字符串、空字符串或含 NUL 的 `directory`，统一抛 `ClaimUnavailable`；不创建目录或执行工具，不增加依赖。
