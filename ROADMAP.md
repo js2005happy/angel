@@ -1,3 +1,9 @@
+
+## 2026-11-21 — P0 Linux claim 目录句柄最终关闭失败的错误归一化（仅静态审查）
+
+- **仓库事实**：Node/Bun claim 仍未接入真实工具派发；最终目录 fd 关闭失败可能绕过统一 `ClaimUnavailable` 失败语义。本轮仅修复最终关闭错误归一化，保留 unknown，不做自动重放。
+- **公开反馈事实**：2026-11-20 [Codex #62853](https://github.com/openai/codex/issues/62853) 报告执行环境断开后的交付不确定；2026-11-07 [Codex #60104](https://github.com/openai/codex/issues/60104) 报告重复返工。均为外部个案，不证明 Angel 故障或总体频率。**工程推断**：操作状态失败关闭应比异常类型细节更稳定。
+- **优先级（价值/难度/安全风险/依赖）**：本项 P0 中/低/低/Node fs（已提交待测试）；Linux procfs 挂载竞态 P0 高/高/高/Linux namespace；Windows reparse 句柄 P0 高/高/高/Windows API；真实工具派发 P0 高/高/高/审批及持久状态；MCP 目录变化 P1 中高/中/中/MCP；外部副作用回执 P1 高/高/高/适配器。
 ## 2026-11-21 — P0 claim 异常路径单次关闭（静态检查，待测试）
 
 - **仓库事实**：实验性 `scripts/node_tool_claim.ts` 在写入/文件 fsync 失败时，catch 先关闭 `directoryFd`，finally 又尝试关闭同一目录 fd；文件关闭失败时还可能重复关闭。重复关闭可能抛出额外异常并遮蔽原本的 unknown 结果，且在 fd 编号复用时存在误关风险。本轮改为先标记失败、始终尝试关闭 claim 文件，仅在失败路径关闭目录一次；成功路径仍保持目录 fd 到目录 fsync 和名称复核完成。未接入运行时。
