@@ -1,3 +1,9 @@
+## 2026-11-21 — Requirement-scoped acceptance references (static-only)
+
+- Reviewed development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests, Agent/Tools, recent commits, open Issues/PR and commit status. External source: [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16), retrieved 2026-11-21; inference separated from report.
+- Static-only: optional bounded `reference_scopes` binds a self-reported receipt to a single requirement; unknown scope or reference fails closed; legacy callers unaffected. Regression tests added but **not run**. The mapping is not a trusted provenance adapter.
+- **Not run:** tests, compilation, scripts, CI, platform checks, deployment. No main merge or production release.
+
 ## 2026-11-21 — Acceptance reference allowlist (static-only)
 
 - Read development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance module/tests and Agent/Tools; reviewed recent commits, open Issues/PR and prior CI status. External reports: [Codex #61857](https://github.com/openai/codex/issues/61857), [#62682](https://github.com/openai/codex/issues/62682), retrieved 2026-11-21.
