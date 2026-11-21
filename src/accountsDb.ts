@@ -32,6 +32,7 @@ import {
   type AccountAuditAction,
   type AccountDirectory,
   type AccountProvider,
+  type AccountRole,
   type AccountSession,
   type AccountSessionDirectory,
   type LinkedIdentity,
@@ -41,7 +42,7 @@ import {
 
 export const DATABASE_URL_ENV = "NYRA_DATABASE_URL";
 export const DATABASE_VAULT_ENTRY = "database-url";
-export const ACCOUNTS_SCHEMA_VERSION = 1;
+export const ACCOUNTS_SCHEMA_VERSION = 2;
 
 /** 最小 SQL 客户端接口：PostgresAccountStore 等只依赖它，测试用替身上。 */
 export interface SqlClient {
@@ -89,6 +90,13 @@ export const ACCOUNTS_SCHEMA_STATEMENTS: string[] = [
   "CREATE INDEX IF NOT EXISTS magic_links_email_idx ON magic_links (email)",
   "CREATE TABLE IF NOT EXISTS account_audit (ts timestamptz NOT NULL DEFAULT now(), action text NOT NULL, provider text, account_id text)",
   "INSERT INTO schema_migrations (version) VALUES (1) ON CONFLICT (version) DO NOTHING",
+  // v2（缺口 43 第二批：SSO/SCIM）：账号状态（停用即失能）、SCIM 外部标识、SSO 身份提供方。
+  // ALTER … ADD COLUMN IF NOT EXISTS 幂等，老库升级时直接跑，不用重建表。
+  "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended'))",
+  "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS suspended_at timestamptz",
+  "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS external_id text",
+  "ALTER TABLE account_identities ADD COLUMN IF NOT EXISTS issuer text",
+  "INSERT INTO schema_migrations (version) VALUES (2) ON CONFLICT (version) DO NOTHING",
 ];
 
 /** 建表（幂等；CLI 每次用 Postgres 后端时先跑一遍，空库第一次就建好）。 */
@@ -155,13 +163,13 @@ function isUniqueViolation(err: unknown): boolean {
 
 async function loadAccount(client: SqlClient, id: string): Promise<Account | null> {
   const { rows } = await client.query(
-    "SELECT id, email, name, role, created_at, last_seen FROM accounts WHERE id = $1",
+    "SELECT id, email, name, role, status, suspended_at, external_id, created_at, last_seen FROM accounts WHERE id = $1",
     [id],
   );
   const row = rows[0];
   if (!row) return null;
   const identities = await client.query(
-    "SELECT provider, sub, email, name, linked_at FROM account_identities WHERE account_id = $1 ORDER BY provider",
+    "SELECT provider, sub, email, name, issuer, linked_at FROM account_identities WHERE account_id = $1 ORDER BY provider",
     [id],
   );
   return {
@@ -169,11 +177,15 @@ async function loadAccount(client: SqlClient, id: string): Promise<Account | nul
     email: String(row.email),
     name: String(row.name ?? ""),
     role: row.role === "owner" ? "owner" : "user",
+    status: row.status === "suspended" ? "suspended" : "active",
+    ...(row.suspended_at ? { suspended_at: toIso(row.suspended_at) } : {}),
+    ...(typeof row.external_id === "string" && row.external_id ? { external_id: row.external_id } : {}),
     providers: identities.rows.map((r): LinkedIdentity => ({
       provider: r.provider as AccountProvider,
       sub: String(r.sub),
       email: String(r.email),
       ...(typeof r.name === "string" && r.name ? { name: r.name } : {}),
+      ...(typeof r.issuer === "string" && r.issuer ? { issuer: r.issuer } : {}),
       linked_at: toIso(r.linked_at),
     })),
     created_at: toIso(row.created_at),
@@ -224,7 +236,7 @@ export class PostgresAccountStore implements AccountDirectory {
     return accounts;
   }
 
-  async create(input: { email: string; name?: string }): Promise<Account> {
+  async create(input: { email: string; name?: string; external_id?: string }): Promise<Account> {
     const email = normalizeEmail(input.email);
     if (!email) throw new AccountError("邮箱格式无效");
     const dup = await this.client.query("SELECT 1 FROM accounts WHERE lower(email) = lower($1) LIMIT 1",
@@ -238,21 +250,23 @@ export class PostgresAccountStore implements AccountDirectory {
       name: (input.name ?? "").trim() || email.split("@")[0],
       // 第一个账号自动是 owner（单机场景第一个登录的人就是机主；托管时同理）。
       role: "user",
+      status: "active",
+      ...(input.external_id ? { external_id: input.external_id } : {}),
       providers: [],
       created_at: nowIso(now),
       last_seen: nowIso(now),
     };
     const count = await this.client.query("SELECT COUNT(*)::int AS n FROM accounts");
     if (Number(count.rows[0]?.n ?? 0) === 0) account.role = "owner";
-    const insert = "INSERT INTO accounts (id, email, name, role, created_at, last_seen) VALUES ($1, $2, $3, $4, to_timestamp($5), to_timestamp($6))";
-    const params = [account.id, account.email, account.name, account.role, now, now];
+    const insert = "INSERT INTO accounts (id, email, name, role, status, external_id, created_at, last_seen) VALUES ($1, $2, $3, $4, 'active', $5, to_timestamp($6), to_timestamp($6))";
+    const params = [account.id, account.email, account.name, account.role, input.external_id ?? null, now];
     try {
       await this.client.query(insert, params);
     } catch (err) {
       if (isUniqueViolation(err) && account.role === "owner") {
         // 并发首登：另一个进程先抢到了 owner 位，重试为普通用户。
         account.role = "user";
-        await this.client.query(insert, [account.id, account.email, account.name, "user", now, now]);
+        await this.client.query(insert, [account.id, account.email, account.name, "user", input.external_id ?? null, now]);
       } else {
         throw err;
       }
@@ -266,6 +280,7 @@ export class PostgresAccountStore implements AccountDirectory {
     if (!identity.sub) throw new AccountError("登录方没有返回用户标识");
     const account = await loadAccount(this.client, accountId);
     if (!account) throw new AccountError("账号不存在");
+    if (account.status === "suspended") throw new AccountError("该账号已停用，不能再绑定登录方式");
     const other = await this.client.query("SELECT account_id FROM account_identities WHERE provider = $1 AND sub = $2 AND account_id <> $3 LIMIT 1",
       [identity.provider, identity.sub, accountId],
     );
@@ -274,12 +289,12 @@ export class PostgresAccountStore implements AccountDirectory {
     const now = this.clock();
     if (existing) {
       if (existing.sub !== identity.sub) throw new AccountError("该账号已经绑定了另一个 " + identity.provider + " 身份");
-      await this.client.query("UPDATE account_identities SET email = $1, name = $2, linked_at = to_timestamp($3) WHERE account_id = $4 AND provider = $5",
-        [email, identity.name ?? existing.name ?? null, now, accountId, identity.provider],
+      await this.client.query("UPDATE account_identities SET email = $1, name = $2, issuer = $3, linked_at = to_timestamp($4) WHERE account_id = $5 AND provider = $6",
+        [email, identity.name ?? existing.name ?? null, identity.issuer ?? existing.issuer ?? null, now, accountId, identity.provider],
       );
     } else {
-      await this.client.query("INSERT INTO account_identities (account_id, provider, sub, email, name, linked_at) VALUES ($1, $2, $3, $4, $5, to_timestamp($6))",
-        [accountId, identity.provider, identity.sub, email, identity.name ?? null, now],
+      await this.client.query("INSERT INTO account_identities (account_id, provider, sub, email, name, issuer, linked_at) VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7))",
+        [accountId, identity.provider, identity.sub, email, identity.name ?? null, identity.issuer ?? null, now],
       );
     }
     await this.client.query("UPDATE accounts SET last_seen = to_timestamp($1) WHERE id = $2",
@@ -288,6 +303,51 @@ export class PostgresAccountStore implements AccountDirectory {
     const updated = await loadAccount(this.client, accountId);
     if (!updated) throw new AccountError("账号不存在");
     return updated;
+  }
+
+  async suspend(accountId: string): Promise<Account> {
+    const { rows } = await this.client.query(
+      "UPDATE accounts SET status = 'suspended', suspended_at = now() WHERE id = $1 RETURNING id",
+      [accountId],
+    );
+    if (!rows.length) throw new AccountError("账号不存在");
+    const account = await loadAccount(this.client, accountId);
+    if (!account) throw new AccountError("账号不存在");
+    return account;
+  }
+
+  async updateExternalId(accountId: string, externalId: string | null): Promise<Account> {
+    const { rows } = await this.client.query(
+      "UPDATE accounts SET external_id = $1 WHERE id = $2 RETURNING id",
+      [externalId, accountId],
+    );
+    if (!rows.length) throw new AccountError("账号不存在");
+    const account = await loadAccount(this.client, accountId);
+    if (!account) throw new AccountError("账号不存在");
+    return account;
+  }
+
+  async reactivate(accountId: string): Promise<Account> {
+    const { rows } = await this.client.query(
+      "UPDATE accounts SET status = 'active', suspended_at = NULL WHERE id = $1 RETURNING id",
+      [accountId],
+    );
+    if (!rows.length) throw new AccountError("账号不存在");
+    const account = await loadAccount(this.client, accountId);
+    if (!account) throw new AccountError("账号不存在");
+    return account;
+  }
+
+  async setRole(accountId: string, role: AccountRole): Promise<Account> {
+    if (role !== "owner" && role !== "user") throw new AccountError("角色只允许 owner 或 user");
+    const { rows } = await this.client.query(
+      "UPDATE accounts SET role = $1 WHERE id = $2 RETURNING id",
+      [role, accountId],
+    );
+    if (!rows.length) throw new AccountError("账号不存在");
+    const account = await loadAccount(this.client, accountId);
+    if (!account) throw new AccountError("账号不存在");
+    return account;
   }
 
   async touchLastSeen(accountId: string): Promise<void> {

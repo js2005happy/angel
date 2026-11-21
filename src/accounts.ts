@@ -24,6 +24,7 @@ import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameS
 import { dirname, join } from "node:path";
 import { resolveNyraHome } from "./memory.ts";
 import { atomicTmpPath } from "./memory.ts";
+import { RunStore } from "./runs.ts";
 import { buildAuthUrl, codeChallengeS256, newAuthState, newCodeVerifier, postForm, startLoopbackCallbackServer, type FetchFn } from "./oauth.ts";
 
 export class AccountError extends Error {
@@ -33,15 +34,20 @@ export class AccountError extends Error {
   }
 }
 
-export type AccountProvider = "google" | "github" | "email";
+export type AccountProvider = "google" | "github" | "email" | "sso";
 export type AccountRole = "owner" | "user";
+
+/** 账号状态：active 正常；suspended 已停用（SCIM 取消开通或管理员手动停用）——停用即失能：会话全撤销、登录拒绝、网关鉴权拒绝。 */
+export type AccountStatus = "active" | "suspended";
 
 export interface LinkedIdentity {
   provider: AccountProvider;
-  /** provider 方的用户唯一标识（Google sub、GitHub 用户 id、邮箱方式就是邮箱本身）。 */
+  /** provider 方的用户唯一标识（Google sub、GitHub 用户 id、邮箱方式就是邮箱本身；SSO 方式是 IdP 的 sub）。 */
   sub: string;
   email: string;
   name?: string;
+  /** SSO 身份提供方（OIDC issuer，如 https://login.microsoftonline.com/<tenant>/v2.0）；只有 provider 为 sso 时有。 */
+  issuer?: string;
   linked_at: string;
 }
 
@@ -53,6 +59,12 @@ export interface Account {
   providers: LinkedIdentity[];
   created_at: string;
   last_seen: string;
+  /** 账号状态（缺省即 active：老文件没有这个字段，按正常处理）。 */
+  status?: AccountStatus;
+  /** 停用时间（status 为 suspended 时有）。 */
+  suspended_at?: string;
+  /** SCIM 外部标识（IdP 方的用户 id，供 SCIM 按 externalId 定位账号；不写进审计原文以外的任何地方，只在 SCIM 资源里回显）。 */
+  external_id?: string;
 }
 
 export interface AccountSession {
@@ -172,9 +184,17 @@ export interface AccountDirectory {
   findByEmail(email: string): Promise<Account | null>;
   findById(id: string): Promise<Account | null>;
   listAccounts(): Promise<Account[]>;
-  create(input: { email: string; name?: string }): Promise<Account>;
+  create(input: { email: string; name?: string; external_id?: string }): Promise<Account>;
   linkIdentity(accountId: string, identity: Omit<LinkedIdentity, "linked_at">): Promise<Account>;
   touchLastSeen(accountId: string): Promise<void>;
+  /** 停用账号（只改状态，不删记录；调用方负责撤销会话与记审计）。 */
+  suspend(accountId: string): Promise<Account>;
+  /** 恢复已停用的账号。 */
+  reactivate(accountId: string): Promise<Account>;
+  /** 改角色（SCIM 群组映射用；只接受 owner/user，非法值直接报错）。 */
+  setRole(accountId: string, role: AccountRole): Promise<Account>;
+  /** 改 SCIM 外部标识（null = 清除；SCIM 删除用户时用）。 */
+  updateExternalId(accountId: string, externalId: string | null): Promise<Account>;
 }
 
 /** 托管形态的会话目录接口：本地文件实现是它的第一个实现。 */
@@ -244,7 +264,7 @@ export class AccountStore implements AccountDirectory {
     return this.load().find((a) => a.id === id) ?? null;
   }
 
-  async create(input: { email: string; name?: string }): Promise<Account> {
+  async create(input: { email: string; name?: string; external_id?: string }): Promise<Account> {
     const email = normalizeEmail(input.email);
     if (!email) throw new AccountError("邮箱格式无效");
     const accounts = this.load();
@@ -259,6 +279,8 @@ export class AccountStore implements AccountDirectory {
       providers: [],
       created_at: now,
       last_seen: now,
+      status: "active",
+      ...(input.external_id ? { external_id: input.external_id } : {}),
     };
     accounts.push(account);
     this.save(accounts);
@@ -272,6 +294,7 @@ export class AccountStore implements AccountDirectory {
     const accounts = this.load();
     const account = accounts.find((a) => a.id === accountId);
     if (!account) throw new AccountError("账号不存在");
+    if (account.status === "suspended") throw new AccountError("该账号已停用，不能再绑定登录方式");
     const other = accounts.find((a) => a.id !== accountId && a.providers.some((p) => p.provider === identity.provider && p.sub === identity.sub));
     if (other) throw new AccountError("这个 " + identity.provider + " 身份已经绑定到另一个账号了");
     const existing = account.providers.find((p) => p.provider === identity.provider);
@@ -279,11 +302,52 @@ export class AccountStore implements AccountDirectory {
       if (existing.sub !== identity.sub) throw new AccountError("该账号已经绑定了另一个 " + identity.provider + " 身份");
       existing.email = email;
       if (identity.name) existing.name = identity.name;
+      if (identity.issuer) existing.issuer = identity.issuer;
       existing.linked_at = nowIso(this.clock());
     } else {
       account.providers.push({ ...identity, email, linked_at: nowIso(this.clock()) });
     }
     account.last_seen = nowIso(this.clock());
+    this.save(accounts);
+    return account;
+  }
+
+  async suspend(accountId: string): Promise<Account> {
+    const accounts = this.load();
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) throw new AccountError("账号不存在");
+    account.status = "suspended";
+    account.suspended_at = nowIso(this.clock());
+    this.save(accounts);
+    return account;
+  }
+
+  async reactivate(accountId: string): Promise<Account> {
+    const accounts = this.load();
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) throw new AccountError("账号不存在");
+    account.status = "active";
+    delete account.suspended_at;
+    this.save(accounts);
+    return account;
+  }
+
+  async setRole(accountId: string, role: AccountRole): Promise<Account> {
+    if (role !== "owner" && role !== "user") throw new AccountError("角色只允许 owner 或 user");
+    const accounts = this.load();
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) throw new AccountError("账号不存在");
+    account.role = role;
+    this.save(accounts);
+    return account;
+  }
+
+  async updateExternalId(accountId: string, externalId: string | null): Promise<Account> {
+    const accounts = this.load();
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) throw new AccountError("账号不存在");
+    if (externalId) account.external_id = externalId;
+    else delete account.external_id;
     this.save(accounts);
     return account;
   }
@@ -464,7 +528,7 @@ export class MagicLinkStore implements MagicLinkDirectory {
 }
 
 /** 审计动作：只记动作、provider、账号 id，不记邮箱、不记 token。 */
-export type AccountAuditAction = "login" | "logout" | "link" | "revoke" | "magic_link_requested" | "magic_link_redeemed";
+export type AccountAuditAction = "login" | "logout" | "link" | "revoke" | "magic_link_requested" | "magic_link_redeemed" | "suspended" | "reactivated";
 
 export function appendAccountAudit(
   home: string,
@@ -511,7 +575,7 @@ export function clearCurrentSession(home: string): void {
   }
 }
 
-/** 当前登录的账号（本机 token 验过之后才认；验不过按未登录处理）。 */
+/** 当前登录的账号（本机 token 验过之后才认；验不过按未登录处理；已停用的账号按未登录处理）。 */
 export async function getCurrentAccount(home: string, opts?: { clock?: () => number; stores?: AccountsStores }): Promise<Account | null> {
   const current = readCurrentSession(home);
   if (!current) return null;
@@ -519,7 +583,59 @@ export async function getCurrentAccount(home: string, opts?: { clock?: () => num
   const verified = await sessions.verify(current.token);
   if (!verified || verified.account_id !== current.account_id) return null;
   const accounts = opts?.stores?.directory ?? new AccountStore(home, opts);
-  return accounts.findById(current.account_id);
+  const account = await accounts.findById(current.account_id);
+  if (!account || account.status === "suspended") return null;
+  return account;
+}
+
+/**
+ * 停用账号（fail-closed，立即失能）：改状态 → 撤销该账号全部会话 → 记审计。
+ * 会话撤销后网关鉴权（accountSessions.verify）与 getCurrentAccount 同时失效，
+ * 不留“停用了还能用旧会话”的窗口。重复停用不报错（幂等）。
+ * 有运行上下文时把停用事件镜像进运行事件（缺口 43 第二批）。
+ */
+export async function suspendAccount(
+  home: string,
+  accountId: string,
+  opts?: { clock?: () => number; stores?: AccountsStores; runId?: string | null },
+): Promise<{ account: Account; revoked_sessions: number }> {
+  const directory = opts?.stores?.directory ?? new AccountStore(home, opts);
+  const sessions = opts?.stores?.sessions ?? new AccountSessionStore(home, opts);
+  const account = await directory.suspend(accountId);
+  const revoked = await sessions.revokeAllForAccount(accountId);
+  const audit = opts?.stores?.audit ?? ((e: { action: AccountAuditAction; provider?: AccountProvider; account_id?: string }) => appendAccountAudit(home, e));
+  await audit({ action: "suspended", account_id: accountId });
+  mirrorAccountEvent(home, opts?.runId ?? null, "account_suspended", { account_id: accountId });
+  return { account, revoked_sessions: revoked };
+}
+
+/** 恢复已停用的账号（只改状态，不恢复已撤销的会话——被停用期间的会话作废了就是作废了，须重新登录）。 */
+export async function reactivateAccount(
+  home: string,
+  accountId: string,
+  opts?: { clock?: () => number; stores?: AccountsStores; runId?: string | null },
+): Promise<Account> {
+  const directory = opts?.stores?.directory ?? new AccountStore(home, opts);
+  const account = await directory.reactivate(accountId);
+  const audit = opts?.stores?.audit ?? ((e: { action: AccountAuditAction; provider?: AccountProvider; account_id?: string }) => appendAccountAudit(home, e));
+  await audit({ action: "reactivated", account_id: accountId });
+  mirrorAccountEvent(home, opts?.runId ?? null, "account_reactivated", { account_id: accountId });
+  return account;
+}
+
+/** 有运行上下文时，把账号停用/恢复事件镜像进运行事件（与 governance.ts 同款写法）。 */
+function mirrorAccountEvent(home: string, runId: string | null, type: string, fields: Record<string, unknown>): void {
+  if (!runId) return;
+  for (const dir of ["tasks", "runs"]) {
+    try {
+      const store = new RunStore(join(home, dir));
+      store.load(runId);
+      store.appendEvent(runId, type, fields);
+      return;
+    } catch {
+      /* 不在这个目录，换下一个 */
+    }
+  }
 }
 
 // ---- Google OAuth（授权码 + PKCE + 回环回调）-------------------------
@@ -626,25 +742,28 @@ export async function fetchGoogleUserinfo(opts: { accessToken: string; fetchFn?:
 /**
  * 按 provider + sub 或邮箱找到账号，没有就新建；找到就补链身份。
  * 同邮箱链到同一个账号，不建第二个（见 docs/accounts.md §3）。
+ * 已停用的账号拒绝登录与绑定（fail-closed：停用就是停用，不留后门）。
  */
 export async function upsertAccount(
   home: string,
   provider: AccountProvider,
-  identity: { sub: string; email: string; name?: string },
+  identity: { sub: string; email: string; name?: string; issuer?: string },
   opts?: { clock?: () => number; stores?: AccountsStores },
 ): Promise<Account> {
   const store = opts?.stores?.directory ?? new AccountStore(home, opts);
   const byProvider = await store.findByProvider(provider, identity.sub);
   if (byProvider) {
+    if (byProvider.status === "suspended") throw new AccountError("该账号已停用，请联系管理员恢复后再登录");
     await store.touchLastSeen(byProvider.id);
-    return store.linkIdentity(byProvider.id, { provider, sub: identity.sub, email: identity.email, ...(identity.name ? { name: identity.name } : {}) });
+    return store.linkIdentity(byProvider.id, { provider, sub: identity.sub, email: identity.email, ...(identity.name ? { name: identity.name } : {}), ...(identity.issuer ? { issuer: identity.issuer } : {}) });
   }
   const byEmail = await store.findByEmail(identity.email);
   if (byEmail) {
-    return store.linkIdentity(byEmail.id, { provider, sub: identity.sub, email: identity.email, ...(identity.name ? { name: identity.name } : {}) });
+    if (byEmail.status === "suspended") throw new AccountError("该账号已停用，请联系管理员恢复后再登录");
+    return store.linkIdentity(byEmail.id, { provider, sub: identity.sub, email: identity.email, ...(identity.name ? { name: identity.name } : {}), ...(identity.issuer ? { issuer: identity.issuer } : {}) });
   }
   const created = await store.create({ email: identity.email, name: identity.name });
-  return store.linkIdentity(created.id, { provider, sub: identity.sub, email: identity.email, ...(identity.name ? { name: identity.name } : {}) });
+  return store.linkIdentity(created.id, { provider, sub: identity.sub, email: identity.email, ...(identity.name ? { name: identity.name } : {}), ...(identity.issuer ? { issuer: identity.issuer } : {}) });
 }
 
 /**

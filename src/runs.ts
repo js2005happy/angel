@@ -156,6 +156,23 @@ proposal_applied: ["proposal_id", "target"],
 proposal_released: ["proposal_id", "holdout_passed"],
 proposal_failed: ["proposal_id", "reason"],
 proposal_reverted: ["proposal_id", "target"],
+// 缺口 43 第二批（SSO/SCIM）：SSO 登录（哪个账号、issuer 指纹）、身份提供方
+// 增删、SCIM 用户/群组增删改、账号停用/恢复。只记 id 与指纹，不记邮箱、
+// 不记 token、不记 secret；issuer 指纹截到 12 位，免得被 appendEvent 的
+// redact 当长词串掩掉（与缺口 43 第一批同款）。
+sso_login: ["account_id", "issuer_hash"],
+sso_provider_added: ["provider_id", "issuer_hash"],
+sso_provider_removed: ["provider_id"],
+scim_user_created: ["account_id", "external_id"],
+scim_user_updated: ["account_id"],
+scim_user_deactivated: ["account_id"],
+scim_user_reactivated: ["account_id"],
+scim_user_deleted: ["account_id"],
+scim_group_created: ["group_id"],
+scim_group_updated: ["group_id"],
+scim_group_deleted: ["group_id"],
+account_suspended: ["account_id"],
+account_reactivated: ["account_id"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

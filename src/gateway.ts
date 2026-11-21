@@ -1482,7 +1482,10 @@ export class Gateway {
     try {
       const verified = await this.accountSessions.verify(supplied);
       if (!verified) return null;
-      return await this.accountsDirectory.findById(verified.account_id);
+      const account = await this.accountsDirectory.findById(verified.account_id);
+      // 已停用的账号按未登录处理（停用时会话已撤销，这是双保险）。
+      if (!account || account.status === "suspended") return null;
+      return account;
     } catch {
       // 账号文件损坏等 fail-closed：当未登录处理，不拖垮网关。
       return null;
@@ -1666,6 +1669,25 @@ export class Gateway {
       const result = await this.mcpServer().handle(body, who === "owner" ? "owner" : "device");
       if (result.body === null) { res.writeHead(202); res.end(); return; }
       this.sendJson(res, 200, result.body);
+      return;
+    }
+
+    // SCIM 2.0（缺口 43 第二批）：挂在 /api/ 通用鉴权之前——SCIM 用自己的
+    // Bearer token（`nyra sso scim token` 签发），不走 X-Nyra-Token。
+    // 鉴权在 handleScimRequest 里做（未配 token 或验不过一律 401），
+    // 这里只读原文 body 再转交；网关用文件版 store
+    // （与 accounts.md §12 已知的 Postgres 网关接线局限同口径）。
+    if (path === "/scim/v2" || path.startsWith("/scim/v2/")) {
+      const { handleScimRequest } = await import("./scim.ts");
+      const bodyText = (await this.readRawBody(req)).toString("utf-8");
+      const result = await handleScimRequest({
+        method,
+        path,
+        headers: req.headers,
+        bodyText,
+        home: this.home,
+      });
+      this.sendJson(res, result.status, result.body);
       return;
     }
 

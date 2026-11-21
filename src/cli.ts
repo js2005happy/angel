@@ -75,6 +75,7 @@ import { handleSideEffects } from "./sideEffects.ts";
 import { handleHeartbeat } from "./heartbeat.ts";
 import { handleGovernance } from "./governance.ts";
 import { handleOptimize } from "./optimizer.ts";
+import { handleSso } from "./sso.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
 import {
   loadEventTriggers, saveEventTriggers, addEventTrigger, removeEventTrigger, setEventTriggerEnabled,
@@ -197,7 +198,8 @@ nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|rem
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   技能自沉淀：成功任务自动起草技能草稿，人工批准后才安装，低质自动归档（详见 docs/skill-sedimentation.md）
 nyra bughunt <install|status|scope|template|check>   授权漏洞挖掘技能包：范围卡 + 证伪验证 + 提交前七问 + 证据卫生，提交前核对（详见 docs/bughunt.md）
 nyra market <list|show|source|install|uninstall|installed|publish|template>   内置机器人市场：浏览、安装、发布技能包与机器人配置（第一阶段：静态策展仓库 + 本地客户端，详见 docs/marketplace.md）
-nyra account <status|login|logout|list|revoke|link>   用户账号登录：Google / GitHub / 邮箱（邮箱随网关兑换端点在下一批），账号身份 + 会话（详见 docs/accounts.md）
+nyra account <status|login|logout|list|revoke|link|suspend|reactivate>   用户账号登录：Google / GitHub / 邮箱 / SSO，账号身份 + 会话（详见 docs/accounts.md）
+nyra sso <provider|login|status|scim>   企业 SSO：OIDC 身份提供方注册与登录、SCIM 账号开通（详见 docs/sso.md）
 nyra kb <create|list|add|search|ask|remove>  本地知识库
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  插件市场（最小版：技能包，只装带来源、可审计的插件）
 nyra hooks list                列出已安装的钩子（~/.nyra/hooks/<事件>.d/ 下的脚本，详见 docs/hooks.md）
@@ -297,7 +299,8 @@ nyra verifier <status|enable|disable|set-model|rework-on|rework-off|add-rule|rem
 nyra skills <status|enable|disable|draft|drafts|show|approve|reject|archive|sweep>   skill sedimentation: successful runs auto-draft skill drafts, installed only after your approval, low-quality ones auto-archived (see docs/skill-sedimentation.md)
 nyra bughunt <install|status|scope|template|check>   authorized bug-hunting skill pack: scope card + falsification + pre-submit seven questions + evidence hygiene, pre-submit gate (see docs/bughunt.md)
 nyra market <list|show|source|install|uninstall|installed|publish|template>   built-in bot marketplace: browse, install and publish skill packs and bot configs (phase 1: static curated repo + local client, see docs/marketplace.md)
-nyra account <status|login|logout|list|revoke|link>   user account login: Google / GitHub / email, account identity + sessions (see docs/accounts.md)
+nyra account <status|login|logout|list|revoke|link|suspend|reactivate>   user account login: Google / GitHub / email / SSO, account identity + sessions (see docs/accounts.md)
+nyra sso <provider|login|status|scim>   enterprise SSO: OIDC identity provider registration and login, SCIM provisioning (see docs/sso.md)
 nyra kb <create|list|add|search|ask|remove>  local knowledge base
 nyra plugin <list|search|install|uninstall|enable|disable|verify|audit|pin|unpin>  plugin market (skill packs with source, auditable)
 nyra hooks list                list installed hooks (~/.nyra/hooks/<event>.d/, see docs/hooks.md)
@@ -1851,7 +1854,7 @@ async function handleBughunt(argv: string[], home: string): Promise<number> {
 // ---- 子命令：market（内置机器人市场，第一阶段：静态策展仓库 + 本地客户端） ----
 // ---- 子命令：account（用户账号登录，缺口 41） ----
 const ACCOUNT_USAGE =
-  "用法：nyra account <status|login|logout|list|revoke|link> [选项]\n" +
+  "用法：nyra account <status|login|logout|list|revoke|link|suspend|reactivate> [选项]\n" +
   "  nyra account status              当前登录状态\n" +
   "  nyra account login google        Google 登录（回环回调；首次要 OAuth 客户端）\n" +
   "  nyra account login github        GitHub 登录（设备流：终端给码，浏览器里输码）\n" +
@@ -1860,6 +1863,8 @@ const ACCOUNT_USAGE =
   "  nyra account list                列出本机账号\n" +
   "  nyra account revoke <会话 id>|--all  撤销会话\n" +
   "  nyra account logout              登出（撤销当前会话 + 清掉本机 token）\n" +
+  "  nyra account suspend <账号 id> [--yes]  停用账号（全部会话立即失效；SCIM 取消开通也走这条路）\n" +
+  "  nyra account reactivate <账号 id>  恢复已停用的账号（已撤销的会话不恢复，须重新登录）\n" +
   "  数据库：设 NYRA_DATABASE_URL 后账号数据存 Postgres（Neon），否则存本机文件。";
 
 async function handleAccount(argv: string[], home: string): Promise<number> {
@@ -1990,8 +1995,44 @@ async function handleAccount(argv: string[], home: string): Promise<number> {
         return 0;
       }
       for (const a of accounts) {
-        process.stdout.write(`- ${a.email}（${a.role === "owner" ? "机主" : "普通用户"}，${a.providers.map((p) => p.provider).join("、") || "未绑定登录方式"}，创建于 ${a.created_at}）\n`);
+        process.stdout.write(`- ${a.email}（id ${a.id}，${a.role === "owner" ? "机主" : "普通用户"}，${a.providers.map((p) => p.provider).join("、") || "未绑定登录方式"}${a.status === "suspended" ? "，已停用" : ""}，创建于 ${a.created_at}）\n`);
       }
+      return 0;
+    }
+    if (cmd === "suspend" || cmd === "reactivate") {
+      const id = argv[1];
+      if (!id) {
+        process.stderr.write(`用法：nyra account ${cmd} <账号 id>\n`);
+        return 2;
+      }
+      const store = stores?.directory ?? new mod.AccountStore(home);
+      const target = await store.findById(id);
+      if (!target) {
+        process.stderr.write("没有这个账号：" + id + "\n");
+        return 1;
+      }
+      if (cmd === "suspend") {
+        if (target.status === "suspended") {
+          process.stdout.write(`账号已是停用状态：${target.email}\n`);
+          return 0;
+        }
+        if (!argv.includes("--yes")) {
+          const answer = (await ask(`确定停用账号 ${target.email} 吗？该账号的全部会话会立即失效。[y/N] `)).trim().toLowerCase();
+          if (answer !== "y") {
+            process.stdout.write("已取消\n");
+            return 0;
+          }
+        }
+        const { revoked_sessions } = await mod.suspendAccount(home, id, { stores });
+        process.stdout.write(`已停用账号：${target.email}（撤销会话 ${revoked_sessions} 个）\n`);
+        return 0;
+      }
+      if (target.status !== "suspended") {
+        process.stdout.write(`账号本来就没停用：${target.email}\n`);
+        return 0;
+      }
+      await mod.reactivateAccount(home, id, { stores });
+      process.stdout.write(`已恢复账号：${target.email}（被停用期间的会话已作废，须重新登录）\n`);
       return 0;
     }
     if (cmd === "login") {
@@ -5372,6 +5413,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "bughunt") return handleBughunt(args.subArgs ?? [], home);
   if (args.subcommand === "market") return handleMarket(args.subArgs ?? [], home);
   if (args.subcommand === "account") return handleAccount(args.subArgs ?? [], home);
+  if (args.subcommand === "sso") return handleSso(args.subArgs ?? [], home);
   if (args.subcommand === "task") return handleTask(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "review") return handleReview(args.subArgs ?? [], home);
   if (args.subcommand === "kb") return knowledgeMain(args.subArgs ?? []);
