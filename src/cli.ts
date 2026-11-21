@@ -76,6 +76,7 @@ import { handleWorkflow } from "./workflow.ts";
 import { handleScript } from "./scriptCli.ts";
 import { handleHandover } from "./handoverCli.ts";
 import { handleReconciler } from "./reconciler.ts";
+import { handleWatch } from "./watch.ts";
 import { attachContractToRun, handleContract } from "./contract.ts";
 import { handleGolden, stripRunReport, type GoldenRunner } from "./golden.ts";
 import { handleFanout } from "./fanout.ts";
@@ -192,6 +193,7 @@ nyra script preauth <list|grant|revoke> --workflow <名字>   脚本摘要预授
 nyra handover contract <create|list|show|check|resolve|close>   交接契约的程序化验收（Pi Bot 借鉴第 2 条）：交付物 + 验收项 + 修正轮次上限；验收是程序核对，不调模型，不过打回、轮次用完停下等人（详见 docs/handover-contract.md）
 nyra handover checkers   列出能用的 checker（验收项只能挂这些）
 nyra reconciler <scan|status|enable|disable|config|settle>   卡住步骤看门狗（Pi Bot 借鉴第 3 条）：working 任务超时无进展先标出来、再按轮次上限自动重排、超限进 blocked 只等人；自动巡查默认关（详见 docs/reconciler.md）
+nyra watch <add|list|show|remove|check|enable|disable|config|run-action>   变化监测例程（缺口 32）：盯页面或文件，变了才汇报（变了什么 → 详情 → 来源）；带动作的另声明条件与动作，下载类敏感动作须人批；自动巡查默认关（详见 docs/watch.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -314,6 +316,7 @@ nyra script preauth <list|grant|revoke> --workflow <name>   script digest pre-au
 nyra handover contract <create|list|show|check|resolve|close>   programmatic acceptance of handover contracts (Pi Bot idea 2): deliverables + checks + a fix-round cap; acceptance is a deterministic program check, not a model call — a failed check sends the work back, out of rounds stops for a human (see docs/handover-contract.md)
 nyra handover checkers   list the checkers an acceptance item may use
 nyra reconciler <scan|status|enable|disable|config|settle>   stuck-step watchdog (Pi Bot idea 3): a working task idle past the threshold is flagged, then auto-requeued up to a cap, then blocked for a human; automatic patrol is off by default (see docs/reconciler.md)
+nyra watch <add|list|show|remove|check|enable|disable|config|run-action>   change-watch routine (gap 32): watch a page or a file, report only when it changes (what changed, details, source); actions need a separate condition and action, downloads need a human yes; automatic patrol is off by default (see docs/watch.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -1264,6 +1267,16 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           if (report.skipped) return;
           const acted = report.flagged.length + report.retried.length + report.blocked.length + report.failed.length;
           if (acted) process.stdout.write(`[看门狗] 扫了 ${report.scanned} 个在跑任务：标卡住 ${report.flagged.length} 个、重排 ${report.retried.length} 个、停下 ${report.blocked.length} 个、运行已失败走 fail 路径 ${report.failed.length} 个。\n`);
+        });
+      // 缺口 32：变化监测例程 Watch / Watch-with-action（只读巡查：抓页面、
+      // 读文件，变了才汇报；带动作的按声明触发，下载须人批）。全局开关未
+      // 开时 runDueWatches 内部跳过；失败只记 stderr，不破坏定时任务。
+      pollers.push(async () => {
+          const { runDueWatches } = await import("./watch.ts");
+          const report = await runDueWatches(home);
+          if (report.skipped) return;
+          const acted = report.changed.length + report.missing.length + report.actions.length;
+          if (acted) process.stdout.write(`[Watch] 扫了 ${report.checked} 个到期的监测：变了 ${report.changed.length} 个、目标取不到 ${report.missing.length} 个、触发动作 ${report.actions.length} 个。\n`);
         });
       // Phase 3：定时任务结果推送（Bot notifier）。notifier 没开/没配
       // owner/目标会话/token 时 buildNotifierFromConfig 返回 null，不推、
@@ -5660,6 +5673,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "script") return handleScript(args.subArgs ?? [], home);
   if (args.subcommand === "handover") return handleHandover(args.subArgs ?? [], home);
   if (args.subcommand === "reconciler") return handleReconciler(args.subArgs ?? [], home);
+  if (args.subcommand === "watch") return handleWatch(args.subArgs ?? [], home);
   if (args.subcommand === "trust") return handleTrust(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "team") return handleTeamCommand(args, home);

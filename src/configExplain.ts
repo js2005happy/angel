@@ -14,6 +14,7 @@ import { resolveReasoningOptions } from "./reasoning.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
 import { resolveTrustLadderSettings } from "./trustLadder.ts";
 import { resolveReconcilerSettings } from "./reconciler.ts";
+import { resolveWatchSettings } from "./watch.ts";
 
 export type ExplainSource = "cli" | "config" | "env" | "default" | "conflict";
 
@@ -236,6 +237,22 @@ export function explainAll(input: ExplainInput): CapabilityExplain[] {
       source: configured ? "config" : "default",
       keys: ["reconciler.enabled", "reconciler.stuck_after_seconds", "reconciler.max_retries", "reconciler.scan_interval_seconds"],
       note: "看门狗只重排任务板任务（回队列等下一轮 tick），不调模型、不写任务板账本以外的文件、不对外发；超限进 blocked 只等人 reset；无人值守续跑照样强制只读",
+    });
+  }
+
+  // 12) 缺口 32：变化监测例程 Watch / Watch-with-action（页面或文件变了
+  // 才汇报，汇报格式固定为“变了什么 → 详情 → 来源”；带动作的须另声明
+  // 条件与动作，下载类敏感动作须人批）
+  {
+    const s = resolveWatchSettings(cfg);
+    const raw = (pick(cfg, "watch") ?? {}) as Record<string, unknown>;
+    const configured = raw.enabled !== undefined || raw.default_interval_seconds !== undefined;
+    out.push({
+      capability: "watch",
+      effective: s.enabled ? `开（自动巡查，默认每 ${s.defaultIntervalSeconds} 秒检查一次）` : "关（只手动检查）",
+      source: configured ? "config" : "default",
+      keys: ["watch.enabled", "watch.default_interval_seconds"],
+      note: "Watch 本身只读（抓页面、读文件），不调模型、不对外发；enqueue-task 动作入队后执行时照常走审批；download 动作须人显式批准才执行",
     });
   }
 

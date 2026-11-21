@@ -343,6 +343,17 @@ reconciler_retried: ["task_id", "idle_seconds", "retries", "attempts"],
 reconciler_blocked: ["task_id", "idle_seconds", "retries"],
 reconciler_recovered: ["task_id", "idle_seconds"],
 reconciler_run_done: ["task_id", "run_id", "status"],
+// 缺口 32：变化监测例程进证据链——变了（哪个监测、哪类目标、前后短哈
+// 希、新增/删除几行）、目标取不到（哪个监测、哪类目标、为什么）、动作
+// 触发（哪个监测、什么动作、什么条件、入队任务的运行 id）、动作待批准
+// （哪个监测、什么动作、为什么等批）、动作完成（哪个监测、什么动作、
+// 成没成、详情）。只记元数据与 id 与短哈希，不记目标全文、不记下载内
+// 容、不记绝对路径；变化与缺失没有运行上下文时只记审计与收件箱。
+watch_changed: ["watch_id", "label", "kind", "from_hash", "to_hash", "added_lines", "removed_lines"],
+watch_missing: ["watch_id", "label", "kind", "reason"],
+watch_action_triggered: ["watch_id", "label", "action", "condition", "run_id"],
+watch_action_pending: ["watch_id", "label", "action", "reason"],
+watch_action_done: ["watch_id", "label", "action", "ok", "detail"],
 // 缺口 15：语音指挥进证据链——转写（多长、多少字、哪个引擎、花了多少、
 // 转写文本的指纹）与回读（多少字、哪个引擎、花了多少）。只记元数据与
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。

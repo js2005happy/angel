@@ -129,6 +129,11 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 超限进 blocked 只等人）；scan_interval_seconds = 守护进程每几秒扫一
   // 遍（默认 300，整数 60–3600）。数字不合法时回退默认值。
   reconciler: { enabled: false, stuck_after_seconds: 1800, max_retries: 2, scan_interval_seconds: 300 },
+  // 缺口 32：变化监测例程 Watch / Watch-with-action（见 docs/watch.md）。
+  // enabled 默认关（显式 opt-in 才自动巡查；手动 nyra watch check 不受
+  // 开关限制）；default_interval_seconds = 没配 --every-seconds 的监测
+  // 默认每几秒检查一次（默认 3600，整数 60–86400，非法回默认）。
+  watch: { enabled: false, default_interval_seconds: 3600 },
   // 缺口 24：Plan/Act 分模型。plan_model = 规划阶段（--plan / buildPlan）用的强推理模型；
   // act_model = 执行阶段（Act）用的便宜模型（不填沿用主模型）。与主模型相同会被忽略。
   plan_model: null,
