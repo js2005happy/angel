@@ -244,6 +244,13 @@ workflow_node: ["workflow_run_id", "workflow", "node_id", "node_type", "status",
 workflow_awaiting_approval: ["workflow_run_id", "workflow", "node_id", "review_item_id"],
 workflow_completed: ["workflow_run_id", "workflow", "spent_usd", "nodes"],
 workflow_failed: ["workflow_run_id", "workflow", "error"],
+// 缺口 25 其余形态：协调者每轮的决定（第几轮、什么动作、哪个步骤、这次决定
+// 花了多少）、动态生成的新步骤（哪个步骤、什么类型）、协调者停下来问人
+// （第几轮、哪个审阅项）。只记元数据与 id，不记提示词原文、不记决定全文、
+// 不记绝对路径。
+workflow_coordinator_decision: ["workflow_run_id", "workflow", "round", "action", "step", "spent_usd"],
+workflow_dynamic_step: ["workflow_run_id", "workflow", "step_id", "step_type"],
+workflow_coordinator_ask: ["workflow_run_id", "workflow", "round", "review_item_id"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

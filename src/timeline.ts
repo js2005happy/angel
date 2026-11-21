@@ -576,6 +576,18 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       case "workflow_failed":
         push(at, "event", `工作流 ${str(ev.workflow) ?? "?"} 失败`, str(ev.error) ? str(ev.error)!.slice(0, 200) : null, false, null);
         break;
+      case "workflow_coordinator_decision": {
+        const action = str(ev.action);
+        const actionText = action === "run" ? "跑步骤" : action === "new_step" ? "生成新步骤" : action === "finish" ? "结束" : action === "ask" ? "停下来问人" : action === "invalid" ? "决定无效" : action ?? "?";
+        push(at, "event", `协调者第 ${num(ev.round) ?? "?"} 轮决定：${actionText}${str(ev.step) ? ` ${str(ev.step)}` : ""}`, typeof ev.spent_usd === "number" ? `这次决定已花 $${(ev.spent_usd as number).toFixed(4)}` : null, null, null);
+        break;
+      }
+      case "workflow_dynamic_step":
+        push(at, "event", `协调者新增步骤 ${str(ev.step_id) ?? "?"}（${str(ev.step_type) ?? "?"}）`, null, null, null);
+        break;
+      case "workflow_coordinator_ask":
+        push(at, "event", `协调者第 ${num(ev.round) ?? "?"} 轮停下来问人`, str(ev.review_item_id) ? `审阅项 ${str(ev.review_item_id)}` : null, null, null);
+        break;
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

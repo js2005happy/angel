@@ -1,10 +1,10 @@
-// src/workflow.ts — 缺口 25 第一批：声明式可复用工作流（DSL + 固定图执行 + 审批节点 + dry-run）。
+// src/workflow.ts — 缺口 25：声明式可复用工作流（DSL + 三种执行形态 + 审批节点 + dry-run）。
 //
 // 做法借的是 Dify 的声明式 Workflow DSL（YAML/JSON 文本、节点编排、Human Input
 // 审批节点）与 Proto 的三级复用阶梯（工作流激活前先拿真实数据试跑、通过才激活；
 // 非活跃测试只预览写/发动作而不真执行），不抄 Dify 的节点 API 形状与画布交互，
-// 也不拿 Proto 的演示数字当事实。G-5 的三种执行形态（固定图 / 协调者 / 动态）
-// 本批只做固定图：三种形态写进 docs/workflow.md，协调者与动态是后续批次。
+// 也不拿 Proto 的演示数字当事实。G-5 的三种执行形态（固定图 / 协调者 / 动态）：
+// 第一批做了固定图，第二批加了协调者与动态（见下文「协调者循环」一节）。
 //
 // 节点就是 Nyra 已有的东西——工具调用、技能、delegate 子 agent、知识检索、
 // LLM 判断；分支/循环/并行是 DSL 里的控制结构，不是新概念。简单决策用 if/else，
@@ -25,17 +25,23 @@
 // 诚实边界（写进文档，不粉饰）：
 //   - dry-run 只能枚举确定性节点（tool 节点）的写/发动作；llm / delegate /
 //     skill 节点的动作由模型临场决定，dry-run 只能写“可能产生写/发动作，
-//     无法枚举”，不能假装列全了。
+//     无法枚举”，不能假装列全了。协调者/动态形态的 dry-run 再加两句实话：
+//     计划步骤只是“候选”（协调者运行中决定跑不跑），协调者还能再生成新步骤，
+//     那些动作同样无法枚举。
 //   - 成本只对“报了 usage 的调用”计价；没报 usage 的调用金额记 null（未知），
 //     不编数字；月度硬顶与 --max-cost 只对已知部分生效，未知部分不假装封顶。
+//     协调者每轮的决策调用也按实报 usage 计价进月度账本，同样算进 --max-cost。
 //   - 技能节点是“按技能正文带路的 delegate 子 agent 单次任务”，不是完整
 //     agent 会话；知识节点是 BM25 检索（缺口 1 的同一套），不是向量检索。
 //   - 审批节点（approve）只认顶层步骤：不许放并行分支里（续跑要回到确定的
 //     顶层步号，分支里的挂起续跑会重跑整个并行节点），也不许放循环里；
-//     违反的在 import/validate 时直接拒绝，不等跑到一半才炸。
+//     违反的在 import/validate 时直接拒绝，不等跑到一半才炸。动态生成的步骤
+//     不能是审批节点（审批须写进计划，或让协调者用 ask 停下来问人）。
 //   - 触发器本批只声明 + 校验，不触发执行；挂定时/事件触发是下一批的事。
-//   - 协调者形态与动态形态本批没做，DSL 里写 mode: coordinator/dynamic 会
-//     直接拒绝并提示后续批次。
+//   - 协调者是“每轮一次模型调用做决定”，不是 agent 自由发挥：简单判断仍走
+//     确定性 if（不调模型），下一步只从当前可执行的步骤里选；图本身不会自己
+//     长出来——新步骤一次一个、要过同一套 DSL 校验，且有硬上限（轮数 / 新步骤
+//     数 / 每步骤执行次数 / 连续坏决定数），超了即停，不循环烧钱。
 //   - 真实多 agent 场景只在假 provider 上验过；Windows/macOS 真机未验证。
 //
 // 账本：定义文件 ~/.nyra/workflows/<名字>.yaml|json（DSL 文本本身，Git 友好）；
@@ -79,12 +85,59 @@ export const MAX_PROMPT_CHARS = 8000;
 export const MAX_TASK_CHARS = 4000;
 export const MAX_OUTPUT_CHARS = 4000;
 export const MAX_RUNS_KEPT = 200;
+// 协调者 / 动态形态的硬上限（G-5 的 ADK 硬规矩：递归设硬深度上限；简单决策不调模型）。
+export const MAX_COORDINATOR_ROUNDS = 20;
+export const DEFAULT_COORDINATOR_ROUNDS = 10;
+export const MAX_NEW_STEPS = 10;
+export const DEFAULT_COORDINATOR_NEW_STEPS = 3;
+export const DEFAULT_DYNAMIC_NEW_STEPS = 5;
+export const MAX_STEP_RUNS = 3;
+export const MAX_BAD_DECISIONS = 2;
+export const MAX_GOAL_CHARS = 2000;
+/** 协调者 ask 挂起的哨兵节点 id：不对应 steps 里的任何步骤，resume 时单独处理。 */
+export const ASK_NODE_ID = "__ask__";
 export const WORKFLOW_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} _-]{0,99}$/u;
 export const STEP_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
+export type WorkflowMode = "fixed" | "coordinator" | "dynamic";
 export type WorkflowStatus = "draft" | "trial_passed" | "active";
 export type WorkflowRunStatus = "running" | "awaiting_approval" | "completed" | "failed";
 export type NodeType = "tool" | "llm" | "delegate" | "knowledge" | "skill" | "approve" | "parallel";
+
+/** 协调者配置（只用于 coordinator / dynamic；fixed 写了直接拒绝）。 */
+export interface WorkflowCoordinatorConfig {
+  max_rounds?: number;
+  max_new_steps?: number;
+}
+
+/** 协调者一轮的决定（记进运行账本与事件，是“协调者当时怎么想的”的证据）。 */
+export interface WorkflowCoordinatorDecision {
+  round: number;
+  action: "run" | "new_step" | "finish" | "ask" | "invalid";
+  step?: string;
+  summary?: string;
+  ok: boolean;
+  error?: string | null;
+  spent_usd: number | null;
+}
+
+/** 协调者运行态（存在运行记录里，挂起 resume 后从这里续跑，不丢轮数与动态步骤）。 */
+export interface WorkflowCoordinatorState {
+  round: number;
+  executed: string[];
+  runCounts: Record<string, number>;
+  dynamicSteps: WorkflowStep[];
+  decisions: WorkflowCoordinatorDecision[];
+}
+
+/** 协调者一轮解析后的决定（内部用，不进账本；进账本的是 WorkflowCoordinatorDecision）。 */
+interface CoordinatorDecisionParsed {
+  action: "run" | "new_step" | "finish" | "ask";
+  stepId?: string;
+  step?: WorkflowStep;
+  summary?: string;
+  question?: string;
+}
 
 export interface WorkflowStep {
   id: string;
@@ -117,10 +170,15 @@ export interface WorkflowDefinition {
   name: string;
   version: 1;
   description?: string;
-  mode: "fixed";
+  mode: WorkflowMode;
+  /** 目标陈述（coordinator / dynamic 必填；fixed 不认）。 */
+  goal?: string;
+  /** 协调者配置（coordinator / dynamic 可选；fixed 不认）。 */
+  coordinator?: WorkflowCoordinatorConfig;
   inputs?: Record<string, string | number | boolean>;
   max_cost_usd?: number;
   triggers?: WorkflowTrigger[];
+  /** fixed / coordinator：计划步骤（非空）；dynamic：种子步骤（可为空，协调者运行中派生）。 */
   steps: WorkflowStep[];
 }
 
@@ -171,6 +229,19 @@ export interface WorkflowRun {
   pendingNodeIndex: number | null;
   reviewItemId: string | null;
   dryRunPlanHash: string | null;
+  /** 协调者运行态（fixed 形态为 null；挂起 resume 后从这里续跑）。 */
+  coordinator: WorkflowCoordinatorState | null;
+}
+
+/** 协调者最多跑几轮（定义里没配用默认值 10，上限 20）。 */
+export function resolveMaxRounds(def: WorkflowDefinition): number {
+  return def.coordinator?.max_rounds ?? DEFAULT_COORDINATOR_ROUNDS;
+}
+
+/** 协调者最多再生成几个新步骤（定义里没配用默认值：coordinator 3、dynamic 5，上限 10）。 */
+export function resolveMaxNewSteps(def: WorkflowDefinition): number {
+  if (def.coordinator?.max_new_steps !== undefined) return def.coordinator.max_new_steps;
+  return def.mode === "dynamic" ? DEFAULT_DYNAMIC_NEW_STEPS : DEFAULT_COORDINATOR_NEW_STEPS;
 }
 
 export interface WorkflowRunsLedger {
@@ -198,6 +269,10 @@ export function newWorkflowRunId(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}-${randomBytes(3).toString("hex")}`;
+}
+
+export function newCoordinatorState(): WorkflowCoordinatorState {
+  return { round: 0, executed: [], runCounts: {}, dynamicSteps: [], decisions: [] };
 }
 
 function slugifyName(name: string): string {
@@ -529,7 +604,7 @@ function validateCron(cron: string, where: string): void {
   }
 }
 
-function validateStep(raw: unknown, where: string, depth: number, ids: Set<string>, knownTools?: Set<string> | null): WorkflowStep {
+function validateStep(raw: unknown, where: string, depth: number, ids: Set<string>, knownTools?: Set<string> | null, dynamicStep = false): WorkflowStep {
   if (!isObj(raw)) throw new WorkflowError(`工作流定义无效（${where}）：步骤须是映射`);
   const id = raw.id;
   if (typeof id !== "string" || !STEP_ID_RE.test(id)) {
@@ -579,6 +654,9 @@ function validateStep(raw: unknown, where: string, depth: number, ids: Set<strin
     needStr(raw.skill, `步骤 ${id} 的 skill`, 1, 100);
     needStr(raw.task, `步骤 ${id} 的 task`, 1, MAX_TASK_CHARS);
   } else if (type === "approve") {
+    if (dynamicStep) {
+      throw new WorkflowError(`工作流定义无效（步骤 ${id}）：动态生成的步骤不能是审批节点（审批须写进计划，或让协调者用 ask 停下来问人）`);
+    }
     needStr(raw.title, `步骤 ${id} 的 title`, 1, 200);
     if (raw.summary !== undefined) needStr(raw.summary, `步骤 ${id} 的 summary`, 1, 2000);
     if (raw.on_reject !== undefined && raw.on_reject !== "fail" && raw.on_reject !== "skip") {
@@ -604,7 +682,7 @@ function validateStep(raw: unknown, where: string, depth: number, ids: Set<strin
       if (hasApprove(branch)) {
         throw new WorkflowError(`工作流定义无效（步骤 ${id}）：审批节点只认顶层步骤，不许放并行分支里`);
       }
-      for (const sub of branch) validateStep(sub, `${where} 分支 ${b + 1}`, depth + 1, ids, knownTools);
+      for (const sub of branch) validateStep(sub, `${where} 分支 ${b + 1}`, depth + 1, ids, knownTools, dynamicStep);
     }
   }
   return step;
@@ -631,17 +709,31 @@ export function validateWorkflowDefinition(value: unknown, knownTools?: Set<stri
   }
   if (value.version !== 1) throw new WorkflowError("工作流定义无效：version 目前只认 1");
   const mode = value.mode;
-  if (mode !== "fixed") {
-    if (mode === "coordinator" || mode === "dynamic") {
-      throw new WorkflowError(`工作流定义无效：mode ${mode} 是后续批次（三种形态本批只做了固定图），先写 fixed`);
-    }
-    throw new WorkflowError("工作流定义无效：mode 目前只认 fixed");
+  if (mode !== "fixed" && mode !== "coordinator" && mode !== "dynamic") {
+    throw new WorkflowError("工作流定义无效：mode 只认 fixed / coordinator / dynamic");
   }
-  const allowedTop = new Set(["name", "version", "description", "mode", "inputs", "max_cost_usd", "triggers", "steps"]);
+  const allowedTop = new Set(["name", "version", "description", "mode", "goal", "coordinator", "inputs", "max_cost_usd", "triggers", "steps"]);
   for (const k of Object.keys(value)) {
     if (!allowedTop.has(k)) throw new WorkflowError(`工作流定义无效：顶层不认字段 ${k}`);
   }
   const def = value as unknown as WorkflowDefinition;
+  if (def.goal !== undefined) {
+    if (mode === "fixed") throw new WorkflowError("工作流定义无效：goal 只用于 coordinator / dynamic，fixed 不认");
+    needStr(def.goal, "goal", 1, MAX_GOAL_CHARS);
+  }
+  if (mode !== "fixed" && (def.goal === undefined || def.goal.trim() === "")) {
+    throw new WorkflowError(`工作流定义无效：mode ${mode} 须写 goal（协调者要知道目标是什么）`);
+  }
+  if (def.coordinator !== undefined) {
+    if (mode === "fixed") throw new WorkflowError("工作流定义无效：coordinator 配置只用于 coordinator / dynamic，fixed 不认");
+    if (!isObj(def.coordinator)) throw new WorkflowError("工作流定义无效：coordinator 须是映射");
+    const c = def.coordinator as Record<string, unknown>;
+    for (const k of Object.keys(c)) {
+      if (k !== "max_rounds" && k !== "max_new_steps") throw new WorkflowError(`工作流定义无效：coordinator 不认字段 ${k}`);
+    }
+    if (c.max_rounds !== undefined) needInt(c.max_rounds, "coordinator.max_rounds", 1, MAX_COORDINATOR_ROUNDS);
+    if (c.max_new_steps !== undefined) needInt(c.max_new_steps, "coordinator.max_new_steps", 0, MAX_NEW_STEPS);
+  }
   if (def.description !== undefined) needStr(def.description, "description", 1, MAX_DESC_CHARS);
   if (def.inputs !== undefined) {
     if (!isObj(def.inputs)) throw new WorkflowError("工作流定义无效：inputs 须是映射");
@@ -677,7 +769,17 @@ export function validateWorkflowDefinition(value: unknown, knownTools?: Set<stri
       }
     }
   }
-  if (!Array.isArray(def.steps) || def.steps.length === 0) {
+  // dynamic 允许 steps 键缺省（YAML 子集写不出空列表）：缺省按空数组算；其他形态缺 steps 直接拒绝。
+  if (def.steps === undefined && mode === "dynamic") def.steps = [];
+  if (!Array.isArray(def.steps)) {
+    throw new WorkflowError("工作流定义无效：steps 须是数组");
+  }
+  if (mode === "dynamic") {
+    // dynamic 允许种子步骤为空（协调者运行中派生），但新步骤额度不能同时是 0，否则没步骤可跑。
+    if (def.steps.length === 0 && resolveMaxNewSteps(def) === 0) {
+      throw new WorkflowError("工作流定义无效：dynamic 模式 steps 为空时，coordinator.max_new_steps 不能是 0（否则没步骤可跑）");
+    }
+  } else if (def.steps.length === 0) {
     throw new WorkflowError("工作流定义无效：steps 须是非空数组");
   }
   const ids = new Set<string>();
@@ -980,8 +1082,11 @@ function toolActionKind(toolName: string, args: Record<string, unknown>): DryRun
   return "write";
 }
 
-/** 对一段步骤做静态 dry-run 枚举；llm/delegate/skill 节点记 unknown-model-action。 */
-function planSteps(steps: WorkflowStep[], scope: EvalScope, actions: DryRunAction[], skipped: string[], depth: number): void {
+/** 对一段步骤做静态 dry-run 枚举；llm/delegate/skill 节点记 unknown-model-action。
+ *  协调者/动态形态下计划步骤只是“候选”（协调者运行中决定跑不跑），详情里写明；
+ *  协调者还能再生成的新步骤不在这里，其动作在 dryRunPlan 里另记一条。 */
+function planSteps(steps: WorkflowStep[], scope: EvalScope, actions: DryRunAction[], skipped: string[], depth: number, mode: WorkflowMode = "fixed"): void {
+  const candidate = mode === "fixed" ? "" : "（候选步骤：协调者运行中决定是否执行）";
   for (const step of steps) {
     if (step.if !== undefined) {
       let cond: boolean;
@@ -999,16 +1104,16 @@ function planSteps(steps: WorkflowStep[], scope: EvalScope, actions: DryRunActio
       : scope;
     if (step.type === "tool") {
       const args = (renderValue(step.args ?? {}, stepScope) as Record<string, unknown>);
-      actions.push({ nodeId: step.id, kind: toolActionKind(step.tool ?? "", args), detail: `${step.tool} ${stableStringify(args)}${step.for_each ? "（每轮一次）" : ""}` });
+      actions.push({ nodeId: step.id, kind: toolActionKind(step.tool ?? "", args), detail: `${step.tool} ${stableStringify(args)}${step.for_each ? "（每轮一次）" : ""}${candidate}` });
     } else if (step.type === "llm" || step.type === "delegate" || step.type === "skill") {
-      actions.push({ nodeId: step.id, kind: "unknown-model-action", detail: `${step.type} 节点的动作由模型临场决定，dry-run 无法枚举（可能产生写/发动作）${step.for_each ? "（每轮一次）" : ""}` });
+      actions.push({ nodeId: step.id, kind: "unknown-model-action", detail: `${step.type} 节点的动作由模型临场决定，dry-run 无法枚举（可能产生写/发动作）${step.for_each ? "（每轮一次）" : ""}${candidate}` });
     } else if (step.type === "knowledge") {
-      actions.push({ nodeId: step.id, kind: "read", detail: `知识检索 ${step.base ?? ""}：${String(renderTemplate(step.query ?? "", stepScope))}` });
+      actions.push({ nodeId: step.id, kind: "read", detail: `知识检索 ${step.base ?? ""}：${String(renderTemplate(step.query ?? "", stepScope))}${candidate}` });
     } else if (step.type === "approve") {
-      actions.push({ nodeId: step.id, kind: "read", detail: `审批节点（人工批复，dry-run 不进审阅队列）：${step.title ?? ""}` });
+      actions.push({ nodeId: step.id, kind: "read", detail: `审批节点（人工批复，dry-run 不进审阅队列）：${step.title ?? ""}${candidate}` });
     } else if (step.type === "parallel") {
       if (depth >= MAX_PARALLEL_DEPTH) throw new WorkflowError(`dry-run 失败（步骤 ${step.id}）：并行嵌套超过 ${MAX_PARALLEL_DEPTH} 层`);
-      for (const branch of step.branches ?? []) planSteps(branch, stepScope, actions, skipped, depth + 1);
+      for (const branch of step.branches ?? []) planSteps(branch, stepScope, actions, skipped, depth + 1, mode);
     }
   }
 }
@@ -1017,7 +1122,11 @@ export function dryRunPlan(def: WorkflowDefinition, inputs: Record<string, unkno
   const scope: EvalScope = { inputs: inputs as ScopeValue, steps: {}, loop: {} };
   const actions: DryRunAction[] = [];
   const skipped: string[] = [];
-  planSteps(def.steps, scope, actions, skipped, 0);
+  planSteps(def.steps, scope, actions, skipped, 0, def.mode);
+  const maxNew = resolveMaxNewSteps(def);
+  if (def.mode !== "fixed" && maxNew > 0) {
+    actions.push({ nodeId: "__coordinator__", kind: "unknown-model-action", detail: `协调者最多再生成 ${maxNew} 个新步骤，其动作无法枚举（可能产生写/发动作）` });
+  }
   const hash = sha256Hex(stableStringify({ workflow: def.name, inputs, actions, skipped }));
   return { workflow: def.name, inputs, actions, skippedNodes: skipped, hash };
 }
@@ -1101,6 +1210,9 @@ class WorkflowRunner {
   spentKnown = 0;
   monthlyLimit: number | null;
   config: Record<string, unknown>;
+  coordState: WorkflowCoordinatorState | null;
+  badDecisions = 0;
+  knownTools: Set<string> | null = null;
 
   constructor(def: WorkflowDefinition, inputs: Record<string, unknown>, opts: WorkflowRunOptions, existingRun?: WorkflowRun) {
     this.def = def;
@@ -1152,7 +1264,21 @@ class WorkflowRunner {
         pendingNodeIndex: null,
         reviewItemId: null,
         dryRunPlanHash: null,
+        coordinator: null,
       };
+    }
+    // 协调者运行态：fixed 为 null；续跑时从已有运行记录里恢复（轮数、动态步骤、
+    // 决策记录都不丢），新运行从空状态起步。run.coordinator 与 coordState 是
+    // 同一个对象引用，saveRun 直接把它写进账本。
+    if (def.mode === "fixed") {
+      this.coordState = null;
+      this.run.coordinator = null;
+    } else if (existingRun) {
+      this.coordState = existingRun.coordinator ?? newCoordinatorState();
+      this.run.coordinator = this.coordState;
+    } else {
+      this.coordState = newCoordinatorState();
+      this.run.coordinator = this.coordState;
     }
     const storeRun = this.store.create(`工作流 ${def.name}`, `workflow-${this.run.id}`, this.workdir, this.mode, 1);
     this.storeRunId = storeRun.run_id;
@@ -1494,8 +1620,9 @@ class WorkflowRunner {
     }
   }
 
-  /** 从顶层第 startIndex 步开始跑；跑完返回运行记录。 */
+  /** 从顶层第 startIndex 步开始跑；跑完返回运行记录。协调者/动态形态不走固定图，走 runCoordinator。 */
   async runFrom(startIndex: number): Promise<WorkflowRun> {
+    if (this.def.mode !== "fixed") return this.runCoordinator();
     this.emit("workflow_started", { status: this.run.status, dry_run: this.run.dryRun, trial: this.run.trial });
     try {
       for (let i = startIndex; i < this.def.steps.length; i++) {
@@ -1523,6 +1650,290 @@ class WorkflowRunner {
       this.emit("workflow_completed", { spent_usd: this.spentKnown, nodes: this.run.nodes.length });
       return this.run;
     } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.run.status = "failed";
+      this.run.endedAt = nowIso();
+      this.run.error = message;
+      this.run.spentUsd = this.spentKnown;
+      this.saveRun();
+      this.emit("workflow_failed", { error: message.slice(0, 200) });
+      return this.run;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 协调者循环（G-5 第二、三种形态：coordinator / dynamic）
+  //
+  // 每轮只调一次模型做决定（不是 agent 自由发挥）：提示词里只列“当前可执行
+  // 的步骤”（if 已用确定性求值筛过，不把简单判断交给模型），模型只回一个
+  // JSON 决定——run（跑一个可执行步骤）/ new_step（生成一个新步骤并马上跑）
+  // / finish（目标达成）/ ask（缺关键信息，停下来问人）。决定本身进账本与
+  // 事件（workflow_coordinator_decision），是“协调者当时怎么想的”的证据。
+  //
+  // 硬上限（超了即停，不循环烧钱）：轮数（max_rounds，默认 10、上限 20）、
+  // 新步骤数（max_new_steps，默认 coordinator 3 / dynamic 5、上限 10）、
+  // 每步骤执行次数（3 次）、连续坏决定数（2 次）、已执行节点总数（50 个）。
+  // 审批节点一轮只跑一次（批了就过了，拒了按 on_reject 走，不会反复问）。
+  // 协调者每轮的决策调用也按实报 usage 计价进月度账本、算进 --max-cost。
+  // -------------------------------------------------------------------------
+
+  coordinatorRound(): number {
+    return this.coordState?.round ?? 0;
+  }
+
+  private stepOneLine(step: WorkflowStep): string {
+    if (step.type === "tool") return `tool ${step.tool ?? ""}`;
+    if (step.type === "llm") return `llm：${(step.prompt ?? "").slice(0, 60)}`;
+    if (step.type === "delegate") return `delegate：${(step.task ?? "").slice(0, 60)}`;
+    if (step.type === "skill") return `skill ${step.skill ?? ""}：${(step.task ?? "").slice(0, 60)}`;
+    if (step.type === "knowledge") return `知识检索 ${step.base ?? ""}：${(step.query ?? "").slice(0, 60)}`;
+    if (step.type === "approve") return `审批：${step.title ?? ""}`;
+    return `parallel（${step.branches?.length ?? 0} 个分支）`;
+  }
+
+  /** 当前可执行的步骤：if 用确定性求值筛过（条件暂时算不出来的先不列，等依赖
+   *  跑完再说），每步骤最多跑 3 次，审批节点一轮只跑一次。 */
+  private eligibleCoordinatorSteps(): WorkflowStep[] {
+    const state = this.coordState!;
+    const out: WorkflowStep[] = [];
+    for (const s of this.def.steps) {
+      if ((state.runCounts[s.id] ?? 0) >= MAX_STEP_RUNS) continue;
+      if (s.type === "approve" && state.executed.includes(s.id)) continue;
+      if (s.if !== undefined) {
+        let cond: boolean;
+        try {
+          cond = evalCondition(s.if, this.scope);
+        } catch {
+          continue;
+        }
+        if (!cond) continue;
+      }
+      out.push(s);
+    }
+    return out;
+  }
+
+  private coordinatorPrompt(eligible: WorkflowStep[]): { system: string; user: string } {
+    const state = this.coordState!;
+    const maxRounds = resolveMaxRounds(this.def);
+    const maxNew = resolveMaxNewSteps(this.def);
+    const newLeft = maxNew - state.dynamicSteps.length;
+    const system = [
+      "你是工作流协调者：按目标一步步推进，每轮只做一个决定。",
+      "只回一个 JSON 对象，不要写别的字。动作四选一：",
+      '{"action":"run","step":"<步骤 id>"}——跑一个下面列出的可执行步骤；',
+      '{"action":"new_step","step":{...}}——生成一个新步骤并马上跑它（type 只认 tool / llm / delegate / knowledge / skill；id 小写字母开头、不超过 32 字、不能与已有步骤重名；tool 必须是 Nyra 已有的工具名；不能是审批节点）；',
+      '{"action":"finish","summary":"<一句话总结>"}——目标已达成，结束；',
+      '{"action":"ask","question":"<要问人的问题>"}——缺关键信息，停下来问人（人批了继续，拒了整轮失败）。',
+      "不要编步骤 id，不要选没列出的步骤；目标没达成不要 finish。",
+    ].join("\n");
+    const lines: string[] = [];
+    lines.push(`目标：${this.def.goal ?? ""}`);
+    lines.push(`第 ${state.round + 1} / ${maxRounds} 轮；还能生成 ${newLeft} 个新步骤；每步骤最多跑 ${MAX_STEP_RUNS} 次。`);
+    lines.push("可执行的步骤：");
+    if (!eligible.length) lines.push("- （当前没有可执行的步骤；可以生成新步骤，或 finish，或 ask）");
+    for (const s of eligible) {
+      lines.push(`- ${s.id}（${s.type}）：${this.stepOneLine(s)}${state.runCounts[s.id] ? `，已跑 ${state.runCounts[s.id]} 次` : ""}`);
+    }
+    lines.push("已完成的步骤：");
+    if (!state.executed.length) lines.push("- （无）");
+    for (const id of state.executed) {
+      const node = [...this.run.nodes].reverse().find((n) => n.id === id || n.id.startsWith(`${id}[`));
+      lines.push(`- ${id}：${node?.status ?? "?"}${node?.output ? `，输出：${node.output.slice(0, 500)}` : ""}`);
+    }
+    lines.push(`已花 $${this.spentKnown.toFixed(4)}（上限 ${this.maxCostUsd !== null ? `$${this.maxCostUsd.toFixed(2)}` : "未设"}）。`);
+    return { system, user: lines.join("\n") };
+  }
+
+  private parseCoordinatorDecision(text: string, round: number): CoordinatorDecisionParsed {
+    let json = text.trim();
+    const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(json);
+    if (fenced) json = fenced[1].trim();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch {
+      throw new WorkflowError(`协调者第 ${round} 轮的决定不是合法 JSON（只回一个 JSON 对象）：${text.slice(0, 200)}`);
+    }
+    if (!isObj(parsed)) throw new WorkflowError(`协调者第 ${round} 轮的决定不是 JSON 对象`);
+    const action = parsed.action;
+    if (action === "run") {
+      if (typeof parsed.step !== "string" || !STEP_ID_RE.test(parsed.step)) {
+        throw new WorkflowError(`协调者第 ${round} 轮的 run 决定没给合法的步骤 id`);
+      }
+      return { action, stepId: parsed.step };
+    }
+    if (action === "new_step") {
+      if (!isObj(parsed.step)) throw new WorkflowError(`协调者第 ${round} 轮的 new_step 决定没给步骤对象`);
+      return { action, step: parsed.step as unknown as WorkflowStep };
+    }
+    if (action === "finish") {
+      if (typeof parsed.summary !== "string" || !parsed.summary.trim() || parsed.summary.length > MAX_GOAL_CHARS) {
+        throw new WorkflowError(`协调者第 ${round} 轮的 finish 决定须给 1–${MAX_GOAL_CHARS} 字的总结`);
+      }
+      return { action, summary: parsed.summary };
+    }
+    if (action === "ask") {
+      if (typeof parsed.question !== "string" || !parsed.question.trim() || parsed.question.length > MAX_GOAL_CHARS) {
+        throw new WorkflowError(`协调者第 ${round} 轮的 ask 决定须给 1–${MAX_GOAL_CHARS} 字的问题`);
+      }
+      return { action, question: parsed.question };
+    }
+    throw new WorkflowError(`协调者第 ${round} 轮的决定不认动作 ${String(action)}（只认 run / new_step / finish / ask）`);
+  }
+
+  private async validateCoordinatorDecision(decision: CoordinatorDecisionParsed, eligible: WorkflowStep[], round: number): Promise<void> {
+    const state = this.coordState!;
+    if (decision.action === "run") {
+      const id = decision.stepId!;
+      if (eligible.some((s) => s.id === id)) return;
+      if (this.def.steps.some((s) => s.id === id)) {
+        throw new WorkflowError(`协调者第 ${round} 轮想跑步骤 ${id}，但它当前不可执行（条件为假，或已跑满 ${MAX_STEP_RUNS} 次，或审批节点已跑过）`);
+      }
+      throw new WorkflowError(`协调者第 ${round} 轮想跑步骤 ${id}，但没有这个步骤`);
+    }
+    if (decision.action === "new_step") {
+      const maxNew = resolveMaxNewSteps(this.def);
+      if (state.dynamicSteps.length >= maxNew) {
+        throw new WorkflowError(`协调者第 ${round} 轮想生成新步骤，但新步骤额度已用完（max_new_steps=${maxNew}）`);
+      }
+      const tools = await this.getKnownTools();
+      const ids = new Set(this.def.steps.map((s) => s.id));
+      validateStep(decision.step, `第 ${round} 轮动态步骤`, 0, ids, tools, true);
+    }
+  }
+
+  private async getKnownTools(): Promise<Set<string>> {
+    if (this.knownTools) return this.knownTools;
+    const { TOOL_SCHEMAS } = await import("./tools.ts");
+    this.knownTools = new Set(TOOL_SCHEMAS.map((s) => (s.function as Record<string, unknown>).name as string));
+    return this.knownTools;
+  }
+
+  /** 协调者每轮一次模型调用：决定本身也按实报 usage 计价进月度账本、算进 --max-cost。 */
+  private async callCoordinator(eligible: WorkflowStep[]): Promise<{ text: string; spent: number | null }> {
+    this.checkMonthlyCapOrThrow();
+    const provider = await this.getProvider();
+    const { system, user } = this.coordinatorPrompt(eligible);
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ];
+    const resp = await provider.chat(messages);
+    const text = extractChatText(resp);
+    const usage = extractChatUsage(resp);
+    const pricing = this.pricingFor(provider);
+    const spent = pricing ? computeCostUsd(usage.prompt, usage.completion, pricing) : null;
+    if (usage.prompt !== null || usage.completion !== null) {
+      this.ledger.recordDelta(
+        { calls: 1, reported_calls: 1, missing_calls: 0, prompt_tokens: usage.prompt, completion_tokens: usage.completion, total_tokens: (usage.prompt ?? 0) + (usage.completion ?? 0), prompt_samples: 1, completion_samples: 1, total_samples: 1, last_prompt_tokens: usage.prompt, context_window_tokens: null, context_window_source: "unknown", context_window_model: null, context_remaining_tokens: null },
+        null, spent, null, (provider as { model?: string | null }).model ?? null, new Date(), "workflow",
+      );
+    }
+    if (typeof spent === "number") this.spentKnown += spent;
+    return { text, spent };
+  }
+
+  async runCoordinator(): Promise<WorkflowRun> {
+    const state = this.coordState!;
+    this.emit("workflow_started", { status: this.run.status, dry_run: this.run.dryRun, trial: this.run.trial });
+    try {
+      for (;;) {
+        const round = state.round + 1;
+        if (state.round >= resolveMaxRounds(this.def)) {
+          throw new WorkflowError(`协调者轮数用完（max_rounds=${resolveMaxRounds(this.def)}），目标还没达成`);
+        }
+        if (this.run.nodes.length >= MAX_STEPS) {
+          throw new WorkflowError(`已执行节点超过 ${MAX_STEPS} 个，停止（防失控）`);
+        }
+        state.round = round;
+        const eligible = this.eligibleCoordinatorSteps();
+        const { text, spent } = await this.callCoordinator(eligible);
+        let decision: CoordinatorDecisionParsed | null = null;
+        let decisionError: string | null = null;
+        try {
+          decision = this.parseCoordinatorDecision(text, round);
+          await this.validateCoordinatorDecision(decision, eligible, round);
+        } catch (err: unknown) {
+          decisionError = err instanceof Error ? err.message : String(err);
+        }
+        if (decision === null || decisionError !== null) {
+          state.decisions.push({ round, action: "invalid", ok: false, error: decisionError, spent_usd: spent });
+          this.emit("workflow_coordinator_decision", { round, action: "invalid", step: null, spent_usd: spent });
+          this.saveRun();
+          this.badDecisions++;
+          this.checkMaxCostOrThrow();
+          if (this.badDecisions >= MAX_BAD_DECISIONS) {
+            throw new WorkflowError(`协调者连续 ${MAX_BAD_DECISIONS} 次决定无法执行（最近一次：${decisionError}），运行已中止`);
+          }
+          continue;
+        }
+        this.badDecisions = 0;
+        const stepId = decision.action === "run" ? decision.stepId! : decision.action === "new_step" ? (decision.step as WorkflowStep).id : undefined;
+        state.decisions.push({
+          round,
+          action: decision.action,
+          ...(stepId ? { step: stepId } : {}),
+          ...(decision.action === "finish" ? { summary: decision.summary } : {}),
+          ...(decision.action === "ask" ? { summary: decision.question } : {}),
+          ok: true,
+          error: null,
+          spent_usd: spent,
+        });
+        this.emit("workflow_coordinator_decision", { round, action: decision.action, step: stepId ?? null, spent_usd: spent });
+        this.saveRun();
+        this.checkMaxCostOrThrow();
+        if (decision.action === "finish") {
+          this.run.status = "completed";
+          this.run.endedAt = nowIso();
+          this.run.spentUsd = this.spentKnown;
+          this.saveRun();
+          this.emit("workflow_completed", { spent_usd: this.spentKnown, nodes: this.run.nodes.length });
+          return this.run;
+        }
+        if (decision.action === "ask") {
+          const question = decision.question!;
+          const { item } = enqueueReviewItem(this.home, {
+            source: "automation",
+            title: `工作流 ${this.def.name} 提问：${question.slice(0, 200)}`,
+            summary: question,
+            runId: `workflow-${this.run.id}`,
+            sessionId: `workflow-${this.run.id}`,
+            workdir: this.workdir,
+          });
+          this.emit("workflow_coordinator_ask", { round, review_item_id: item.id });
+          throw new WorkflowPendingApproval(item.id, ASK_NODE_ID, -1);
+        }
+        if (decision.action === "new_step") {
+          const step = decision.step as WorkflowStep;
+          state.dynamicSteps.push(step);
+          // 动态步骤追加进定义快照：续跑与 show 都能看到它；校验时已确认 id 不重复。
+          this.def.steps.push(step);
+          this.emit("workflow_dynamic_step", { step_id: step.id, step_type: step.type });
+        }
+        const step = decision.action === "run"
+          ? eligible.find((s) => s.id === decision.stepId)!
+          : (decision.step as WorkflowStep);
+        state.executed.push(step.id);
+        state.runCounts[step.id] = (state.runCounts[step.id] ?? 0) + 1;
+        this.saveRun();
+        await this.executeStep(step, 0, 0);
+      }
+    } catch (err: unknown) {
+      if (err instanceof WorkflowPendingApproval) {
+        this.run.status = "awaiting_approval";
+        if (err.nodeId === ASK_NODE_ID) {
+          this.run.pendingNodeId = ASK_NODE_ID;
+          this.run.pendingNodeIndex = -1;
+        } else {
+          this.run.pendingNodeId = err.nodeId;
+          this.run.pendingNodeIndex = this.def.steps.findIndex((s) => s.id === err.nodeId);
+        }
+        this.run.reviewItemId = err.reviewItemId;
+        this.saveRun();
+        this.emit("workflow_awaiting_approval", { node_id: err.nodeId, review_item_id: err.reviewItemId });
+        return this.run;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.run.status = "failed";
       this.run.endedAt = nowIso();
@@ -1627,6 +2038,7 @@ export function dryRunWorkflowByName(home: string, name: string, inputOverrides:
     nodes: [], spentUsd: 0, startedAt: nowIso(), endedAt: nowIso(),
     dryRun: true, trial: false, error: null,
     pendingNodeId: null, pendingNodeIndex: null, reviewItemId: null, dryRunPlanHash: plan.hash,
+    coordinator: null,
   };
   saveWorkflowRun(home, run);
   return { run, plan };
@@ -1685,7 +2097,10 @@ export function removeWorkflow(home: string, name: string, confirm: boolean): vo
   saveWorkflowRegistry(home, registry);
 }
 
-/** 续跑挂起的运行：审阅项已批复则继续，已拒绝按 on_reject 处理，还没批复就报错。 */
+/** 续跑挂起的运行：审阅项已批复则继续，已拒绝按 on_reject 处理，还没批复就报错。
+ *  协调者/动态形态：批复后回到协调者循环续跑（轮数与动态步骤从运行记录里恢复）；
+ *  协调者 ask 挂起（pendingNodeId 是 __ask__ 哨兵）：批了记一个 ask 节点继续循环，
+ *  拒了整轮失败。 */
 export async function resumeWorkflow(home: string, runId: string, req: WorkflowRunRequest): Promise<WorkflowRun> {
   const run = getWorkflowRun(home, runId);
   if (!run) throw new WorkflowError(`没有这个运行：${runId}`);
@@ -1695,13 +2110,7 @@ export async function resumeWorkflow(home: string, runId: string, req: WorkflowR
   if (!run.reviewItemId || run.pendingNodeIndex === null || !run.pendingNodeId) {
     throw new WorkflowError(`运行 ${runId} 的挂起信息不完整`);
   }
-  const idx = run.pendingNodeIndex;
-  const step = run.definition.steps[idx];
-  if (!step || step.id !== run.pendingNodeId) {
-    throw new WorkflowError(`运行 ${runId} 的挂起节点对不上定义快照`);
-  }
-  const item = getReviewItem(home, run.reviewItemId);
-  const title = step.title ?? step.id;
+  const isCoordinator = run.definition.mode !== "fixed";
   const runner = new WorkflowRunner(run.definition, run.inputs, {
     home, workdir: req.workdir, mode: req.mode, interactive: req.interactive,
     maxCostUsd: req.maxCostUsd,
@@ -1712,6 +2121,44 @@ export async function resumeWorkflow(home: string, runId: string, req: WorkflowR
     run.pendingNodeIndex = null;
     run.reviewItemId = null;
   };
+  const continueAfter = (nextIndex: number): Promise<WorkflowRun> => {
+    if (isCoordinator) return runner.runCoordinator();
+    return runner.runFrom(nextIndex);
+  };
+  if (run.pendingNodeId === ASK_NODE_ID) {
+    const askItem = getReviewItem(home, run.reviewItemId);
+    if (askItem.status === "approved" || askItem.status === "applied") {
+      // ask 节点 id 避开计划里已有的步骤 id（scope 里同名会互相覆盖）。
+      let askId = `ask-${runner.coordinatorRound()}`;
+      while (run.definition.steps.some((s) => s.id === askId)) askId = `${askId}-x`;
+      const askNode: WorkflowNodeResult = {
+        id: askId, type: "approve", status: "ok",
+        startedAt: nowIso(), endedAt: nowIso(), ms: 0,
+        input: askItem.title, output: `已批准协调者的提问：${askItem.title}`, approved: true, spentUsd: null, error: null,
+      };
+      runner.recordNode(askNode);
+      clearPending();
+      return runner.runCoordinator();
+    }
+    if (askItem.status === "rejected") {
+      run.status = "failed";
+      run.endedAt = nowIso();
+      run.error = `协调者的提问被拒绝：${askItem.title}`;
+      run.spentUsd = runner.spentKnown;
+      clearPending();
+      saveWorkflowRun(home, run);
+      runner.emit("workflow_failed", { error: run.error.slice(0, 200) });
+      return run;
+    }
+    throw new WorkflowError(`审阅项 ${askItem.id} 还没批复（当前 ${askItem.status}），先 nyra review approve/reject 再 resume`);
+  }
+  const idx = run.pendingNodeIndex;
+  const step = run.definition.steps[idx];
+  if (!step || step.id !== run.pendingNodeId) {
+    throw new WorkflowError(`运行 ${runId} 的挂起节点对不上定义快照`);
+  }
+  const item = getReviewItem(home, run.reviewItemId);
+  const title = step.title ?? step.id;
   if (item.status === "approved" || item.status === "applied") {
     const approved: WorkflowNodeResult = {
       id: step.id, type: "approve", status: "ok",
@@ -1720,7 +2167,7 @@ export async function resumeWorkflow(home: string, runId: string, req: WorkflowR
     };
     runner.recordNode(approved);
     clearPending();
-    return runner.runFrom(idx + 1);
+    return continueAfter(idx + 1);
   }
   if (item.status === "rejected") {
     if (step.on_reject === "skip") {
@@ -1731,7 +2178,7 @@ export async function resumeWorkflow(home: string, runId: string, req: WorkflowR
       };
       runner.recordNode(skipped);
       clearPending();
-      return runner.runFrom(idx + 1);
+      return continueAfter(idx + 1);
     }
     run.status = "failed";
     run.endedAt = nowIso();
@@ -1775,7 +2222,10 @@ const WORKFLOW_USAGE = [
   "  --max-cost N   本次运行的成本上限（美元），超了即停；不给则用定义里的 max_cost_usd",
   "",
   "工作流激活前有两道门：trial 真实数据试跑 + activate 人工确认。三种执行形态",
-  "本批只做了固定图（mode: fixed），协调者与动态是后续批次（详见 docs/workflow.md）。",
+  "都已落地：fixed（固定图，按 DSL 顺序跑）、coordinator（协调者 agent 每轮决定",
+  "下一步，可生成新步骤）、dynamic（动态：种子步骤可为空，协调者运行中派生子问题）。",
+  "协调者每轮只调一次模型做决定，简单判断仍走 if（不调模型）；轮数、新步骤数、",
+  "每步骤执行次数都有硬上限，超了即停。详见 docs/workflow.md。",
 ].join("\n");
 
 function parseInputFlag(argv: string[]): Record<string, unknown> {
@@ -1808,6 +2258,10 @@ function printRunSummary(run: WorkflowRun): void {
   const spent = typeof run.spentUsd === "number" ? `$${run.spentUsd.toFixed(4)}` : "未知（有调用没报用量）";
   process.stdout.write(`运行 ${run.id}：${run.status}（${run.nodes.length} 个节点，已花 ${spent}）\n`);
   if (run.status === "awaiting_approval") {
+    if (run.pendingNodeId === ASK_NODE_ID) {
+      process.stdout.write(`协调者停下来问人了（审阅项 ${run.reviewItemId ?? "?"}）。\n先 nyra review approve ${run.reviewItemId ?? ""}（或 reject），再 nyra workflow resume ${run.id}\n`);
+      return;
+    }
     process.stdout.write(`审批节点 ${run.pendingNodeId ?? "?"} 已进审阅队列（审阅项 ${run.reviewItemId ?? "?"}）。\n先 nyra review approve ${run.reviewItemId ?? ""}（或 reject），再 nyra workflow resume ${run.id}\n`);
   }
   if (run.status === "failed" && run.error) {
@@ -1864,6 +2318,10 @@ export async function handleWorkflow(argv: string[], home: string): Promise<numb
       if (!entry) { process.stderr.write(`错误：没有这个工作流：${name}\n`); return 1; }
       const { def } = loadWorkflowDefinitionFile(resolvedHome, name);
       process.stdout.write(`${def.name}（${entry.status}）${def.description ? `：${def.description}` : ""}\n`);
+      process.stdout.write(`形态 ${def.mode}${def.goal ? `，目标：${def.goal.slice(0, 100)}` : ""}\n`);
+      if (def.mode !== "fixed") {
+        process.stdout.write(`协调者：最多 ${resolveMaxRounds(def)} 轮，最多再生成 ${resolveMaxNewSteps(def)} 个新步骤\n`);
+      }
       process.stdout.write(`节点 ${countSteps(def.steps)} 个，触发器 ${def.triggers?.length ?? 0} 个${def.max_cost_usd ? `，成本上限 $${def.max_cost_usd}` : ""}\n`);
       const runs = loadWorkflowRuns(resolvedHome).runs.filter((r) => r.workflow === name).slice(-5);
       if (runs.length) {
