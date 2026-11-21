@@ -42,6 +42,8 @@ interface TelegramMessage {
   caption_entities?: { type: string; offset: number; length: number; user?: { id: number } }[];
   photo?: { file_id: string; width?: number; height?: number; file_size?: number }[];
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  /** 语音消息（Opus 编码的 OGG；缺口 27：语音入口转文字当任务）。 */
+  voice?: { file_id: string; duration?: number; mime_type?: string; file_size?: number };
 }
 
 export interface TelegramAdapterOptions {
@@ -188,6 +190,15 @@ export class TelegramAdapter implements ChannelAdapter {
         name: message.document.file_name,
         sizeBytes: typeof message.document.file_size === "number" ? message.document.file_size : undefined,
         mimeType: message.document.mime_type,
+      });
+    }
+    if (message.voice) {
+      attachments.push({
+        kind: "voice",
+        fileId: message.voice.file_id,
+        sizeBytes: typeof message.voice.file_size === "number" ? message.voice.file_size : undefined,
+        mimeType: message.voice.mime_type ?? "audio/ogg",
+        durationSeconds: typeof message.voice.duration === "number" ? message.voice.duration : undefined,
       });
     }
     const chatType = (message.chat.type === "private" || message.chat.type === "group" || message.chat.type === "supergroup" || message.chat.type === "channel")
