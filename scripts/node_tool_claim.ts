@@ -9,7 +9,7 @@
  * proving an external side effect. Never use on an untrusted/shared filesystem.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, statfsSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, statSync, statfsSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 export class ClaimUnavailable extends Error {
@@ -91,6 +91,13 @@ export function claimOperation(directory: string, operationId: string): Operatio
       // /proc/self/fd/N is resolved by the kernel against the open directory,
       // not by traversing the original directory pathname again.
       claimNameAtFd = `/proc/self/fd/${directoryFd}/${filename}`;
+      // Verify that procfs resolves this descriptor to the directory we opened.
+      // The earlier statfs preflight alone cannot establish descriptor identity.
+      const viaProc = statSync(`/proc/self/fd/${directoryFd}`);
+      if (!viaProc.isDirectory() || viaProc.dev !== before.dev ||
+          viaProc.ino !== before.ino || viaProc.uid !== before.uid) {
+        throw new ClaimUnavailable();
+      }
       fd = openSync(claimNameAtFd,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     } catch (error) { closeSync(directoryFd); throw error; }
