@@ -18,6 +18,9 @@ class AcceptanceError(ValueError):
 def assess_acceptance(
     requirements: Sequence[str],
     evidence: Mapping[str, Sequence[Mapping[str, object]]],
+    *,
+    expected_revision: str | None = None,
+    expected_environment: str | None = None,
 ) -> dict[str, object]:
     """Return a conservative, serializable summary of explicitly supplied evidence.
 
@@ -26,9 +29,17 @@ def assess_acceptance(
     References are never dereferenced or treated as trusted attestations.
     A reported target verification must identify the tested revision and
     environment; both are untrusted descriptions, not independent proof.
+    When both expected target fields are supplied, only exact matching
+    target reports count toward reported completion. A mismatch stays open.
     Only target_verified can satisfy a requirement, and even that is a
     *reported* state, not independent verification by Angel.
     """
+    if (expected_revision is None) != (expected_environment is None):
+        raise AcceptanceError("expected revision and environment must be supplied together")
+    for expected in (expected_revision, expected_environment):
+        if expected is not None and (not isinstance(expected, str) or not expected.strip()
+                                     or len(expected) > 200):
+            raise AcceptanceError("invalid expected target context")
     if isinstance(requirements, (str, bytes)) or not isinstance(requirements, Sequence):
         raise AcceptanceError("requirements must be a sequence")
     if not isinstance(evidence, Mapping):
@@ -51,6 +62,7 @@ def assess_acceptance(
         highest = None
         references = []
         target_contexts = []
+        matching_target = False
         for entry in entries:
             if not isinstance(entry, Mapping):
                 raise AcceptanceError("invalid evidence entry")
@@ -67,8 +79,11 @@ def assess_acceptance(
                         or not isinstance(environment, str) or not environment.strip()
                         or len(environment) > 200):
                     raise AcceptanceError("target verification requires revision and environment")
+                matches = (expected_revision is None or
+                           (revision == expected_revision and environment == expected_environment))
+                matching_target = matching_target or matches
                 target_contexts.append({"revision": revision, "environment": environment,
-                                        "reference": reference})
+                                        "reference": reference, "matches_expected": matches})
             references.append(reference)
             if highest is None or _LEVEL_INDEX[level] > _LEVEL_INDEX[highest]:
                 highest = level
@@ -77,7 +92,7 @@ def assess_acceptance(
             "reported_level": highest or "unverified",
             "references": references,
             "reported_target_contexts": target_contexts,
-            "reported_target_verified": highest == "target_verified",
+            "reported_target_verified": matching_target,
         })
     incomplete = [item["requirement"] for item in items if not item["reported_target_verified"]]
     return {
