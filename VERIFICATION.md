@@ -1,3 +1,10 @@
+## 2026-11-21 — Acceptance provenance context (static-only)
+
+- Read development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance module, Agent/Tools/ToolJournal and experimental Node claim; checked recent main commits, open Issues/PR (none returned), previous development commit statuses and PR-triggered workflows (empty, **not** a pass).
+- Added bounded revision/environment context requirements only for self-reported `target_verified` entries. Summary preserves those strings for human review, without dereferencing URLs, verifying commits, or treating descriptions as proof. Added unexecuted unittest cases for missing context, reported-only completion and lower-level compatibility.
+- External fact: [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, describes unsupported completion claims; engineering inference is to require explicit tested revision and environment. Not an Angel reproduction.
+- **Not run:** tests, compilation, scripts, CI, platform probes or deployment. No main merge, runtime wiring, permission change or third-party dependency.
+
 ## 2026-11-21 — Acceptance evidence assessment (static-only)
 
 - Inspected development branch README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, Python Agent/Tools/ToolJournal, experimental Node claim, recent commits, open Issues/PR (none returned), and GitHub commit statuses/PR-triggered workflow runs (empty, not a pass).
