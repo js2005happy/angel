@@ -1,3 +1,9 @@
+
+## 2026-11-21 — P0 Linux claim 目录句柄最终关闭失败的错误归一化（仅静态审查）
+
+- 静态审阅 `scripts/node_tool_claim.ts` 的最终 `finally`：`closeSync(directoryFd)` 原生异常此前可能绕过 claim 的统一失败边界；现在捕获并抛 `ClaimUnavailable`。不会删除或重试 claim，仍保留 unknown。
+- 已核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim；近期 main 提交、开放 Issues/PR 和 GitHub Actions。main 的 Node CI 2026-11-21 03:26 UTC 一次成功仅对应 main 提交 `8e75586`，**不是本分支验证**。
+- 未运行编译、测试、脚本、CI 或故障注入；Windows 仍拒绝 claim，procfs 挂载竞态和实际派发仍未解决。
 ## 2026-11-21 — Node claim 异常路径句柄清理（仅静态）
 
 - 阅读 `scripts/node_tool_claim.ts` 发现原 catch/finally 对同一 `directoryFd` 可能重复调用 `closeSync`。
