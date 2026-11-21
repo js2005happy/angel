@@ -70,6 +70,7 @@ import { handleReview } from "./reviewQueue.ts";
 import { handleVerifier, resolveVerifierModel, verifierConfig } from "./verifier.ts";
 import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
+import { handleFanout } from "./fanout.ts";
 import { handleSubagent } from "./resume.ts";
 import { handleRoster } from "./roster.ts";
 import { handleSideEffects } from "./sideEffects.ts";
@@ -163,6 +164,7 @@ nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-st
 nyra roster <list|show>   实时花名册：每个子 agent 一行——状态 + 已耗时 + 当前动作（只读快照，不花 token；token/费用默认不显示，详见 docs/roster.md）
 nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   静默巡查：无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 docs/heartbeat.md）
+nyra fanout <list|show|recover>   后台扇出：顶层委派立即回 handle，跑完单条回填收件箱；跑一半的进程退出后须 recover 回收（详见 docs/merge-fanout.md）
 nyra governance <policy|mandate|mode|dry-runs>   企业治理：版本化策略 + 不可变授权 + observe/auto 接单模式 + 干跑记录（详见 docs/governance.md）
 nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   分层成本上限：按 Bot/角色/团队/人设设月度上限，触顶进可恢复暂停态
 nyra governance audit <export|verify>   审计导出：治理审计日志导出给 SIEM（JSONL + 哈希链，可验证）
@@ -271,6 +273,7 @@ nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-st
 nyra roster <list|show>   live roster: one line per sub-agent — status + elapsed + current action (read-only snapshot, no tokens spent; token/cost hidden by default, see docs/roster.md)
 nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   silent patrol: quiet when nothing is wrong, findings go to evidence first then inbox; inferred commitments need one user confirmation and auto-expire (see docs/heartbeat.md)
+nyra fanout <list|show|recover>   background fan-out: top-level delegation returns a handle immediately, results backfill the inbox as one message; half-run fan-outs need recover after the process exits (see docs/merge-fanout.md)
 nyra governance <policy|mandate|mode|dry-runs>   enterprise governance: versioned policy + immutable mandates + observe/auto intake modes + dry-run ledger (see docs/governance.md)
 nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   tiered cost caps: monthly USD/token limits per Bot/role/team/persona, over-cap tasks pause recoverably
 nyra governance audit <export|verify>   audit export: governance audit logs to SIEM (JSONL + hash chain, verifiable)
@@ -5494,6 +5497,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "replay") return handleReplay(args.subArgs ?? [], home);
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
+  if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
   if (args.subcommand === "roster") return handleRoster(args.subArgs ?? [], home);
   if (args.subcommand === "side-effects") return handleSideEffects(args.subArgs ?? [], home);

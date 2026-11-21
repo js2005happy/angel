@@ -18,6 +18,7 @@ import { resolveHome } from "./config.ts";
 import { RunStore } from "./runs.ts";
 import { appendInbox, loadInbox } from "./tasks.ts";
 import { listKanbanTasks } from "./kanban.ts";
+import { listFanouts } from "./fanout.ts";
 import { listSubagentRuns } from "./resume.ts";
 import { getAgentMode, recordDryRun } from "./governance.ts";
 import { pythonJsonDump } from "./pyjson.ts";
@@ -29,8 +30,8 @@ export class HeartbeatError extends Error {
   }
 }
 
-export type CheckKind = "inbox_unread" | "kanban_blocked" | "resume_pending" | "stale_runs";
-export const CHECK_KINDS: CheckKind[] = ["inbox_unread", "kanban_blocked", "resume_pending", "stale_runs"];
+export type CheckKind = "inbox_unread" | "kanban_blocked" | "resume_pending" | "stale_runs" | "fanout_unfinished";
+export const CHECK_KINDS: CheckKind[] = ["inbox_unread", "kanban_blocked", "resume_pending", "stale_runs", "fanout_unfinished"];
 
 export interface HeartbeatMonitor {
   agent: string;
@@ -139,6 +140,12 @@ export function runChecks(home: string, kinds: CheckKind[]): HeartbeatFinding[] 
         } catch { /* 目录不存在就跳过 */ }
       }
       if (stale.length) findings.push({ kind, summary: `${stale.length} 个运行已中断`, count: stale.length });
+    } else if (kind === "fanout_unfinished") {
+      // H-6：后台扇出“跑完了没人看”的兜底——已中断/失败的，或跑完但回填没送到的，都要人处理。
+      const pending = listFanouts(home).filter((f) =>
+        f.status === "interrupted" || f.status === "failed" ||
+        ((f.status === "done" || f.status === "partial") && !f.delivered));
+      if (pending.length) findings.push({ kind, summary: `${pending.length} 个后台扇出待处理：${pending.map((f) => `${f.id}（${f.status === "interrupted" ? "已中断" : f.status === "failed" ? "失败" : "未回填"}）`).join("、").slice(0, 200)}`, count: pending.length });
     }
   }
   return findings;

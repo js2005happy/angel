@@ -480,6 +480,30 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 已消费引导（${by}）`, null, null, null);
         break;
       }
+      case "merge_started":
+        push(at, "delegate", `合并步开始：${num(ev.threads) ?? "?"} 个线程 → 一份${str(ev.format) === "plan" ? "计划" : str(ev.format) === "file" ? "文件" : "报告"}`, null, null, null);
+        break;
+      case "merge_finished": {
+        const verified = bool(ev.verified);
+        const checks = `检查 ${num(ev.checks_passed) ?? "?"} 通过 / ${num(ev.checks_failed) ?? "?"} 未通过`;
+        push(at, "verdict", `合并完成：${verified === true ? "确定性检查全过" : verified === false ? "确定性检查未通过" : "未知"}`, `${checks}${str(ev.review_item_id) ? ` · 审阅 ${str(ev.review_item_id)}` : ""}`, verified, null);
+        break;
+      }
+      case "fanout_started":
+        push(at, "delegate", `后台扇出开始：${str(ev.fanout_id) ?? "?"}（${num(ev.tasks) ?? "?"} 个子任务，后台跑，等回填）`, null, null, null);
+        break;
+      case "fanout_finished": {
+        const status = str(ev.status) ?? "?";
+        const label = status === "done" ? "已完成" : status === "partial" ? "部分完成" : status === "failed" ? "失败" : status;
+        push(at, "delegate", `后台扇出 ${str(ev.fanout_id) ?? "?"}${label}：成功 ${num(ev.succeeded) ?? "?"} / 失败 ${num(ev.failed) ?? "?"}`, null, status === "done" ? true : status === "failed" ? false : null, null);
+        break;
+      }
+      case "fanout_backfilled":
+        push(at, "event", `后台扇出 ${str(ev.fanout_id) ?? "?"} 已回填（${str(ev.kind) === "per-group" ? "逐个回 + 汇总" : "单条回填"}）`, null, null, null);
+        break;
+      case "fanout_interrupted":
+        push(at, "event", `后台扇出 ${str(ev.fanout_id) ?? "?"} 已中断`, safeText(ev.reason) || null, false, null);
+        break;
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

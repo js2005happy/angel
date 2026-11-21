@@ -73,6 +73,16 @@ import {
   type ParallelThreadEvidence,
   type ParallelThreadResult,
 } from "./parallelDelegate.ts";
+import {
+  buildMergeTask, extractMergedText, verifyMergedDeliverable,
+  type MergeFormat, type MergedDeliverable,
+} from "./merge.ts";
+import {
+  createFanout, getFanout, updateFanout,
+  type FanoutBackfill,
+} from "./fanout.ts";
+import { createKanbanTask, startKanbanTask, verifyKanbanTask, completeKanbanTask, failKanbanTask } from "./kanban.ts";
+import { appendInbox } from "./tasks.ts";
 import { CheckpointStore } from "./checkpoints.ts";
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type ShadowSnapshotNotice } from "./shadowSnapshots.ts";
 import { ConversationStore } from "./conversations.ts";
@@ -588,6 +598,8 @@ export class Agent {
       // 缺口 3a：并行 delegate——工具层 delegate_parallel 的入口，返回格式化文本。
       delegateParallelFn: (tasks, opts) =>
         this.delegateParallel(tasks, opts).then((r) => formatParallelResults(r)),
+      // H-6：后台扇出入口——工具层 delegate_parallel background:true 时走这里，立即回 handle。
+      delegateParallelBackgroundFn: (tasks, opts) => this.delegateParallelBackground(tasks, opts),
       evidence: this.evidence,
       backend: this.backend ?? null,
       approveFn: opts.approveFn ?? null,
@@ -2295,10 +2307,15 @@ export class Agent {
    * 缺口 13：每线程出结果后先过验收门（delegateDetailed 里的 verifyDelegateResult，
    * 结论进线程证据的 verification）；未通过且开了 rework 时打回重做 1 次，
    * 重做结果替换首轮结果（首轮结论仍记在 verifier_verdict 事件里）。
+   * H-5：`merge: true` 时批跑完再跑一个合并步（mergeParallelResults）——
+   * 合成子 agent（只读）把各线程结果合成为一份交付物，确定性检查后进审阅队列；
+   * 合并步占 1 次子 agent 预算，预算用完时合并失败、原文汇总仍在。
+   * H-6：后台扇出不走这里（delegateParallelBackground），这里永远是同轮等结果；
+   * `onThreadDone` 是每线程结束时的回调（per-group 回填用）。
    */
   async delegateParallel(
     tasks: ParallelTaskSpec[],
-    opts: { maxConcurrency?: number; timeoutMs?: number; enqueueReview?: boolean } = {},
+    opts: { maxConcurrency?: number; timeoutMs?: number; enqueueReview?: boolean; merge?: boolean; mergeTitle?: string; mergeFormat?: MergeFormat; onThreadDone?: (r: ParallelThreadResult) => void } = {},
   ): Promise<ParallelDelegateResult> {
     const resolved = resolveParallelOptions(opts);
     if (!Array.isArray(tasks) || tasks.length === 0) {
@@ -2317,6 +2334,7 @@ export class Agent {
         durationMs: 0,
         model: null,
         evidence: emptyParallelThreadEvidence(),
+        schemaValid: null,
       }));
       return {
         results, succeeded: 0, failed: 0, timedOut: 0, rejected: tasks.length,
@@ -2324,7 +2342,7 @@ export class Agent {
           pendingAfterTimeout: 0,
         maxConcurrency: resolved.maxConcurrency, timeoutMs: resolved.timeoutMs,
         maxConcurrencyClamped: resolved.maxConcurrencyClamped,
-        reviewEnqueued: [], reviewEnqueueError: null,
+        reviewEnqueued: [], reviewEnqueueError: null, merged: null,
       };
     }
     // 预算：本次任务最多 MAX_DELEGATE_CALLS 个子 agent；超出的线程直接被拒，不启动。
@@ -2350,10 +2368,12 @@ export class Agent {
           changedFiles: d.changedFiles,
           diffStat: d.diffStat,
           verification: d.verification,
+          // H-4：契约结论透传给合并步（schemaValid: false 的线程要在合并文本里标出来）。
+          schemaValid: d.schema ? d.schema.valid : null,
         };
       },
       tasks.slice(0, startable),
-      opts,
+      { maxConcurrency: opts.maxConcurrency, timeoutMs: opts.timeoutMs, onThreadDone: opts.onThreadDone },
     );
     const results: ParallelThreadResult[] = [...ran.results];
     for (let i = startable; i < tasks.length; i++) {
@@ -2366,6 +2386,7 @@ export class Agent {
         durationMs: 0,
         model: null,
         evidence: emptyParallelThreadEvidence(),
+        schemaValid: null,
       });
     }
     let succeeded = 0;
@@ -2392,7 +2413,7 @@ export class Agent {
         pendingAfterTimeout: timedOut,
       maxConcurrency: ran.maxConcurrency, timeoutMs: ran.timeoutMs,
       maxConcurrencyClamped: ran.maxConcurrencyClamped,
-      reviewEnqueued: [], reviewEnqueueError: null,
+      reviewEnqueued: [], reviewEnqueueError: null, merged: null,
     };
     if (opts.enqueueReview) {
       try {
@@ -2406,6 +2427,230 @@ export class Agent {
         result.reviewEnqueueError = err instanceof Error ? err.message : String(err);
       }
     }
+    // H-5：开了合并时批跑完再跑一个合并步（合并失败不破坏并行结果，原因记在 merged 里）。
+    if (opts.merge) {
+      try {
+        result.merged = await this.mergeParallelResults(result, { title: opts.mergeTitle, format: opts.mergeFormat });
+      } catch (err: unknown) {
+        result.merged = {
+          ok: false, title: (opts.mergeTitle ?? "").trim() || "并行委派合并交付物", text: "",
+          error: err instanceof Error ? err.message : String(err),
+          verified: false, checks: [], reviewItemId: null, reviewEnqueueError: null,
+          mergeSpentUsd: null, mergeModel: null, file: null,
+        };
+      }
+    }
     return result;
+  }
+
+  /**
+   * H-5：合并步——把一批并行线程的结果合成为一份交付物。
+   *
+   * 合并子 agent 只读（tools: ["read_file"]，只做合成，不改文件、不跑命令）；
+   * 合并文本剥掉 delegateDetailed 的任务头与验收尾后落盘 ~/.nyra/merged/<id>.md
+   * （0600），再过确定性检查，最后进审阅队列（source parallel，verification
+   * 方法 merge-deterministic）。确定性检查未通过也不丢结果：标 verified: false，
+   * 审阅项 verification 为 failed，人批复——不要拿“合并了”当“对了”。
+   * 无成功线程时不跑合并（没有可合的东西），返回 ok:false。
+   * 合并步占 1 次子 agent 预算；预算用完时 delegateDetailed 直接回失败，合并失败。
+   */
+  async mergeParallelResults(
+    result: ParallelDelegateResult,
+    opts: { title?: string; format?: MergeFormat } = {},
+  ): Promise<MergedDeliverable> {
+    const title = (opts.title ?? "").trim() || "并行委派合并交付物";
+    const format = opts.format ?? "report";
+    const mergeId = `mg_${randomBytes(6).toString("hex")}`;
+    this.emit("merge_started", { threads: result.results.length, format });
+    if (result.succeeded === 0) {
+      const merged: MergedDeliverable = {
+        ok: false, title, text: "", error: "没有成功线程可合并",
+        verified: false, checks: [], reviewItemId: null, reviewEnqueueError: null,
+        mergeSpentUsd: null, mergeModel: null, file: null,
+      };
+      this.emit("merge_finished", { verified: false, checks_passed: 0, checks_failed: 0, review_item_id: "" });
+      return merged;
+    }
+    const d = await this.delegateDetailed(buildMergeTask(result, title, format), 6, { tools: ["read_file"] });
+    if (!d.ok) {
+      const merged: MergedDeliverable = {
+        ok: false, title, text: "", error: d.text, verified: false, checks: [],
+        reviewItemId: null, reviewEnqueueError: null,
+        mergeSpentUsd: d.spentUsd, mergeModel: d.model, file: null,
+      };
+      this.emit("merge_finished", { verified: false, checks_passed: 0, checks_failed: 0, review_item_id: "" });
+      return merged;
+    }
+    const mergedText = extractMergedText(d.text);
+    // 完整版落盘（审阅队列的 summary 只留前 2000 字，完整版以文件为准）。
+    let file: string | null = null;
+    try {
+      const dir = join(this.home, "merged");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${mergeId}.md`), mergedText, { mode: 0o600, encoding: "utf-8" });
+      file = `merged/${mergeId}.md`;
+    } catch { /* 落盘失败不挡合并：file 为 null，调用方看得到 */ }
+    const checks = verifyMergedDeliverable(mergedText, result);
+    const verified = checks.every((c) => c.passed);
+    let reviewItemId: string | null = null;
+    let reviewEnqueueError: string | null = null;
+    try {
+      const { enqueueReviewItem } = await import("./reviewQueue.ts");
+      const changedFiles = [...new Set(result.results.flatMap((r) => r.evidence.changedFiles))];
+      const diffStat = result.results
+        .map((r) => r.evidence.diffStat)
+        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+        .join("\n")
+        .slice(0, 20000) || null;
+      const spent = result.totalSpentUsd === null
+        ? d.spentUsd
+        : (result.totalSpentUsd ?? 0) + (d.spentUsd ?? 0);
+      const { item } = enqueueReviewItem(this.home, {
+        source: "parallel",
+        title: title.slice(0, 200),
+        summary: (file ? `完整版：~/.nyra/${file}\n\n` : "") + mergedText,
+        runId: this.sessionId ?? null,
+        sessionId: this.sessionId ?? null,
+        workdir: this.workdir,
+        worktreePath: null,
+        changedFiles,
+        diffStat,
+        verification: {
+          status: verified ? "verified" : "failed",
+          method: "merge-deterministic",
+          note: verified
+            ? `合并确定性检查全过（${checks.length} 项）`
+            : `合并确定性检查未通过：${checks.filter((c) => !c.passed).map((c) => c.label).join("、")}`,
+          at: new Date().toISOString(),
+        },
+        spentUsd: spent,
+      });
+      reviewItemId = item.id;
+    } catch (err: unknown) {
+      reviewEnqueueError = err instanceof Error ? err.message : String(err);
+    }
+    const merged: MergedDeliverable = {
+      ok: true, title, text: mergedText, error: null, verified, checks,
+      reviewItemId, reviewEnqueueError,
+      mergeSpentUsd: d.spentUsd, mergeModel: d.model, file,
+    };
+    this.emit("merge_finished", {
+      verified,
+      checks_passed: checks.filter((c) => c.passed).length,
+      checks_failed: checks.filter((c) => !c.passed).length,
+      review_item_id: reviewItemId ?? "",
+    });
+    return merged;
+  }
+
+  /**
+   * H-6：后台扇出——顶层委派立即回 handle，聊天继续。
+   *
+   * 先建扇出记录（~/.nyra/fanout.json）+ 任务板行（kind delegate，nyra kanban 可查），
+   * 再不等待地跑 delegateParallel；跑完按 backfill 回填收件箱（single：单条汇总；
+   * per-group：每线程完成逐个回 + 最后单条汇总）。回填是单条 consolidated 消息，
+   * 完整合并交付物在 ~/.nyra/merged/<id>.md，审阅项在 review queue。
+   * 进程退出，后台跑着的模型循环就停了——扇出记录与任务板行还在，但跑一半的任务
+   * 不能原地续跑，须 `nyra fanout recover` 回收（标 interrupted，任务板行回队列）。
+   * 任务板/收件箱写失败不挡扇出本身：fanout 账本就是记录。
+   */
+  async delegateParallelBackground(
+    tasks: ParallelTaskSpec[],
+    opts: { maxConcurrency?: number; timeoutMs?: number; enqueueReview?: boolean; merge?: boolean; mergeTitle?: string; mergeFormat?: MergeFormat; backfill?: FanoutBackfill; title?: string } = {},
+  ): Promise<string> {
+    if (!Array.isArray(tasks) || tasks.length === 0) return "错误：delegate_parallel 至少需要一个子任务（tasks 非空数组）";
+    const title = (opts.title ?? "").trim() || `并行委派（${tasks.length} 个子任务）`;
+    const backfill = opts.backfill ?? "single";
+    const fanout = createFanout(this.home, { title, tasksCount: tasks.length, backfill });
+    let kanbanTaskId: string | null = null;
+    try {
+      const kb = createKanbanTask(this.home, { title: `后台并行委派：${title}`, kind: "delegate", workdir: this.workdir });
+      startKanbanTask(this.home, kb.id);
+      kanbanTaskId = kb.id;
+      updateFanout(this.home, fanout.id, { kanbanTaskId });
+    } catch { /* 任务板写失败不挡扇出 */ }
+    this.emit("fanout_started", { fanout_id: fanout.id, tasks: tasks.length });
+    const runPromise = this.delegateParallel(tasks, {
+      maxConcurrency: opts.maxConcurrency,
+      timeoutMs: opts.timeoutMs,
+      enqueueReview: opts.enqueueReview,
+      merge: opts.merge,
+      mergeTitle: opts.mergeTitle,
+      mergeFormat: opts.mergeFormat,
+      onThreadDone: backfill === "per-group"
+        ? (r) => {
+            try {
+              appendInbox(
+                fanout.id, "fanout-thread",
+                `后台扇出 ${fanout.id}：线程 ${r.index + 1}${r.status === "ok" ? "完成" : r.status === "timeout" ? "超时" : r.status === "failed" ? "失败" : "被拒"}（${(r.task ?? "").slice(0, 60)}）`,
+                this.home,
+              );
+            } catch { /* 回填写失败不挡主流程 */ }
+          }
+        : undefined,
+    });
+    void runPromise.then((result) => {
+      // 完成时重读记录：recover/cancel 已接管（interrupted）时不覆盖。
+      let current;
+      try { current = getFanout(this.home, fanout.id); } catch { return; }
+      if (current.status === "interrupted") return;
+      const failedCount = result.failed + result.timedOut + result.rejected;
+      const status = result.succeeded === 0 ? "failed" : failedCount === 0 ? "done" : "partial";
+      const reviewItemIds = [...(result.reviewEnqueued ?? [])];
+      if (result.merged?.reviewItemId) reviewItemIds.push(result.merged.reviewItemId);
+      if (kanbanTaskId) {
+        try {
+          if (status === "failed") {
+            failKanbanTask(this.home, kanbanTaskId, `后台扇出失败：成功 0/${tasks.length}（失败 ${result.failed}、超时 ${result.timedOut}、被拒 ${result.rejected}）`);
+          } else {
+            verifyKanbanTask(this.home, kanbanTaskId, {
+              method: "fanout",
+              summary: `成功 ${result.succeeded}/${tasks.length}${failedCount ? `，失败 ${result.failed}、超时 ${result.timedOut}、被拒 ${result.rejected}` : ""}；合并${result.merged ? (result.merged.verified ? "已核验" : "核验未通过") : "未启用"}`,
+              passed: true,
+            });
+            completeKanbanTask(this.home, kanbanTaskId);
+          }
+        } catch { /* 任务板写失败不挡回填 */ }
+      }
+      const head = `后台扇出 ${fanout.id} ${status === "done" ? "已完成" : status === "partial" ? "部分完成" : "失败"}：` +
+        `成功 ${result.succeeded}/${tasks.length}` +
+        (failedCount ? `（失败 ${result.failed}、超时 ${result.timedOut}、被拒 ${result.rejected}）` : "") +
+        `，花费 ${result.totalSpentUsd === null ? "未知（未计价）" : "$" + result.totalSpentUsd.toFixed(4)}。`;
+      const tail = result.merged
+        ? `合并交付物「${result.merged.title}」${result.merged.verified ? "确定性检查全过" : "确定性检查未通过，须人批复后再用"}，` +
+          (result.merged.reviewItemId ? `审阅队列 ${result.merged.reviewItemId}（nyra review show ${result.merged.reviewItemId}）。` : "审阅队列未入队。")
+        : `未开合并，原文汇总见 nyra fanout show ${fanout.id}。`;
+      let delivered = false;
+      try {
+        appendInbox(fanout.id, "fanout", `${head}${tail}任务板 ${kanbanTaskId ?? "无"}。`, this.home);
+        delivered = true;
+      } catch { /* 回填写失败就记 delivered: false，Heartbeat 会兜底提醒 */ }
+      try {
+        updateFanout(this.home, fanout.id, {
+          status, succeeded: result.succeeded, failed: result.failed,
+          timedOut: result.timedOut, rejected: result.rejected,
+          totalSpentUsd: result.totalSpentUsd, merged: result.merged !== null,
+          reviewItemIds, delivered, deliveredAt: delivered ? new Date().toISOString() : null,
+        });
+      } catch { /* ignore */ }
+      this.emit("fanout_finished", { fanout_id: fanout.id, status, succeeded: result.succeeded, failed: result.failed });
+      this.emit("fanout_backfilled", { fanout_id: fanout.id, kind: backfill });
+    }).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        updateFanout(this.home, fanout.id, { status: "failed", error: message });
+      } catch { /* ignore */ }
+      if (kanbanTaskId) {
+        try { failKanbanTask(this.home, kanbanTaskId, `后台扇出异常：${message}`); } catch { /* ignore */ }
+      }
+      try {
+        appendInbox(fanout.id, "fanout", `后台扇出 ${fanout.id} 异常失败：${message.slice(0, 100)}`, this.home);
+      } catch { /* ignore */ }
+      this.emit("fanout_finished", { fanout_id: fanout.id, status: "failed", succeeded: 0, failed: tasks.length });
+    });
+    return `后台跑，等回填：已派发 ${tasks.length} 个子任务（fanout ${fanout.id}，任务板 ${kanbanTaskId ?? "无"}）。` +
+      `全部跑完后以单条消息回填收件箱${opts.merge ? "（含 H-5 合并交付物）" : ""}；` +
+      `进度看 nyra fanout show ${fanout.id} 或 nyra kanban list；` +
+      `要等结果不要后台跑，调 delegate_parallel 时传 background: false。`;
   }
 }

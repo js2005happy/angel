@@ -143,6 +143,17 @@ subagent_stop_cancelled: ["run_id", "by"],
 // 只确认“已排队”，不谎称“已送达”。
 subagent_steer_queued: ["run_id", "by", "steer_id", "text"],
 subagent_steer_consumed: ["run_id", "by", "steer_id"],
+// H-5：合并步进证据链——开始（几个线程、什么形态）、结束（确定性检查是否全过、
+// 过了几项、审阅项 id）。合并文本本身在 ~/.nyra/merged/<id>.md，事件只记元数据。
+merge_started: ["threads", "format"],
+merge_finished: ["verified", "checks_passed", "checks_failed", "review_item_id"],
+// H-6：后台扇出进证据链——开始（哪个扇出、几个子任务）、结束（哪个扇出、
+// 什么结论、成功/失败各几个）、回填（哪个扇出、哪种回填）、中断（哪个扇出、
+// 为什么）。回填消息正文在收件箱，事件只记元数据。
+fanout_started: ["fanout_id", "tasks"],
+fanout_finished: ["fanout_id", "status", "succeeded", "failed"],
+fanout_backfilled: ["fanout_id", "kind"],
+fanout_interrupted: ["fanout_id", "reason"],
 // DSH-4：先存后做进证据链——记下来（哪个副作用、什么类型）、恢复结论
 // （哪个副作用、已做过/重新执行/失败）。只记元数据，不记参数原文。
 side_effect_recorded: ["effect_id", "kind"],

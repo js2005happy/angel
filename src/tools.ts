@@ -152,7 +152,9 @@ export interface ToolContext {
   soulAgent?: string;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
   /** 缺口 3a：并行委派入口（Agent.delegateParallel 的格式化版，返回汇总文本）。 */
-  delegateParallelFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number }) => Promise<string>) | null;
+  delegateParallelFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number; merge?: boolean; mergeTitle?: string; mergeFormat?: "plan" | "report" | "file" }) => Promise<string>) | null;
+  /** H-6：后台扇出入口（Agent.delegateParallelBackground，立即回 handle，结果回填收件箱）。 */
+  delegateParallelBackgroundFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number; merge?: boolean; mergeTitle?: string; mergeFormat?: "plan" | "report" | "file"; backfill?: "single" | "per-group"; enqueueReview?: boolean }) => Promise<string>) | null;
   /** 缺口 6：Gmail 传输层注入（只供测试用假 transport；不传时按 home +
    * config 现场建真实 transport。Agent 不用管它，默认就是 null）。 */
   gmailTransport?: GmailTransport | null;
@@ -355,7 +357,7 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
       output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象）" },
     },
     ["task"]),
-  schema("delegate_parallel", "把多个互不依赖的子任务并行交给子 agent 跑并汇总结果（缺口 3a，opt-in：只有显式调这个工具才并行）。默认最多 5 个同时跑（硬顶，给再大也只按 5 跑）、单个子任务 10 分钟超时；失败/超时的线程不拖垮其他线程，只返回成功者的结果并注明失败原因与已花成本。每个线程继承 delegate 的工具白名单与 worktree 隔离，收敛规则写进子任务系统提示；本批不做自动验证，验证结论待 review queue 验收",
+  schema("delegate_parallel", "把多个互不依赖的子任务并行交给子 agent 跑并汇总结果（缺口 3a，opt-in：只有显式调这个工具才并行）。默认最多 5 个同时跑（硬顶，给再大也只按 5 跑）、单个子任务 10 分钟超时；失败/超时的线程不拖垮其他线程，只返回成功者的结果并注明失败原因与已花成本。每个线程继承 delegate 的工具白名单与 worktree 隔离，收敛规则写进子任务系统提示；本批不做自动验证，验证结论待 review queue 验收。H-6：background 默认 true——立即回 handle（后台跑，等回填），不阻塞聊天，全部跑完以单条消息回填收件箱（nyra fanout show <id> 查进度，任务板上有行）；要等结果传 background: false。H-5：merge: true 时批跑完再跑一个合并步（只读合成子 agent 把各线程结果合成为一份交付物，确定性检查后进审阅队列），合并要花一次模型调用，成本如实记账",
     {
       tasks: {
         type: "array",
@@ -374,6 +376,11 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
       },
       max_concurrency: { type: "integer", default: 5, minimum: 1, maximum: 5, description: "同时跑的线程数上限，默认 5，也是硬顶" },
       timeout_ms: { type: "integer", default: 600000, minimum: 1000, description: "单个子任务超时（毫秒），默认 600000（10 分钟），到点即判该线程超时" },
+      background: { type: "boolean", default: true, description: "后台扇出：true 立即回 handle（后台跑，等回填）；false 同轮等全部线程跑完再返回" },
+      backfill: { type: "string", enum: ["single", "per-group"], default: "single", description: "回填方式：single 全部跑完单条回填；per-group 每线程完成逐个回 + 最后单条汇总" },
+      merge: { type: "boolean", default: false, description: "合并步：批跑完把各线程结果合成为一份交付物（确定性检查后进审阅队列），要花一次模型调用" },
+      merge_title: { type: "string", description: "合并交付物的标题（不给时默认“并行委派合并交付物”）" },
+      merge_format: { type: "string", enum: ["plan", "report", "file"], default: "report", description: "合并交付物的形态：计划 / 报告 / 文件" },
     },
     ["tasks"]),
   schema("plan", "先写一份执行计划文件",
@@ -2042,13 +2049,16 @@ async function toolDelegate(ctx: ToolContext, task: string, maxTurns = 6, opts: 
 
 // 缺口 3a：并行 delegate 工具——参数只做形状校验，真正的并发/超时/失败隔离
 // 在 agent.ts 的 delegateParallel 与 parallelDelegate.ts 里；工具层不自造语义。
+// H-6：background 默认 true——立即回 handle（后台跑，等回填），不阻塞聊天；
+// 要等结果传 background: false。merge 是 H-5 的合并步（opt-in，默认不开，
+// 合并要花一次模型调用 + 校验，成本如实记账）。
 async function toolDelegateParallel(
   ctx: ToolContext,
   rawTasks: unknown,
   maxConcurrency?: number,
   timeoutMs?: number,
+  extra: { background?: boolean; backfill?: "single" | "per-group"; merge?: boolean; mergeTitle?: string; mergeFormat?: "plan" | "report" | "file" } = {},
 ): Promise<string> {
-  if (!ctx.delegateParallelFn) return "错误：并行子 agent 不可用";
   if (!Array.isArray(rawTasks) || rawTasks.length === 0) return "错误：delegate_parallel 至少需要一个子任务（tasks 非空数组）";
   const tasks: import("./parallelDelegate.ts").ParallelTaskSpec[] = [];
   for (let i = 0; i < rawTasks.length; i++) {
@@ -2071,9 +2081,28 @@ async function toolDelegateParallel(
     }
     tasks.push(spec);
   }
+  const merge = extra.merge === true;
+  const mergeTitle = typeof extra.mergeTitle === "string" && extra.mergeTitle.trim() ? extra.mergeTitle.trim() : undefined;
+  const mergeFormat = extra.mergeFormat === "plan" || extra.mergeFormat === "report" || extra.mergeFormat === "file" ? extra.mergeFormat : undefined;
+  // H-6：background 默认 true（立即回 handle）；显式传 false 才同轮等结果。
+  if (extra.background !== false) {
+    if (!ctx.delegateParallelBackgroundFn) return "错误：后台并行子 agent 不可用（未接后台扇出入口）";
+    return ctx.delegateParallelBackgroundFn(tasks, {
+      ...(typeof maxConcurrency === "number" ? { maxConcurrency } : {}),
+      ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+      ...(merge ? { merge: true } : {}),
+      ...(mergeTitle ? { mergeTitle } : {}),
+      ...(mergeFormat ? { mergeFormat } : {}),
+      ...(extra.backfill === "per-group" ? { backfill: "per-group" as const } : {}),
+    });
+  }
+  if (!ctx.delegateParallelFn) return "错误：并行子 agent 不可用";
   return ctx.delegateParallelFn(tasks, {
     ...(typeof maxConcurrency === "number" ? { maxConcurrency } : {}),
     ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+    ...(merge ? { merge: true } : {}),
+    ...(mergeTitle ? { mergeTitle } : {}),
+    ...(mergeFormat ? { mergeFormat } : {}),
   });
 }
 
@@ -2524,6 +2553,13 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
         args.tasks,
         args.max_concurrency === undefined ? undefined : Number(args.max_concurrency),
         args.timeout_ms === undefined ? undefined : Number(args.timeout_ms),
+        {
+          ...(typeof args.background === "boolean" ? { background: args.background } : {}),
+          ...(args.backfill === "per-group" ? { backfill: "per-group" as const } : {}),
+          ...(args.merge === true ? { merge: true } : {}),
+          ...(typeof args.merge_title === "string" && args.merge_title.trim() ? { mergeTitle: args.merge_title.trim() } : {}),
+          ...(args.merge_format === "plan" || args.merge_format === "report" || args.merge_format === "file" ? { mergeFormat: args.merge_format } : {}),
+        },
       );
       case "plan": return await toolPlan(ctx, String(args.title), args.steps as string[], args.path === undefined ? "plan.md" : String(args.path));
       case "grep_search": return await toolGrepSearch(ctx, String(args.pattern), args.path === undefined ? "." : String(args.path), args.regex === true, args.case_sensitive === true, args.max_results === undefined ? 50 : Number(args.max_results));

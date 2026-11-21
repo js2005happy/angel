@@ -15,6 +15,8 @@
 
 // 验收结论的状态与审阅队列共用同一套口径（type-only，编译期抹掉，无循环 import）。
 import type { VerificationStatus } from "./reviewQueue.ts";
+/** H-5：合并后的交付物（type-only；merge.ts 只 import 本文件的类型，无循环 import）。 */
+import type { MergedDeliverable } from "./merge.ts";
 
 /** 并行默认并发上限（学 Goose 的硬约束：默认 5，同时也是上限）。 */
 export const DEFAULT_PARALLEL_MAX_CONCURRENCY = 5;
@@ -66,6 +68,8 @@ error: string | null;
 durationMs: number;
 model: string | null;
 evidence: ParallelThreadEvidence;
+/** H-4：结构化输出契约的校验结论（没给契约时为 null；通过 true / 未通过 false）。 */
+schemaValid: boolean | null;
 }
 
 export interface ParallelDelegateResult {
@@ -90,11 +94,15 @@ maxConcurrencyClamped: boolean;
 reviewEnqueued: string[];
 /** 3b：opt-in 入队失败时的原因；未要求入队或入队成功时为 null。 */
 reviewEnqueueError: string | null;
+/** H-5：合并步的交付物；没开合并时为 null。 */
+merged: MergedDeliverable | null;
 }
 
 export interface ParallelDelegateOptions {
 maxConcurrency?: number;
 timeoutMs?: number;
+/** H-6：每线程结束时回调（per-group 回填用；回调里抛错不影响线程结果）。 */
+onThreadDone?: (result: ParallelThreadResult) => void;
 }
 
 export interface ResolvedParallelOptions {
@@ -133,6 +141,8 @@ changedFiles: string[];
 diffStat: string | null;
 /** 缺口 13：验收者的验收结论（未开启时不填，调用方按 not-verified 处理）。 */
 verification?: ParallelThreadEvidence["verification"];
+/** H-4：结构化输出契约的校验结论（没给契约时不填，调用方按 null 处理）。 */
+schemaValid?: boolean | null;
 }
 
 export type ParallelRunner = (
@@ -189,6 +199,7 @@ task: spec.task,
 durationMs: 0,
 model: null,
 evidence: emptyEvidence(),
+schemaValid: null,
 };
 const finish = (
 status: ParallelThreadStatus,
@@ -212,7 +223,12 @@ error,
 durationMs: Date.now() - threadStartedAt,
 model: outcome?.model?? null,
 evidence,
+schemaValid: outcome?.schemaValid?? null,
 };
+// H-6：per-group 回填钩子——回调里抛错不影响线程结果。
+if (opts.onThreadDone) {
+try { opts.onThreadDone(results[index]); } catch { /* ignore */ }
+}
 };
 try {
 const outcome = await runWithTimeout(runOne(spec, index), timeoutMs, index);
@@ -270,6 +286,8 @@ timeoutMs,
 maxConcurrencyClamped,
 reviewEnqueued: [],
 reviewEnqueueError: null,
+// H-5：本层不做合并（合并在 agent.ts 的 delegateParallel 里，跑完才有结果可合）。
+merged: null,
 };
 }
 
@@ -369,6 +387,17 @@ lines.push(`已进审阅队列 ${result.reviewEnqueued.length} 项（nyra review
 }
 if (result.reviewEnqueueError) {
 lines.push(`入队失败（结果本身不受影响）：${result.reviewEnqueueError}`);
+}
+// H-5：开了合并时附合并交付物（#79 同款容忍：手写结果可能没有 merged 字段）。
+if (result.merged) {
+const m = result.merged;
+lines.push(
+m.ok
+? `合并交付物：${m.title}\n${m.text}\n\n合并核验：确定性检查 ${m.checks.filter((c) => c.passed).length} 通过 / ${m.checks.filter((c) => !c.passed).length} 未通过（merge-deterministic）${m.verified ? "；可进审阅。" : "；未通过，须人批复后再用，不要把合并结果当已验证。"}` +
+(m.file ? `\n完整版文件：${m.file}（~/.nyra 下）。` : "") +
+(m.reviewItemId ? `\n审阅队列：${m.reviewItemId}（nyra review show ${m.reviewItemId} 查看并批复）。` : `\n审阅队列：未入队${m.reviewEnqueueError ? `（${m.reviewEnqueueError}）` : ""}。`)
+: `合并步失败：${m.error ?? "未知原因"}（各线程原文汇总见上，合并交付物未生成）。`,
+);
 }
 return lines.join("\n\n");
 }
