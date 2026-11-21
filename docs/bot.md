@@ -79,8 +79,8 @@ task.run）才进活动账本与运行事件。
 ```
 Telegram getUpdates 长轮询 → 归一化 InboundMessage
   → 幂等去重（messageId，落盘，重启后仍有效）
+  → 群聊 @ 过滤（mentionOnly 默认开，没 @ 直接忽略；指令同样要过这道门）
   → 确定性指令优先（/help、/status、/new、/stop、/model、/approve、/reject、/computer-shell）
-  → 群聊 @ 过滤（mentionOnly 默认开，没 @ 直接忽略）
   → 配额（单用户/天、单群聊/分钟、当天 token 预算）
   → 月度硬顶预检（超了直接回绝，不调模型）
   → 附件处理（Phase 3：文本文档提取进上下文，图片只记元信息）

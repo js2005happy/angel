@@ -128,6 +128,17 @@ nyra bot status
 绝对路径、绝不记文件内容。时间线里电脑动作按工具步骤渲染（失败的会进
 回归沉淀的失败口径，与 G-3 同款）。
 
+## 定时任务落电脑（Routine 挂电脑上）
+
+定时任务（`nyra schedule`）可以归属一台 Bot，让它跑在那台 Bot 的电脑里，
+而不是跑在守护进程启动时的目录：
+
+- `nyra schedule add --name <名字> --prompt <内容> --at 08:38 --agent <名字>`：任务归属该 Bot；agent id 与 `bot.agent` 同口径（小写字母开头，最长 32 字，非法值添加时拒绝）。
+- 守护进程到点跑任务时，按 `agent` 解析电脑（有 Soul 没电脑就自动建一台，与 BotRunner 绑定同款口径），任务跑在电脑的 workspace 里；休眠的电脑先唤醒。
+- 没接电脑（没 Soul、建电脑失败）时回退到任务的 workdir / 启动目录，任务照常跑，并在守护进程输出里打印一句说明（不会悄悄以为在电脑里跑）。
+- `nyra schedule list` 末尾多一列 agent；没指定 agent 的任务那列为空，行为与以前一致。
+- 旧的 `schedule.json` 里没 `agent` 字段的任务照常加载，agent 为空。
+
 ## 已知局限（诚实边界）
 
 - 没有容器后端（缺口 18 未做）：隔离靠目录 + 权限边界兜底，不是容器级
@@ -147,3 +158,4 @@ nyra bot status
   的 ask 判定再走审批流——BotRunner 侧的接线已在第二批做完（聊天里的
   `/computer-shell`，见 `docs/bot.md`）；`runComputerShell` 的 `approvedBy`
   非空表示调用方已经批过，不再重复拦 ask，只拦 deny。
+- `nyra task worker` 的审阅队列任务仍按原 workdir 跑（不在本批范围，那是 review-queue 的活；本批只接了 `nyra schedule` 的定时任务）。

@@ -62,7 +62,7 @@
 |---|---|
 | `nyra ui` | 启动 gateway 网页界面（含手机 PWA） |
 | `nyra gw <sessions\|send\|view\|approve…>` | 连正在跑的 gateway 当客户端 |
-| `nyra schedule <list\|add\|remove\|run\|daemon>` | 定时任务 |
+| `nyra schedule <list\|add\|remove\|run\|daemon>` | 定时任务（`add` 可加 `--agent <名字>`，让任务跑在该 Bot 的电脑里） |
 | `nyra events <list\|add\|remove\|enable\|disable\|test\|poll>` | 事件触发任务：webhook 与新邮件触发进任务队列（详见 `docs/event-triggers.md`） |
 | `nyra mail-inbox <status\|enable\|disable\|allowlist\|set\|poll>` | 邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 `docs/mail-inbox.md`） |
 | `nyra responsibility <list\|add\|remove\|enable\|disable\|check>` | 常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 `docs/responsibilities.md`） |
