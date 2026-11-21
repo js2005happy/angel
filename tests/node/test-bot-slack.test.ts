@@ -243,3 +243,64 @@ test("Slack：answerCallback 发 interaction ack 信封", async () => {
   expect(ack.payload.trigger_id).toBe("trig-123");
   adapter.close();
 });
+
+test("Slack：消息附件归一化为 attachments", async () => {
+  const ws = fakeWebSocket();
+  const factory: SlackWebSocketFactory = () => ws;
+  const { fetchImpl } = fakeFetch((url) => {
+    if (url.endsWith("/apps.connections.open")) return { ok: true, url: "wss://example.com/socket-mode/abc" };
+    return { ok: true };
+  });
+  const adapter = new SlackAdapter({ appToken: "xapp-x", botToken: "xoxb-x", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  await adapter.pollOnce();
+  ws.onmessage?.({ data: envelope("e20", "events_api", {
+    type: "message",
+    channel: "D1",
+    user: "U2",
+    ts: "1700000000.002000",
+    text: "看这个文件",
+    files: [{ id: "F123", name: "notes.txt", size: 17, mimetype: "text/plain", url_private: "https://files.slack.com/f1.txt" }],
+  }) });
+
+  const msgs = await adapter.pollOnce();
+  expect(msgs.length).toBe(1);
+  expect(msgs[0].attachments.length).toBe(1);
+  expect(msgs[0].attachments[0].fileId).toBe("F123");
+  expect(msgs[0].attachments[0].name).toBe("notes.txt");
+  expect(msgs[0].attachments[0].mimeType).toBe("text/plain");
+  expect(msgs[0].attachments[0].sizeBytes).toBe(17);
+  adapter.close();
+});
+
+test("Slack：downloadFile 走 files.info 拿 url_private 再带 token 下载", async () => {
+  const ws = fakeWebSocket();
+  const factory: SlackWebSocketFactory = () => ws;
+  const seen: { url: string; init?: RequestInit }[] = [];
+  // 自定义 fetch：files.info 返回 url_private，下载返回二进制
+  const fetchImpl = (async (url: string | URL, init?: RequestInit): Promise<Response> => {
+    const u = String(url);
+    seen.push({ url: u, init });
+    if (u.endsWith("/files.info")) {
+      return new Response(JSON.stringify({ ok: true, file: { url_private: "https://files.slack.com/f1.txt", name: "notes.txt", mimetype: "text/plain" } }), { status: 200 });
+    }
+    if (u.includes("files.slack.com")) {
+      return new Response(Buffer.from("hello attachment"), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, url: "wss://x" }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const adapter = new SlackAdapter({ appToken: "xapp-x", botToken: "xoxb-secret", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  const downloaded = await adapter.downloadFile("F123");
+  expect(downloaded.fileName).toBe("notes.txt");
+  expect(downloaded.mimeType).toBe("text/plain");
+  expect(downloaded.bytes.toString()).toBe("hello attachment");
+
+  // files.info 用 bot token；下载也带 bot token，且 URL 不含 token
+  const infoReq = seen.find((c) => c.url.endsWith("/files.info"))!;
+  expect((infoReq.init?.headers as Record<string, string>)?.Authorization).toBe("Bearer xoxb-secret");
+  const dlReq = seen.find((c) => c.url.includes("files.slack.com"))!;
+  expect((dlReq.init?.headers as Record<string, string>)?.Authorization).toBe("Bearer xoxb-secret");
+  expect(dlReq.url).not.toContain("xoxb-secret");
+  adapter.close();
+});

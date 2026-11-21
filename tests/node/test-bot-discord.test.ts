@@ -129,3 +129,89 @@ test("Discord：getMe 走 REST /users/@me", async () => {
   expect(adapter.botId).toBe("me-id");
   adapter.close();
 });
+
+test("Discord：审批按钮 INTERACTION_CREATE 归一化为 /approve 指令", async () => {
+  const ws = fakeWebSocket();
+  const factory: WebSocketFactory = () => ws;
+  const { fetchImpl } = fakeFetch(() => ({ id: "bot-id", username: "NyraBot" }));
+  const adapter = new DiscordAdapter({ token: "t", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  await adapter.pollOnce();
+  ws.onopen?.(null);
+  ws.onmessage?.({ data: gatewayFrame(10, undefined, { heartbeat_interval: 10000 }) });
+  ws.onmessage?.({ data: gatewayFrame(0, "READY", { user: { id: "123456", username: "NyraBot" }, session_id: "sess-1" }) });
+
+  // 批准按钮点击（custom_id = bot:approve:deadbeef）
+  ws.onmessage?.({ data: gatewayFrame(0, "INTERACTION_CREATE", {
+    id: "inter-1", token: "itok-1", type: 2,
+    data: { custom_id: "bot:approve:deadbeef", component_type: 2 },
+    member: { user: { id: "u1", username: "admin" } },
+    channel_id: "ch-1", guild_id: "g-1",
+  }) });
+  // 拒绝按钮点击（custom_id = bot:reject:deadbeef）
+  ws.onmessage?.({ data: gatewayFrame(0, "INTERACTION_CREATE", {
+    id: "inter-2", token: "itok-2", type: 2,
+    data: { custom_id: "bot:reject:deadbeef", component_type: 2 },
+    user: { id: "u1", username: "admin" },
+    channel_id: "ch-1",
+  }) });
+  // 非审批按钮（custom_id 不匹配）应忽略
+  ws.onmessage?.({ data: gatewayFrame(0, "INTERACTION_CREATE", {
+    id: "inter-3", token: "itok-3", type: 2,
+    data: { custom_id: "other:thing", component_type: 2 },
+    user: { id: "u1" }, channel_id: "ch-1",
+  }) });
+
+  const msgs = await adapter.pollOnce();
+  expect(msgs.length).toBe(2);
+  expect(msgs[0].text).toBe("/approve deadbeef");
+  expect(msgs[0].viaCallback).toBe(true);
+  expect(msgs[0].callbackId).toBe("inter-1:itok-1");
+  expect(msgs[0].senderId).toBe("u1");
+  expect(msgs[0].chatType).toBe("group");
+  expect(msgs[1].text).toBe("/reject deadbeef");
+  expect(msgs[1].chatType).toBe("private");
+  adapter.close();
+});
+
+test("Discord：sendText 把 inlineKeyboard 转成 components 按钮", async () => {
+  const ws = fakeWebSocket();
+  const factory: WebSocketFactory = () => ws;
+  const { fetchImpl, seen } = fakeFetch((url, init) => {
+    if (url.includes("/messages") && init?.method === "POST") return { id: "sent-1" };
+    return {};
+  });
+  const adapter = new DiscordAdapter({ token: "t", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  await adapter.sendText({
+    chatId: "ch-1", threadId: null, text: "需要审批",
+    inlineKeyboard: [[
+      { text: "✅ 批准", callbackData: "bot:approve:deadbeef" },
+      { text: "❌ 拒绝", callbackData: "bot:reject:deadbeef" },
+    ]],
+  });
+
+  const post = seen.find((c) => c.init?.method === "POST")!;
+  const body = JSON.parse(String(post.init?.body)) as { components?: { type: number; components: { custom_id: string; style: number; label: string }[] }[] };
+  expect(body.components).toBeDefined();
+  expect(body.components?.[0].components.length).toBe(2);
+  expect(body.components?.[0].components[0].custom_id).toBe("bot:approve:deadbeef");
+  expect(body.components?.[0].components[0].style).toBe(1);
+  expect(body.components?.[0].components[1].custom_id).toBe("bot:reject:deadbeef");
+  expect(body.components?.[0].components[1].style).toBe(4);
+  adapter.close();
+});
+
+test("Discord：answerCallback 走交互响应端点", async () => {
+  const ws = fakeWebSocket();
+  const factory: WebSocketFactory = () => ws;
+  const { fetchImpl, seen } = fakeFetch(() => ({}));
+  const adapter = new DiscordAdapter({ token: "t", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  await adapter.answerCallback("inter-1:itok-1", "已批准");
+  const cb = seen.find((c) => c.url.includes("/interactions/"))!;
+  expect(cb.url).toBe("https://discord.com/api/v10/interactions/inter-1/itok-1/callback");
+  const body = JSON.parse(String(cb.init?.body)) as { type: number };
+  expect(body.type).toBe(6);
+  adapter.close();
+});

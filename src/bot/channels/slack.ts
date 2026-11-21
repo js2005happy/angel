@@ -86,6 +86,7 @@ interface SlackAppMentionPayload {
   thread_ts?: string;
   bot_id?: string;
   subtype?: string;
+  files?: SlackFilePayload[];
 }
 
 interface SlackMessagePayload {
@@ -98,6 +99,20 @@ interface SlackMessagePayload {
   team?: string;
   thread_ts?: string;
   bot_id?: string;
+  files?: SlackFilePayload[];
+}
+
+/** 消息自带的附件元信息（Slack 在 message 里直接带 files 数组）。 */
+interface SlackFilePayload {
+  id?: string;
+  name?: string;
+  size?: number;
+  mimetype?: string;
+  filetype?: string;
+  /** 下载地址（需要带 bot token 的 Authorization 头才能访问）。 */
+  url_private?: string;
+  width?: number;
+  height?: number;
 }
 
 /** 审批按钮回调（block_actions 交互）的 payload 结构。 */
@@ -348,6 +363,15 @@ export class SlackAdapter implements ChannelAdapter {
     const isMentioned = kind === "mention" || kind === "im";
     const chatType: BotChatType = kind === "im" ? "private" : "group";
     const channel = message.channel ?? "";
+    const attachments: InboundMessage["attachments"] = (message.files ?? []).map((f) => ({
+      kind: "attachment",
+      fileId: f.id ?? f.url_private ?? "",
+      name: f.name,
+      sizeBytes: typeof f.size === "number" ? f.size : undefined,
+      mimeType: f.mimetype ?? f.filetype,
+      width: typeof f.width === "number" ? f.width : undefined,
+      height: typeof f.height === "number" ? f.height : undefined,
+    })).filter((a) => a.fileId !== "");
     return {
       channel: "slack",
       chatId: channel,
@@ -357,7 +381,7 @@ export class SlackAdapter implements ChannelAdapter {
       isMentioned,
       messageId: message.ts ?? "",
       text,
-      attachments: [],
+      attachments,
       chatType,
       timestamp: message.ts ? Math.floor(parseFloat(message.ts) * 1000) : Date.now(),
     };
@@ -404,6 +428,37 @@ export class SlackAdapter implements ChannelAdapter {
         text,
       },
     });
+  }
+
+  /**
+   * 按 file_id 下载附件：先 files.info 拿 url_private（需要 bot token 的
+   * files:read scope），再从文件服务下载（带 bot token 的 Authorization 头）。
+   * 只报方法名与状态码，不把含 token 的 URL 写进错误文案。
+   */
+  async downloadFile(fileId: string): Promise<{ bytes: Buffer; fileName?: string; mimeType?: string }> {
+    const info = await this.callApi<{ file?: { url_private?: string; name?: string; mimetype?: string } }>("files.info", { file: fileId });
+    const url = info.file?.url_private;
+    if (!url) throw new Error("Slack 未返回附件下载地址");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await this.fetchImpl(url, {
+        headers: { Authorization: `Bearer ${this.botToken}` },
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Slack 附件下载失败（HTTP ${res.status}）`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      return {
+        bytes: buf,
+        fileName: info.file?.name,
+        mimeType: info.file?.mimetype,
+      };
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") throw new Error("Slack 附件下载超时");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** 关闭连接（拆掉 Socket Mode、停止重连）。 */

@@ -43,6 +43,22 @@ interface DiscordGatewayEvent {
   s?: number | null;
 }
 
+/** 审批按钮回调（INTERACTION_CREATE 的 message component）结构。 */
+interface DiscordInteractionPayload {
+  id: string;
+  token: string;
+  type: number; // 2 = MESSAGE_COMPONENT（按钮点击）
+  data?: { custom_id?: string; component_type?: number };
+  member?: { user?: { id: string; username?: string } };
+  user?: { id: string; username?: string };
+  message?: { id: string; channel_id: string };
+  channel_id?: string;
+  guild_id?: string;
+}
+
+/** 审批按钮回调的 custom_id 前缀（与 approvalBridge 的 APPROVAL_CALLBACK_PREFIX 一致）。 */
+export const DISCORD_APPROVE_BUTTON_PREFIX = "bot:";
+
 /** 可注入的 WebSocket 工厂（测试用 mock；不传用全局 WebSocket）。 */
 export interface DiscordWebSocketLike {
   onopen: ((ev: unknown) => void) | null;
@@ -229,6 +245,12 @@ export class DiscordAdapter implements ChannelAdapter {
       const inbound = this.toInbound(data as DiscordMessage | undefined);
       if (inbound) this.inbox.push(inbound);
     }
+    if (type === "INTERACTION_CREATE") {
+      // 审批按钮回调：把 message component 交互归一化成 viaCallback 的
+      // InboundMessage，走与 Telegram 按钮同一条 decide() 链路。
+      const inbound = this.toCallback(data as DiscordInteractionPayload | undefined);
+      if (inbound) this.inbox.push(inbound);
+    }
   }
 
   private startHeartbeat(): void {
@@ -259,6 +281,40 @@ export class DiscordAdapter implements ChannelAdapter {
   }
 
   // ---- 归一化 ----
+
+  /**
+   * 审批按钮回调 → InboundMessage：custom_id 只认 `bot:approve:<id>` 与
+   * `bot:reject:<id>` 两种（与 approvalBridge 的 APPROVAL_CALLBACK_PREFIX
+   * 完全一致），其余一律忽略（伪造的回调到不了审批层）。正文转成对应的
+   * /approve / /reject 指令，走同一条确定性指令链路；viaCallback 标记供
+   * 主链路回 answerCallback 消转圈，callbackId 用 interaction 的
+   * `id:token`（Discord 交互响应端点的路径）。
+   */
+  toCallback(payload: DiscordInteractionPayload | undefined): InboundMessage | null {
+    if (!payload || payload.type !== 2) return null; // 只认按钮点击（MESSAGE_COMPONENT）
+    const customId = payload.data?.custom_id;
+    if (typeof customId !== "string") return null;
+    const m = /^bot:(approve|reject):([0-9a-f]{8})$/.exec(customId);
+    if (!m) return null;
+    const user = payload.member?.user ?? payload.user;
+    const channelId = payload.channel_id ?? payload.message?.channel_id ?? "";
+    const messageId = payload.message?.id ?? "";
+    return {
+      channel: "discord",
+      chatId: channelId,
+      threadId: null,
+      senderId: user?.id ?? "",
+      senderRole: "member",
+      isMentioned: true,
+      messageId: messageId || `cb-${payload.id}`,
+      text: `/${m[1]} ${m[2]}`,
+      attachments: [],
+      chatType: payload.guild_id ? "group" : "private",
+      timestamp: Date.now(),
+      viaCallback: true,
+      callbackId: payload.token ? `${payload.id}:${payload.token}` : payload.id,
+    };
+  }
 
   private toInbound(message: DiscordMessage | undefined): InboundMessage | null {
     if (!message || !message.author || message.author.bot) return null; // 忽略机器人（含自己）
@@ -295,15 +351,39 @@ export class DiscordAdapter implements ChannelAdapter {
     if (msg.replyToMessageId) {
       body.message_reference = { message_id: msg.replyToMessageId };
     }
-    // Discord 的行内按钮用 components（action row + button），但审批按钮依赖
-    // callback 交互，本批先不接（与 Telegram 的 inlineKeyboard 语义不同，需要
-    // INTERACTION_CREATE 事件 + 交互端点，Phase 2 再补）。这里只发纯文本。
+    // 审批按钮：把 inlineKeyboard 转成 components（action row + button）。
+    // custom_id 沿用 callbackData（即 approvalBridge 的 bot:approve:<id> /
+    // bot:reject:<id>），点击后经 INTERACTION_CREATE 推回，走 decide() 链路。
+    if (msg.inlineKeyboard?.length) {
+      const components = msg.inlineKeyboard.map((row) => ({
+        type: 1, // action row
+        components: row.map((b) => ({
+          type: 2, // button
+          style: b.callbackData.startsWith("bot:reject:") ? 4 : 1, // 拒绝=红(4)、批准=蓝(1)
+          label: b.text,
+          custom_id: b.callbackData,
+        })),
+      }));
+      body.components = components;
+    }
     const sent = await this.callApi<{ id: string }>("POST", `/channels/${msg.chatId}/messages`, body);
     return sent.id;
   }
 
   async editText(chatId: string, messageId: string, text: string): Promise<void> {
     await this.callApi("PATCH", `/channels/${chatId}/messages/${messageId}`, { content: text });
+  }
+
+  /**
+   * 回应按钮点击（消掉客户端的等待转圈）。callbackId 是 `id:token`（见
+   * toCallback），走 Discord 交互响应端点；type 6 是 deferred ack（先确认
+   * 收到，后续可编辑）。只报方法名与状态码，token 不进错误文案。
+   */
+  async answerCallback(callbackId: string, text: string): Promise<void> {
+    const idx = callbackId.indexOf(":");
+    const interactionId = idx > 0 ? callbackId.slice(0, idx) : callbackId;
+    const token = idx > 0 ? callbackId.slice(idx + 1) : "";
+    await this.callApi("POST", `/interactions/${interactionId}/${token}/callback`, { type: 6, data: { content: text } });
   }
 
   /** 关闭连接（停止心跳、断开 Gateway）。 */

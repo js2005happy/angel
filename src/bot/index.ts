@@ -82,6 +82,7 @@ import { SessionQueue } from "./sessionQueue.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
 import { DiscordAdapter } from "./channels/discord.ts";
 import { SlackAdapter } from "./channels/slack.ts";
+import { WhatsAppAdapter } from "./channels/whatsapp.ts";
 import {
   botPolicyFromConfig,
   memorySessionIdFor,
@@ -95,10 +96,13 @@ export const BOT_AUDIT_FILE = "bot-audit.jsonl";
 export const BOT_TELEGRAM_PID_FILE = "bot-telegram.pid";
 export const BOT_DISCORD_PID_FILE = "bot-discord.pid";
 export const BOT_SLACK_PID_FILE = "bot-slack.pid";
+export const BOT_WHATSAPP_PID_FILE = "bot-whatsapp.pid";
 export const TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN";
 export const DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN";
 export const SLACK_APP_TOKEN_ENV = "SLACK_APP_TOKEN";
 export const SLACK_BOT_TOKEN_ENV = "SLACK_BOT_TOKEN";
+export const WHATSAPP_TOKEN_ENV = "WHATSAPP_ACCESS_TOKEN";
+export const WHATSAPP_PHONE_ID_ENV = "WHATSAPP_PHONE_NUMBER_ID";
 /**
  * 密码箱/keys.json 里的条目名就是环境变量名（与 keystore 的口径一致：
  * `telegram-bot-token` 这种小写连字符名过不了 validEnvName，进不了
@@ -108,6 +112,8 @@ export const TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN";
 export const DISCORD_TOKEN_KEY = "DISCORD_BOT_TOKEN";
 export const SLACK_APP_TOKEN_KEY = "SLACK_APP_TOKEN";
 export const SLACK_BOT_TOKEN_KEY = "SLACK_BOT_TOKEN";
+export const WHATSAPP_TOKEN_KEY = "WHATSAPP_ACCESS_TOKEN";
+export const WHATSAPP_PHONE_ID_KEY = "WHATSAPP_PHONE_NUMBER_ID";
 
 export interface AgentRunResult {
   text: string;
@@ -1037,10 +1043,35 @@ export function resolveSlackTokens(home: string): {
   return { appToken: app, botToken: bot, source: "missing" };
 }
 
-type BotChannelName = "telegram" | "discord" | "slack";
+/** WhatsApp 凭证解析：access token + 号码 id 各三来源，同款口径。 */
+export function resolveWhatsAppCredentials(home: string): {
+  token: string | null;
+  phoneNumberId: string | null;
+  source: "env" | "vault" | "file" | "missing";
+} {
+  const tokenEnv = process.env[WHATSAPP_TOKEN_ENV];
+  const phoneEnv = process.env[WHATSAPP_PHONE_ID_ENV];
+  if (tokenEnv && tokenEnv.trim() && phoneEnv && phoneEnv.trim()) {
+    return { token: tokenEnv.trim(), phoneNumberId: phoneEnv.trim(), source: "env" };
+  }
+  const tokenVault = getCredential(WHATSAPP_TOKEN_KEY, home);
+  const phoneVault = getCredential(WHATSAPP_PHONE_ID_KEY, home);
+  if (tokenVault && phoneVault) return { token: tokenVault, phoneNumberId: phoneVault, source: "vault" };
+  const tokenFile = getFileKey(WHATSAPP_TOKEN_KEY, home);
+  const phoneFile = getFileKey(WHATSAPP_PHONE_ID_KEY, home);
+  if (tokenFile && phoneFile) return { token: tokenFile, phoneNumberId: phoneFile, source: "file" };
+  const token = tokenEnv?.trim() || tokenVault || tokenFile || null;
+  const phoneNumberId = phoneEnv?.trim() || phoneVault || phoneFile || null;
+  return { token, phoneNumberId, source: "missing" };
+}
+
+type BotChannelName = "telegram" | "discord" | "slack" | "whatsapp";
 
 function pidPath(home: string, channel: BotChannelName): string {
-  const file = channel === "telegram" ? BOT_TELEGRAM_PID_FILE : channel === "discord" ? BOT_DISCORD_PID_FILE : BOT_SLACK_PID_FILE;
+  const file = channel === "telegram" ? BOT_TELEGRAM_PID_FILE
+    : channel === "discord" ? BOT_DISCORD_PID_FILE
+    : channel === "slack" ? BOT_SLACK_PID_FILE
+    : BOT_WHATSAPP_PID_FILE;
   return join(resolveNyraHome(home), file);
 }
 
@@ -1075,7 +1106,7 @@ function removePid(home: string, channel: BotChannelName): void {
 
 // -- CLI：nyra bot telegram <start|stop|status> ----
 
-/** `nyra bot status`：渠道（Telegram/Discord/Slack 运行态 + token 配置）+ 电脑总览（数量、醒/休眠、已声明内存）。 */
+/** `nyra bot status`：渠道（Telegram/Discord/Slack/WhatsApp 运行态 + token 配置）+ 电脑总览（数量、醒/休眠、已声明内存）。 */
 export function handleBotStatus(home: string): number {
   const resolvedHome = home || resolveHome();
   const config = loadConfig(resolvedHome);
@@ -1083,6 +1114,7 @@ export function handleBotStatus(home: string): number {
     { channel: "telegram", label: "Telegram", tokenDesc: "" },
     { channel: "discord", label: "Discord", tokenDesc: "" },
     { channel: "slack", label: "Slack", tokenDesc: "" },
+    { channel: "whatsapp", label: "WhatsApp", tokenDesc: "" },
   ];
   for (const meta of channelMeta) {
     const pid = readPid(resolvedHome, meta.channel);
@@ -1093,6 +1125,11 @@ export function handleBotStatus(home: string): number {
       tokenLine = tokens.appToken && tokens.botToken
         ? `已配置（${tokens.source}，${maskKey(tokens.appToken)} / ${maskKey(tokens.botToken)}）`
         : "未配置（需 app token + bot token）";
+    } else if (meta.channel === "whatsapp") {
+      const creds = resolveWhatsAppCredentials(resolvedHome);
+      tokenLine = creds.token && creds.phoneNumberId
+        ? `已配置（${creds.source}，${maskKey(creds.token)} / 号码 ${creds.phoneNumberId}）`
+        : "未配置（需 access token + 号码 id）";
     } else {
       const resolveToken = meta.channel === "telegram" ? resolveTelegramToken : resolveDiscordToken;
       const token = resolveToken(resolvedHome);
@@ -1132,15 +1169,15 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     return handleBotStatus(resolvedHome);
   }
   const action = argv[1];
-  if (channel !== "telegram" && channel !== "discord" && channel !== "slack") {
-    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot slack <start|stop|status>\n       nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>\n       nyra bot status\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
+  if (channel !== "telegram" && channel !== "discord" && channel !== "slack" && channel !== "whatsapp") {
+    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot slack <start|stop|status>\n       nyra bot whatsapp <start|stop|status>\n       nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>\n       nyra bot status\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
     return 2;
   }
   if (!action) {
     process.stdout.write(`用法：nyra bot ${channel} <start|stop|status>\n`);
     return 2;
   }
-  const label = channel === "telegram" ? "Telegram" : channel === "discord" ? "Discord" : "Slack";
+  const label = channel === "telegram" ? "Telegram" : channel === "discord" ? "Discord" : channel === "slack" ? "Slack" : "WhatsApp";
   const cn: BotChannelName = channel;
 
   if (action === "stop") {
@@ -1174,6 +1211,9 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     if (cn === "slack") {
       const tokens = resolveSlackTokens(resolvedHome);
       process.stdout.write(`Token：${tokens.appToken && tokens.botToken ? `已配置（${tokens.source}，${maskKey(tokens.appToken)} / ${maskKey(tokens.botToken)}）` : `未配置（需 app token ${SLACK_APP_TOKEN_ENV} + bot token ${SLACK_BOT_TOKEN_ENV}，或 nyra vault add 分别存）`}\n`);
+    } else if (cn === "whatsapp") {
+      const creds = resolveWhatsAppCredentials(resolvedHome);
+      process.stdout.write(`Token：${creds.token && creds.phoneNumberId ? `已配置（${creds.source}，${maskKey(creds.token)} / 号码 ${creds.phoneNumberId}）` : `未配置（需 access token ${WHATSAPP_TOKEN_ENV} + 号码 id ${WHATSAPP_PHONE_ID_ENV}，或 nyra vault add 分别存）`}\n`);
     } else {
       const resolveToken = cn === "telegram" ? resolveTelegramToken : resolveDiscordToken;
       const tokenEnv = cn === "telegram" ? TELEGRAM_TOKEN_ENV : DISCORD_TOKEN_ENV;
@@ -1203,6 +1243,14 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
         return 1;
       }
       adapter = new SlackAdapter({ appToken: tokens.appToken, botToken: tokens.botToken });
+    } else if (cn === "whatsapp") {
+      const creds = resolveWhatsAppCredentials(resolvedHome);
+      if (!creds.token || !creds.phoneNumberId) {
+        const hint = "先在 Meta 开发者后台（developers.facebook.com）建 WhatsApp 应用，拿 system user access token + 号码 id（Phone Number ID）";
+        process.stderr.write(`未找到 ${label} 凭证：${hint}，再用环境变量 ${WHATSAPP_TOKEN_ENV} 与 ${WHATSAPP_PHONE_ID_ENV}（或 nyra vault add 分别存）（详见 docs/bot.md）。\n`);
+        return 1;
+      }
+      adapter = new WhatsAppAdapter({ token: creds.token, phoneNumberId: creds.phoneNumberId });
     } else {
       const resolveToken = cn === "telegram" ? resolveTelegramToken : resolveDiscordToken;
       const tokenEnv = cn === "telegram" ? TELEGRAM_TOKEN_ENV : DISCORD_TOKEN_ENV;

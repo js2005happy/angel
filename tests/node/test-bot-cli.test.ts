@@ -120,7 +120,7 @@ test("handleBot：用法错误退出 2", async () => {
     expect(code1).toBe(2);
     const code2 = await handleBot(["telegram", "fly"], home);
     expect(code2).toBe(2);
-    const code3 = await handleBot(["whatsapp", "start"], home);
+    const code3 = await handleBot(["wechat", "start"], home);
     expect(code3).toBe(2);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -258,6 +258,61 @@ test("handleBot：slack status 未运行时正常退出 0", async () => {
       else process.env.SLACK_APP_TOKEN = prevApp;
       if (prevBot === undefined) delete process.env.SLACK_BOT_TOKEN;
       else process.env.SLACK_BOT_TOKEN = prevBot;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("handleBot：whatsapp 无凭证时 start 报错退出 1", async () => {
+  const home = tempHome("nyra-bot-cli13-");
+  try {
+    const prevToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    const prevPhone = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const logs: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const code = await handleBot(["whatsapp", "start"], home);
+      expect(code).toBe(1);
+      expect(logs.join("")).toContain("凭证");
+    } finally {
+      process.stderr.write = origErr;
+      if (prevToken === undefined) delete process.env.WHATSAPP_ACCESS_TOKEN;
+      else process.env.WHATSAPP_ACCESS_TOKEN = prevToken;
+      if (prevPhone === undefined) delete process.env.WHATSAPP_PHONE_NUMBER_ID;
+      else process.env.WHATSAPP_PHONE_NUMBER_ID = prevPhone;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("handleBot：whatsapp status 未运行时正常退出 0", async () => {
+  const home = tempHome("nyra-bot-cli14-");
+  try {
+    const prevToken = process.env.WHATSAPP_ACCESS_TOKEN;
+    const prevPhone = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    delete process.env.WHATSAPP_ACCESS_TOKEN;
+    delete process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const logs: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const code = await handleBot(["whatsapp", "status"], home);
+      expect(code).toBe(0);
+      const out = logs.join("");
+      expect(out).toContain("WhatsApp Bot");
+      expect(out).toContain("未运行");
+      expect(out).toContain("未配置");
+    } finally {
+      process.stdout.write = origOut;
+      if (prevToken === undefined) delete process.env.WHATSAPP_ACCESS_TOKEN;
+      else process.env.WHATSAPP_ACCESS_TOKEN = prevToken;
+      if (prevPhone === undefined) delete process.env.WHATSAPP_PHONE_NUMBER_ID;
+      else process.env.WHATSAPP_PHONE_NUMBER_ID = prevPhone;
     }
   } finally {
     rmSync(home, { recursive: true, force: true });

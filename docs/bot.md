@@ -1,4 +1,4 @@
-# Bot 方向：Telegram + Discord + Slack 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
+# Bot 方向：Telegram + Discord + Slack + WhatsApp 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
 
 用户 2026-11-20 给的双场景架构：场景 A（外部社群/客服/办公 IM Bot）
 与场景 B（个人/业务自动化监控与任务 Bot）复用同一套 Bot Core（会话
@@ -7,8 +7,9 @@
 与 approvalBridge（聊天内审批）+ 用量硬顶；Phase 3 做了场景 B 的主
 动推送（notifier：Heartbeat 静默巡查 + Watch 文件变化 + 任务结果推
 送）与附件处理（文本文档提取、图片只记元信息）。2026-11-21 新增
-Discord 渠道（Gateway 收消息 + REST 发消息）与 Slack 渠道（Socket
-Mode 收事件 + Web API 发消息）。
+Discord 渠道（Gateway 收消息 + REST 发消息）、Slack 渠道（Socket
+Mode 收事件 + Web API 发消息，含审批按钮闭环）与 WhatsApp 渠道
+（Cloud API 发消息 + webhook 收消息）。
 
 ## 快速开始
 
@@ -106,10 +107,38 @@ Slack 的审批闭环：审批提示以 Block Kit 消息发出（带「批准 / 
 `interaction` ack 消掉客户端转圈。与 Telegram 唯一的区别是 ack 走 Socket
 Mode 信封而非 REST，主链路零改动。
 
+### WhatsApp
+
+WhatsApp 与前三个渠道有一个**关键不同**：Cloud API 收消息没有官方轮询或
+Socket Mode 等价物，Meta 只通过 **webhook**（HTTPS POST 到你的公网回调
+URL）推消息。所以 WhatsApp 渠道不能像前三个那样在「家里电脑」上直接跑通
+收消息，需要一个公网 HTTPS 入口（ngrok / Cloudflare Tunnel，或部署到有
+公网域名的机器）把 Meta 的请求转发进适配器的 `handleWebhook`。
+
+1. 到 Meta 开发者后台（developers.facebook.com）建 WhatsApp 应用，拿
+   **system user access token** 与 **号码 id**（Phone Number ID）。
+2. 存两个凭证（二选一，绝不写进配置文件）：
+   - 环境变量：`WHATSAPP_ACCESS_TOKEN=<token>` 与
+     `WHATSAPP_PHONE_NUMBER_ID=<号码 id>`；
+   - 或密码箱：`nyra vault add WHATSAPP_ACCESS_TOKEN`、
+     `nyra vault add WHATSAPP_PHONE_NUMBER_ID`。
+3. 配 webhook：把公网入口（隧道/部署）的 URL 填进 Meta 后台的 callback URL，
+   配 verify token，完成 `hub.challenge` 握手；公网入口把 Meta 的 GET（握手）
+   转发给 `verifyWebhook`、POST（消息）转发给 `handleWebhook`（带
+   `X-Hub-Signature-256` 验签）。
+4. 启动：`nyra bot whatsapp start`；状态 `nyra bot whatsapp status`。
+
+WhatsApp 只接两类消息：私聊文本（免 @）与群聊文本（`chatType=group`；
+WhatsApp 群聊没有「@ 机器人」机制，`isMentioned` 恒 false，靠文本匹配）。
+按钮回发（interactive 的 button_reply / list_reply）取标题当正文。发消息走
+`/{phone_number_id}/messages`，编辑退化为补发（Cloud API 不支持改已发消息）。
+行内审批按钮（interactive button）未接，审批提示里的 `/approve <id>` 指令
+可直接回复。
+
 ## 消息处理主链路
 
 ```
-Telegram getUpdates 长轮询 / Discord Gateway 事件 / Slack Socket Mode 事件
+Telegram getUpdates 长轮询 / Discord Gateway 事件 / Slack Socket Mode 事件 / WhatsApp webhook
   → 归一化 InboundMessage
   → 幂等去重（messageId，落盘，重启后仍有效）
   → 群聊 @ 过滤（mentionOnly 默认开，没 @ 直接忽略；指令同样要过这道门）
