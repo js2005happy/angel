@@ -1,3 +1,10 @@
+## 2026-11-21 — Acceptance evidence provenance gate (implemented, static-only)
+
+- **External user report (fact, 2026-11-16):** [Codex #61857](https://github.com/openai/codex/issues/61857) describes completion claims unsupported by target-device or deployed-environment verification, despite checklists. It is an anecdotal report, not an Angel reproduction or frequency estimate. [Codex #60258](https://github.com/openai/codex/issues/60258) (2026-11-08) separately reports premature stopping on multi-step implementation.
+- **Engineering inference:** reported target acceptance should include the specific tested revision and environment, so a source edit or generic check URL cannot silently become a target-environment claim. These strings are self-reported, not verified attestations.
+- **Ranking (value / effort / safety risk / dependencies):** P1 provenance context gate high / low / low / existing acceptance module (implemented, untested); P1 independent evidence-source adapters high / medium / medium / trusted CI and target APIs; P1 persistent task contract high / medium / medium / privacy boundaries; P1 bounded no-progress detection high / medium / medium / progress events; P0 claim dispatch high / high / high / storage and approval safety (blocked); P0 Linux mount race high / high / high / OS threat model (blocked); P0 Windows handle security high / high / high / native API (blocked).
+- **Scope:** only `target_verified` evidence now requires nonblank bounded `revision` and `environment` descriptions. Earlier evidence levels remain accepted without those fields. A self-reported target status never makes `independently_verified` or `safe_to_auto_resume` true. Regression tests added but not run; no runtime integration.
+
 ## 2026-11-21 — Read-only acceptance evidence primitive (implemented, untested)
 
 - **External fact (report dated 2026-11-16):** [Codex #61872](https://github.com/openai/codex/issues/61872) describes a long UI integration task with many passing local checks but incomplete delivery. This is one external report, not a reproduced Angel defect or prevalence measurement.
