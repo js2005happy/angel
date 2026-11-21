@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 read-only acceptance evidence classifier
+
+- Added `angel/acceptance_evidence.py`, a side-effect-free, stdlib-only assessment of supplied requirement evidence. Distinguishes changed, static-reviewed, tests-passed and reported target-verified levels, retaining explicit incomplete requirements. Never claims independent verification or safe automatic resume.
+- Not connected to the execution loop; no change to permissions, claim handling, persistence or external tools. Static review only; tests/CI not run.
+
 ## Unreleased — 2026-11-21 research-only security gate
 
 - Recorded [Codex #61872](https://github.com/openai/codex/issues/61872) as external evidence for bounded deliverable acceptance and long-task convergence; distinguished the report from Angel defects and engineering inference.
