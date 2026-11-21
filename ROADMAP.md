@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 claim 目录参数运行时门禁（仅静态）
+
+- **仓库事实**：实验性 `scripts/node_tool_claim.ts` 原先只校验 operationId，directory 在 JavaScript 调用边界可能是非字符串、空字符串或含 NUL 的值；这些值进入 `isAbsolute`/`resolve`/文件系统 API 时会产生不一致的原生异常。本轮在任何目录预检前统一拒绝这三类输入，返回 `ClaimUnavailable`，合法绝对路径的后续安全检查保持不变；组件未接入真实 Node 派发。
+- **外部反馈（事实）**：2026-11-20 [Codex #62853](https://github.com/openai/codex/issues/62853) 报告执行环境断开后交付状态不确定；2026-11-07 [Codex #60104](https://github.com/openai/codex/issues/60104) 报告重复返工与用量浪费。均为外部个案，非 Angel 缺陷或频率统计。**工程推断**：持久操作标识的输入错误应一致失败关闭，避免调用方误判状态。
+- **候选排序（价值／难度／安全风险／依赖）**：本项 P0 中／低／低／无（已提交，待测试）；P0 procfs 挂载竞态与异常路径验证 高／高／高／Linux；P0 Windows reparse 句柄防护 高／高／高／Windows API；P0 真实 Node 派发集成 高／高／高／可信 claim 与审批；P1 MCP 工具目录变化检测 中高／中／中／MCP；P1 可信外部副作用回执 高／高／高／工具适配器。
+- **验证限制**：仅源码静态检查，未执行测试、编译、脚本或 CI；不提供 exactly-once 保证。
+
 ## 2026-11-21 — P0 Linux procfs 文件系统类型门禁（仅静态审阅）
 
 - **仓库事实**：实验性 Node claim 依赖 `/proc/self/fd/<fd>`，此前未检查该路径是否位于真正的 Linux procfs。本轮在打开 claim 目录前调用 Node 标准库 `statfsSync("/proc/self/fd")`，要求 `type === 0x9fa0`（Linux PROC_SUPER_MAGIC）；异常或不匹配即失败关闭，不执行 claim 创建。组件仍未接入真实 Node 派发。main 于 2026-11-20 23:32 UTC 的 [9230072](https://github.com/js2005happy/nyra/commit/9230072d35fcb32e6ffff6b160c0b10749dc4415) 是沙箱 CI 修复，非重复实现；开放 Issues/PR 检索为空。
