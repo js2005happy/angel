@@ -1,3 +1,9 @@
+## 2026-11-21 — Node claim 文件关闭异常资源清理（仅静态）
+
+- 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python Agent 和 main TypeScript Agent；查询开放 Issues/PR、近期提交及前次提交状态。main 近期 [ac72f5f](https://github.com/js2005happy/nyra/commit/ac72f5fb2438705055abce1d5be0cedd0e672169) 为任务板文档，非重复实现；开放 Issues/PR 为空，前次提交 status 与 PR workflow runs 均为空，不能视为通过。
+- 静态确认原 `closeSync(fd)` 若在 finally 抛错会跳过目录 fd 同步/关闭；现在 catch 尝试关闭 directoryFd 并抛统一 ClaimUnavailable，保留 unknown。正常关闭路径保持不变。
+- **未运行**测试、编译、脚本、CI、故障注入或跨平台实测；无法证明 close 错误的运行时行为。Linux procfs 可信边界、Windows 支持及真实派发仍未完成。
+
 ## 2026-11-21 — claim 目录参数类型与 NUL 门禁（仅静态）
 
 - 核对开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python Agent/Tools，main 的 TypeScript Agent/Tools、package.json、近期提交与开放 Issues/PR。main 最近检索提交 8f16280（2026-11-21 00:38 UTC）；该提交的状态检查和 PR 触发 workflow runs 均为空，不能视为 CI 通过。
