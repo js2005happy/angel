@@ -1,3 +1,10 @@
+## 2026-11-21 — Opt-in acceptance reference allowlist (static-only)
+
+- **External user reports (facts, retrieved 2026-11-21):** [Codex #61857](https://github.com/openai/codex/issues/61857) reports unsupported completion claims; [Codex #62682](https://github.com/openai/codex/issues/62682) reports premature stopping before end-to-end deployment verification. These are individual reports, not Angel reproductions or prevalence measurements.
+- **Engineering inference:** a caller-supplied, exact reference allowlist can conservatively keep unknown target evidence incomplete without dereferencing artifacts. The allowlist itself is untrusted; this is **not** an independent provenance adapter or proof of completion.
+- **Ranking (value / effort / risk / dependencies):** P1 opt-in reference gate high / low / low / acceptance assessor (implemented, tests unrun); P1 independent trusted evidence adapter high / medium / medium / verified CI or target API (open); P1 durable task contract high / medium / medium / privacy controls (open); P1 no-progress detector medium-high / medium / medium / event provenance (open); P0 claim dispatch high / high / high / secure storage and approvals (blocked).
+- **Scope:** optional bounded list; only exact listed references count for reported target completion when supplied; legacy omission unchanged. No network, filesystem, tool execution, or trust escalation.
+
 ## 2026-11-21 — Acceptance target revision/environment matching (static-only)
 
 - **External user report (fact, 2026-11-16):** [Codex #61857](https://github.com/openai/codex/issues/61857) reports unsupported completion claims for deployed/device behavior; the issue explicitly requests matching the tested revision and environment to acceptance criteria. [Codex #42080](https://github.com/openai/codex/issues/42080) describes stale or proxy evidence attributed to the target. These are reports, not independently established prevalence or Angel reproductions.
