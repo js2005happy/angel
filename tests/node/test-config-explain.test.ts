@@ -7,7 +7,7 @@ const CAPABILITIES = [
   "tool_search", "run_recall", "cost_cap", "aux_model_routing",
   "plan_act_model_routing",
   "reasoning_effort", "extra_writable_dirs", "deny_read_globs", "sandbox",
-  "nested_delegate",
+  "nested_delegate", "trust_ladder",
 ];
 
 test("列出全部能力（顺序固定，便于文档引用）", () => {
@@ -44,6 +44,15 @@ test("nested_delegate：默认 2 层，config 可配 1–5，非法回 2", () =>
   expect(c.effective).toBe("4 层");
   expect(c.source).toBe("config");
   expect(explainOne({ config: { delegate_max_depth: 99 } }, "nested_delegate")!.effective).toBe("2 层");
+});
+
+test("trust_ladder：默认 5 次成功/级、抽查 10%，非法值回默认", () => {
+  expect(explainOne({ config: {} }, "trust_ladder")!.effective).toBe("5 次成功/级，抽查 10%");
+  const c = explainOne({ config: { trust_ladder: { required_successes: 3, spot_check_rate: 0.5 } } }, "trust_ladder")!;
+  expect(c.effective).toBe("3 次成功/级，抽查 50%");
+  expect(c.source).toBe("config");
+  expect(explainOne({ config: { trust_ladder: { required_successes: 99, spot_check_rate: 9 } } }, "trust_ladder")!.effective)
+    .toBe("5 次成功/级，抽查 10%");
 });
 
 test("cost_cap：CLI 覆盖 config，来源标 cli", () => {
