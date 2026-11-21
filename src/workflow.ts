@@ -58,6 +58,15 @@ import { closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, o
 import { createHash, randomBytes } from "node:crypto";
 import { dirname, join, basename } from "node:path";
 import { resolveHome, loadConfig } from "./config.ts";
+import {
+  pinWorkflowScripts,
+  listPreauth,
+  revokePreauth,
+  workflowRoutineId,
+  type PinResult,
+} from "./scriptPreauth.ts";
+// scriptPreauth 只依赖 scriptPurity 与 node 内置模块，是叶子模块，
+// 静态导入不会形成循环（本模块对 tools.ts 的动态 import 惯例不受影响）。
 import { RunStore } from "./runs.ts";
 import { enqueueReviewItem, getReviewItem } from "./reviewQueue.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
@@ -1478,6 +1487,14 @@ class WorkflowRunner {
           interactive: this.interactive,
           memoryPath: join(this.home, "memory"),
           skillsDir: join(this.home, "skills"),
+          // Pi Bot 借鉴第 1 条：工作流步骤跑在例行上下文里——shell 步骤的
+          // 纯脚本快路径与摘要预授权靠 routineId 生效；判定事件只把脚本
+          // 相关的两类转进本次运行的证据链，别的审批事件不往工作流事件里塞。
+          routineId: workflowRoutineId(this.def.name),
+          routineStepId: step.id,
+          onEvent: (type, fields) => {
+            if (type === "script_pure" || type === "script_preauth_used") this.emit(type, fields);
+          },
         });
         const out = await executeTool(step.tool ?? "", args, ctx);
         // 失败判定按 Nyra 全仓惯例：工具返回文本以“错误：”/“执行失败：”开头
@@ -2070,7 +2087,7 @@ export async function trialWorkflow(home: string, name: string, inputOverrides: 
   return run;
 }
 
-export function activateWorkflow(home: string, name: string, confirm: boolean): WorkflowRegistryEntry {
+export function activateWorkflow(home: string, name: string, confirm: boolean, workdir?: string): WorkflowRegistryEntry {
   if (!confirm) throw new WorkflowError("激活须加 --yes 确认（激活前必须先试跑通过）");
   const registry = loadWorkflowRegistry(home);
   const entry = registry.workflows.find((w) => w.name === name);
@@ -2082,7 +2099,24 @@ export function activateWorkflow(home: string, name: string, confirm: boolean): 
   entry.activatedAt = nowIso();
   entry.updatedAt = nowIso();
   saveWorkflowRegistry(home, registry);
+  // Pi Bot 借鉴第 1 条：激活时把纯脚本的摘要钉死（预授权）。钉摘要要读
+  // 脚本文件，读失败不破坏激活（只跳过那一步）；钉死的步骤内容一改，
+  // 跑时直接拒绝，须重新 trial + activate。
+  try {
+    grantWorkflowScriptPreauth(home, name, workdir ?? process.cwd());
+  } catch { /* 钉摘要失败不破坏激活 */ }
   return entry;
+}
+
+/**
+ * Pi Bot 借鉴第 1 条：给工作流钉纯脚本摘要（预授权）。激活时自动调一次；
+ * 激活前就推上 main 的老工作流用 `nyra script preauth grant` 补钉。
+ * 只钉纯脚本——不纯的、含模板的、指定了 cwd 的、不是单条脚本调用的步骤
+ * 都跳过（理由在 skipped 里），不拦工作流本身。
+ */
+export function grantWorkflowScriptPreauth(home: string, name: string, workdir: string): PinResult {
+  const { def } = loadWorkflowDefinitionFile(home, name);
+  return pinWorkflowScripts(home, workdir, workflowRoutineId(name), def.steps);
 }
 
 export function removeWorkflow(home: string, name: string, confirm: boolean): void {
@@ -2095,6 +2129,8 @@ export function removeWorkflow(home: string, name: string, confirm: boolean): vo
   if (existsSync(path)) rmSync(path);
   registry.workflows.splice(idx, 1);
   saveWorkflowRegistry(home, registry);
+  // 预授权跟着工作流走：删了工作流，钉死的摘要一并撤销。
+  try { revokePreauth(home, workflowRoutineId(name)); } catch { /* ignore */ }
 }
 
 /** 续跑挂起的运行：审阅项已批复则继续，已拒绝按 on_reject 处理，还没批复就报错。
@@ -2374,8 +2410,9 @@ export async function handleWorkflow(argv: string[], home: string): Promise<numb
     if (action === "activate") {
       const name = argv[1];
       if (!name) { process.stderr.write("错误：activate 后面须跟工作流名字\n"); return 2; }
-      activateWorkflow(resolvedHome, name, argv.includes("--yes"));
-      process.stdout.write(`工作流 ${name} 已激活。注意：触发器执行是下一批，本批只声明 + 校验触发器入口。\n`);
+      activateWorkflow(resolvedHome, name, argv.includes("--yes"), req.workdir);
+      const pinned = listPreauth(resolvedHome, workflowRoutineId(name)).length;
+      process.stdout.write(`工作流 ${name} 已激活。纯脚本摘要已钉 ${pinned} 个（改了内容须重新 trial + activate；nyra script preauth list --workflow ${name} 查看）。注意：触发器执行是下一批，本批只声明 + 校验触发器入口。\n`);
       return 0;
     }
     if (action === "remove") {

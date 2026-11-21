@@ -73,6 +73,7 @@ import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
 import { handleGoal } from "./goal.ts";
 import { handleWorkflow } from "./workflow.ts";
+import { handleScript } from "./scriptCli.ts";
 import { attachContractToRun, handleContract } from "./contract.ts";
 import { handleGolden, stripRunReport, type GoldenRunner } from "./golden.ts";
 import { handleFanout } from "./fanout.ts";
@@ -184,6 +185,8 @@ nyra governance audit <export|verify>   审计导出：治理审计日志导出�
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   带人批的自优化环：只起草改指令建议，须人批才生效，三数据集 + holdout 定放行（详见 docs/governance.md）
 nyra trust <register|list|show|evidence|promote|demote|review|check>   信任阶梯（GROK-6，缺口 43 治理深化）：新 agent / 新技能默认只读，攒够 N 次连续成功且零违规才升一级；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做（详见 docs/trust-ladder.md）
 nyra workflow <import|list|show|run|dry-run|resume|trial|activate|remove|verify>   声明式可复用工作流（缺口 25）：YAML/JSON 定义 + 三种执行形态（固定图/协调者/动态）+ 审批节点 + dry-run，激活前须真实数据试跑 + 人工确认（详见 docs/workflow.md）
+nyra script check <文件> [--language python|javascript|lua|php]   判定一个脚本纯不纯（白名单静态分析）：纯返回 0，不纯返回 1
+nyra script preauth <list|grant|revoke> --workflow <名字>   脚本摘要预授权：激活时自动钉纯脚本摘要，内容一改授权失效；只在例行里有效（详见 docs/script-purity.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -301,6 +304,8 @@ nyra governance audit <export|verify>   audit export: governance audit logs to S
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   human-approved self-optimization loop: drafts instruction changes only, needs approval to apply, three datasets + holdout decide release (see docs/governance.md)
 nyra trust <register|list|show|evidence|promote|demote|review|check>   trust ladder (GROK-6, gap 43 governance): new agents / skills start read-only, earn one level per N consecutive successes with zero violations; each recorded success may be randomly spot-checked and only counts after review; demotion any time (see docs/trust-ladder.md)
 nyra workflow <import|list|show|run|dry-run|resume|trial|activate|remove|verify>   declarative reusable workflows (gap 25): YAML/JSON definitions + three execution modes (fixed graph / coordinator / dynamic) + approval nodes + dry-run; activation needs a real-data trial run + human confirmation (see docs/workflow.md)
+nyra script check <file> [--language python|javascript|lua|php]   judge whether a script is pure (allowlist static analysis): exit 0 if pure, 1 if not
+nyra script preauth <list|grant|revoke> --workflow <name>   script digest pre-authorization: pure script digests are pinned at activation, a changed script voids the grant; routine-only (see docs/script-purity.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -5634,6 +5639,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
   if (args.subcommand === "goal") return handleGoal(args.subArgs ?? [], home);
   if (args.subcommand === "workflow") return handleWorkflow(args.subArgs ?? [], home);
+  if (args.subcommand === "script") return handleScript(args.subArgs ?? [], home);
   if (args.subcommand === "trust") return handleTrust(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "team") return handleTeamCommand(args, home);

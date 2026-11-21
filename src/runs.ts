@@ -251,6 +251,12 @@ workflow_failed: ["workflow_run_id", "workflow", "error"],
 workflow_coordinator_decision: ["workflow_run_id", "workflow", "round", "action", "step", "spent_usd"],
 workflow_dynamic_step: ["workflow_run_id", "workflow", "step_id", "step_type"],
 workflow_coordinator_ask: ["workflow_run_id", "workflow", "round", "review_item_id"],
+// Pi Bot 借鉴第 1 条：脚本纯度判定 + 摘要预授权进证据链——纯度判定
+//（哪门语言、哪个摘要、纯还是不纯、为什么）与预授权快路径（哪个例行、
+// 哪一步、哪个摘要）。digest 是单向指纹，与 args_hash 同款：appendEvent
+// 里不参与脱敏（见 redact 的豁免），否则 64 位 hex 会被当疑似密钥掩掉。
+script_pure: ["workflow_run_id", "workflow", "language", "digest", "pure", "reason"],
+script_preauth_used: ["workflow_run_id", "workflow", "language", "digest", "step"],
 // 缺口 29：交付契约进证据链——挂到运行（哪个契约、哈希前 12 位见账本，
 // 事件里只记契约 id 与完整哈希）、逐项验收结论（哪个契约、结论、过了几项）；
 // Golden 集跑分（哪次跑分、几个用例、过了几个、均分）。契约正文与逐项明细
@@ -857,7 +863,8 @@ throw new Error("运行事件字段无效");
 }
 // P1-4：args_hash 是单向指纹（只用于比对，不可还原参数原文），不参与脱敏——
 // 脱敏会把它毁成 "[已隐藏]"，续跑时再也认不出已完成的调用。
-event[key] = typeof value === "string" && key !== "args_hash" ? redact(value) : value;
+// digest 同款：脚本摘要是 64 位 hex 指纹，同样不参与脱敏。
+event[key] = typeof value === "string" && key !== "args_hash" && key !== "digest" ? redact(value) : value;
 }
 }
 const path = this.filePath(runId, "events.jsonl");

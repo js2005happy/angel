@@ -29,6 +29,9 @@ import { runHooks } from "./hooks.ts";
 import { reviewToolCall, reviewerConfig, type ReviewerLike } from "./reviewer.ts";
 import { redlineNeverBlock, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { appendSoulAudit, resolveSoulAgentId, soulInvariantBlock } from "./soul.ts";
+import { checkScriptFastPath } from "./scriptPreauth.ts";
+// scriptPreauth 只依赖 scriptPurity 与 node 内置模块，是叶子模块，
+// 静态导入不会形成循环（与 team.ts 的动态导入不同，见上面注释）。
 // 注意：team.ts 不在这里静态导入——team.ts → governance.ts → tasks.ts →
 // agent.ts → creator.ts → tools.ts 是一条循环链，而 creator.ts 在模块求值时
 // 就读 TOOL_SCHEMAS（KNOWN_TOOLS）；tools.ts 先被加载时静态导入 team.ts
@@ -169,6 +172,15 @@ export interface ToolContext {
   soulAgent?: string;
   /** GROK-1：当前 Agent 跑在哪个团队里（null = 不在团队里）；团队审批门（GROK-3）按它判定。 */
   teamId?: string | null;
+  /**
+   * Pi Bot 借鉴第 1 条：当前调用跑在哪个例行里（工作流步骤设为
+   * `workflow:<名字>`；聊天/单次运行不设）。只有设了它，shell 的
+   * 纯脚本快路径与摘要预授权才生效；没设时行为与以前完全一致。
+   */
+  routineId?: string | null;
+  /** 同上：例行里的哪一步（工作流步骤 id）。摘要预授权按步钉死，
+   * 摘要对不上时只拦这一步，不拦别的步骤。 */
+  routineStepId?: string | null;
   delegateFn?: ((task: string, maxTurns?: number, opts?: DelegateOptions) => Promise<string>) | null;
   /** 缺口 3a：并行委派入口（Agent.delegateParallel 的格式化版，返回汇总文本）。 */
   delegateParallelFn?: ((tasks: import("./parallelDelegate.ts").ParallelTaskSpec[], opts?: { maxConcurrency?: number; timeoutMs?: number; merge?: boolean; mergeTitle?: string; mergeFormat?: "plan" | "report" | "file" }) => Promise<string>) | null;
@@ -863,6 +875,28 @@ export async function checkApproval(
   // 只读拒绝与权限规则 deny 之后：重试仍受这两条硬控制约束，跳过的只是
   // 人工弹窗 / approveFn 这一层。
   if (ctx.idempotentRetry === true) return;
+
+  // Pi Bot 借鉴第 1 条：纯脚本 + 摘要预授权快路径——只在例行上下文里
+  // 生效（ctx.routineId 已设，工作流步骤）；聊天/单次运行不设 routineId，
+  // 行为与以前完全一致。位置在硬门与权限规则之后、人工弹窗之前：
+  // 纯脚本按只读命令处理，预授权摘要对上号也不问；钉过摘要的步骤内容
+  // 变了则直接拒绝（fail-closed：非交互例行里没人可问，停下比悄悄跑
+  // 改过的脚本安全）。判定结果走 ctx.onEvent 进证据链（script_pure /
+  // script_preauth_used），预授权的使用与拒绝另记脚本审计。
+  if (toolName === "shell" && opts?.command !== undefined && ctx.routineId) {
+    const fast = checkScriptFastPath({
+      home: ctx.home ?? null,
+      routineId: ctx.routineId,
+      routineStepId: ctx.routineStepId ?? null,
+      workdir: ctx.workdir,
+      command: opts.command,
+      cwd: opts.cwd ?? ctx.workdir,
+      onEvent: ctx.onEvent,
+    });
+    if (fast.decision === "allow") return;
+    if (fast.decision === "refuse") throw new ToolError(fast.reason);
+    // "pass"：不是单条脚本调用，落回下面的正常审批。
+  }
 
   if (ctx.mode === "auto" || ctx.mode === "creator") {
     if (!ctx.interactive) {

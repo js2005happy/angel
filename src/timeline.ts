@@ -588,6 +588,18 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       case "workflow_coordinator_ask":
         push(at, "event", `协调者第 ${num(ev.round) ?? "?"} 轮停下来问人`, str(ev.review_item_id) ? `审阅项 ${str(ev.review_item_id)}` : null, null, null);
         break;
+      // Pi Bot 借鉴第 1 条：脚本纯度判定（哪门语言、纯还是不纯、为什么）
+      // 与预授权快路径（哪一步、哪个摘要）。摘要只显前 12 位，完整摘要在账本里。
+      case "script_pure": {
+        const digest = str(ev.digest);
+        push(at, "event", `脚本纯度判定（${str(ev.language) ?? "?"}）：${bool(ev.pure) === true ? "纯" : "不纯"}`, `${digest ? `摘要 ${digest.slice(0, 12)}…` : ""}${str(ev.reason) ? `，${str(ev.reason)}` : ""}` || null, null, null);
+        break;
+      }
+      case "script_preauth_used": {
+        const digest = str(ev.digest);
+        push(at, "event", `脚本预授权快路径（${str(ev.language) ?? "?"}）`, `步骤 ${str(ev.step) ?? "?"}${digest ? `，摘要 ${digest.slice(0, 12)}…` : ""}`, true, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

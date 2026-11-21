@@ -734,6 +734,8 @@ export const AUDIT_SOURCES: AuditSource[] = [
   { file: "model-switch-audit.jsonl", label: "model_switch" },
   // 缺口 27：渠道路由审计（每条入站的路由决定：routed/dropped + 绑定/规则/原因）也是治理审计日志，进同一份 SIEM 导出。
   { file: "bot-audit.jsonl", label: "bot" },
+  // Pi Bot 借鉴第 1 条：脚本预授权审计（授权/撤销/使用/拒绝）也是治理审计日志，进同一份 SIEM 导出。
+  { file: "script-preauth-audit.jsonl", label: "script_preauth" },
 ];
 
 /** 稳定序列化（键排序，递归）：同一条记录在任何机器上算出的哈希都一样。 */
