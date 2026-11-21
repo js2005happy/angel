@@ -1,3 +1,10 @@
+## 2026-11-22 — Issuer-bound offline receipt verification (static-only)
+
+- **External facts (reviewed 2026-11-22):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, reports unsupported acceptance claims; [Codex #40646](https://github.com/openai/codex/issues/40646), opened 2026-08-25, reports drift of execution constraints and unsupported verification. Individual user reports, not Angel reproductions or frequency estimates.
+- **Engineering inference:** a MAC without an explicit independently pinned issuer and key identifier makes key rotation and issuer selection difficult to audit. Added an isolated v2 offline verifier with a caller-supplied trusted (issuer, key-id) registry; no implicit trust from receipt fields. Removing a key from the registry rejects its receipts. It is not a persistent revocation system or a proof that tests ran.
+- **Rank (value / effort / safety risk / dependencies):** P1 issuer/key-id binding high / medium / medium / independent trusted registry (**implemented, untested**); P1 key lifecycle and revocation high / high / high / external authority and durable storage (**open**); P1 replay protection high / high / high / trusted clock/store (**open**); P1 durable task contract high / medium / medium / privacy design (**open**); P1 no-progress detection medium-high / medium / medium / reliable events (**open**); P0 claim dispatch high / high / high / platform isolation and approval (**blocked**).
+- **Scope:** isolated v2 verifier and unexecuted regression definitions. No runtime integration, network, new dependencies, key issuance, CI execution, merge or release.
+
 ## 2026-11-22 — Receipt artifact identity pinning (static-only)
 
 - **Public feedback (fact, reviewed 2026-11-22):** [Codex #61857](https://github.com/openai/codex/issues/61857) (opened 2026-11-16) describes unsupported claims of deployed/device acceptance; [Codex #59492](https://github.com/openai/codex/issues/59492) (opened 2026-11-04) describes reports that look like evidence without corresponding primary-source proof. These are external user reports, not Angel reproductions or frequency measurements.
