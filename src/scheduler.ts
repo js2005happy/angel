@@ -3,6 +3,7 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeSync, fsyncSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { SOUL_AGENT_ID_RE } from "./soul.ts";
 import { enqueueAutomationResults } from "./reviewQueue.ts";
 
 export class ScheduleError extends Error {
@@ -16,6 +17,10 @@ export interface ScheduleTask {
   at?: string | null;
   enabled?: boolean;
   workdir?: string | null;
+  /** 缺口 42 第三批：任务归属的 Bot（Soul 身份）。指定时守护进程把任务跑在
+   *  该 Bot 的电脑 workspace 里（没接电脑时回退到 workdir）；不指定（null）
+   *  时行为与以前一致。 */
+  agent?: string | null;
   mode?: string;
   max_turns?: number;
   last_run?: string | null;
@@ -57,12 +62,20 @@ export function validateTask(task: Record<string, unknown>): ScheduleTask {
   if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1) {
     throw new ScheduleError("--max-turns 必须为正整数");
   }
+  // 缺口 42 第三批：agent 与 BotPolicy 的 agent 同口径（soul.ts 的
+  // SOUL_AGENT_ID_RE：小写字母开头，小写字母/数字/_/-，最长 32 字）。
+  // 旧文件里没这个字段时为 null，不指定 agent 的任务行为不变。
+  const agent = (task.agent as string | null | undefined) ?? null;
+  if (agent !== null && (typeof agent !== "string" || !SOUL_AGENT_ID_RE.test(agent))) {
+    throw new ScheduleError("--agent 必须是小写字母开头的 agent id（小写字母/数字/_/-，最长 32 字）");
+  }
   return {
     name: task.name.trim(), prompt: task.prompt,
     every_seconds: every === null || every === undefined ? null : every,
     at: (at as string | null | undefined) ?? null,
     enabled: task.enabled !== false,
     workdir: (task.workdir as string | null) ?? null,
+    agent,
     mode, max_turns: maxTurns,
     last_run: (task.last_run as string | null) ?? null,
     last_status: (task.last_status as string | null) ?? null,

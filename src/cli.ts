@@ -108,6 +108,7 @@ import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
 import { listPresets } from "./mcpPresets.ts";
 import { buildNotifierFromConfig, handleBot, type BotNotifier } from "./bot/index.ts";
+import { resolveAgentWorkdir } from "./bot/binding.ts";
 import {
   PluginError, installPlugin, uninstallPlugin, listPlugins, verifyPlugin,
   setPluginStatus, setPluginPinned, pluginSkillDirs, auditPlugins, searchRegistry,
@@ -1017,7 +1018,7 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
     const data = loadSchedule();
     if (action === "list") {
       for (const t of listScheduleTasks(data)) {
-        process.stdout.write(`${t.name}\t${t.enabled === false ? "禁用" : "启用"}\t${t.every_seconds ? `每 ${t.every_seconds} 秒` : t.at}\t${t.last_status ?? ""}\n`);
+        process.stdout.write(`${t.name}\t${t.enabled === false ? "禁用" : "启用"}\t${t.every_seconds ? `每 ${t.every_seconds} 秒` : t.at}\t${t.last_status ?? ""}\t${t.agent ?? ""}\n`);
       }
       return 0;
     }
@@ -1032,9 +1033,12 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
       const every = get("--every") ? parseInt(get("--every")!, 10) : null;
       const at = get("--at") ?? null;
       const mode = get("--mode") ?? "auto";
-      addScheduleTask(data, { name, prompt, every_seconds: every, at, mode, enabled: !argv.includes("--disable") });
+      // 缺口 42 第三批：--agent <名字> 让任务归属一台 Bot，跑在它的电脑里
+      //（非法 agent id 由 validateTask 拒绝；没给时行为与以前一致）。
+      const agent = get("--agent") ?? null;
+      addScheduleTask(data, { name, prompt, every_seconds: every, at, mode, enabled: !argv.includes("--disable"), agent });
       saveSchedule(data);
-      process.stdout.write(`已添加定时任务：${name}\n`);
+      process.stdout.write(`已添加定时任务：${name}${agent ? `（agent ${agent}，跑在它的电脑里）` : ""}\n`);
       return 0;
     }
     if (action === "remove") {
@@ -1055,7 +1059,20 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
       const roundsIdx = argv.indexOf("--rounds");
       const rounds = roundsIdx >= 0 ? parseInt(argv[roundsIdx + 1], 10) : null;
       const factory = async (task: ScheduleTask): Promise<string> => {
-        const { agent } = await buildAgent({ ...parseArgs([]), workdir: task.workdir ?? workdir, mode: task.mode }, { interactive: false });
+        // 缺口 42 第三批：任务归属了 agent 时，跑在那台 Bot 的电脑 workspace
+        // 里（休眠的先唤醒）；没接电脑时回退到任务 workdir / 启动目录，任务
+        // 照常跑（回退时打印一句，免得用户以为任务在电脑里跑）。
+        let taskWorkdir = task.workdir ?? workdir;
+        if (task.agent) {
+          const resolved = resolveAgentWorkdir(home, task.agent, taskWorkdir);
+          if (resolved.computerId) {
+            process.stdout.write(`[定时任务] ${task.name} 在电脑 ${resolved.computerId}（${task.agent}）里跑\n`);
+          } else {
+            process.stdout.write(`[定时任务] ${task.name} 没接电脑（agent ${task.agent} 没有 Soul 或电脑建不出来），用 ${taskWorkdir} 跑\n`);
+          }
+          taskWorkdir = resolved.workdir;
+        }
+        const { agent } = await buildAgent({ ...parseArgs([]), workdir: taskWorkdir, mode: task.mode }, { interactive: false });
         return agent.run(task.prompt);
       };
       // 缺口 7：守护进程每轮顺带跑应用事件源轮询（本批先做 Gmail 新邮件）。
