@@ -1,5 +1,13 @@
 ## 2026-11-21 — Node claim 文件关闭异常资源清理（仅静态）
 
+## 2026-11-21 — Node claim 异常路径句柄清理（仅静态）
+
+- 阅读 `scripts/node_tool_claim.ts` 发现原 catch/finally 对同一 `directoryFd` 可能重复调用 `closeSync`。
+- 静态修改：失败状态单独记录，finally 始终尝试关闭 claim fd，失败时只尝试关闭目录 fd 一次；成功时目录 fd 保留到后续同步。未删除 claim、未自动重试。
+- **未运行** TypeScript 编译、单元测试、故障注入或 CI；未证明文件系统持久化、procfs 挂载可信或跨进程 exactly-once。
+- 外部背景：2026-11-20 [Codex #62853](https://github.com/openai/codex/issues/62853) 和 2026-11-07 [Codex #60104](https://github.com/openai/codex/issues/60104) 均为外部用户报告，不能视为 Angel 复现。
+
+
 - 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python Agent 和 main TypeScript Agent；查询开放 Issues/PR、近期提交及前次提交状态。main 近期 [ac72f5f](https://github.com/js2005happy/nyra/commit/ac72f5fb2438705055abce1d5be0cedd0e672169) 为任务板文档，非重复实现；开放 Issues/PR 为空，前次提交 status 与 PR workflow runs 均为空，不能视为通过。
 - 静态确认原 `closeSync(fd)` 若在 finally 抛错会跳过目录 fd 同步/关闭；现在 catch 尝试关闭 directoryFd 并抛统一 ClaimUnavailable，保留 unknown。正常关闭路径保持不变。
 - **未运行**测试、编译、脚本、CI、故障注入或跨平台实测；无法证明 close 错误的运行时行为。Linux procfs 可信边界、Windows 支持及真实派发仍未完成。
