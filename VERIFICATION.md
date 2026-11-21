@@ -1,3 +1,9 @@
+## 2026-11-21 — Acceptance target-context match (static-only)
+
+- Read README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, Python acceptance module/tests, Agent/Tools and Node claim; checked recent commits, open Issues/PR (none returned), prior development commit combined status and PR-triggered workflow runs (empty, **not** CI success).
+- Static inspection: optional expected revision/environment pair validates exact target context; mismatched self-reported target evidence stays incomplete. Added unexecuted regression cases for mismatch, match, malformed expected context. Legacy no-expected-context behavior retained. No source dereferencing or attestation trust.
+- External report: [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16); inference is to avoid accepting evidence for the wrong revision/environment. **Not run:** tests, compilation, scripts, CI, platform checks. No runtime integration or deployment.
+
 ## 2026-11-21 — Acceptance provenance context (static-only)
 
 - Read development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance module, Agent/Tools/ToolJournal and experimental Node claim; checked recent main commits, open Issues/PR (none returned), previous development commit statuses and PR-triggered workflows (empty, **not** a pass).
