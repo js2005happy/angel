@@ -1,5 +1,3 @@
-## 2026-11-21 — P0 Node claim close 异常资源清理（仅静态）
-
 ## 2026-11-21 — P0 claim 异常路径单次关闭（静态检查，待测试）
 
 - **仓库事实**：实验性 `scripts/node_tool_claim.ts` 在写入/文件 fsync 失败时，catch 先关闭 `directoryFd`，finally 又尝试关闭同一目录 fd；文件关闭失败时还可能重复关闭。重复关闭可能抛出额外异常并遮蔽原本的 unknown 结果，且在 fd 编号复用时存在误关风险。本轮改为先标记失败、始终尝试关闭 claim 文件，仅在失败路径关闭目录一次；成功路径仍保持目录 fd 到目录 fsync 和名称复核完成。未接入运行时。
@@ -13,7 +11,7 @@
 - **候选排序（价值／难度／风险／依赖）**：本项 P0 中／低／低／无（已提交待测试）；P0 procfs 挂载竞态 高／高／高／Linux namespace；P0 Windows reparse 句柄保护 高／高／高／Windows API；P0 claim 真实派发集成 高／高／高／安全存储与审批；P1 MCP 目录变化 中高／中／中／MCP；P1 可信外部副作用回执 高／高／高／适配器。
 - **边界**：只修复文件 close 抛错后的目录 fd 清理，不保证目录 close 自身成功，也不证明文件持久化、外部 exactly-once。仅静态检查。
 
-## 2026-11-21 — P0 claim 目录参数运行时门禁（仅静态）
+## 2026-11-21 — P0 Node claim close 异常资源清理（仅静态）
 
 - **仓库事实**：实验性 `scripts/node_tool_claim.ts` 原先只校验 operationId，directory 在 JavaScript 调用边界可能是非字符串、空字符串或含 NUL 的值；这些值进入 `isAbsolute`/`resolve`/文件系统 API 时会产生不一致的原生异常。本轮在任何目录预检前统一拒绝这三类输入，返回 `ClaimUnavailable`，合法绝对路径的后续安全检查保持不变；组件未接入真实 Node 派发。
 - **外部反馈（事实）**：2026-11-20 [Codex #62853](https://github.com/openai/codex/issues/62853) 报告执行环境断开后交付状态不确定；2026-11-07 [Codex #60104](https://github.com/openai/codex/issues/60104) 报告重复返工与用量浪费。均为外部个案，非 Angel 缺陷或频率统计。**工程推断**：持久操作标识的输入错误应一致失败关闭，避免调用方误判状态。
