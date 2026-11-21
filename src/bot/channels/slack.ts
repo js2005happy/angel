@@ -100,6 +100,20 @@ interface SlackMessagePayload {
   bot_id?: string;
 }
 
+/** 审批按钮回调（block_actions 交互）的 payload 结构。 */
+interface SlackBlockActionsPayload {
+  type: "block_actions";
+  actions?: { action_id?: string; block_id?: string; value?: string }[];
+  user?: { id?: string; username?: string };
+  channel?: { id?: string };
+  message?: { ts?: string; thread_ts?: string; text?: string };
+  trigger_id?: string;
+  response_url?: string;
+}
+
+/** 审批按钮回调的 value 前缀（与 approvalBridge 的 APPROVAL_CALLBACK_PREFIX 一致）。 */
+export const SLACK_APPROVE_BUTTON_PREFIX = "bot:";
+
 export class SlackAdapter implements ChannelAdapter {
   readonly channel = "slack" as const;
   botUsername: string | null = null;
@@ -245,6 +259,11 @@ export class SlackAdapter implements ChannelAdapter {
         const inbound = this.toInbound(msg, "im");
         if (inbound) this.inbox.push(inbound);
       }
+    } else if (p.type === "block_actions") {
+      // 审批按钮回调：把 block_actions 归一化成 viaCallback 的 InboundMessage，
+      // 走与 Telegram 按钮同一条 decide() 链路。
+      const inbound = this.toCallback(p as unknown as SlackBlockActionsPayload);
+      if (inbound) this.inbox.push(inbound);
     }
   }
 
@@ -285,6 +304,41 @@ export class SlackAdapter implements ChannelAdapter {
 
   // ---- 归一化 ----
 
+  /**
+   * 审批按钮回调 → InboundMessage：value 只认 `bot:approve:<id>` 与
+   * `bot:reject:<id>` 两种（与 approvalBridge 的 APPROVAL_CALLBACK_PREFIX
+   * 完全一致），其余一律忽略（伪造的回调数据到不了审批层）。
+   * 正文转成对应的 /approve / /reject 指令，走同一条确定性指令链路；
+   * viaCallback 标记供主链路回 answerCallback 消转圈，callbackId 用
+   * trigger_id（Slack 交互 ack 的唯一标识）。
+   */
+  toCallback(payload: SlackBlockActionsPayload | undefined): InboundMessage | null {
+    if (!payload || !payload.actions?.length) return null;
+    const action = payload.actions[0];
+    if (!action || typeof action.value !== "string") return null;
+    const m = /^bot:(approve|reject):([0-9a-f]{8})$/.exec(action.value);
+    if (!m) return null;
+    const channelId = payload.channel?.id ?? "";
+    const userId = payload.user?.id ?? "";
+    const threadTs = payload.message?.thread_ts;
+    const messageTs = payload.message?.ts ?? "";
+    return {
+      channel: "slack",
+      chatId: channelId,
+      threadId: typeof threadTs === "string" && threadTs ? threadTs : null,
+      senderId: userId,
+      senderRole: "member",
+      isMentioned: true,
+      messageId: messageTs || `cb-${action.action_id ?? "action"}`,
+      text: `/${m[1]} ${m[2]}`,
+      attachments: [],
+      chatType: channelId.startsWith("D") ? "private" : "group",
+      timestamp: Date.now(),
+      viaCallback: true,
+      callbackId: payload.trigger_id ?? undefined,
+    };
+  }
+
   private toInbound(message: SlackAppMentionPayload | SlackMessagePayload, kind: "mention" | "im"): InboundMessage | null {
     if (!message || !message.user || message.bot_id) return null; // 忽略机器人（含自己）
     if (this.botId && message.user === this.botId) return null; // 自己的消息
@@ -314,6 +368,19 @@ export class SlackAdapter implements ChannelAdapter {
   async sendText(msg: OutgoingMessage): Promise<string> {
     const body: Record<string, unknown> = { channel: msg.chatId, text: msg.text };
     if (msg.threadId !== null) body.thread_ts = msg.threadId;
+    // 审批按钮：把 inlineKeyboard 转成 Block Kit 的 actions（value 直接沿用
+    // callbackData，即 approvalBridge 的 bot:approve:<id> / bot:reject:<id>）。
+    if (msg.inlineKeyboard?.length) {
+      const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: msg.text } }];
+      const elements = msg.inlineKeyboard.flat().map((b) => ({
+        type: "button",
+        text: { type: "plain_text", text: b.text, emoji: true },
+        value: b.callbackData,
+        action_id: b.callbackData.startsWith("bot:approve:") ? "nyra_approve" : b.callbackData.startsWith("bot:reject:") ? "nyra_reject" : "nyra_action",
+      }));
+      blocks.push({ type: "actions", elements });
+      body.blocks = blocks;
+    }
     const sent = await this.callApi<{ ts?: string }>("chat.postMessage", body);
     if (!sent.ts) throw new Error("Slack 未返回消息时间戳");
     return sent.ts;
@@ -321,6 +388,22 @@ export class SlackAdapter implements ChannelAdapter {
 
   async editText(chatId: string, messageId: string, text: string): Promise<void> {
     await this.callApi("chat.update", { channel: chatId, ts: messageId, text });
+  }
+
+  /**
+   * 回应按钮点击（消掉客户端的等待转圈）。Socket Mode 下交互响应走
+   * WebSocket 信封（type "interaction"，payload 里带 trigger_id）；文案
+   * 只写结论，不带敏感信息。
+   */
+  async answerCallback(callbackId: string, text: string): Promise<void> {
+    this.sendEnvelope({
+      type: "interaction",
+      payload: {
+        type: "ack",
+        trigger_id: callbackId,
+        text,
+      },
+    });
   }
 
   /** 关闭连接（拆掉 Socket Mode、停止重连）。 */

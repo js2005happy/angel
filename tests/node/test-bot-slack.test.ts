@@ -143,3 +143,103 @@ test("Slack：disconnect 事件触发重连拿新 URL", async () => {
   expect(socketCount).toBeGreaterThanOrEqual(2);
   adapter.close();
 });
+
+test("Slack：审批按钮回调 block_actions 归一化为 /approve 指令", async () => {
+  const ws = fakeWebSocket();
+  const factory: SlackWebSocketFactory = () => ws;
+  const { fetchImpl } = fakeFetch((url) => {
+    if (url.endsWith("/apps.connections.open")) return { ok: true, url: "wss://example.com/socket-mode/abc" };
+    return { ok: true };
+  });
+  const adapter = new SlackAdapter({ appToken: "xapp-x", botToken: "xoxb-x", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  await adapter.pollOnce();
+  // 一条批准按钮回调（value = bot:approve:deadbeef）
+  ws.onmessage?.({ data: envelope("e10", "events_api", {
+    type: "block_actions",
+    actions: [{ action_id: "nyra_approve", value: "bot:approve:deadbeef" }],
+    user: { id: "U1", username: "admin" },
+    channel: { id: "C1" },
+    message: { ts: "1700000000.000900", thread_ts: "1700000000.000800" },
+    trigger_id: "trig-123",
+  }) });
+  // 一条拒绝按钮回调（value = bot:reject:deadbeef）
+  ws.onmessage?.({ data: envelope("e11", "events_api", {
+    type: "block_actions",
+    actions: [{ action_id: "nyra_reject", value: "bot:reject:deadbeef" }],
+    user: { id: "U1" },
+    channel: { id: "D1" },
+    trigger_id: "trig-456",
+  }) });
+  // 一条非审批的按钮（value 不匹配）应忽略
+  ws.onmessage?.({ data: envelope("e12", "events_api", {
+    type: "block_actions",
+    actions: [{ action_id: "x", value: "slack:other:xyz" }],
+    user: { id: "U1" },
+    channel: { id: "C1" },
+  }) });
+
+  const msgs = await adapter.pollOnce();
+  expect(msgs.length).toBe(2);
+  expect(msgs[0].text).toBe("/approve deadbeef");
+  expect(msgs[0].viaCallback).toBe(true);
+  expect(msgs[0].callbackId).toBe("trig-123");
+  expect(msgs[0].senderId).toBe("U1");
+  expect(msgs[0].chatId).toBe("C1");
+  expect(msgs[0].threadId).toBe("1700000000.000800");
+  expect(msgs[1].text).toBe("/reject deadbeef");
+  expect(msgs[1].chatType).toBe("private");
+  adapter.close();
+});
+
+test("Slack：sendText 把 inlineKeyboard 转成 Block Kit actions 按钮", async () => {
+  const ws = fakeWebSocket();
+  const factory: SlackWebSocketFactory = () => ws;
+  const { fetchImpl, seen } = fakeFetch((url, init) => {
+    if (url.endsWith("/apps.connections.open")) return { ok: true, url: "wss://example.com/socket-mode/abc" };
+    if (url.endsWith("/chat.postMessage")) return { ok: true, ts: "1700000000.001000" };
+    return { ok: true };
+  });
+  const adapter = new SlackAdapter({ appToken: "xapp-x", botToken: "xoxb-x", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  const ts = await adapter.sendText({
+    chatId: "C1",
+    threadId: null,
+    text: "需要审批",
+    inlineKeyboard: [[
+      { text: "✅ 批准", callbackData: "bot:approve:deadbeef" },
+      { text: "❌ 拒绝", callbackData: "bot:reject:deadbeef" },
+    ]],
+  });
+  expect(ts).toBe("1700000000.001000");
+
+  const post = seen.find((c) => c.url.endsWith("/chat.postMessage"))!;
+  const body = JSON.parse(String(post.init?.body)) as Record<string, unknown>;
+  const blocks = body.blocks as { type: string; elements?: { value: string; action_id: string }[] }[];
+  expect(blocks).toBeDefined();
+  const actions = blocks.find((b) => b.type === "actions")!;
+  expect(actions.elements?.length).toBe(2);
+  expect(actions.elements?.[0].value).toBe("bot:approve:deadbeef");
+  expect(actions.elements?.[0].action_id).toBe("nyra_approve");
+  expect(actions.elements?.[1].value).toBe("bot:reject:deadbeef");
+  adapter.close();
+});
+
+test("Slack：answerCallback 发 interaction ack 信封", async () => {
+  const ws = fakeWebSocket();
+  const factory: SlackWebSocketFactory = () => ws;
+  const { fetchImpl } = fakeFetch((url) => {
+    if (url.endsWith("/apps.connections.open")) return { ok: true, url: "wss://example.com/socket-mode/abc" };
+    return { ok: true };
+  });
+  const adapter = new SlackAdapter({ appToken: "xapp-x", botToken: "xoxb-x", fetchImpl, webSocketFactory: factory, autoReconnect: false });
+
+  await adapter.pollOnce();
+  await adapter.answerCallback("trig-123", "已批准");
+  // 找到 interaction ack 帧（跳过 apps.connections.open 前的连接帧）
+  const ack = ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === "interaction");
+  expect(ack).toBeDefined();
+  expect(ack.payload.type).toBe("ack");
+  expect(ack.payload.trigger_id).toBe("trig-123");
+  adapter.close();
+});

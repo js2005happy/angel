@@ -93,11 +93,18 @@ Slack 走 Socket Mode（官方为「无公网回调」场景的方案，家里�
      （交互输入；没解锁密码箱时进 `~/.nyra/keys.json`，0600）。
 6. 启动：`nyra bot slack start`；状态 `nyra bot slack status`。
 
-Slack 渠道只接两类消息：群里 `app_mention`（有人 @ 了 Bot）与私聊
-`message.im`。群里的普通闲聊不接（避免把所有话都吃进模型）。与 Discord
-的 Gateway 不同，Socket Mode 不需要应用层心跳（WebSocket 协议层 ping/pong
-兜底）、没有 sequence/RESUME——断了就拆掉重新 `apps.connections.open` 拿新
-URL 重连。
+Slack 渠道只接三类消息：群里 `app_mention`（有人 @ 了 Bot）、私聊
+`message.im`，以及审批按钮回调 `block_actions`（审批卡的批准/拒绝按钮）。
+群里的普通闲聊不接（避免把所有话都吃进模型）。与 Discord 的 Gateway 不
+同，Socket Mode 不需要应用层心跳（WebSocket 协议层 ping/pong 兜底）、没
+有 sequence/RESUME——断了就拆掉重新 `apps.connections.open` 拿新 URL 重连。
+
+Slack 的审批闭环：审批提示以 Block Kit 消息发出（带「批准 / 拒绝」两个
+按钮，value 沿用 `bot:approve:<id>` / `bot:reject:<id>`），审批人点按钮 →
+`block_actions` 交互事件经 Socket Mode 推来 → 归一化成 `/approve <id>` 指令
+走与 Telegram 按钮同一条 `decide()` 链路；`answerCallback` 经 WebSocket 回
+`interaction` ack 消掉客户端转圈。与 Telegram 唯一的区别是 ack 走 Socket
+Mode 信封而非 REST，主链路零改动。
 
 ## 消息处理主链路
 
