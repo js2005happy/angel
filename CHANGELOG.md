@@ -1,3 +1,8 @@
+## 2026-11-22 — Offline acceptance receipt verifier (unreleased, static-only)
+
+- Added `angel/acceptance_receipt.py`: side-effect-free HMAC-SHA256 verification of an exact requirement, revision and environment using an independently provisioned secret. Refuses malformed input and short secrets; does not create or manage signatures/keys.
+- Added unexecuted regression source `tests/test_acceptance_receipt.py`. No tests or CI were run. No runtime wiring, dependency, auto-replay, merge or production release. A valid MAC authenticates the secret holder's statement, not actual target behavior.
+
 ## Unreleased — 2026-11-22 conflicting acceptance receipt contexts
 
 - Reject a target receipt that is reported against conflicting revision/environment pairs, even within one requirement. Preserve a distinct eligible receipt; never upgrade self-reported completion to independent verification. Added two unexecuted regression cases. No runtime integration, dependencies, test execution, CI trigger, or release.
