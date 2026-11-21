@@ -16,6 +16,7 @@
 | `extra_writable_dirs` | `extra_writable_dirs`<br>`--add-dir` | none | 只有工作目录可写 |
 | `deny_read_globs` | `deny_read_globs` | off | 未配置：敏感文件（.env / secrets）可被读取并发给模型 |
 | `sandbox` | `sandbox`<br>`sandbox_mode`<br>`--sandbox` | auto | auto：Linux 用 bwrap、macOS 用 seatbelt（需显式 --sandbox seatbelt） |
+| `nested_delegate` | `delegate_max_depth` | 2 层 | 子 agent 默认不能再委派（flat）；委派时传 orchestrator: true 才允许嵌套，最多嵌套这么多层，每层预算独立记账 |
 
 ## 生效优先级（通用）
 

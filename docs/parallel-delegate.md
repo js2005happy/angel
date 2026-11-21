@@ -36,14 +36,45 @@ handle，跑完后单条 consolidated 消息回填；显式传 `background: fals
 文件，完整版落盘 `~/.nyra/merged/<mg_id>.md`。后台扇出直接落任务板
 （`kind: delegate`），重启不丢；`nyra fanout <list|show|recover>` 查与回收。
 
+## 嵌套编排 opt-in（H-7，缺口 13 深化）
+
+默认 flat：子 agent 不能再派子 agent。大任务想分层拆（父级拆给子级，
+子级再拆给孙级），须父级在委派时显式授予 `orchestrator: true`：
+
+```json
+{ "task": "调研 A 方案", "orchestrator": true }
+```
+
+`delegate_parallel` 每条线程也可以单独给 `orchestrator`。规则：
+
+- 深度上限默认 2 层（`config.json` 的 `delegate_max_depth` 可配 1–5，
+  非法值回 2）；根 agent 是第 0 层，不受 flat 门限制。
+- 每层预算独立记账：每层各有 8 个子 agent 名额（与串行 `delegate` 共用
+  同一份按层预算），第 0 层用满不影响第 1 层；超了直接 `rejected`，不启动、
+  不占预算。金额上各层仍按既有口径（子任务花费进父级 `delegateSpentUsd`，
+  月度硬顶与分层成本上限在每层都生效），不另建分层金额账本。
+- 防循环委派：分派时显式指定的 agent 已在当前委派链里（A 派 B、B 派 A
+  或更长的环）直接拒绝；没指定 agent 时子级继承父级 Soul，继承不是循环。
+- 团队模式：默认只有参谋长能分派；被授予 `orchestrator` 角色的成员也能
+  再往下分派（仍须指定 agent、仍须完整 Charter）。详见 `docs/team.md`。
+- 内部机械步（H-5 合并子 agent，`internal: true`）绕过深度门与 flat 门
+  （它只读合成、不再委派），但仍占一次子 agent 预算。
+- 拒绝进证据链：`delegate_rejected` 事件（task_id / reason / depth）；
+  `delegate_start` 多了 `depth` 与 `layer_remaining` 两个字段，花名册
+  （`nyra roster`）详情里能看到每行的委派层级；H-3 的停止沿 `parentRunId`
+  递归停子树，嵌套层同样走这条路；H-2 的引导检查点与 H-5/H-6 的
+  `output_schema` 契约、合并步在嵌套层同样适用，不另起一套。
+- 强不了在哪：层数越深，上下文与成本越难控，失败定位越难；不要拿
+  “后台跑”当“跑完了”、不要拿“合并了”当“对了”。
+
 ## 硬约束（不是默认值，是顶）
 
 | 约束 | 值 | 说明 |
 |---|---|---|
 | 默认并发上限 | 5 | 同时跑的线程数；调用方给再大也只按 5 跑，并在结果里注明被夹住了 |
 | 单任务超时 | 10 分钟（600000ms，可配） | 到点即判该线程 `timeout`，不等它跑完 |
-| 本次任务子 agent 总数 | 8（与串行 delegate 共用预算） | 超出的线程直接 `rejected`，不启动、不占预算 |
-| 嵌套深度 | 3 层 | 深度已满时整批 `rejected`，一个线程都不启动 |
+| 每层子 agent 总数 | 8（每层独立记账，与串行 delegate 共用同一份按层预算） | 超出的线程直接 `rejected`，不启动、不占预算 |
+| 嵌套深度 | 2 层（`config.delegate_max_depth` 可配 1–5） | 深度已满时整批 `rejected`，一个线程都不启动 |
 
 并行是 opt-in：只有显式调 `delegate_parallel` 才并行，串行 `delegate`
 的行为一点没变，不会自动把一批串行调用改成并行。

@@ -69,7 +69,7 @@ nyra team dispatch <团队名或 id> "<任务>" [--dry-run]
 
 - 团队账本 `~/.nyra/teams.json`（原子写 0600，损坏先备份再抛错），最多 8 个成员，参谋长不能同时是成员，同名 active 团队不重复。
 - 参谋长独占入口：只拆解、分派、汇总，不写业务代码；下游专职 agent 各做执行，只回简报。
-- 下游之间不直接互发指令：只有参谋长能分派（`delegateDetailed` 的团队门：非参谋长调 delegate 直接拒绝；分派须指定 `agent`，只认团队成员；成员接单须有完整 Charter）；成员之间要交接只通过参谋长或 beads 交接。
+- 下游之间不直接互发指令：只有参谋长能分派（`delegateDetailed` 的团队门：非参谋长调 delegate 直接拒绝；分派须指定 `agent`，只认团队成员；成员接单须有完整 Charter）；成员之间要交接只通过参谋长或 beads 交接。**例外（H-7 嵌套编排）**：被参谋长授予 `orchestrator` 角色的成员也能再往下分派（委派时传 `orchestrator: true`，仍须指定 `agent`、仍须完整 Charter；没授予的成员调 delegate 仍被团队门拒绝，收到的还是这条团队门文案）。
 - 分派是 `delegate` 工具的 `agent` 参数（只认团队成员）与 `delegate_parallel` 每条线程的 `agent` 参数；内部机械步（H-5 合并子 agent）走 `internal` 旁路，不走分派门。
 - 参谋长的上下文是瓶颈：只收摘要不收全文。`buildChiefTask` 给参谋长的任务文本写明了这六条（拆解、分派、汇总；只派给名单里的成员；下游不互发指令；只收简报；对外动作回参谋长/人批；拆错了全队白跑，不能拆就直接说）。
 - 分派前三道门（`planTeamDispatch`，不调模型、不花 token）：团队须 active、参谋长与每个成员的 Charter 须完整、月度硬顶（组织级 + 分层，`checkAutoAllowed`）须没触顶；不过直接拒绝，连参谋长都不起。`--dry-run` 只出计划，不跑模型。
