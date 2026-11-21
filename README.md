@@ -88,6 +88,7 @@
 
 - **Nyra 能当 MCP 服务器了**：别的 agent 可以经网关调 Nyra 的记忆读写、任务派发与证据查询；写操作默认关闭，开了也要过独立审查。
 - **并行委派默认后台跑，跑完合成为一份交付物**：`delegate_parallel` 现在默认后台跑（立即回 handle，聊天继续），跑完单条 consolidated 消息回填，扇出直接落任务板（重启不丢），跑完了没回填由 Heartbeat 提醒；`merge: true` 时批跑完多一次合并步，把各线程的结构化摘要合成一份交付物，过 verifier 确定性检查再进审阅队列人批。`nyra fanout <list|show|recover>` 查与回收跑一半的扇出。
+- **团队模式来了（常驻参谋长）**：一个参谋长独占入口，只拆解、分派、汇总，不写业务代码；下游专职 agent 各做执行，只回简报。每个成员先有一份角色契约（Charter：负责什么、信息来源、输出格式、审批门、停下条件，`nyra soul charter set`），没完整契约接不了单；成员之间用 inbox/outbox/changelog 交接文件（落在各 agent 自己的电脑 workspace 里，不共用一台电脑）；下游的对外动作（发消息、采购、删除、发布）一律回参谋长/人批，不由子代理自批。`nyra team <create|list|show|add|remove|dissolve|dispatch|handover>`，详见 `docs/team.md`。参谋长是单点瓶颈与单点故障，拆错了全队白跑；Charter 写得再好模型也可能不遵守，交付时只做确定性抽查，内容对错仍由验收与人批负责。
 - **手机 APK 构建修好了**：0.5.3 连挂 3 次的原因是 `mobile/package.json` 里缺 TypeScript，补上后本地验证通过。
 - **Bot 方向 Phase 1 来了**：Telegram 渠道先跑起来——长轮询收消息、同一会话串行排队、消息去重与配额、/help /status /new /stop 这些指令不走模型；外部用户强制只读，不能写文件、跑命令。
 - **Bot 方向 Phase 2 来了**：按人分角色（机主、管理员、受信任用户、默认外部用户），能写什么由角色白名单定；机主和管理员的写操作要逐次在聊天里审批——回 `/approve` / `/reject` 或点按钮放行，超时自动拒绝，非管理员的放行无效；审批绕不过用量硬顶与配额。
