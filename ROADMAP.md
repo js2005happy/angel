@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 procfs 描述符身份复核（静态审查）
+
+- **仓库事实**：实验性 Linux claim 先检查 procfs 类型，但未在创建前核对 `/proc/self/fd/<directoryFd>` 是否解析到已打开目录。现在对该 procfs 描述符路径执行 `statSync`，要求目录类型、dev、ino、uid 与 `fstatSync(directoryFd)` 一致；异常失败关闭，不删除 claim、不重试、不增加依赖。
+- **外部反馈事实**：2026-11-20 [Codex #62853](https://github.com/openai/codex/issues/62853) 报告执行环境中断与交付不确定；2026-11-07 [Codex #60104](https://github.com/openai/codex/issues/60104) 报告重复返工。仅为外部用户个案，不证明 Angel 故障或普遍发生率。**工程推断**：执行所有权记录应先核对存储身份，再考虑恢复。
+- **排序（价值/难度/安全风险/依赖）**：本项 P0 中高/低/低/Node fs（已提交待测试）；P0 procfs 挂载竞态 P0 高/高/高/Linux mount namespace；P0 Windows reparse 保护 高/高/高/Windows API；P0 实际工具派发集成 高/高/高/审批与可信 claim；P1 MCP 动态目录检测 中高/中/中/MCP；P1 副作用回执 高/高/高/适配器。
+- **边界**：此项是创建前身份检查，不能阻止检查后的挂载切换，也不证明 exactly-once。未运行测试/编译/CI。
+
 ## 2026-11-21 — P0 Linux claim 路径词法规范化门禁（仅静态审阅）
 
 - **仓库事实**：`checkPrivateDirectory` 用 `resolve(directory)` 检查祖先，但 `openSync(directory)` 打开原始路径；含 `..`、`.`、重复分隔符或尾部斜杠的路径可能让词法祖先检查与实际内核路径遍历不一致。新增 `directory === resolve(directory)` 要求，非规范绝对路径失败关闭；不改已有合法规范路径、claim 格式或工具派发。仅 Linux 实验性模块，未接入主运行时。
