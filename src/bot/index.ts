@@ -91,6 +91,7 @@ import {
   type ChannelAdapter,
   type InboundMessage,
 } from "./types.ts";
+import { getTeam, requireCharter } from "../team.ts";
 
 export const BOT_AUDIT_FILE = "bot-audit.jsonl";
 export const BOT_TELEGRAM_PID_FILE = "bot-telegram.pid";
@@ -199,6 +200,10 @@ export class BotRunner {
   readonly adapter: ChannelAdapter;
   /** 本 Bot 的 Soul 身份（config 的 bot.agent，默认 "nyra"；电脑挂在这个身份下）。 */
   readonly agent: string;
+  /** GROK-1：本 Bot 跑在哪个团队里（config 的 bot.team；null = 不在团队里）。 */
+  readonly teamId: string | null;
+  /** GROK-1：本 Bot 在团队里的角色（chief = 参谋长；member = 成员；null = 不在团队里）。 */
+  readonly teamRole: "chief" | "member" | null;
   /** 绑上的电脑（缺口 42 第二批；没接上时为 null，任务仍在启动目录跑）。 */
   readonly boundComputer: BotComputer | null;
   /** Agent 实际的工作目录：接上电脑时是电脑的 workspace，否则是启动目录。 */
@@ -251,6 +256,27 @@ export class BotRunner {
     this.agentWorkdir = binding?.workdir ?? opts.workdir;
     if (!binding) {
       process.stderr.write(`Bot 未接持久电脑（agent ${this.agent} 没有 Soul 或电脑建不出来）：任务在启动目录跑；跑 \`nyra soul init ${this.agent}\` 与 \`nyra bot computer create --agent ${this.agent}\` 接入持久电脑。\n`);
+    }
+    // GROK-1：团队模式——配了 bot.team 时 Bot 只能是该团队的参谋长或成员，
+    // 且须有完整 Charter 才能接单；三者任一不满足直接拒绝启动（fail-closed，
+    // 不静默跑成单机 Bot）。没配团队时 teamId/teamRole 都是 null，行为不变。
+    if (this.policy.team) {
+      const team = getTeam(opts.home, this.policy.team);
+      if (!team) throw new Error(`Bot 团队模式启动失败：找不到团队 ${this.policy.team}（先跑 nyra team create 建团队，或把 config.json 的 bot.team 清掉）`);
+      if (team.status !== "active") throw new Error(`Bot 团队模式启动失败：团队 ${team.name} 已解散`);
+      if (this.agent !== team.chief && !team.members.includes(this.agent)) {
+        throw new Error(`Bot 团队模式启动失败：agent ${this.agent} 不是团队 ${team.name} 的参谋长也不是成员（参谋长 ${team.chief}，成员 ${team.members.join("、")}）`);
+      }
+      try {
+        requireCharter(opts.home, this.agent, "Bot 团队模式");
+      } catch (err: unknown) {
+        throw new Error(`Bot 团队模式启动失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.teamId = team.id;
+      this.teamRole = this.agent === team.chief ? "chief" : "member";
+    } else {
+      this.teamId = null;
+      this.teamRole = null;
     }
     this.dedup = new DedupStore(opts.home);
     this.quota = new QuotaStore(opts.home);
@@ -416,6 +442,9 @@ export class BotRunner {
       monthlySpentBeforeUsd,
       // 缺口 43 第三批：分层成本上限（与月度硬顶同级硬停）。
       tieredCapCheck,
+      // GROK-1：团队模式（config bot.team 配了时）——Bot 跑参谋长/成员的 Soul，
+      // 团队审批门（GROK-3）按 teamId 判定；没配团队时不传，行为与以前一致。
+      ...(this.teamId ? { soulAgent: this.agent, teamId: this.teamId, teamRole: this.teamRole } : {}),
       reviewerModel: resolveReviewerModel(this.config).model,
       sandbox: { backend: sandbox.backend, mode: sandbox.mode as "read-only" | "workspace-write" | "danger-full-access", allowNet: sandbox.allowNet },
     });

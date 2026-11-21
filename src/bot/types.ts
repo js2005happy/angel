@@ -133,6 +133,11 @@ export interface BotPolicy {
    * Bot 的电脑挂在这个身份下（每 agent 一台）；没配 Soul 时 Bot 照常跑，
    * 只不接电脑（工作目录仍是启动时的目录，并在启动时打一条提示）。 */
   agent: string;
+  /** GROK-1：本 Bot 跑在哪个团队里（团队名或 id；null = 不在团队里）。
+   * 配了团队时 Bot 只能是该团队的参谋长或成员（启动时校验，不在团队里
+   * 直接报错、不静默跑成单机）；团队模式下 Bot 的对外动作一律回参谋长/
+   * 人批（GROK-3 团队审批门）。 */
+  team?: string | null;
   /** 群聊里只有被 @ 才响应（默认 true；私聊不受影响）。 */
   mentionOnly: boolean;
   /** 每次 Bot 回复最多走几轮 agent（默认 12；超了诚实收尾，不烧完）。 */
@@ -177,6 +182,7 @@ export interface BotPolicy {
 
 export const DEFAULT_BOT_POLICY: BotPolicy = {
   agent: "nyra",
+  team: null,
   mentionOnly: true,
   maxTurns: 12,
   timeoutMs: 120000,
@@ -274,6 +280,9 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
     agent: typeof b.agent === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(b.agent.trim())
       ? b.agent.trim()
       : DEFAULT_BOT_POLICY.agent,
+    // GROK-1：团队名或 id（空 = 不在团队里）；只做字符串归一化，存在性与
+    // 成员身份在 BotRunner 启动时校验（不在团队里直接报错）。
+    team: asId(b.team),
     mentionOnly: b.mention_only === false ? false : DEFAULT_BOT_POLICY.mentionOnly,
     maxTurns: asPosInt(b.max_turns, DEFAULT_BOT_POLICY.maxTurns),
     timeoutMs: asPosInt(b.timeout_ms, DEFAULT_BOT_POLICY.timeoutMs),
