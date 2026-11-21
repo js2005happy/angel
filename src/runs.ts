@@ -117,6 +117,24 @@ bot_computer_created: ["computer_id", "agent", "isolation"],
 bot_computer_action: ["computer_id", "kind", "action", "target", "ok"],
 bot_computer_lifecycle: ["computer_id", "action", "reason"],
 bot_computer_credential: ["computer_id", "account", "op"],
+// 缺口 26：持久任务板进证据链——建板（哪个任务、什么类型）、流转（哪个
+// 任务、从哪到哪）、熔断（哪个任务、失败几次）、审阅（哪个任务、批准还是
+// 打回）、验证（哪个任务、什么方法、通过与否）。只记元数据，不记任务正文。
+kanban_created: ["task_id", "kind"],
+kanban_transition: ["task_id", "from", "to"],
+kanban_blocked: ["task_id", "attempts"],
+kanban_reviewed: ["task_id", "decision"],
+kanban_verified: ["task_id", "method", "passed"],
+// 缺口 30：崩溃自续进证据链——标待续跑（哪个运行、为什么）、续跑（哪个
+// 运行、什么模式）、挂起（哪个运行、续跑几次）。心跳本身不记事件（太吵），
+// 只落在注册表的 lastHeartbeatAt 里；续跑动作才进证据链。
+subagent_resume_pending: ["run_id", "reason"],
+subagent_resumed: ["run_id", "mode"],
+subagent_suspended: ["run_id", "restarts"],
+// DSH-4：先存后做进证据链——记下来（哪个副作用、什么类型）、恢复结论
+// （哪个副作用、已做过/重新执行/失败）。只记元数据，不记参数原文。
+side_effect_recorded: ["effect_id", "kind"],
+side_effect_recovered: ["effect_id", "outcome"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

@@ -69,6 +69,10 @@ import { handleTask } from "./tasks.ts";
 import { handleReview } from "./reviewQueue.ts";
 import { handleVerifier, resolveVerifierModel, verifierConfig } from "./verifier.ts";
 import { handleRegression } from "./regression.ts";
+import { handleKanban } from "./kanban.ts";
+import { handleSubagent } from "./resume.ts";
+import { handleSideEffects } from "./sideEffects.ts";
+import { handleHeartbeat } from "./heartbeat.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
 import {
   loadEventTriggers, saveEventTriggers, addEventTrigger, removeEventTrigger, setEventTriggerEnabled,
@@ -144,6 +148,10 @@ nyra evidence verify <运行 ID>   独立复核运行的证据链（工具调用
 nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]   执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行，详见 docs/timeline.md）
 nyra replay <运行 ID> [--verbose]   会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行）
 nyra regression <list|precipitate --run <运行 ID>|remove <用例 id>|status <用例 id> <open|verified|retired>>   回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 docs/regression.md）
+nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   持久任务板：任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 docs/kanban.md）
+nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   崩溃自续：子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑（详见 docs/kanban.md）
+nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
+nyra heartbeat <add|list|remove|enable|disable|run|commitments>   静默巡查：无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 docs/heartbeat.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -235,6 +243,10 @@ nyra evidence verify <run id>  independently re-check a run's evidence chain (se
 nyra timeline <run id> [--verbose] [--json] [--out <path>]   rebuild one multi-agent run as a timeline (read-only replay, no re-execution, see docs/timeline.md)
 nyra replay <run id> [--verbose]   replay one run step by step, grouped by turn (read-only, no re-execution)
 nyra regression <list|precipitate --run <run id>|remove <case id>|status <case id> <open|verified|retired>>   regression case library: precipitate failed steps of a run into cases (metadata only, no model calls, no auto re-run, see docs/regression.md)
+nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   durable task board: tasks are ledger rows, crash-safe, circuit-breaker to blocked, completion needs verification evidence (see docs/kanban.md)
+nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   crash resume: persistent sub-agent rows + heartbeat checkpoints + boot sweep + verify-before-resume (see docs/kanban.md)
+nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
+nyra heartbeat <add|list|remove|enable|disable|run|commitments>   silent patrol: quiet when nothing is wrong, findings go to evidence first then inbox; inferred commitments need one user confirmation and auto-expire (see docs/heartbeat.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -1126,6 +1138,17 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           const results = await runDueResponsibilities(data, { home, workdir });
           saveResponsibilities(data, responsibilitiesPath(home));
           for (const r of results) process.stdout.write(`[巡查] ${r.name}：${r.status} - ${r.summary.slice(0, 100)}\n`);
+        });
+      // 缺口 31：Heartbeat 静默巡查（只读、无人值守）。每轮跑一次到期的
+      // monitor：检查项全是只读（收件箱未读、任务板熔断、待续跑子 agent、
+      // 已中断运行）；无事安静（只记审计），有发现先记证据再写收件箱，
+      // 不直接发消息、不调模型。轮询器自己按间隔跳过，失败只记 stderr。
+      pollers.push(async () => {
+          const { runDueHeartbeats } = await import("./heartbeat.ts");
+          const results = runDueHeartbeats(home);
+          for (const r of results) {
+            if (!r.quiet) process.stdout.write(`[Heartbeat] ${r.agent}：${r.findings.length} 项发现，已写收件箱。\n`);
+          }
         });
       // Phase 3：定时任务结果推送（Bot notifier）。notifier 没开/没配
       // owner/目标会话/token 时 buildNotifierFromConfig 返回 null，不推、
@@ -5365,6 +5388,10 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "timeline") return handleTimeline(args.subArgs ?? [], home);
   if (args.subcommand === "replay") return handleReplay(args.subArgs ?? [], home);
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
+  if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
+  if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
+  if (args.subcommand === "side-effects") return handleSideEffects(args.subArgs ?? [], home);
+  if (args.subcommand === "heartbeat") return handleHeartbeat(args.subArgs ?? [], home);
   if (args.subcommand === "verdict") {
     // --json：机器可读输出（CI 门禁只看 grade，看板画趋势线看 reasons 里的数字）。
     const verdictJson = (args.subArgs ?? []).includes("--json");
