@@ -1,3 +1,10 @@
+## 2026-11-22 — Receipt reference pinning (static review only)
+
+- Reviewed development-branch README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests, Agent/Tools; checked recent commits, open Issues/PR and previous commit status/workflow records (none returned). No inference of CI success.
+- Inspected optional `expected_reference` match in offline HMAC verifier and three new regression test definitions. **Not executed:** tests, compilation, scripts, CI or platform verification.
+- A valid MAC authenticates a secret holder's assertion, not the CI artifact or target behavior. No key management, replay protection, runtime integration, main merge or release.
+- External reports (facts, not Angel reproductions): [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16), [Codex #59492](https://github.com/openai/codex/issues/59492) (2026-11-04); reviewed 2026-11-22. Engineering inference and priority recorded in ROADMAP.
+
 ## 2026-11-22 — Offline acceptance receipt verifier (static inspection only)
 
 - Inspected README.md, DESIGN.md, CHANGELOG.md, VERIFICATION.md, ROADMAP.md, acceptance assessor, Agent and Tools source; reviewed recent commits, open Issues/PR and prior commit checks. The queried prior commit had no status checks or workflow runs; this is not CI success.
