@@ -125,6 +125,23 @@ kanban_transition: ["task_id", "from", "to"],
 kanban_blocked: ["task_id", "attempts"],
 kanban_reviewed: ["task_id", "decision"],
 kanban_verified: ["task_id", "method", "passed"],
+// GROK-5：长目标对象进证据链——建目标（哪个目标）、加清单项（哪个目标、
+// 哪项）、项开工（哪个目标、哪项）、逐项验证（哪个目标、哪项、什么方法、
+// 通过与否）、标完成（哪个目标、几项全过）、暂停/恢复（哪个目标、恢复时
+// 几项证据失效退回待做）、取消（哪个目标、原因指纹）、追加指令（哪个目标）、
+// 关联任务板任务（哪个目标、哪项、哪个任务）。只记元数据与 id，不记目标
+// 陈述、清单项标题与指令原文、不记绝对路径；原因指纹截到 12 位，免得被
+// appendEvent 的 redact 当长词串掩掉（与缺口 43 第一批同款）。
+goal_created: ["goal_id"],
+goal_item_added: ["goal_id", "item_id"],
+goal_item_started: ["goal_id", "item_id"],
+goal_item_verified: ["goal_id", "item_id", "method", "passed"],
+goal_completed: ["goal_id", "items"],
+goal_paused: ["goal_id"],
+goal_resumed: ["goal_id", "reset_items"],
+goal_cancelled: ["goal_id", "reason_hash"],
+goal_instruction_added: ["goal_id"],
+goal_item_linked: ["goal_id", "item_id", "task_id"],
 // 缺口 30：崩溃自续进证据链——标待续跑（哪个运行、为什么）、续跑（哪个
 // 运行、什么模式）、挂起（哪个运行、续跑几次）。心跳本身不记事件（太吵），
 // 只落在注册表的 lastHeartbeatAt 里；续跑动作才进证据链。

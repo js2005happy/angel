@@ -504,6 +504,40 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       case "fanout_interrupted":
         push(at, "event", `后台扇出 ${str(ev.fanout_id) ?? "?"} 已中断`, safeText(ev.reason) || null, false, null);
         break;
+      case "goal_created":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 已建`, null, null, null);
+        break;
+      case "goal_item_added":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 加了一项清单`, str(ev.item_id) ? `清单项 ${str(ev.item_id)}` : null, null, null);
+        break;
+      case "goal_item_started":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 的清单项已开工`, str(ev.item_id) ? `清单项 ${str(ev.item_id)}` : null, null, null);
+        break;
+      case "goal_item_verified": {
+        const passed = bool(ev.passed);
+        push(at, "verdict", `目标 ${str(ev.goal_id) ?? "?"} 的清单项验证${passed === true ? "通过" : passed === false ? "未通过" : "未知"}`, str(ev.method) ? `方法：${str(ev.method)}` : null, passed, null);
+        break;
+      }
+      case "goal_completed":
+        push(at, "verdict", `目标 ${str(ev.goal_id) ?? "?"} 已完成（清单 ${num(ev.items) ?? "?"} 项全过）`, null, true, null);
+        break;
+      case "goal_paused":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 已暂停`, null, null, null);
+        break;
+      case "goal_resumed": {
+        const reset = num(ev.reset_items);
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 已恢复`, reset !== null && reset > 0 ? `${reset} 项证据失效退回待做` : "已验证项重核全过", null, null);
+        break;
+      }
+      case "goal_cancelled":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 已取消`, null, false, null);
+        break;
+      case "goal_instruction_added":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 追加了一条指令`, null, null, null);
+        break;
+      case "goal_item_linked":
+        push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 的清单项已关联任务板任务`, str(ev.task_id) ? `任务 ${str(ev.task_id)}` : null, null, null);
+        break;
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

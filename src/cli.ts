@@ -70,6 +70,7 @@ import { handleReview } from "./reviewQueue.ts";
 import { handleVerifier, resolveVerifierModel, verifierConfig } from "./verifier.ts";
 import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
+import { handleGoal } from "./goal.ts";
 import { handleFanout } from "./fanout.ts";
 import { handleTeam, type TeamDispatchPlan } from "./team.ts";
 import { handleSubagent } from "./resume.ts";
@@ -161,6 +162,7 @@ nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]   执行时间�
 nyra replay <运行 ID> [--verbose]   会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行）
 nyra regression <list|precipitate --run <运行 ID>|remove <用例 id>|status <用例 id> <open|verified|retired>>   回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 docs/regression.md）
 nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   持久任务板：任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 docs/kanban.md）
+nyra goal <create|list|show|add-item|start-item|verify-item|complete|pause|resume|cancel|instruct|link|split>   长目标对象：目标陈述 + 动态进度清单 + 逐项验证，全部通过才标完成；中途加指令不丢目标，可暂停/恢复/取消（详见 docs/goal-object.md）
 nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop|steer>   崩溃自续：子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑 + 单点停止 + 单点引导（详见 docs/kanban.md、docs/roster.md 与 docs/steer-schema.md）
 nyra roster <list|show>   实时花名册：每个子 agent 一行——状态 + 已耗时 + 当前动作（只读快照，不花 token；token/费用默认不显示，详见 docs/roster.md）
 nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
@@ -271,6 +273,7 @@ nyra timeline <run id> [--verbose] [--json] [--out <path>]   rebuild one multi-a
 nyra replay <run id> [--verbose]   replay one run step by step, grouped by turn (read-only, no re-execution)
 nyra regression <list|precipitate --run <run id>|remove <case id>|status <case id> <open|verified|retired>>   regression case library: precipitate failed steps of a run into cases (metadata only, no model calls, no auto re-run, see docs/regression.md)
 nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   durable task board: tasks are ledger rows, crash-safe, circuit-breaker to blocked, completion needs verification evidence (see docs/kanban.md)
+nyra goal <create|list|show|add-item|start-item|verify-item|complete|pause|resume|cancel|instruct|link|split>   long goal object: goal statement + live checklist + per-item verification, all must pass before completion; mid-course instructions don't lose the goal, pause/resume/cancel supported (see docs/goal-object.md)
 nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop|steer>   crash resume: persistent sub-agent rows + heartbeat checkpoints + boot sweep + verify-before-resume + per-child stop + per-child steer (see docs/kanban.md, docs/roster.md and docs/steer-schema.md)
 nyra roster <list|show>   live roster: one line per sub-agent — status + elapsed + current action (read-only snapshot, no tokens spent; token/cost hidden by default, see docs/roster.md)
 nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
@@ -5549,6 +5552,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "replay") return handleReplay(args.subArgs ?? [], home);
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
+  if (args.subcommand === "goal") return handleGoal(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "team") return handleTeamCommand(args, home);
   if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
