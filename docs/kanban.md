@@ -16,6 +16,10 @@ nyra kanban show <任务 id>
 执行失败回 `queued`（attempts+1），满 3 次熔断进 `blocked`（须人
 `nyra kanban reset` 回队列，不自动放行）。
 
+后台扇出（H-6）也落任务板：`delegate_parallel` 默认后台跑，派发时建一
+行 `kind: delegate` 的任务板任务，跑完走 fail / verify + done（详见
+`docs/merge-fanout.md`）。
+
 ## 完成边界：没验证的完成标不上去
 
 Hermes 只对 PR 任务验 CI checks；Nyra 的完成边界是通用的——任何任务标

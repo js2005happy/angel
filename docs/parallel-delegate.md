@@ -26,6 +26,16 @@
 也可以在代码里直接调 `Agent.delegateParallel(tasks, opts)`，返回结构化结果
 （`ParallelDelegateResult`，见 `src/parallelDelegate.ts`）。
 
+## 后台扇出与合并（H-5 + H-6，详见 docs/merge-fanout.md）
+
+`delegate_parallel` 默认后台跑：`background` 默认 `true`，顶层委派立即回
+handle，跑完后单条 consolidated 消息回填；显式传 `background: false`
+才同轮等结果。`backfill` 是 `single`（默认）/ `per-group`（每线程完成回
+一条）。`merge: true` 时批跑完加一次合并步（一次模型调用 + verifier
+确定性检查 + review queue 人批），合成为一份交付物；合并步只读、不改
+文件，完整版落盘 `~/.nyra/merged/<mg_id>.md`。后台扇出直接落任务板
+（`kind: delegate`），重启不丢；`nyra fanout <list|show|recover>` 查与回收。
+
 ## 硬约束（不是默认值，是顶）
 
 | 约束 | 值 | 说明 |

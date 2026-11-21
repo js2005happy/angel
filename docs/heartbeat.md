@@ -6,7 +6,7 @@
 Heartbeat 补这一层：每 agent 一个 monitor，按间隔批量检查——
 
 ```bash
-nyra heartbeat add --agent nyra [--every-minutes 30] [--checks inbox_unread,kanban_blocked,resume_pending,stale_runs]
+nyra heartbeat add --agent nyra [--every-minutes 30] [--checks inbox_unread,kanban_blocked,resume_pending,stale_runs,fanout_unfinished]
 nyra heartbeat list
 nyra heartbeat enable|disable --agent nyra
 nyra heartbeat remove --agent nyra --yes
@@ -17,7 +17,9 @@ nyra heartbeat run --agent nyra [--force]   # 或 --all
   不写收件箱、不发消息。守护进程每轮顺带跑到期的 monitor（`nyra schedule daemon` 的
   轮询器），同样只读、失败只记 stderr。
 - **有发现先记证据再汇报**：发现写进审计文件，再写收件箱（不直接发消息打扰）。
-- **检查项全是只读**：未读收件箱条数、任务板熔断任务、待续跑子 agent、已中断运行。
+- **检查项全是只读**：未读收件箱条数、任务板熔断任务、待续跑子 agent、已中断运行、
+  未完成/未回填的后台扇出（`fanout_unfinished`，H-6 的兜底——扇出中断/失败，
+  或跑完了没回填时提醒）。
   巡查本身不写、不发——无人值守时这条同样成立（缺口 8 的硬约束）。
 
 默认间隔 30 分钟（5–1440 分钟可配）；未到间隔的跳过，`--force` 重跑。
