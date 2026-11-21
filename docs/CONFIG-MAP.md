@@ -19,6 +19,7 @@
 | `nested_delegate` | `delegate_max_depth` | 2 层 | 子 agent 默认不能再委派（flat）；委派时传 orchestrator: true 才允许嵌套，最多嵌套这么多层，每层预算独立记账 |
 | `trust_ladder` | `trust_ladder.required_successes`<br>`trust_ladder.spot_check_rate` | 5 次成功/级，抽查 10% | 新 agent / 新技能登记后默认只读；每级要攒够连续成功且零违规才升一级，升级须人点头；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做 |
 | `reconciler` | `reconciler.enabled`<br>`reconciler.stuck_after_seconds`<br>`reconciler.max_retries`<br>`reconciler.scan_interval_seconds` | 关（只手动扫描） | 看门狗只重排任务板任务（回队列等下一轮 tick），不调模型、不写任务板账本以外的文件、不对外发；超限进 blocked 只等人 reset；无人值守续跑照样强制只读 |
+| `watch` | `watch.enabled`<br>`watch.default_interval_seconds` | 关（只手动检查） | Watch 本身只读（抓页面、读文件），不调模型、不对外发；enqueue-task 动作入队后执行时照常走审批；download 动作须人显式批准才执行 |
 
 ## 生效优先级（通用）
 
