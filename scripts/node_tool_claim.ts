@@ -81,7 +81,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
   let directoryFd: number;
   let claimNameAtFd: string;
   try {
-    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_CLOEXEC);
     try {
       before = fstatSync(directoryFd);
       const named = lstatSync(directory);
@@ -99,7 +99,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
         throw new ClaimUnavailable();
       }
       fd = openSync(claimNameAtFd,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_CLOEXEC, 0o600);
     } catch (error) { closeSync(directoryFd); throw error; }
   } catch { throw new ClaimUnavailable(); }
   let claimFileIdentity: { dev: number; ino: number; size: number } | undefined;
