@@ -165,6 +165,14 @@ export function claimOperation(directory: string, operationId: string): Operatio
           !after.isDirectory() || after.isSymbolicLink()) throw new ClaimUnavailable();
       // Recheck through the same directory fd after syncing. This only detects
       // replacement at this instant; it is not an openat-style atomic binding.
+      // Revalidate procfs and the descriptor target after directory fsync.
+      // This catches some mount changes between preflight and final verification;
+      // a privileged mount-namespace attacker can still race this check.
+      if (statfsSync("/proc/self/fd").type !== 0x9fa0) throw new ClaimUnavailable();
+      const viaProcAfter = statSync(`/proc/self/fd/${directoryFd}`);
+      if (!viaProcAfter.isDirectory() ||
+          viaProcAfter.dev !== opened.dev || viaProcAfter.ino !== opened.ino ||
+          viaProcAfter.uid !== opened.uid) throw new ClaimUnavailable();
       const claimNamed = lstatSync(claimNameAtFd);
       if (!claimNamed.isFile() || claimNamed.isSymbolicLink() ||
           claimNamed.dev !== claimFileIdentity.dev || claimNamed.ino !== claimFileIdentity.ino ||
