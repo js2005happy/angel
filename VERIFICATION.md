@@ -1,5 +1,3 @@
-## 2026-11-21 — Node claim 文件关闭异常资源清理（仅静态）
-
 ## 2026-11-21 — Node claim 异常路径句柄清理（仅静态）
 
 - 阅读 `scripts/node_tool_claim.ts` 发现原 catch/finally 对同一 `directoryFd` 可能重复调用 `closeSync`。
@@ -12,7 +10,7 @@
 - 静态确认原 `closeSync(fd)` 若在 finally 抛错会跳过目录 fd 同步/关闭；现在 catch 尝试关闭 directoryFd 并抛统一 ClaimUnavailable，保留 unknown。正常关闭路径保持不变。
 - **未运行**测试、编译、脚本、CI、故障注入或跨平台实测；无法证明 close 错误的运行时行为。Linux procfs 可信边界、Windows 支持及真实派发仍未完成。
 
-## 2026-11-21 — claim 目录参数类型与 NUL 门禁（仅静态）
+## 2026-11-21 — Node claim 文件关闭异常资源清理（仅静态）
 
 - 核对开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python Agent/Tools，main 的 TypeScript Agent/Tools、package.json、近期提交与开放 Issues/PR。main 最近检索提交 8f16280（2026-11-21 00:38 UTC）；该提交的状态检查和 PR 触发 workflow runs 均为空，不能视为 CI 通过。
 - 静态检查 `claimOperation` 在任何 `isAbsolute`、`resolve` 或文件系统调用前拒绝非字符串、空字符串及含 NUL 的目录参数；保留现有 operationId 校验和安全目录检查。未进行动态异常注入。
