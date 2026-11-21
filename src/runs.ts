@@ -131,6 +131,13 @@ kanban_verified: ["task_id", "method", "passed"],
 subagent_resume_pending: ["run_id", "reason"],
 subagent_resumed: ["run_id", "mode"],
 subagent_suspended: ["run_id", "restarts"],
+// H-1/H-3：单点停止进证据链——请求停止（哪个运行、谁发起、停在哪一步）、
+// 确认停下（哪个运行、谁确认、停在哪一步）、取消请求（哪个运行、谁取消）。
+// “请求停止”不是“已停止”：停没停下来以 subagent_stopped 为准；step 是
+// 心跳检查点里的上一步摘要，不记任务正文。
+subagent_stop_requested: ["run_id", "by", "step"],
+subagent_stopped: ["run_id", "by", "step"],
+subagent_stop_cancelled: ["run_id", "by"],
 // DSH-4：先存后做进证据链——记下来（哪个副作用、什么类型）、恢复结论
 // （哪个副作用、已做过/重新执行/失败）。只记元数据，不记参数原文。
 side_effect_recorded: ["effect_id", "kind"],

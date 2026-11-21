@@ -452,6 +452,23 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", "好友码已重生成", null, null, null);
         break;
       }
+      case "subagent_stop_requested": {
+        const by = str(ev.by) ?? "未记发起人";
+        const step = str(ev.step) ?? "";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 已请求停止（${by} 发起）`, step ? `停在：${step.slice(0, 60)}` : null, null, null);
+        break;
+      }
+      case "subagent_stopped": {
+        const by = str(ev.by) ?? "未记发起人";
+        const step = str(ev.step) ?? "";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 已确认停下（${by} 确认）`, step ? `停在：${step.slice(0, 60)}` : null, null, null);
+        break;
+      }
+      case "subagent_stop_cancelled": {
+        const by = str(ev.by) ?? "未记发起人";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 的停止请求已取消（${by}）`, null, null, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";
