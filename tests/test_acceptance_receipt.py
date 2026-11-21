@@ -29,6 +29,7 @@ class ReceiptVerificationTests(unittest.TestCase):
             expected_requirement=kwargs.get("requirement", "checkout"),
             expected_revision=kwargs.get("revision", "abc123"),
             expected_environment=kwargs.get("environment", "staging"),
+            expected_reference=kwargs.get("reference"),
         )
 
     def test_exact_context(self):
@@ -42,6 +43,16 @@ class ReceiptVerificationTests(unittest.TestCase):
 
     def test_tampered_receipt(self):
         self.assertFalse(self.verify({**self.receipt, "reference": "ci:43"}))
+
+    def test_expected_reference_matches(self):
+        self.assertTrue(self.verify(reference="ci:42"))
+
+    def test_expected_reference_mismatch(self):
+        self.assertFalse(self.verify(reference="ci:43"))
+
+    def test_invalid_expected_reference(self):
+        with self.assertRaises(ReceiptError):
+            self.verify(reference=" ")
 
     def test_wrong_key(self):
         self.assertFalse(self.verify(secret=b"x" * 32))
