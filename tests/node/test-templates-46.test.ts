@@ -9,8 +9,9 @@
 import { test, expect } from "bun:test";
 import {
   mkdtempSync, rmSync, writeFileSync, readFileSync,
-  existsSync, statSync, readdirSync,
+  existsSync, readdirSync,
 } from "node:fs";
+import { expectPerms } from "./fsPerms.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -201,7 +202,7 @@ test("Templates46Test.test_import_builtin_draft", () => {
     expect(entry.source).toBe("builtin");
     const file = join(templatesDir(home), entry.file);
     expect(existsSync(file)).toBe(true);
-    expect(statSync(file).mode & 0o777).toBe(0o600);
+    expectPerms(file, 0o600);
     expect(listTemplates(home).map((t) => t.name)).toContain("expense_review");
     expect(() => importBuiltinTemplate(home, "expense_review", KNOWN_TOOLS)).not.toThrow();
     expect(listTemplates(home).length).toBe(1);
