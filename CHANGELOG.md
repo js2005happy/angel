@@ -1,5 +1,11 @@
 ## 未发布（2026-11-21，Node claim close 异常清理）
 
+## 2026-11-21 — Experimental Linux claim cleanup (unreleased)
+
+- Fixed a double-close error path in `scripts/node_tool_claim.ts`: a failed write or file fsync no longer closes the directory in both catch and finally. File close is always attempted; directory cleanup is attempted once on failure, and successful writes keep the directory descriptor for later fsync/verification.
+- Failures still mean UNKNOWN; no claim deletion or automatic retry. Static review only; no compilation, tests, fault injection, or CI executed.
+
+
 - 修复实验性 Linux Node/Bun claim 在 claim 文件 `closeSync(fd)` 抛错时可能遗留目录 fd 的异常路径：尝试释放目录 fd 并统一失败关闭，不自动重放；正常目录同步逻辑不变，无新增依赖。
 - 仅静态检查，未运行测试/编译/CI；未接入真实工具派发，不提供 exactly-once 保证。
 
