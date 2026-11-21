@@ -5,11 +5,11 @@
 // 2) 读侧禁读清单 deny_read_globs（学 Codex requirements.toml）
 //    —— 写侧有受保护路径，读侧原来什么都没有，.env / 私钥照样能被读进上下文
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRules, evaluate, splitCompound } from "../../src/permissionRules.ts";
-import { workspaceReadPath, resetDenyReadCache } from "../../src/tools.ts";
+import { workspaceReadPath, workspaceWritePath, resetDenyReadCache } from "../../src/tools.ts";
 import type { ToolContext } from "../../src/tools.ts";
 
 let home: string;
@@ -101,4 +101,70 @@ test("deny_read_globs：改配置后 resetDenyReadCache 生效", () => {
   writeFileSync(join(home, "config.json"), JSON.stringify({}), "utf-8");
   resetDenyReadCache();
   expect(() => workspaceReadPath(ctx(), ".env")).not.toThrow();
+});
+
+// ---- 3) 软链规范化（CI #491：macOS /var 软链）----
+//
+// macOS 的 tmpdir 是 /var/folders/...（软链到 /private/var/folders/...）：
+// workdir 与文件路径可能一个走软链、一个走真实路径，字符串前缀比较会把
+// 目录内文件误判成越界。旧实现只做 resolve() 后的字符串比较，不解析软链。
+
+test("workspaceReadPath：软链工作目录 + 真实路径可读（CI #491）", () => {
+  const real = mkdtempSync(join(tmpdir(), "nyra-real-"));
+  const link = join(tmpdir(), `nyra-link-${Date.now()}-${process.pid}`);
+  symlinkSync(real, link);
+  try {
+    writeFileSync(join(real, "t.txt"), "hello");
+    const ctxLink = { workdir: link, home, mode: "auto", interactive: false } as unknown as ToolContext;
+    const ctxReal = { workdir: real, home, mode: "auto", interactive: false } as unknown as ToolContext;
+    expect(() => workspaceReadPath(ctxLink, join(real, "t.txt"))).not.toThrow();
+    expect(() => workspaceReadPath(ctxReal, join(link, "t.txt"))).not.toThrow();
+    // 工作目录内不存在的文件仍放行（读侧报“文件不存在”，不是抛错）
+    expect(() => workspaceReadPath(ctxLink, join(real, "no-such-file.txt"))).not.toThrow();
+    expect(() => workspaceReadPath(ctxLink, join(link, "no-such-file.txt"))).not.toThrow();
+  } finally {
+    rmSync(link, { force: true });
+    rmSync(real, { recursive: true, force: true });
+  }
+});
+
+test("workspaceReadPath：软链不能绕过越界拒绝（CI #491）", () => {
+  const real = mkdtempSync(join(tmpdir(), "nyra-real-"));
+  const outside = mkdtempSync(join(tmpdir(), "nyra-outside-"));
+  const link = join(tmpdir(), `nyra-link-${Date.now()}-${process.pid}`);
+  symlinkSync(real, link);
+  try {
+    writeFileSync(join(outside, "secret.txt"), "x");
+    const ctxLink = { workdir: link, home, mode: "auto", interactive: false } as unknown as ToolContext;
+    expect(() => workspaceReadPath(ctxLink, join(outside, "secret.txt"))).toThrow(/只能访问工作目录内/);
+    // 目录内软链指向目录外：经软链读目录外文件同样拒绝
+    symlinkSync(outside, join(real, "esc"));
+    try {
+      expect(() => workspaceReadPath(ctxLink, join(real, "esc", "secret.txt"))).toThrow(/只能访问工作目录内/);
+    } finally {
+      rmSync(join(real, "esc"), { force: true });
+    }
+  } finally {
+    rmSync(link, { force: true });
+    rmSync(real, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("workspaceWritePath：经软链逃出工作目录的写入被拒绝（CI #491）", () => {
+  const real = mkdtempSync(join(tmpdir(), "nyra-real-"));
+  const outside = mkdtempSync(join(tmpdir(), "nyra-outside-"));
+  try {
+    // 目录内软链指向目录外：旧实现只看字符串前缀，放行；修后应拒绝。
+    // 注意写侧用相对路径（绝对路径会被 join 到工作目录下，见 test-extra-dirs）。
+    symlinkSync(outside, join(real, "esc"));
+    const ctxReal = { workdir: real, home, mode: "auto", interactive: false } as unknown as ToolContext;
+    expect(() => workspaceWritePath(ctxReal, "esc/x.txt")).toThrow(/禁止写入工作目录之外/);
+    // 目录内正常写入仍放行
+    expect(() => workspaceWritePath(ctxReal, "plain.txt")).not.toThrow();
+  } finally {
+    rmSync(join(real, "esc"), { force: true });
+    rmSync(real, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
 });

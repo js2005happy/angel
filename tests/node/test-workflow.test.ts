@@ -6,11 +6,12 @@
 // 运行事件注册（EVENT_FIELDS）与时间线渲染。全部在临时 home 里跑，不碰真模型
 // （llm / delegate 节点用假 provider），不碰真文件系统外的东西。
 import { test, expect } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseWorkflowText,
+  parseWorkflowDefinition,
   validateWorkflowDefinition,
   evalCondition,
   renderTemplate,
@@ -151,6 +152,60 @@ test("YAML：.json 走 JSON.parse", () => {
   const v = parseWorkflowText('{"name": "读文件", "version": 1}', "w.json") as Record<string, unknown>;
   expect(v.name).toBe("读文件");
   expect(() => parseWorkflowText("{bad json", "w.json")).toThrow(WorkflowError);
+});
+
+test("YAML：双引号里的 Windows 路径反转义不丢反斜杠（CI #491）", () => {
+  // defToYaml 用 JSON.stringify 给字符串加双引号：Windows 路径里的 \\n / \\t
+  // 是“转义反斜杠 + 字母”，绝不能先当成换行/制表符读掉。旧实现是顺序 replace
+  // 链（先 \\n/\\t、最后才折叠 \\\\），"\\nyra-wf-test-..." 里的第二个反斜杠
+  // 会跟 n 拼成换行，路径被改写，Windows 上整轮 run 失败。
+  const winPaths = [
+    "C:\\Users\\runner\\AppData\\Local\\Temp\\nyra-wf-test-abc\\a.txt",
+    "C:\\test\\tmp\\new.txt",
+    "D:\\work\\notes\\todo.txt",
+  ];
+  const text = [
+    "name: win",
+    "version: 1",
+    "mode: fixed",
+    "inputs:",
+    ...winPaths.map((p, i) => `  p${i}: ${JSON.stringify(p)}`),
+    "steps:",
+    "  - id: r",
+    "    type: tool",
+    "    tool: read_file",
+    "    args:",
+    `      path: ${JSON.stringify(winPaths[0])}`,
+    "",
+  ].join("\n");
+  const def = parseWorkflowDefinition(text, "w.yaml", new Set(["read_file"]));
+  const inputs = def.inputs as Record<string, unknown>;
+  winPaths.forEach((p, i) => expect(inputs[`p${i}`]).toBe(p));
+  expect((def.steps[0].args as Record<string, unknown>).path).toBe(winPaths[0]);
+});
+
+test("YAML：双引号转义单遍处理（回车、引号、unicode、反斜杠）", () => {
+  const line = '    prompt: "a\\rb\\"c\\u0041\\\\d"';
+  const text = ["name: esc", "version: 1", "mode: fixed", "steps:", "  - id: a", "    type: llm", line, ""].join("\n");
+  const def = parseWorkflowDefinition(text, "w.yaml");
+  expect(def.steps[0].prompt).toBe("a\rb\"cA\\d");
+});
+
+test("YAML：导入后重读定义，Windows 路径原样保存（CI #491）", async () => {
+  const home = tempHome();
+  try {
+    const winPath = "C:\\Users\\runner\\AppData\\Local\\Temp\\nyra-wf-test-abc\\a.txt";
+    const def: WorkflowDefinition = {
+      name: "读文件", version: 1, mode: "fixed",
+      inputs: { file: winPath },
+      steps: [{ id: "read", type: "tool", tool: "read_file", args: { path: "{{inputs.file}}" } }],
+    };
+    const ret = await importWorkflow(home, writeDefFile(home, defToYaml(def)));
+    const stored = parseWorkflowDefinition(readFileSync(join(home, "workflows", ret.file), "utf-8"), ret.file, new Set(["read_file"]));
+    expect((stored.inputs as Record<string, unknown>).file).toBe(winPath);
+  } finally {
+    cleanup(home);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -624,6 +679,38 @@ test("CLI：list/show/import/run 分发与退出码", async () => {
     }
   } finally {
     cleanup(home);
+  }
+});
+
+test("CLI：软链临时目录下 run 仍能读文件（macOS /var 软链回归，CI #491）", async () => {
+  // macOS 的 tmpdir 是 /var/folders/...（软链到 /private/var/folders/...）：
+  // process.chdir(软链路径) 后 process.cwd() 返回解析后的真实路径，而 --input
+  // 传的是软链路径拼的文件。旧的 workspaceReadPath 只做字符串前缀比较，
+  // 文件看起来在工作目录外，run 失败、退出码 1。Linux 上用软链复现同一形状。
+  const real = mkdtempSync(join(tmpdir(), "nyra-wf-real-"));
+  const link = join(tmpdir(), `nyra-wf-link-${Date.now()}`);
+  symlinkSync(real, link);
+  const home = link;
+  const origWrite = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  let out = "";
+  (process.stdout as unknown as { write: (s: string) => boolean }).write = (s: string) => { out += s; return true; };
+  (process.stderr as unknown as { write: (s: string) => boolean }).write = (s: string) => { out += s; return true; };
+  const savedCwd = process.cwd();
+  try {
+    const defPath = writeDefFile(home, toolDefYaml());
+    expect(await handleWorkflow(["import", defPath], home)).toBe(0);
+    const file = join(home, "t.txt");
+    writeFileSync(file, "cli-ok");
+    process.chdir(home);
+    expect(await handleWorkflow(["run", "读文件", "--input", `file=${file}`], home)).toBe(0);
+    expect(out).toContain("completed");
+  } finally {
+    process.chdir(savedCwd);
+    (process.stdout as unknown as { write: unknown }).write = origWrite;
+    (process.stderr as unknown as { write: unknown }).write = origErr;
+    rmSync(link, { force: true });
+    rmSync(real, { recursive: true, force: true });
   }
 });
 
