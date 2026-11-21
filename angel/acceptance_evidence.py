@@ -24,6 +24,8 @@ def assess_acceptance(
     Each evidence item must contain a recognized 'level' and a nonempty
     'reference' (commit, check URL, or user-supplied acceptance artifact).
     References are never dereferenced or treated as trusted attestations.
+    A reported target verification must identify the tested revision and
+    environment; both are untrusted descriptions, not independent proof.
     Only target_verified can satisfy a requirement, and even that is a
     *reported* state, not independent verification by Angel.
     """
@@ -48,6 +50,7 @@ def assess_acceptance(
             raise AcceptanceError("invalid evidence sequence")
         highest = None
         references = []
+        target_contexts = []
         for entry in entries:
             if not isinstance(entry, Mapping):
                 raise AcceptanceError("invalid evidence entry")
@@ -57,6 +60,15 @@ def assess_acceptance(
                 raise AcceptanceError("unknown evidence level")
             if not isinstance(reference, str) or not reference.strip() or len(reference) > 500:
                 raise AcceptanceError("missing or oversized evidence reference")
+            if level == "target_verified":
+                revision = entry.get("revision")
+                environment = entry.get("environment")
+                if (not isinstance(revision, str) or not revision.strip() or len(revision) > 200
+                        or not isinstance(environment, str) or not environment.strip()
+                        or len(environment) > 200):
+                    raise AcceptanceError("target verification requires revision and environment")
+                target_contexts.append({"revision": revision, "environment": environment,
+                                        "reference": reference})
             references.append(reference)
             if highest is None or _LEVEL_INDEX[level] > _LEVEL_INDEX[highest]:
                 highest = level
@@ -64,6 +76,7 @@ def assess_acceptance(
             "requirement": requirement,
             "reported_level": highest or "unverified",
             "references": references,
+            "reported_target_contexts": target_contexts,
             "reported_target_verified": highest == "target_verified",
         })
     incomplete = [item["requirement"] for item in items if not item["reported_target_verified"]]
