@@ -53,6 +53,48 @@ nyra voice disable-tts
 - `nyra voice speak <文字>` 是显式入口；`--speak` 或 `voice.tts_enabled`
   时任务跑完自动回读；回读失败只写一行警告，不破坏已完成的运行。
 
+## 实时语音通话（缺口 36，§4.3 第一批）
+
+通话的最小闭环：建通话 → 接听 → 一段一段喂音频 → 转写文本交给调用方
+处理 → agent 的回读文字可合成语音读出来 → 挂断看三本账总结。
+
+```bash
+nyra voice call start                        # 本机回环通话（不拨真实电话）
+nyra voice call start --peer 林舟 --yes      # 呼叫有名有姓的对方，须 --yes
+nyra voice call answer <通话 id>             # 接听
+nyra voice call decline <通话 id>            # 拒绝
+nyra voice call segment <通话 id> 录音.wav   # 喂一段音频，转写后打印文本
+nyra voice call segment <通话 id> 录音.wav --speak-reply "好的，写完了"
+nyra voice call confirm <通话 id> <段落 id>  # 确认被扣下的段落（只确认含义，不执行）
+nyra voice call end <通话 id>                # 挂断，打印三本账总结
+nyra voice call status [通话 id]             # 看一通 / 列最近通话
+```
+
+- **传输层本批是本机回环**：没有真 WebRTC 媒体栈，不拨真实电话、不走
+  TURN/SFU；传输接口已留好（`VoiceCallTransport`），实时流式传输是下一批。
+  总结里的三本账分开算：传输（本批回环，0 带宽、0 token）、理解（STT）、
+  干活（本次通话不调 LLM，无 token 花费）。不要写“语音不花 token”这种
+  绝对说法——传输不花，理解与回读按需花。
+- **VAD 门控**：WAV 做真能量检测（20ms 帧、RMS 门限），静音段直接跳过、
+  不转写、不花钱；MP3 等其他格式跳过 VAD（不假装都测了），直接转写。
+- **转写比缺口 15 更严**：本地 whisper.cpp 优先；云端只在
+  `voice.call_cloud_enabled` 显式设为 true 时才走（默认关），且走之前先
+  套月度硬顶（本月已花是下界，只会晚触发、不会误触发；没配上限不挡人）。
+  本地不可用、云端又没开时直接报错指路，不静默降级。
+- **语音不碰支付与对外发送**：转写文本命中支付类（转账、付款……）或对外
+  发送类（发消息、发邮件……）关键词时，该段被扣下（`held`），不回读、不
+  执行；`confirm` 只记“含义已确认”，执行请把文字当普通任务跑。转写原文
+  不落盘：账本（`~/.nyra/voice-calls.json`，0600、损坏先备份再抛错）与
+  审计（`~/.nyra/voice-call-audit.jsonl`）只记时长、字数、引擎、花费与
+  文本指纹，原文只在喂段落时打印一次，确认时凭段落 id 与指纹核对。
+- **回读**：`--speak-reply "<文字>"` 才合成（云端 TTS，同样过月度硬顶；
+  超 `call_reply_max_chars` 截断）；mp3 存 `~/.nyra/voice/call-<通话 id>-<段落 id>.mp3`
+  （0600），配了播放器才播。被扣下的段落不回读。
+- **证据链**：8 个新事件已注册进 EVENT_FIELDS（`voice_call_started` /
+  `answered` / `declined` / `ended` / `transcribed` / `spoken` /
+  `blocked` / `confirmed`），有运行上下文（`--run <运行 id>`）时镜像进
+  运行事件，`src/timeline.ts` 加渲染；只记元数据与指纹，不记原文与路径。
+
 ## 边界：语音不碰支付与对外发送
 
 语音层只把转写文本当任务交给主循环：转写文本里哪怕写着“转 100 元”“发一封
@@ -91,12 +133,20 @@ nyra voice disable-tts
 | `tts_player` | `null` | 回读播放器（不配只保存文件） |
 | `stt_price_per_min_usd` | `null` | STT 单价（美元/分钟，不配不计价） |
 | `tts_price_per_1k_chars_usd` | `null` | TTS 单价（美元/千字，不配不计价） |
+| `call_max_minutes` | 120 | 单通电话最长（分钟），超时只拒绝再喂段落 |
+| `call_max_segments` | 200 | 单通电话最多段落数 |
+| `call_cloud_enabled` | `false` | 通话里是否允许走云端 STT/TTS（默认关，显式 opt-in） |
+| `call_vad_min_speech_ratio` | 0.15 | VAD 判定“有人说话”的最低有声帧比例 |
+| `call_reply_max_chars` | 2000 | 单次回读最多字数，超长截断 |
 
 ## 已知局限
 
 - 真 STT/TTS 未在真 API 上跑通，只在假服务上验过；本地 whisper.cpp 未打包、
   须用户自己装（模型文件另行下载）。
-- 实时语音通话是缺口 36 的事，本批没做；视频通话是缺口 37。
+- 实时语音通话（缺口 36）本批只做了本机回环的最小闭环：没有真 WebRTC 媒体栈，
+  不拨真实电话；视频通话是缺口 37。
+- 转写原文不落盘：确认被扣下的段落时凭段落 id 与指纹核对，原文只在喂段落时
+  打印一次；VAD 只对 WAV 做真能量检测，其他格式跳过。
 - 回读只读结果摘要，不读完整证据链；`describe_image` 式的语音内嵌指令仍按
   主循环的不可信输入处理。
 - Windows/macOS 真机未验证。
