@@ -1,3 +1,8 @@
+## 2026-11-21 — Linux claim procfs fd 身份检查（未发布）
+
+- `scripts/node_tool_claim.ts` 在使用 procfs 描述符路径排他创建前，比较 `statSync('/proc/self/fd/<fd>')` 与已打开目录 `fstat` 的类型、设备号、inode 和所有者；不一致或异常失败关闭。
+- 无新依赖、不自动删除或重试 claim。仅静态审阅，未运行测试、编译或 CI；不解决 mount namespace 竞态、真实派发或 exactly-once。
+
 ## 2026-11-21 — Linux claim 非规范目录路径拒绝（未发布）
 
 - `scripts/node_tool_claim.ts`：在预检之前要求绝对目录路径与 `resolve(directory)` 完全一致，拒绝点段、冗余分隔符和尾部斜杠等词法别名，避免祖先检查路径与实际打开路径的语义分离。保留失败关闭、unknown、不自动重放；无新增依赖。
