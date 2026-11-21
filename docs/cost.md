@@ -55,6 +55,33 @@ nyra cost --show        # 定价、单次上限、月度上限与本月已花
 nyra stats              # 本月累计 + 今日 + 最近 7 天
 ```
 
+## 分层成本上限（缺口 43 第三批）
+
+月度硬顶是组织级上限，分层上限是叠加在它之上的第二道门——
+按 Bot / 角色 / 团队 / 人设分层设上限，默认最严的还是组织级那条。
+详见 `docs/governance.md` 的「分层成本上限」一节；这里只讲成本口径：
+
+- **组织级没有第二套数字**：组织级上限就是月度硬顶
+  （`monthly_cost_limit_usd`），`caps set org` 直接拒绝。
+  子层上限超过组织级时拒绝设置——要先显式抬组织级。
+- **同一份数**：分层花费按用量账本的 `agent` 归属拆分（定时任务
+  `--agent` 与 Bot 的运行按 agent 记账；CLI 交互运行没有 agent id，
+  不记归属）；MCP 花费没有 agent 归属，只在组织级计入。
+- **分层花费是下界**：未归属的行分不下去，只会晚触发、不会误触发；
+  美元算不出时该层只判 token。
+- **触顶是可恢复暂停**：运行中触顶先建暂停记录再抛错中止（与月度
+  硬顶同级硬停）；暂停记录带 runId / taskId 引用，任务板多一个
+  `paused` 状态（`nyra kanban pause` / `resume`，恢复回 queued，
+  attempts 不动）。放行前先重判，还超就拒绝。
+- **放宽要留痕**：抬高或取消上限记 `cost_cap_relaxed`（谁放的、
+  什么时候、从多少到多少），进治理审计链。
+
+```bash
+nyra governance caps set agent:nyra --usd 5 --tokens 100000 --yes
+nyra governance caps check --agent nyra
+nyra governance caps pauses
+```
+
 ## 用量热力图（缺口 20）
 
 ```
