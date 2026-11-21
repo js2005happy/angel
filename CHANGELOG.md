@@ -1,3 +1,7 @@
+## 2026-11-21 — Requirement-scoped acceptance references (static-only)
+
+- Added optional, bounded per-requirement scoping for acceptance references. A receipt assigned to one requirement cannot count toward another when enabled. Caller scopes remain untrusted; no independent verification or runtime wiring. Added regression cases, not executed. No dependencies or deployment.
+
 ## Unreleased — 2026-11-21 acceptance reference allowlist
 
 - Added an optional bounded caller-provided reference allowlist to the read-only acceptance assessor; unknown references no longer satisfy reported target completion when the gate is enabled. This is not independent provenance verification. Added regression cases (not executed); no runtime integration or dependencies.
