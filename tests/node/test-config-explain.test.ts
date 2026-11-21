@@ -7,6 +7,7 @@ const CAPABILITIES = [
   "tool_search", "run_recall", "cost_cap", "aux_model_routing",
   "plan_act_model_routing",
   "reasoning_effort", "extra_writable_dirs", "deny_read_globs", "sandbox",
+  "nested_delegate",
 ];
 
 test("列出全部能力（顺序固定，便于文档引用）", () => {
@@ -35,6 +36,14 @@ test("tool_search：env 一票否决优先于 features", () => {
   expect(c.effective).toBe("off");
   expect(c.source).toBe("env");
   expect(c.note).toContain("一票否决");
+});
+
+test("nested_delegate：默认 2 层，config 可配 1–5，非法回 2", () => {
+  expect(explainOne({ config: {} }, "nested_delegate")!.effective).toBe("2 层");
+  const c = explainOne({ config: { delegate_max_depth: 4 } }, "nested_delegate")!;
+  expect(c.effective).toBe("4 层");
+  expect(c.source).toBe("config");
+  expect(explainOne({ config: { delegate_max_depth: 99 } }, "nested_delegate")!.effective).toBe("2 层");
 });
 
 test("cost_cap：CLI 覆盖 config，来源标 cli", () => {

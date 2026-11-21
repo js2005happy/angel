@@ -48,11 +48,11 @@ function setup() {
 }
 
 test("AgentTest.test_delegation_constants", () => {
-  expect(MAX_DELEGATE_DEPTH).toBe(3);
+  expect(MAX_DELEGATE_DEPTH).toBe(2);
   expect(MAX_DELEGATE_CALLS).toBe(8);
   expect(MAX_DELEGATE_TURNS).toBe(12);
   expect(SYSTEM_PROMPT_BASE).toContain("最多 8 个子 agent");
-  expect(SYSTEM_PROMPT_BASE).toContain("最多嵌套 3 层");
+  expect(SYSTEM_PROMPT_BASE).toContain("最多嵌套 2 层");
   expect(MODE_NOTES.readonly).toContain("只读");
   expect(MODE_NOTES.auto).toContain("自动确认");
   expect(MODE_NOTES.full).toContain("全权");
@@ -60,11 +60,11 @@ test("AgentTest.test_delegation_constants", () => {
 
 test("AgentTest.test_delegation_budget", () => {
   const budget = new DelegationBudget();
-  expect(budget.remaining).toBe(8);
+  expect(budget.remaining()).toBe(8);
   for (let i = 0; i < 8; i++) expect(budget.consume()).toBe(true);
   expect(budget.consume()).toBe(false);
   budget.reset();
-  expect(budget.remaining).toBe(8);
+  expect(budget.remaining()).toBe(8);
 });
 
 test("AgentTest.test_tool_schemas_count_and_disabled", () => {
@@ -210,11 +210,11 @@ test("AgentTest.test_delegate_child_fresh_session_and_summary_only", async () =>
 test("AgentTest.test_delegate_depth_limit", async () => {
   const { home, workdir } = setup();
   const agent = new Agent(new FakeProvider([]) as never, {
-    workdir, home, mode: "full", skillsDirs: [], delegateDepth: 3,
+    workdir, home, mode: "full", skillsDirs: [], delegateDepth: 2,
   });
   const out = await agent.delegate("做点事");
   expect(out).toContain("最大委派深度");
-  expect(out).toContain("3");
+  expect(out).toContain("2");
 });
 
 test("AgentTest.test_delegate_budget_exhausted", async () => {
@@ -225,7 +225,8 @@ test("AgentTest.test_delegate_budget_exhausted", async () => {
     workdir, home, mode: "full", skillsDirs: [], delegateBudget: budget,
   });
   const out = await agent.delegate("做点事");
-  expect(out).toContain("最多创建 8 个子 Agent");
+  expect(out).toContain("第 0 层子 agent 预算已用完");
+  expect(out).toContain("每层最多 8 个");
 });
 
 test("AgentTest.test_delegate_max_turns_validation", async () => {

@@ -188,7 +188,8 @@ test("Agent.delegateParallel：10 个任务只放行 8 个，超出预算的被�
   expect(r.succeeded).toBe(8);
   expect(r.rejected).toBe(2);
   expect(r.results[8].status).toBe("rejected");
-  expect(r.results[8].error).toContain("子 agent 总数上限");
+  expect(r.results[8].error).toContain("超出第 0 层子 agent 预算");
+  expect(r.results[8].error).toContain("每层最多 8 个");
   expect(r.results[9].status).toBe("rejected");
 });
 
@@ -203,7 +204,7 @@ test("Agent.delegateParallel：深度已满时整批被拒、一个线程都不�
     sessionId: null,
     skillsDirs: [],
     checkpointStore: null,
-    delegateDepth: 3,
+    delegateDepth: 2,
   } as never);
   const r = await agent.delegateParallel([{ task: "甲" }, { task: "乙" }], {});
   expect(r.succeeded).toBe(0);

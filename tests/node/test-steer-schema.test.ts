@@ -230,7 +230,8 @@ test("SteerSchemaTest.test_delegate_auto_registers_and_finishes", async () => {
 test("SteerSchemaTest.test_delegate_nested_parent_run_id", async () => {
   const { home, workdir } = setup();
   const provider = new FakeProvider([
-    toolReply("c1", "delegate", { task: "子任务", max_turns: 6 }),
+    // H-7：默认 flat，子级再委派须父级在委派时显式授予 orchestrator 角色。
+    toolReply("c1", "delegate", { task: "子任务", max_turns: 6, orchestrator: true }),
     toolReply("c2", "delegate", { task: "孙任务", max_turns: 3 }),
     textReply("孙任务结果"),
     textReply("子任务结果"),
