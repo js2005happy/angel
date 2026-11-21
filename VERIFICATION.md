@@ -1,3 +1,9 @@
+## 2026-11-21 — claim 目录参数类型与 NUL 门禁（仅静态）
+
+- 核对开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python Agent/Tools，main 的 TypeScript Agent/Tools、package.json、近期提交与开放 Issues/PR。main 最近检索提交 8f16280（2026-11-21 00:38 UTC）；该提交的状态检查和 PR 触发 workflow runs 均为空，不能视为 CI 通过。
+- 静态检查 `claimOperation` 在任何 `isAbsolute`、`resolve` 或文件系统调用前拒绝非字符串、空字符串及含 NUL 的目录参数；保留现有 operationId 校验和安全目录检查。未进行动态异常注入。
+- **未运行测试、编译、脚本或 CI**；不代表跨平台通过。实验性 claim 仍未接入真实工具派发，unknown 不可自动重试。
+
 ## 2026-11-21 — Linux procfs 类型门禁（仅静态）
 
 - 检查开发分支 README/DESIGN/CHANGELOG/VERIFICATION/ROADMAP、Node claim、Python Agent/Tools，以及 main TypeScript Agent/Tools、package.json、近期提交、开放 Issues/PR；最新检索 main 提交 9230072（2026-11-20 23:32 UTC），提交状态检查为空，不能视为 CI 通过。
