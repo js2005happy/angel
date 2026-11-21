@@ -116,3 +116,17 @@ subagent_suspended`、`side_effect_recorded / side_effect_recovered` 已注册
 进 `EVENT_FIELDS`，有运行上下文时镜像进运行事件；没上下文时账本 history
 就是审计，不静默丢。心跳本身不记事件（太吵），只落在注册表的
 `lastHeartbeatAt` 里；续跑动作才进证据链。
+
+## 卡住步骤看门狗（Pi Bot 借鉴第 3 条）
+
+详见 `docs/reconciler.md`。看门狗定期扫 working 任务：静默超过阈值
+（默认 1800 秒，三处进展信号——任务 `updatedAt`、绑的运行 `updated_at`、
+子 agent 心跳 `lastHeartbeatAt`——取最新）先标卡住（`stuckAt` /
+`stuckFlags + 1`、收件箱留一条提醒），下一轮仍卡着按轮次上限自动重排
+（走 fail 路径回队列，`watchdogRetries + 1`），重排用完进 blocked 只等
+人 reset。绑的运行已失败走 fail 路径；运行已结束只记一条
+`reconciler_run_done` 事件（同一运行只提醒一次），不替人标完成；运行在
+等人工批准不算卡住。5 个新事件（`reconciler_stuck / retried / blocked /
+recovered / run_done`）已注册进 `EVENT_FIELDS`，只记元数据与 id。自动巡
+查默认关（`reconciler.enabled`，显式 opt-in 才开），手动 `nyra reconciler
+scan` 不受开关限制。

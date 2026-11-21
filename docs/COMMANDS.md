@@ -80,6 +80,7 @@
 | `nyra channels <start\|stop\|status\|health\|bindings\|explain>` | 缺口 27：常驻多渠道网关——四渠道一个进程、bindings 确定性路由、渠道会话默认进沙箱、每条入站路由进证据链、语音指挥入口（详见 `docs/channels.md`） |
 | `nyra task <add\|list\|show\|cancel\|worker\|approve>` | 后台任务队列 |
 | `nyra kanban <create\|list\|show\|start\|fail\|review\|decide\|verify\|done\|reset\|remove\|tick\|sweep>` | 缺口 26：持久任务板——任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 `docs/kanban.md`） |
+| `nyra reconciler <scan\|status\|enable\|disable\|config\|settle>` | Pi Bot 借鉴第 3 条：卡住步骤看门狗——working 任务超时无进展先标出来、再按轮次上限自动重排、超限进 blocked 只等人；自动巡查默认关（详见 `docs/reconciler.md`） |
 | `nyra goal <create\|list\|show\|add-item\|start-item\|verify-item\|complete\|pause\|resume\|cancel\|instruct\|link\|split>` | GROK-5（缺口 26/30 深化）：长目标对象——目标陈述 + 动态进度清单 + 逐项验证，全部通过才标完成；中途加指令不丢目标，可暂停/恢复/取消；恢复前重验证；目标可拆成任务板任务（详见 `docs/goal-object.md`） |
 | `nyra trust <register\|list\|show\|evidence\|promote\|demote\|review\|check>` | GROK-6（缺口 43 治理深化）：信任阶梯——新 agent / 新技能默认只读，攒够 N 次连续成功且零违规才升一级（只读 → 起草 → 发送 → 购买）；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做（详见 `docs/trust-ladder.md`） |
 | `nyra workflow <import\|list\|show\|run\|dry-run\|resume\|trial\|activate\|remove\|verify>` | 缺口 25 其余形态：声明式可复用工作流——三种执行形态（固定图 / 协调者 / 动态）+ 审批节点（复用审阅队列）+ dry-run；激活前须真实数据试跑 + 人工确认；协调者每轮只调一次模型做决定，简单判断仍走 if（详见 `docs/workflow.md`） |
