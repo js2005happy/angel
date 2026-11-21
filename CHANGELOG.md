@@ -1,3 +1,7 @@
+## Unreleased — 2026-11-21 acceptance target-context matching
+
+- Added optional exact expected revision/environment matching to the read-only acceptance evidence assessor. Target reports for a different revision or environment remain visible but do not count as reported complete; matching reports are still not independent verification. Added unexecuted regression tests. No new dependencies, runtime integration, permissions, tool replay or release.
+
 ## Unreleased — 2026-11-21 acceptance provenance context
 
 - Strengthened the opt-in, read-only acceptance classifier: self-reported `target_verified` entries now require bounded, nonblank tested `revision` and `environment` descriptions; returned summaries retain that context. These values are untrusted claims, not independent proof. Lower evidence levels remain compatible.
