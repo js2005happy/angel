@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 Linux claim close-on-exec hardening
+
+- Explicitly request `O_CLOEXEC` when opening both the Linux claim directory fd and exclusive claim file fd, to avoid accidental descriptor inheritance into executed child processes. Defense in depth; runtime already may set this flag. No new dependencies or automatic replay.
+- Static review only; no tests, compilation, or CI. Experimental primitive remains disconnected from real tool dispatch; does not solve mount races or exactly-once execution.
+
 ## 2026-11-21 — Linux claim procfs fd 身份检查（未发布）
 
 - `scripts/node_tool_claim.ts` 在使用 procfs 描述符路径排他创建前，比较 `statSync('/proc/self/fd/<fd>')` 与已打开目录 `fstat` 的类型、设备号、inode 和所有者；不一致或异常失败关闭。
