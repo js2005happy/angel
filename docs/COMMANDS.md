@@ -17,6 +17,9 @@
 | `nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]` | 执行时间线：按时间重建一次多 agent 任务（只读回放，不重新执行） |
 | `nyra replay <运行 ID> [--verbose]` | 会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行） |
 | `nyra regression <list\|precipitate --run <运行 ID>\|remove <用例 id>\|status <用例 id> <open\|verified\|retired>>` | 回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 `docs/regression.md`） |
+| `nyra contract <create\|list\|show\|activate\|attach\|verify\|mark-item\|remove\|stats>` | 交付契约（缺口 29）：接单时先定验收标准（交付物 + 检查清单），跑完逐项打分，全部通过才算被接受（详见 `docs/delivery-contract.md`） |
+| `nyra golden <add\|list\|show\|remove\|run\|rescore>` | Golden 测试集（G-2）：固定输入 + 期望输出 + 期望工具轨迹，跑分看结果分与轨迹分（详见 `docs/delivery-contract.md`） |
+| `nyra "任务" --contract <契约 id>` | 本次运行挂上已激活的交付契约，收尾逐项打分进运行报告 |
 | `nyra "任务" --image <图片路径> [--image ...] [--video <视频路径或链接>]` | 图像/视频输入：图片进首轮用户消息，视频先抽帧再进（模型须支持看图，详见 docs/vision.md） |
 | `nyra --voice <音频路径> ["任务"]` | 语音指挥：先转文字再当任务跑（本地 whisper 优先、云端兜底；详见 docs/voice.md） |
 | `nyra "任务" --speak` | 任务跑完后把结果读出来（默认关；只读结果前 500 字） |
