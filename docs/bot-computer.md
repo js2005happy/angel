@@ -1,4 +1,4 @@
-# 每 Bot 一台持久电脑（缺口 42 第一批）
+# 每 Bot 一台持久电脑（缺口 42 第一批 + 第二批 BotRunner 接线）
 
 每个 Bot（Soul 身份）拥有一台自己的持久电脑：自己的工作目录、自己的
 浏览器配置与登录态、自己的 shell。Bot 关机/离线后电脑仍在（文件与登录态
@@ -8,6 +8,13 @@
 本批只做第一批（报告 §7 定义）：持久 workspace + 浏览器 profile + 凭证
 Vault + 隔离分级。容器后端（缺口 18 未做）与 gVisor 等重件放后几批；
 真正的浏览器操作（打开页面、看屏幕）是缺口 50 的事，本批只管 profile。
+
+**第二批（BotRunner 接线，见 `docs/bot.md` 的“Bot 与电脑”一节）**：Bot
+启动时按 `bot.agent` 绑上自己那台电脑（已有就用、有 Soul 没电脑就自动建、
+没 Soul 就不接并提示，任务照常在启动目录跑）；Agent 的工作目录就是电脑
+的 workspace，消息到了先唤醒电脑、跑完记一笔 `task.run` 活动；聊天里的
+`/computer-shell` 让机主/管理员在指定电脑上跑 shell，跨电脑写操作走
+`checkComputerAccess` 的 ask 判定再进审批流。
 
 ## 一台电脑是什么
 
@@ -50,7 +57,9 @@ nyra bot computer credential <电脑 id> list                  # 只给掩码与
 nyra bot computer credential <电脑 id> remove --account <账号>
 
 # 在电脑的 workspace 里跑一条命令（bwrap 沙箱）
-nyra bot computer shell <电脑 id> <命令...> [--timeout <秒>]
+nyra bot computer shell <电脑 id> <命令...> [--timeout <秒>] [--cred <账号> ...]
+# --cred 把 Vault 里该账号的凭证代填进沙箱环境变量 NYRA_CRED_<账号大写>，
+# 命令里用 $NYRA_CRED_<账号> 引用（可重复）；没存的账号直接报错、命令不跑
 
 # 总览：渠道运行态 + 电脑数量与资源
 nyra bot status
@@ -82,6 +91,12 @@ nyra bot status
 - Bot 看不到密码：取明文的 `getComputerCredential` 只供应用层代填
   （浏览器自动填表）调用，绝不进提示词、绝不进日志、绝不进事件与审计原文；
   `list` 与 `status` 只给掩码与来源。
+- **凭证代填（第二批）**：`runComputerShell` 的 `credentials`（CLI 是
+  `--cred`，聊天里是 `/computer-shell` 的 `--cred`）把 Vault 明文放进沙箱
+  进程的环境变量 `NYRA_CRED_<账号大写>`，命令用 `$NYRA_CRED_<账号>` 引用；
+  每填一个记一笔 `credential.used` 活动（只记账号 + 掩码）；返回值里的
+  `filledValues` 只供调用方做回复脱敏（回显前把明文替换成 `***`），绝不记
+  日志、绝不进事件；没存的账号直接抛错、命令不跑。
 - 删电脑时清掉这台电脑的全部凭证条目；凭证在密码箱里且密码箱未解锁时
   拒绝删（免得删完账本却留着凭证孤儿）。
 
@@ -104,6 +119,8 @@ nyra bot status
 | 创建 | `computer.created` | `bot_computer_created`（电脑、agent、隔离） |
 | 浏览器访问 | `browser.open` | `bot_computer_action`（电脑、browser、动作、host、成没成） |
 | shell 命令 | `shell.run` | `bot_computer_action`（电脑、shell、动作、命令摘要、成没成） |
+| 消息任务 | `task.run` | `bot_computer_action`（电脑、task、动作、会话 key、花费、成没成；不记用户原文） |
+| 凭证代填 | `credential.used` | `bot_computer_credential`（电脑、账号、掩码） |
 | 休眠/唤醒/删除 | `computer.sleep` / `computer.wake` / `computer.removed` | `bot_computer_lifecycle`（电脑、动作、原因） |
 | 凭证存/删 | `credential.stored` / `credential.removed` | `bot_computer_credential`（电脑、账号、存/删） |
 
@@ -127,4 +144,6 @@ nyra bot status
   不依赖真实 bwrap。
 - `nyra bot computer shell` 是机主在终端前直接执行（按电脑主人名义），
   不走审批；别的 agent 要在这台电脑上写东西，须先过 `checkComputerAccess`
-  的 ask 判定再走审批流——BotRunner 侧的接线是下一批。
+  的 ask 判定再走审批流——BotRunner 侧的接线已在第二批做完（聊天里的
+  `/computer-shell`，见 `docs/bot.md`）；`runComputerShell` 的 `approvedBy`
+  非空表示调用方已经批过，不再重复拦 ask，只拦 deny。

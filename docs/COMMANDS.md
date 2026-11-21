@@ -69,8 +69,8 @@
 | `nyra bot telegram <start\|stop\|status>` | Bot 方向 Phase 1+2+3：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；角色路由与聊天内审批；主动推送 notifier 与附件处理，详见 `docs/bot.md`） |
 | `nyra bot discord <start\|stop\|status>` | Bot 方向：Discord 渠道（Gateway 收 MESSAGE_CREATE 事件、REST 发/编辑消息；需 Message Content Intent，详见 `docs/bot.md`） |
 | `nyra bot redlines <status\|list\|show\|tighten\|loosen\|set>` | Bot 缺口 51：业务动作硬红线表——发消息/付款/删除永远须人批，转钱/交易证券永远禁做（详见 `docs/business-redlines.md`） |
-| `nyra bot computer <create\|list\|status\|sleep\|wake\|remove\|credential\|shell\|sleep-due>` | Bot 缺口 42 第一批：每 Bot 一台持久电脑——持久 workspace + 浏览器 profile + 凭证 Vault + 隔离分级（详见 `docs/bot-computer.md`） |
-| `nyra bot status` | Bot 总览：Telegram/Discord 运行态 + 电脑数量与资源（详见 `docs/bot.md` 与 `docs/bot-computer.md`） |
+| `nyra bot computer <create\|list\|status\|sleep\|wake\|remove\|credential\|shell\|sleep-due>` | Bot 缺口 42 第一批 + 第二批：每 Bot 一台持久电脑——持久 workspace + 浏览器 profile + 凭证 Vault + 隔离分级；第二批 BotRunner 接线：Bot 启动时绑电脑、Agent 在电脑的 workspace 里跑、`/computer-shell`（详见 `docs/bot-computer.md` 与 `docs/bot.md`） |
+| `nyra bot status` | Bot 总览：Telegram/Discord 运行态 + 电脑数量与资源，本 Bot 的电脑带标注（详见 `docs/bot.md` 与 `docs/bot-computer.md`） |
 | `nyra task <add\|list\|show\|cancel\|worker\|approve>` | 后台任务队列 |
 | `nyra review <list\|show\|approve\|reject\|apply…>` | 审阅队列：逐项批准并行线程与定时任务结果 |
 

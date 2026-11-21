@@ -19,6 +19,41 @@ Discord 渠道（Gateway 收消息 + REST 发消息）。
 隔离分级（默认独占；共享须用户显式 opt-in，默认只读、写操作须经审批）、
 资源上限（内存声明超系统 80% 时创建直接拒绝）。
 
+### Bot 与电脑（缺口 42 第二批：BotRunner 接线）
+
+Bot 启动时按 config 的 `bot.agent`（默认 `nyra`）绑上自己那台电脑
+（`src/bot/binding.ts` 的 `resolveBotComputer`）：
+
+- 已有电脑 → 直接用；有 Soul、没电脑 → 自动建一台（默认 1024 MB /
+  50% / 15 分钟，建电脑自带 `computer.created` 活动）；没 Soul → 不接，
+  启动时打一条提示（跑 `nyra soul init <agent>` 与
+  `nyra bot computer create --agent <agent>` 接入），任务照常在启动目录跑。
+- 绑定在 BotRunner 构造时定死，运行中换电脑要重启 Bot。
+- Agent 的工作目录就是电脑的 workspace（`agentWorkdir`）：Agent 自带的
+  shell 工具、读写文件的工具都落在电脑的 workspace 里。消息到了先唤醒
+  休眠的电脑（唤醒失败不挡任务），跑完记一笔 `task.run` 活动（只记会话
+  key、花费与成败，不记用户原文）；取消的任务不记。闲置到点的电脑由
+  BotRunner 每 5 分钟扫一次休眠（`sweepSleepDue()`，与
+  `nyra bot computer sleep-due` 同款逻辑）。
+- `nyra bot status` 里本 Bot（`bot.agent` 相同）的电脑行带
+  “（本 Bot 的电脑）”标注；启动行也写清绑的是哪台电脑（未接时写“未接”）。
+
+聊天里的 `/computer-shell`（只机主/管理员；确定性指令，不走模型）：
+
+```
+/computer-shell <电脑 id|own> <命令...> [--cred <账号> ...]
+```
+
+`own`（也认 `me` / `mine`）指 Bot 自己那台电脑；别的 id 须是合法电脑 id。
+跨电脑写操作走 `checkComputerAccess`：deny 直接拒绝（不建审批）；ask
+走 approvalBridge 审批（批了才跑，批的人记进 `shell.run` 的
+`approvedBy`）；allow 直接跑。`--cred` 把 Vault 里该账号的凭证代填进沙箱
+环境变量 `NYRA_CRED_<账号>`（命令里用 `$NYRA_CRED_<账号>` 引用）；回显前
+把代填的明文脱敏成 `***`，绝不把明文发回聊天（群聊里其他人也看不到）。
+注意：Agent 在 workspace 里的自由工具调用不经过 `computer.ts`，由正常
+运行证据（events.jsonl）覆盖；确定性电脑动作（shell、凭证、生命周期、
+task.run）才进活动账本与运行事件。
+
 ### Telegram
 
 1. 在 Telegram 里找 @BotFather，发 `/newbot`，按提示起名字，拿到 token。
@@ -44,7 +79,7 @@ Discord 渠道（Gateway 收消息 + REST 发消息）。
 ```
 Telegram getUpdates 长轮询 → 归一化 InboundMessage
   → 幂等去重（messageId，落盘，重启后仍有效）
-  → 确定性指令优先（/help、/status、/new、/stop、/model、/approve、/reject）
+  → 确定性指令优先（/help、/status、/new、/stop、/model、/approve、/reject、/computer-shell）
   → 群聊 @ 过滤（mentionOnly 默认开，没 @ 直接忽略）
   → 配额（单用户/天、单群聊/分钟、当天 token 预算）
   → 月度硬顶预检（超了直接回绝，不调模型）
@@ -70,6 +105,7 @@ A 用户的上下文绝不进 B 用户的 Agent。
 | `/stop` | 停止当前正在处理的任务 |
 | `/model` | 当前用的模型 |
 | `/approve <id>`、`/reject <id>` | 放行/拒绝一条挂起的审批（Phase 2 接真逻辑；只有 owner/admin 能批，非白名单的放行无效并记审计） |
+| `/computer-shell <电脑 id\|own> <命令...> [--cred <账号> ...]` | 在一台电脑上跑 shell（只机主/管理员；own 是 Bot 自己那台电脑；跨电脑写操作须审批；--cred 代填 Vault 凭证，回显脱敏） |
 
 群聊里发指令也要先 @ Bot（mentionOnly 的规矩对指令同样适用）。
 
