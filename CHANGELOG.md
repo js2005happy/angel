@@ -1,3 +1,7 @@
+## Unreleased — 2026-11-22 conflicting acceptance receipt contexts
+
+- Reject a target receipt that is reported against conflicting revision/environment pairs, even within one requirement. Preserve a distinct eligible receipt; never upgrade self-reported completion to independent verification. Added two unexecuted regression cases. No runtime integration, dependencies, test execution, CI trigger, or release.
+
 ## Unreleased — 2026-11-21 shared target receipt ambiguity
 
 - Reject self-reported target receipts reused across distinct requirements, including when optional reference scopes are absent. A distinct eligible receipt can still count as reported completion; independent verification remains false. Added unexecuted regression cases. No runtime integration, new dependencies, or release.
