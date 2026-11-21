@@ -123,7 +123,13 @@ export function claimOperation(directory: string, operationId: string): Operatio
     closeSync(directoryFd);
     throw new ClaimUnavailable();
   } finally {
-    closeSync(fd);
+    // A failed claim-file close must not leak the directory handle or allow
+    // the caller to treat durability as confirmed. Preserve UNKNOWN.
+    try { closeSync(fd); }
+    catch {
+      try { closeSync(directoryFd); } catch { /* already unavailable */ }
+      throw new ClaimUnavailable();
+    }
     // Keep directoryFd open until after directory fsync and name checks.
   }
   if (!claimFileIdentity) { closeSync(directoryFd); throw new ClaimUnavailable(); }
