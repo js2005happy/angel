@@ -1,4 +1,4 @@
-# 连接器授权状态机（缺口 44 第 0 批）
+# 连接器目录与授权框架（缺口 44 第 0 批 + 第一批）
 
 用户 2026-11-20 拍板：Bot Phase 3 做完先做这一批。对应总报告里的缺口 44
 （原生业务连接器目录，先决缺口 6 已落地）与 AgentKit 调研报告里值得学的
@@ -15,6 +15,43 @@
 | Slack | 已接入 | 团队消息与审批卡的落点：读频道/消息、发消息（须显式批准）、发审批卡（缺口 44 第二批） |
 
 试点连接器在目录里看得见、用不了，不假装已接通。本批之后目录里暂无试点连接器。
+
+### 安装 / 卸载（缺口 44 第一批）
+
+目录是“用户装了哪些连接器”的账本（`~/.nyra/connector-directory.json`，0600、
+原子写，损坏先备份再抛错），不是声明本身：声明在代码里，是代码；目录记的是
+用户自己的安装动作（装了哪个、什么时候装的、谁装的）。
+
+- **安装**：`nyra connector install <连接器>`。只装声明里有的连接器；试点装不了；
+  重复安装是幂等的（不重复记审计、不改第一次的安装时间）。安装本身不发凭证——
+  凭证走各连接器自己的授权流程（见下“一键连接”）。
+- **卸载**：`nyra connector uninstall <连接器> [--yes]`。从目录里拿掉 + 同时撤销
+  授权（`markConnectorRevoked`），访问立即断，不等下次启动；用量历史保留
+  （审计与用量账本是历史，不跟着删）。没装的卸载不了——先装后卸，报错比静默
+  成功更不容易误操作。
+
+安装与卸载各记一条审计（`installed` / `uninstalled`）与一条运行事件
+（`connector_installed` / `connector_uninstalled`，只记连接器与用户）。
+
+## 统一授权入口（一键连接，缺口 44 第一批）
+
+`nyra connector auth <连接器>`：普通用户一键连接业务系统（OAuth 登录即用）。
+这里只做路由，不另起一套 OAuth——具体流程复用各连接器自己的授权实现：
+Gmail 走 loopback 回调（`nyra gmail auth` 同款）、Shopify 粘贴自定义应用的
+Admin API access token、Slack 粘贴 Bot token。授权成功后自动在状态机里记
+“已授权”，凭证只存密码箱（见下“令牌存放”），token 原文绝不进账本、审计与事件。
+
+## 用量（缺口 44 第一批）
+
+`nyra connector usage [连接器]`：每个连接器的调用次数（总次数、分操作次数、
+最后调用时间），存在 `~/.nyra/connector-usage.json`（0600、原子写）。
+
+调用计数是派生数据——审计 `connector-audit.jsonl` 才是事实源：三个客户端
+（Gmail / Shopify / Slack）每次真实调用都在各自的 `audit()` 里记一行审计，
+同时调 `recordConnectorCall` 把计数写进用量账本、把 `connector_call` 事件
+写进运行记录（有 runId 时进该运行的 events.jsonl，没 runId 时走证据文件回落）。
+事件里只记操作名、条数、耗时，不记 token、不记响应内容、不记客户信息。
+用量账本损坏时先备份再从空开始（不抛错、不拦调用）。
 
 ## 权限声明格式
 
@@ -80,6 +117,10 @@ nyra connector list                              列出全部连接器与授权�
 nyra connector status [连接器]                   查看一个/全部连接器的授权状态与权限声明
 nyra connector approve <连接器>                  显式批准一次
 nyra connector revoke <连接器> [--yes]           撤销授权（立即失效）
+nyra connector auth <连接器>                     一键连接：走该连接器自己的授权流程（OAuth 登录即用）
+nyra connector install <连接器>                  安装到目录：把连接器登记进你的目录（只装声明里有的；试点装不了）
+nyra connector uninstall <连接器> [--yes]        从目录卸载：同时撤销授权，访问立即断
+nyra connector usage [连接器]                    用量：每个连接器的调用次数（总次数、分操作次数、最后调用时间）
 ```
 
 `nyra gmail status` 也会多一行授权状态；`nyra gmail auth` 成功后自动在
