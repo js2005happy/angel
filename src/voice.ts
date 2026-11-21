@@ -499,7 +499,7 @@ export async function handleVoice(argv: string[], home: string, input?: VoiceCli
       return 1;
     }
   }
-  process.stderr.write("用法：nyra voice <status|speak <文字>|enable-tts|disable-tts>\n");
+  process.stderr.write("用法：nyra voice <status|speak <文字>|enable-tts|disable-tts>；通话：nyra voice call <start|answer|decline|end|status|list|segment|confirm>\n");
   return 2;
 }
 

@@ -111,6 +111,7 @@ import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
 import { reviewBusinessAction, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
+import { handleVoiceCall } from "./voiceCall.ts";
 import { handleSoul, resolveSoulAgentId } from "./soul.ts";
 import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
@@ -131,6 +132,7 @@ nyra "任务" --image <图片路径> [--image ...] [--video <视频路径或链�
 nyra --voice <音频路径> ["任务"]   语音指挥：先转文字再当任务跑（wav/mp3/m4a/ogg/flac；本地 whisper 优先、云端兜底，详见 docs/voice.md）
 nyra "任务" --speak   任务跑完后把结果读出来（默认关；只读结果前 500 字）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
+nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
 --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
 nyra                                                        进入交互模式（REPL）
 nyra --help                    显示帮助（不用 Key、不联网）
@@ -178,6 +180,7 @@ nyra connector <status|list|approve|revoke>   连接器授权状态机：每应�
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
 nyra peer <status|enable|disable|list|auth|ask|handoff>   对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭，详见 docs/peer.md）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
+nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
 nyra export --format docx|xlsx|pptx --from <内容 JSON> --out <路径>   成品导出：结构化内容写成可编辑的真办公文件（详见 docs/office.md）
 nyra media <status|enable|disable|ingest <链接> [--out <路径>]|setup|scope ...>   媒体抓取：公开视频先取字幕、没有再本地转写（默认关，须先 nyra media enable；详见 docs/media-ingest.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
@@ -230,6 +233,7 @@ nyra "task" --image <image path> [--image ...] [--video <video path or URL>]   r
 nyra --voice <audio path> ["task"]   voice command: transcribe first, then run it as the task (wav/mp3/m4a/ogg/flac; local whisper.cpp first, cloud STT fallback, see docs/voice.md)
 nyra "task" --speak   read the result aloud after the run (off by default; only the first 500 chars)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
+nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
 --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
 nyra                                                        interactive mode (REPL)
 nyra --help                    show help (no key, no network)
@@ -278,6 +282,7 @@ nyra connector <status|list|approve|revoke>   connector auth state machine: appr
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
 nyra peer <status|enable|disable|list|auth|ask|handoff>   peer collaboration: ask another Nyra instance, hand off run context (off by default, see docs/peer.md)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
+nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
 nyra export --format docx|xlsx|pptx --from <content JSON> --out <path>   export a finished office file from structured content (see docs/office.md)
 nyra media <status|enable|disable|ingest <url> [--out <path>]|setup|scope ...>   media ingest: public videos, subtitles first, local transcription fallback (off by default, run nyra media enable first; see docs/media-ingest.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
@@ -5432,7 +5437,11 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "verifier") return handleVerifier(args.subArgs ?? [], home);
   if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);
   if (args.subcommand === "peer") return handlePeer(args.subArgs ?? [], home);
-  if (args.subcommand === "voice") return handleVoice(args.subArgs ?? [], home);
+  if (args.subcommand === "voice") {
+    const sub = args.subArgs ?? [];
+    if (sub[0] === "call") return handleVoiceCall(sub.slice(1), home);
+    return handleVoice(sub, home);
+  }
   if (args.subcommand === "export") return handleExport(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "media") return handleMedia(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);

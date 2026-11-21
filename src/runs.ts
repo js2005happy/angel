@@ -220,6 +220,21 @@ soul_invariant_blocked: ["agent", "tenet_id", "tool", "rule"],
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。
 voice_input: ["seconds", "chars", "engine", "cost_usd", "text_hash"],
 voice_speak: ["chars", "engine", "cost_usd"],
+// 缺口 36：实时语音通话进证据链——建通话（哪个通话、哪个 agent、呼叫谁、
+// 什么传输）、接听/拒绝/挂断（哪个通话、挂断时多长、几段、STT 几秒、回读
+// 几字、花了多少、扣下几段）、转写（哪个通话、哪段、VAD 结论、几秒、几字、
+// 哪个引擎、花了多少、文本指纹）、回读（哪个通话、哪段、几字、哪个引擎、
+// 花了多少）、扣下（哪个通话、哪段、什么原因、文本指纹）、确认（哪个通话、
+// 哪段、什么原因）。只记元数据与指纹，不记转写原文、不记回读原文、不记
+// 音频路径与绝对路径（与缺口 15 同款）。
+voice_call_started: ["call_id", "agent", "peer", "transport"],
+voice_call_answered: ["call_id"],
+voice_call_declined: ["call_id"],
+voice_call_ended: ["call_id", "duration_seconds", "segments", "stt_seconds", "tts_chars", "cost_usd", "held"],
+voice_call_transcribed: ["call_id", "segment_id", "vad", "seconds", "chars", "engine", "cost_usd", "text_hash"],
+voice_call_spoken: ["call_id", "segment_id", "chars", "engine", "cost_usd"],
+voice_call_blocked: ["call_id", "segment_id", "reason", "text_hash"],
+voice_call_confirmed: ["call_id", "segment_id", "reason"],
 // 缺口 23：办公成品导出进证据链——格式、字节数、核查结论（已核实/未核实数、
 // 文件指纹）。只记元数据与指纹，不记文件全文与绝对路径。
 office_exported: ["format", "bytes", "verified", "unverified", "file_hash"],

@@ -267,6 +267,57 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `语音回读（${engine}）`, `${chars} 字${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
         break;
       }
+      case "voice_call_started": {
+        const peer = str(ev.peer) ?? "本机回环";
+        push(at, "event", `语音通话建立（呼叫 ${peer}）`, null, null, null);
+        break;
+      }
+      case "voice_call_answered": {
+        push(at, "event", "语音通话已接听", null, null, null);
+        break;
+      }
+      case "voice_call_declined": {
+        push(at, "event", "语音通话被拒绝", null, null, null);
+        break;
+      }
+      case "voice_call_ended": {
+        const seconds = num(ev.duration_seconds);
+        const segments = num(ev.segments) ?? 0;
+        const cost = num(ev.cost_usd);
+        const held = num(ev.held) ?? 0;
+        push(at, "event", "语音通话结束", `${seconds !== null ? `${seconds} 秒 · ` : ""}${segments} 段${held > 0 ? ` · ${held} 段待确认` : ""}${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
+        break;
+      }
+      case "voice_call_transcribed": {
+        const vad = str(ev.vad) ?? "";
+        const seconds = num(ev.seconds);
+        const chars = num(ev.chars) ?? 0;
+        const engine = str(ev.engine) ?? "";
+        if (vad === "silence") {
+          push(at, "event", "通话段落：静音，已跳过", null, null, null);
+        } else {
+          const cost = num(ev.cost_usd);
+          push(at, "event", `通话转写（${engine || "未知引擎"}）`, `${seconds !== null ? `${seconds} 秒 · ` : ""}${chars} 字${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
+        }
+        break;
+      }
+      case "voice_call_spoken": {
+        const chars = num(ev.chars) ?? 0;
+        const engine = str(ev.engine) ?? "未知引擎";
+        const cost = num(ev.cost_usd);
+        push(at, "event", `通话回读（${engine}）`, `${chars} 字${cost !== null ? ` · $${cost.toFixed(4)}` : " · 未计价"}`, null, null);
+        break;
+      }
+      case "voice_call_blocked": {
+        const reason = str(ev.reason) ?? "";
+        push(at, "event", `通话段落被扣下（${reason === "payment" ? "支付类" : reason === "external_send" ? "对外发送类" : "敏感意图"}，须文字确认）`, null, false, null);
+        break;
+      }
+      case "voice_call_confirmed": {
+        const reason = str(ev.reason) ?? "";
+        push(at, "event", `通话段落已确认（${reason === "payment" ? "支付类" : reason === "external_send" ? "对外发送类" : "敏感意图"}，含义已确认，未执行）`, null, null, null);
+        break;
+      }
       case "office_exported": {
         const format = str(ev.format) ?? "未知格式";
         const bytes = num(ev.bytes) ?? 0;
