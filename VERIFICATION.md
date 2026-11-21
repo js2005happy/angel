@@ -1,3 +1,9 @@
+## 2026-11-21 — Acceptance reference allowlist (static-only)
+
+- Read development README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance module/tests and Agent/Tools; reviewed recent commits, open Issues/PR and prior CI status. External reports: [Codex #61857](https://github.com/openai/codex/issues/61857), [#62682](https://github.com/openai/codex/issues/62682), retrieved 2026-11-21.
+- Source inspection only: optional exact allowlist, bounded validation, unrecognized target references remain incomplete, recognized entries remain self-reported. Added unexecuted regression cases. No independent source authentication.
+- **Not run:** tests, compilation, scripts, CI, platform probes or deployment. No main merge or production release.
+
 ## 2026-11-21 — Acceptance target-context match (static-only)
 
 - Read README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, Python acceptance module/tests, Agent/Tools and Node claim; checked recent commits, open Issues/PR (none returned), prior development commit combined status and PR-triggered workflow runs (empty, **not** CI success).
