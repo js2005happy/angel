@@ -122,6 +122,13 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // 升级要攒的连续成功次数（默认 5，整数 1–20，非法回 5）；spot_check_rate =
   // 每次记成功被随机抽查的概率（默认 0.1，0–0.5，非法回 0.1）。
   trust_ladder: { required_successes: 5, spot_check_rate: 0.1 },
+  // Pi Bot 借鉴第 3 条：卡住步骤看门狗（见 docs/reconciler.md）。enabled
+  // 默认关（显式 opt-in 才自动巡查；手动 nyra reconciler scan 不受开关
+  // 限制）；stuck_after_seconds = 多少秒无进展算卡住（默认 1800，整数
+  // 60–86400）；max_retries = 每任务最多自动重排几次（默认 2，整数 0–5，
+  // 超限进 blocked 只等人）；scan_interval_seconds = 守护进程每几秒扫一
+  // 遍（默认 300，整数 60–3600）。数字不合法时回退默认值。
+  reconciler: { enabled: false, stuck_after_seconds: 1800, max_retries: 2, scan_interval_seconds: 300 },
   // 缺口 24：Plan/Act 分模型。plan_model = 规划阶段（--plan / buildPlan）用的强推理模型；
   // act_model = 执行阶段（Act）用的便宜模型（不填沿用主模型）。与主模型相同会被忽略。
   plan_model: null,

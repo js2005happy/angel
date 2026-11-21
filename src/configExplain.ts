@@ -13,6 +13,7 @@ import { resolveAuxRouting, resolvePlanActRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions } from "./reasoning.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
 import { resolveTrustLadderSettings } from "./trustLadder.ts";
+import { resolveReconcilerSettings } from "./reconciler.ts";
 
 export type ExplainSource = "cli" | "config" | "env" | "default" | "conflict";
 
@@ -220,6 +221,21 @@ export function explainAll(input: ExplainInput): CapabilityExplain[] {
       source: configured ? "config" : "default",
       keys: ["trust_ladder.required_successes", "trust_ladder.spot_check_rate"],
       note: "新 agent / 新技能登记后默认只读；每级要攒够连续成功且零违规才升一级，升级须人点头；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做",
+    });
+  }
+
+  // 11) Pi Bot 借鉴第 3 条：卡住步骤看门狗（任务板 working 任务超时无进展
+  // 时先标出来、再按轮次上限自动重排、超限进 blocked 只等人）
+  {
+    const s = resolveReconcilerSettings(cfg);
+    const raw = (pick(cfg, "reconciler") ?? {}) as Record<string, unknown>;
+    const configured = raw.enabled !== undefined || raw.stuck_after_seconds !== undefined || raw.max_retries !== undefined || raw.scan_interval_seconds !== undefined;
+    out.push({
+      capability: "reconciler",
+      effective: s.enabled ? `开（${s.stuckAfterSeconds} 秒无进展算卡住，最多重排 ${s.maxRetries} 次，每 ${s.scanIntervalSeconds} 秒扫一遍）` : "关（只手动扫描）",
+      source: configured ? "config" : "default",
+      keys: ["reconciler.enabled", "reconciler.stuck_after_seconds", "reconciler.max_retries", "reconciler.scan_interval_seconds"],
+      note: "看门狗只重排任务板任务（回队列等下一轮 tick），不调模型、不写任务板账本以外的文件、不对外发；超限进 blocked 只等人 reset；无人值守续跑照样强制只读",
     });
   }
 

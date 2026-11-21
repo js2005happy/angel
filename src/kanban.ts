@@ -58,6 +58,11 @@ export interface KanbanTask {
   lastError: string | null;
   verification: KanbanVerification | null;
   review: KanbanReview | null;
+  /** Pi Bot 借鉴第 3 条：卡住步骤看门狗——本轮卡住 episode 的首次发现
+   * 时间（有进展即清零）；累计被标卡住次数；看门狗累计自动重排次数。 */
+  stuckAt: string | null;
+  stuckFlags: number;
+  watchdogRetries: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -114,6 +119,13 @@ export function loadKanbanStore(home: string): KanbanStore {
     !Array.isArray((raw as KanbanStore).tasks) || !Array.isArray((raw as KanbanStore).history)) {
     backupCorrupt(path);
     throw new KanbanError("任务板账本格式无效，已备份");
+  }
+  // Pi Bot 借鉴第 3 条：老行没有看门狗三字段，读时补默认值，下次保存即
+  // 回写——只加字段，不改旧行的语义。
+  for (const t of (raw as KanbanStore).tasks) {
+    if (t.stuckAt === undefined) t.stuckAt = null;
+    if (typeof t.stuckFlags !== "number") t.stuckFlags = 0;
+    if (typeof t.watchdogRetries !== "number") t.watchdogRetries = 0;
   }
   return raw as KanbanStore;
 }
@@ -176,6 +188,7 @@ export function createKanbanTask(
     id: newTaskId(), title, kind, status: "queued", agent,
     workdir: opts.workdir ?? process.cwd(), runId: null,
     attempts: 0, maxAttempts, lastError: null, verification: null, review: null,
+    stuckAt: null, stuckFlags: 0, watchdogRetries: 0,
     createdAt: at, updatedAt: at,
   };
   store.tasks.push(task);
@@ -201,6 +214,9 @@ function transition(home: string, id: string, to: KanbanStatus, note: string): K
   const task = getTask(store, id);
   const from = task.status;
   task.status = to;
+  // Pi Bot 借鉴第 3 条：离开 working 即本轮卡住 episode 结束，清标记
+  // （stuckFlags 累计留着，watchdogRetries 是重排预算、由 reset 清）。
+  if (to !== "working") task.stuckAt = null;
   task.updatedAt = nowIso();
   recordHistory(store, `status:${from}->${to}`, task.id, note);
   saveKanbanStore(home, store);
@@ -313,15 +329,32 @@ export function completeKanbanTask(home: string, id: string): KanbanTask {
   return transition(home, id, "done", `完成（验证：${task.verification.method}）`);
 }
 
-/** 熔断后由人 reset：attempts 清零回 queued。不自动放行。 */
+/** 熔断后由人 reset：attempts 清零回 queued。不自动放行。
+ * Pi Bot 借鉴第 3 条：看门狗的重排预算也清零（重新开始算），累计被标卡
+ * 住的次数（stuckFlags）留着，那是历史。 */
 export function resetKanbanTask(home: string, id: string): KanbanTask {
   const store = loadKanbanStore(home);
   const task = getTask(store, id);
   if (task.status !== "blocked") throw new KanbanError(`只能 reset blocked 状态的任务，当前为 ${task.status}`);
   task.attempts = 0;
+  task.watchdogRetries = 0;
   task.lastError = null;
   saveKanbanStore(home, store);
   return transition(home, id, "queued", "人工 reset 回队列");
+}
+
+/** Pi Bot 借鉴第 3 条：看门狗重排用完仍卡住时直接进 blocked（不走 fail
+ * 路径——fail 还要再攒 attempts，超限停下等人不该等熔断计数凑满）。 */
+export function blockKanbanTask(home: string, id: string, reason: string): KanbanTask {
+  const store = loadKanbanStore(home);
+  const task = getTask(store, id);
+  if (task.status !== "working") throw new KanbanError(`只能停下 working 状态的任务，当前为 ${task.status}`);
+  task.lastError = String(reason).slice(0, 300);
+  task.updatedAt = nowIso();
+  saveKanbanStore(home, store);
+  const done = transition(home, id, "blocked", `看门狗停下：${task.lastError.slice(0, 100)}`);
+  mirrorEvent(home, task.runId, "kanban_blocked", { task_id: task.id, attempts: task.attempts });
+  return done;
 }
 
 export function removeKanbanTask(home: string, id: string): boolean {

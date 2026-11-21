@@ -333,6 +333,16 @@ handover_contract_sent_back: ["contract_id", "from", "to", "round", "passed", "t
 handover_contract_stopped: ["contract_id", "from", "to", "round", "passed", "total"],
 handover_contract_resolved: ["contract_id", "from", "to", "by"],
 handover_contract_closed: ["contract_id", "from", "to", "by"],
+// Pi Bot 借鉴第 3 条：卡住步骤看门狗进证据链——标卡住（哪个任务、静默
+// 几秒、已重排几次）、自动重排（哪个任务、静默几秒、第几次重排、熔断计数
+// 几）、停下等人（哪个任务、静默几秒、已重排几次）、恢复进展（哪个任务、
+// 静默几秒）、运行已结束但任务仍在 working（哪个任务、哪个运行、运行什么
+// 状态）。只记元数据与 id，不记任务标题、不记运行输出、不记绝对路径。
+reconciler_stuck: ["task_id", "idle_seconds", "retries"],
+reconciler_retried: ["task_id", "idle_seconds", "retries", "attempts"],
+reconciler_blocked: ["task_id", "idle_seconds", "retries"],
+reconciler_recovered: ["task_id", "idle_seconds"],
+reconciler_run_done: ["task_id", "run_id", "status"],
 // 缺口 15：语音指挥进证据链——转写（多长、多少字、哪个引擎、花了多少、
 // 转写文本的指纹）与回读（多少字、哪个引擎、花了多少）。只记元数据与
 // 指纹，不记音频内容、转写原文与回读原文（转写原文就是任务文本，已在运行记录里）。

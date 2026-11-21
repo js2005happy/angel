@@ -622,6 +622,27 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `交接契约已放弃（${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}）`, str(ev.by) ? `由 ${str(ev.by)} 放弃` : null, null, null);
         break;
       }
+      // Pi Bot 借鉴第 3 条：卡住步骤看门狗（哪个任务、静默几秒、第几次重排）。
+      case "reconciler_stuck": {
+        push(at, "event", `看门狗：任务 ${str(ev.task_id) ?? "?"} 卡住了`, `${num(ev.idle_seconds) ?? "?"} 秒无进展，已重排 ${num(ev.retries) ?? 0} 次`, null, null);
+        break;
+      }
+      case "reconciler_retried": {
+        push(at, "event", `看门狗：任务 ${str(ev.task_id) ?? "?"} 自动重排`, `卡住 ${num(ev.idle_seconds) ?? "?"} 秒，第 ${num(ev.retries) ?? "?"} 次重排，失败 ${num(ev.attempts) ?? "?"} 次`, null, null);
+        break;
+      }
+      case "reconciler_blocked": {
+        push(at, "event", `看门狗：任务 ${str(ev.task_id) ?? "?"} 已停下等人`, `卡住 ${num(ev.idle_seconds) ?? "?"} 秒，重排已用完 ${num(ev.retries) ?? "?"} 次`, false, null);
+        break;
+      }
+      case "reconciler_recovered": {
+        push(at, "event", `看门狗：任务 ${str(ev.task_id) ?? "?"} 恢复进展`, `卡住 ${num(ev.idle_seconds) ?? "?"} 秒后又有动静了`, true, null);
+        break;
+      }
+      case "reconciler_run_done": {
+        push(at, "event", `看门狗：任务 ${str(ev.task_id) ?? "?"} 的运行已结束`, `运行 ${str(ev.run_id) ?? "?"} 状态 ${str(ev.status) ?? "?"}，任务仍在 working，等验证证据才能标完成`, null, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

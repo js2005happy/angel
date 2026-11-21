@@ -75,6 +75,7 @@ import { handleGoal } from "./goal.ts";
 import { handleWorkflow } from "./workflow.ts";
 import { handleScript } from "./scriptCli.ts";
 import { handleHandover } from "./handoverCli.ts";
+import { handleReconciler } from "./reconciler.ts";
 import { attachContractToRun, handleContract } from "./contract.ts";
 import { handleGolden, stripRunReport, type GoldenRunner } from "./golden.ts";
 import { handleFanout } from "./fanout.ts";
@@ -190,6 +191,7 @@ nyra script check <文件> [--language python|javascript|lua|php]   判定一个
 nyra script preauth <list|grant|revoke> --workflow <名字>   脚本摘要预授权：激活时自动钉纯脚本摘要，内容一改授权失效；只在例行里有效（详见 docs/script-purity.md）
 nyra handover contract <create|list|show|check|resolve|close>   交接契约的程序化验收（Pi Bot 借鉴第 2 条）：交付物 + 验收项 + 修正轮次上限；验收是程序核对，不调模型，不过打回、轮次用完停下等人（详见 docs/handover-contract.md）
 nyra handover checkers   列出能用的 checker（验收项只能挂这些）
+nyra reconciler <scan|status|enable|disable|config|settle>   卡住步骤看门狗（Pi Bot 借鉴第 3 条）：working 任务超时无进展先标出来、再按轮次上限自动重排、超限进 blocked 只等人；自动巡查默认关（详见 docs/reconciler.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -311,6 +313,7 @@ nyra script check <file> [--language python|javascript|lua|php]   judge whether 
 nyra script preauth <list|grant|revoke> --workflow <name>   script digest pre-authorization: pure script digests are pinned at activation, a changed script voids the grant; routine-only (see docs/script-purity.md)
 nyra handover contract <create|list|show|check|resolve|close>   programmatic acceptance of handover contracts (Pi Bot idea 2): deliverables + checks + a fix-round cap; acceptance is a deterministic program check, not a model call — a failed check sends the work back, out of rounds stops for a human (see docs/handover-contract.md)
 nyra handover checkers   list the checkers an acceptance item may use
+nyra reconciler <scan|status|enable|disable|config|settle>   stuck-step watchdog (Pi Bot idea 3): a working task idle past the threshold is flagged, then auto-requeued up to a cap, then blocked for a human; automatic patrol is off by default (see docs/reconciler.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -1251,6 +1254,16 @@ async function handleSchedule(argv: string[], workdir: string): Promise<number> 
           for (const r of results) {
             if (!r.quiet) process.stdout.write(`[Heartbeat] ${r.agent}：${r.findings.length} 项发现，已写收件箱。\n`);
           }
+        });
+      // Pi Bot 借鉴第 3 条：卡住步骤看门狗（只扫任务板、只标记/重排/停下，
+      // 不调模型、不写任务板账本以外的文件、不对外发）。未启用或未到扫描
+      // 间隔时 runDueReconciliations 内部跳过；失败只记 stderr，不破坏定时任务。
+      pollers.push(async () => {
+          const { runDueReconciliations } = await import("./reconciler.ts");
+          const report = runDueReconciliations(home);
+          if (report.skipped) return;
+          const acted = report.flagged.length + report.retried.length + report.blocked.length + report.failed.length;
+          if (acted) process.stdout.write(`[看门狗] 扫了 ${report.scanned} 个在跑任务：标卡住 ${report.flagged.length} 个、重排 ${report.retried.length} 个、停下 ${report.blocked.length} 个、运行已失败走 fail 路径 ${report.failed.length} 个。\n`);
         });
       // Phase 3：定时任务结果推送（Bot notifier）。notifier 没开/没配
       // owner/目标会话/token 时 buildNotifierFromConfig 返回 null，不推、
@@ -5646,6 +5659,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "workflow") return handleWorkflow(args.subArgs ?? [], home);
   if (args.subcommand === "script") return handleScript(args.subArgs ?? [], home);
   if (args.subcommand === "handover") return handleHandover(args.subArgs ?? [], home);
+  if (args.subcommand === "reconciler") return handleReconciler(args.subArgs ?? [], home);
   if (args.subcommand === "trust") return handleTrust(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "team") return handleTeamCommand(args, home);
