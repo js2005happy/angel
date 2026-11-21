@@ -1,3 +1,9 @@
+## 2026-11-22 — Offline acceptance receipt verifier (static inspection only)
+
+- Inspected README.md, DESIGN.md, CHANGELOG.md, VERIFICATION.md, ROADMAP.md, acceptance assessor, Agent and Tools source; reviewed recent commits, open Issues/PR and prior commit checks. The queried prior commit had no status checks or workflow runs; this is not CI success.
+- Added `angel/acceptance_receipt.py` and `tests/test_acceptance_receipt.py`. Static source review only; tests and CI **not run**. Test source covers exact match, wrong environment/requirement, tampering, wrong/weak key and malformed fields.
+- Security boundaries: secret must be provisioned outside model/agent control; no issuance, key storage, revocation, replay defense, external verification or main-loop integration. Valid HMAC does not prove execution. No software installed, accounts accessed, main merge or release.
+
 ## 2026-11-22 — Conflicting acceptance receipt contexts (static-only)
 
 - Reviewed README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests, Agent/Tools, latest repository commits, open Issues/PR and commit status. External evidence: [Codex #61857](https://github.com/openai/codex/issues/61857) (opened 2026-11-16) and [Codex #42080](https://github.com/openai/codex/issues/42080), reviewed 2026-11-22. Reports are not Angel reproductions.
