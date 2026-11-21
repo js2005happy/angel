@@ -53,6 +53,7 @@ import { computerWorkspacePath, getComputer } from "./bot/computer.ts";
 import { appendBead, beadHash } from "./beads.ts";
 import { checkAutoAllowed } from "./governance.ts";
 import { businessActionForTool, BUSINESS_ACTION_LABELS } from "./businessRedlines.ts";
+import { checkHandoverContract, getHandoverContract, linkHandoverPackage } from "./handoverContract.ts";
 import { resolveNyraHome } from "./memory.ts";
 
 export class TeamError extends Error {
@@ -384,6 +385,8 @@ export interface HandoverPackage {
   from_computer: string;
   /** 接收方电脑 id（审计用）。 */
   to_computer: string;
+  /** 挂的交接契约 id（Pi Bot 借鉴第 2 条；没挂时为 null，老包没有该字段也当 null）。 */
+  contract_id?: string | null;
 }
 
 function handoverRoot(home: string, computerId: string): string {
@@ -451,6 +454,8 @@ export interface SendHandoverInput {
   note?: string;
   /** 交出方 workspace 内的相对路径列表（可空：只交代一句话也行）。 */
   files?: string[];
+  /** 挂一份待验收的交接契约（Pi Bot 借鉴第 2 条；from/to 须与契约一致）。 */
+  contractId?: string;
   runId?: string | null;
 }
 
@@ -472,6 +477,18 @@ export function sendHandover(home: string, input: SendHandoverInput): HandoverPa
   const toBinding = resolveBotComputer(home, input.to);
   if (!toBinding) throw new TeamError(`交接发不出去：${input.to} 还没有 Soul / 电脑（先跑 nyra soul init ${input.to}）`);
   if (input.from === input.to) throw new TeamError("不能给自己交接（from 与 to 是同一个 agent）");
+  // 挂交接契约（Pi Bot 借鉴第 2 条）：契约须存在、待验收、from/to 与本次
+  // 交接一致（契约是“谁交给谁”的验收标准）；包建好后才 link（须包 id）。
+  let contractId: string | null = null;
+  if (input.contractId) {
+    const contract = getHandoverContract(home, input.contractId);
+    if (!contract) throw new TeamError(`找不到交接契约 ${input.contractId}（先 nyra handover contract create 立一份）`);
+    if (contract.status !== "pending") throw new TeamError(`交接契约 ${input.contractId} 不是待验收，不能再挂包`);
+    if (contract.from !== input.from || contract.to !== input.to) {
+      throw new TeamError(`交接契约 ${input.contractId} 是 ${contract.from} → ${contract.to}，与本次 ${input.from} → ${input.to} 不一致`);
+    }
+    contractId = input.contractId;
+  }
 
   const fromWorkspace = fromBinding.workdir;
   const files: HandoverFile[] = [];
@@ -503,12 +520,14 @@ export function sendHandover(home: string, input: SendHandoverInput): HandoverPa
     status: "sent",
     from_computer: fromBinding.computer.id,
     to_computer: toBinding.computer.id,
+    contract_id: contractId,
   };
   const data = JSON.stringify(pkg, null, 2) + "\n";
   const inboxPath = join(handoverBoxDir(home, toBinding.computer.id, "inbox"), `${pkg.id}.json`);
   writeFileSync(inboxPath, data, { mode: 0o600 });
   const outboxPath = join(handoverBoxDir(home, fromBinding.computer.id, "outbox"), `${pkg.id}.json`);
   writeFileSync(outboxPath, data, { mode: 0o600 });
+  if (contractId) linkHandoverPackage(home, contractId, pkg.id);
   appendChangelog(home, fromBinding.computer.id, `${pkg.from} → ${pkg.to}：${pkg.task}（${pkg.id}，已发出，${files.length} 个文件）`);
   appendChangelog(home, toBinding.computer.id, `${pkg.from} → ${pkg.to}：${pkg.task}（${pkg.id}，已到 inbox）`);
   try {
@@ -561,10 +580,33 @@ export function readHandover(home: string, agent: string, id: string): { pkg: Ha
  * 接收方确认接下：inbox 包与 outbox 底的状态都改成 accepted，双方
  * changelog 各记一行。确认只是“接了”，内容对错仍由 verifier + 人批负责。
  */
-export function ackHandover(home: string, agent: string, id: string): HandoverPackage {
+export function ackHandover(home: string, agent: string, id: string, opts?: { workdir?: string }): HandoverPackage {
   const { pkg } = readHandover(home, agent, id);
   if (pkg.to !== agent) throw new TeamError(`交接包 ${id} 不是发给 ${agent} 的（接收方是 ${pkg.to}），不能由你确认`);
   if (pkg.status === "accepted") return pkg;
+  // 挂了交接契约的包：先程序验收，过了才接下；打回/停下时包保持 sent
+  // 状态、对方改完再 ack（就是再交一次），轮次用完须人定夺（resolve）。
+  // 验收地默认交出方电脑的 workdir（--workdir 可指定别处）；验收的输出
+  // 文本用包里已内联的文件内容拼（大文件只记了 SHA-256，没内联进包），
+  // 所以挂到交接包上的契约只用文件类与内置 checker，output-contains /
+  // trajectory-contains 类 checker 请走 `nyra handover contract check`
+  // 单独验（带 --output-file / --trajectory）。
+  const contractId = pkg.contract_id ?? null;
+  if (contractId) {
+    const fromBinding = resolveBotComputer(home, pkg.from);
+    const workdir = opts?.workdir ?? fromBinding?.workdir ?? null;
+    if (!workdir) throw new TeamError(`交接包 ${id} 挂了交接契约 ${contractId}，但找不到 ${pkg.from} 的工作目录（用 --workdir 指定核对地）`);
+    const outputText = pkg.files.map((f) => f.content ?? "").filter(Boolean).join("\n");
+    const result = checkHandoverContract(home, contractId, { workdir, outputText });
+    if (result.verdict !== "accepted") {
+      const outcome = result.verdict === "sent-back" ? "没过已打回" : "没过已停下等人";
+      if (fromBinding) appendChangelog(home, fromBinding.computer.id, `${pkg.from} → ${pkg.to}：${pkg.task}（${id}，程序验收${outcome}）`);
+      const toBinding = resolveBotComputer(home, pkg.to);
+      if (toBinding) appendChangelog(home, toBinding.computer.id, `${pkg.from} → ${pkg.to}：${pkg.task}（${id}，程序验收${outcome}）`);
+      appendTeamAudit(home, { kind: result.verdict === "sent-back" ? "handover_contract_sent_back" : "handover_contract_stopped", handover_id: id, contract_id: contractId, from: pkg.from, to: pkg.to });
+      throw new TeamError(result.text);
+    }
+  }
   const accepted: HandoverPackage = { ...pkg, status: "accepted" };
   const data = JSON.stringify(accepted, null, 2) + "\n";
   const toBinding = resolveBotComputer(home, pkg.to);
@@ -725,10 +767,10 @@ const TEAM_USAGE = "用法：\n"
 + " nyra team remove <团队名或 id> <成员> 移除成员（至少留一个）\n"
 + " nyra team dissolve <团队名或 id> [--yes] 解散团队（终态）\n"
 + " nyra team dispatch <团队名或 id> \"<任务>\" [--dry-run] 参谋长分派：拆解、分派、汇总（--dry-run 只出计划，不跑模型）\n"
-+ " nyra team handover send --from <agent> --to <agent> --task \"一句话\" [--note \"备注\"] [--file <相对路径>...] 文件交接（落对方电脑 workspace 的 inbox）\n"
++ " nyra team handover send --from <agent> --to <agent> --task \"一句话\" [--note \"备注\"] [--file <相对路径>...] [--contract <契约 id>] 文件交接（落对方电脑 workspace 的 inbox；挂契约时对方 ack 先程序验收）\n"
 + " nyra team handover list <agent> [--box inbox|outbox] 列出某 agent 的收件/发件箱\n"
 + " nyra team handover show <agent> <id> 看一个交接包\n"
-+ " nyra team handover ack <agent> <id> 接收方确认接下\n"
++ " nyra team handover ack <agent> <id> [--workdir <目录>] 接收方确认接下（挂了契约的包先程序验收，过了才接下）\n"
 + "团队形态：参谋长独占入口，只拆解、分派、汇总，不写业务代码；下游各做执行，只回简报；\n"
 + "下游之间不直接互发指令；对外动作一律回参谋长/人批；交接走 inbox/outbox/changelog，不靠聊天记录复制粘贴。\n"
 + "详见 docs/team.md";
@@ -766,10 +808,10 @@ const cmd = argv[0];
 if (!cmd || cmd === "-h" || cmd === "--help" || cmd === "help") {
 process.stdout.write(
 "用法：\n"
-+ " nyra team handover send --from <agent> --to <agent> --task \"一句话\" [--note \"备注\"] [--file <相对路径>...]\n"
++ " nyra team handover send --from <agent> --to <agent> --task \"一句话\" [--note \"备注\"] [--file <相对路径>...] [--contract <契约 id>]\n"
 + " nyra team handover list <agent> [--box inbox|outbox]\n"
 + " nyra team handover show <agent> <id>\n"
-+ " nyra team handover ack <agent> <id>\n",
++ " nyra team handover ack <agent> <id> [--workdir <目录>]\n",
 );
 return 0;
 }
@@ -779,14 +821,15 @@ const to = flagValue(argv, "--to");
 const task = flagValue(argv, "--task");
 const note = flagValue(argv, "--note")?? "";
 const files = flagValues(argv, "--file");
+const contractId = flagValue(argv, "--contract");
 if (!from ||!to ||!task) {
-process.stderr.write("用法：nyra team handover send --from <agent> --to <agent> --task \"一句话\" [--note \"备注\"] [--file <相对路径>...]\n");
+process.stderr.write("用法：nyra team handover send --from <agent> --to <agent> --task \"一句话\" [--note \"备注\"] [--file <相对路径>...] [--contract <契约 id>]\n");
 return 2;
 }
-const pkg = sendHandover(home, { from, to, task, note, files});
+const pkg = sendHandover(home, { from, to, task, note, files, contractId: contractId ?? undefined });
 emitTeamEvent(input, "team_handover_sent", { handover_id: pkg.id, from: pkg.from, to: pkg.to});
 emitTeamEvent(input, "team_handover_received", { handover_id: pkg.id, from: pkg.from, to: pkg.to});
-process.stdout.write(`已交接给 ${to}：${task}（${pkg.id}，${pkg.files.length} 个文件，${pkg.files.filter((f) => f.content!== null).length} 个内联原文）\n`);
+process.stdout.write(`已交接给 ${to}：${task}（${pkg.id}，${pkg.files.length} 个文件，${pkg.files.filter((f) => f.content!== null).length} 个内联原文${pkg.contract_id ? `，挂交接契约 ${pkg.contract_id}（对方 ack 时先程序验收）` : ""}）\n`);
 process.stdout.write(` 落在 ${to} 的电脑 workspace：handover/inbox/${pkg.id}.json；你这边 outbox 留了底。\n`);
 return 0;
 }
@@ -801,7 +844,7 @@ process.stdout.write(`${agent} 的 ${box === "inbox"? "收件箱": "发件箱"}�
 return 0;
 }
 for (const p of pkgs) {
-process.stdout.write(`[${p.id}] ${p.status === "accepted"? "已接下": "待接"} ${p.from} → ${p.to}：${p.task}（${p.files.length} 个文件，${p.at}）\n`);
+process.stdout.write(`[${p.id}] ${p.status === "accepted"? "已接下": "待接"} ${p.from} → ${p.to}：${p.task}（${p.files.length} 个文件，${p.at}${p.contract_id ? `，挂契约 ${p.contract_id}` : ""}）\n`);
 }
 return 0;
 }
@@ -815,6 +858,7 @@ process.stdout.write(
 + ` ${pkg.from} → ${pkg.to}；${pkg.at}\n`
 + ` 任务：${pkg.task}\n`
 + (pkg.note? ` 备注：${pkg.note}\n`: "")
++ (pkg.contract_id? ` 交接契约：${pkg.contract_id}（对方 ack 时先程序验收：全过才接下，不过打回、轮次用完停下等人）\n`: "")
 + (pkg.files.length
 ? ` 文件（${pkg.files.length} 个）：\n${pkg.files.map((f) => ` - ${f.path}（${f.size} 字节，sha256 ${f.sha256.slice(0, 12)}${f.content!== null? "，原文已内联": "，只记指纹、原文在交出方 workspace"}）`).join("\n")}\n`
 : " 文件：没有\n"),
@@ -824,8 +868,9 @@ return 0;
 if (cmd === "ack") {
 const agent = argv[1];
 const id = argv[2];
-if (!agent ||!id) { process.stderr.write("用法：nyra team handover ack <agent> <id>\n"); return 2;}
-const pkg = ackHandover(home, agent, id);
+const workdir = flagValue(argv, "--workdir");
+if (!agent ||!id) { process.stderr.write("用法：nyra team handover ack <agent> <id> [--workdir <目录>]\n"); return 2;}
+const pkg = ackHandover(home, agent, id, { workdir: workdir ?? undefined });
 emitTeamEvent(input, "team_handover_accepted", { handover_id: pkg.id, from: pkg.from, to: pkg.to});
 process.stdout.write(`已接下交接包 ${id}：${pkg.task}（${pkg.from} → ${pkg.to}）\n`);
 return 0;

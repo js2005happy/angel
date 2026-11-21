@@ -736,6 +736,8 @@ export const AUDIT_SOURCES: AuditSource[] = [
   { file: "bot-audit.jsonl", label: "bot" },
   // Pi Bot 借鉴第 1 条：脚本预授权审计（授权/撤销/使用/拒绝）也是治理审计日志，进同一份 SIEM 导出。
   { file: "script-preauth-audit.jsonl", label: "script_preauth" },
+  // Pi Bot 借鉴第 2 条：交接契约验收审计（立约/挂包/验收/打回/停下/定夺/放弃）也是治理审计日志，进同一份 SIEM 导出。
+  { file: "handover-contract-audit.jsonl", label: "handover_contract" },
 ];
 
 /** 稳定序列化（键排序，递归）：同一条记录在任何机器上算出的哈希都一样。 */

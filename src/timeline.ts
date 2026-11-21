@@ -600,6 +600,28 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `脚本预授权快路径（${str(ev.language) ?? "?"}）`, `步骤 ${str(ev.step) ?? "?"}${digest ? `，摘要 ${digest.slice(0, 12)}…` : ""}`, true, null);
         break;
       }
+      // Pi Bot 借鉴第 2 条：交接契约程序验收的结论（哪个契约、谁交给谁、
+      // 第几轮、几项通过/共几项）与人工定夺/放弃（谁定的）。
+      case "handover_contract_accepted": {
+        push(at, "event", `交接契约已接受（${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}）`, `第 ${num(ev.round) ?? "?"} 轮，${num(ev.passed) ?? "?"} / ${num(ev.total) ?? "?"} 项通过`, true, null);
+        break;
+      }
+      case "handover_contract_sent_back": {
+        push(at, "event", `交接契约已打回（${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}）`, `第 ${num(ev.round) ?? "?"} 轮，${num(ev.passed) ?? "?"} / ${num(ev.total) ?? "?"} 项通过`, null, null);
+        break;
+      }
+      case "handover_contract_stopped": {
+        push(at, "event", `交接契约已停下等人（${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}）`, `第 ${num(ev.round) ?? "?"} 轮，${num(ev.passed) ?? "?"} / ${num(ev.total) ?? "?"} 项通过`, null, null);
+        break;
+      }
+      case "handover_contract_resolved": {
+        push(at, "event", `交接契约人工已定夺（${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}）`, str(ev.by) ? `由 ${str(ev.by)} 定夺` : null, true, null);
+        break;
+      }
+      case "handover_contract_closed": {
+        push(at, "event", `交接契约已放弃（${str(ev.from) ?? "?"} → ${str(ev.to) ?? "?"}）`, str(ev.by) ? `由 ${str(ev.by)} 放弃` : null, null, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

@@ -74,6 +74,7 @@ import { handleKanban } from "./kanban.ts";
 import { handleGoal } from "./goal.ts";
 import { handleWorkflow } from "./workflow.ts";
 import { handleScript } from "./scriptCli.ts";
+import { handleHandover } from "./handoverCli.ts";
 import { attachContractToRun, handleContract } from "./contract.ts";
 import { handleGolden, stripRunReport, type GoldenRunner } from "./golden.ts";
 import { handleFanout } from "./fanout.ts";
@@ -187,6 +188,8 @@ nyra trust <register|list|show|evidence|promote|demote|review|check>   信任阶
 nyra workflow <import|list|show|run|dry-run|resume|trial|activate|remove|verify>   声明式可复用工作流（缺口 25）：YAML/JSON 定义 + 三种执行形态（固定图/协调者/动态）+ 审批节点 + dry-run，激活前须真实数据试跑 + 人工确认（详见 docs/workflow.md）
 nyra script check <文件> [--language python|javascript|lua|php]   判定一个脚本纯不纯（白名单静态分析）：纯返回 0，不纯返回 1
 nyra script preauth <list|grant|revoke> --workflow <名字>   脚本摘要预授权：激活时自动钉纯脚本摘要，内容一改授权失效；只在例行里有效（详见 docs/script-purity.md）
+nyra handover contract <create|list|show|check|resolve|close>   交接契约的程序化验收（Pi Bot 借鉴第 2 条）：交付物 + 验收项 + 修正轮次上限；验收是程序核对，不调模型，不过打回、轮次用完停下等人（详见 docs/handover-contract.md）
+nyra handover checkers   列出能用的 checker（验收项只能挂这些）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -306,6 +309,8 @@ nyra trust <register|list|show|evidence|promote|demote|review|check>   trust lad
 nyra workflow <import|list|show|run|dry-run|resume|trial|activate|remove|verify>   declarative reusable workflows (gap 25): YAML/JSON definitions + three execution modes (fixed graph / coordinator / dynamic) + approval nodes + dry-run; activation needs a real-data trial run + human confirmation (see docs/workflow.md)
 nyra script check <file> [--language python|javascript|lua|php]   judge whether a script is pure (allowlist static analysis): exit 0 if pure, 1 if not
 nyra script preauth <list|grant|revoke> --workflow <name>   script digest pre-authorization: pure script digests are pinned at activation, a changed script voids the grant; routine-only (see docs/script-purity.md)
+nyra handover contract <create|list|show|check|resolve|close>   programmatic acceptance of handover contracts (Pi Bot idea 2): deliverables + checks + a fix-round cap; acceptance is a deterministic program check, not a model call — a failed check sends the work back, out of rounds stops for a human (see docs/handover-contract.md)
+nyra handover checkers   list the checkers an acceptance item may use
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -5640,6 +5645,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "goal") return handleGoal(args.subArgs ?? [], home);
   if (args.subcommand === "workflow") return handleWorkflow(args.subArgs ?? [], home);
   if (args.subcommand === "script") return handleScript(args.subArgs ?? [], home);
+  if (args.subcommand === "handover") return handleHandover(args.subArgs ?? [], home);
   if (args.subcommand === "trust") return handleTrust(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "team") return handleTeamCommand(args, home);
