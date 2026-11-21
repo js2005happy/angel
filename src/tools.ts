@@ -500,14 +500,21 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
     assertWritableProtected(posix.relative(base, target));
     return target;
   }
-  const root = canonicalizePath(ctx.workdir);
-  const target = canonicalizePath(join(root, path));
-  if (target === root || !(target === root || target.startsWith(root + sep))) {
+  const root = resolve(ctx.workdir);
+  const target = resolve(join(root, path));
+  // 越界比较时两边都过 realpath 规范化：软链两侧的同一目录不能误判成越界
+  // （CI #491，macOS /var → /private/var）；但返回给调用方的必须是调用方
+  // 拼写的原始路径——CheckpointStore、事件记录、resume recorder 等下游都按
+  // 字符串比较路径，改写拼写会让它们认不出同一文件，检查点写入直接抛错，
+  // 文件根本写不出来（CI #494：macOS 12 败，第一轮修补漏了这层）。
+  const canonRoot = canonicalizePath(root);
+  const canonTarget = canonicalizePath(target);
+  if (canonTarget === canonRoot || !(canonTarget === canonRoot || canonTarget.startsWith(canonRoot + sep))) {
     // --add-dir：显式加进来的额外可写根同样允许；其余工作目录外的路径一律拒绝。
     const extra = ctx.extraWriteDirs ?? [];
     const under = extra.find((dir) => {
       const r = canonicalizePath(dir);
-      return target === r || target.startsWith(r + sep);
+      return canonTarget === r || canonTarget.startsWith(r + sep);
     });
     if (!under) throw new ToolError("禁止写入工作目录之外的路径（如需写入其他目录，用 --add-dir 显式放开）");
     return target;
@@ -517,11 +524,12 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
 }
 
 /** 路径规范化到真实路径：存在时 realpath；不存在时 realpath 最近已存在的祖先再拼回剩余部分。
- * 只做字符串比较（resolve）会在软链上误判：macOS 的 /var 是到 /private/var 的软链，
- * workdir 与文件路径可能一个走软链、一个走真实路径，目录内文件会被误判成越界
- * （CI #491：macOS 上 nyra workflow run 退出码 1）。realpathSync 在不存在的
- * 路径上抛错，所以不存在时往上找已存在的祖先——读侧“文件不存在”仍由调用方
- * 按 existsSync 判断，不能在这里抛错。 */
+ * 只用于越界比较，不用于改写返回给调用方的路径：只做字符串比较（resolve）会在软链上
+ * 误判（macOS 的 /var 是到 /private/var 的软链，workdir 与文件路径可能一个走软链、
+ * 一个走真实路径，目录内文件会被误判成越界，CI #491）；但返回值一旦改写成真实路径，
+ * 下游按字符串比较路径的部件（CheckpointStore、事件记录、resume recorder）就认不出
+ * 同一文件（CI #494）。realpathSync 在不存在的路径上抛错，所以不存在时往上找已存在
+ * 的祖先——读侧“文件不存在”仍由调用方按 existsSync 判断，不能在这里抛错。 */
 function canonicalizePath(p: string): string {
   const abs = resolve(p);
   let cur = abs;
@@ -572,7 +580,10 @@ export function resetDenyReadCache(): void {
 export function isDenyReadPath(ctx: ToolContext, absPath: string): string | null {
   const globs = denyReadGlobsFor(ctx.home);
   if (!globs.length) return null;
-  const root = canonicalizePath(ctx.workdir);
+  // 禁读清单按“被寻址的名字”匹配（相对路径与文件名），不用 realpath：
+  // 规范化会把软链指向的目标当成本体，一个名为 .env 的软链就绕过清单了。
+  // 调用方传进来的 absPath 与这里的 root 都是词法拼写，与修补前一致。
+  const root = resolve(ctx.workdir);
   const rel = (absPath.startsWith(root + sep) ? absPath.slice(root.length + 1) : absPath).replace(/\\/g, "/");
   for (const glob of globs) {
     if (matchPathGlob(glob, rel) || matchPathGlob(glob, rel.split("/").pop() ?? rel)) return glob;
@@ -585,13 +596,16 @@ export function workspaceReadPath(ctx: ToolContext, path: string): string {
   }
   if (ctx.backend) return resolveBackendPath(ctx, path);
   if (process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR === "1") return resolvePath(ctx, path);
-  const root = canonicalizePath(ctx.workdir);
+  const root = resolve(ctx.workdir);
   // 绝对路径按绝对算（resolvePath 同款），相对路径拼到工作目录下；再验是否在目录内。
-  // 两边都先过 realpath 规范化，否则软链两侧的同一目录会被误判成越界（CI #491）。
-  const target = canonicalizePath(path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
-    ? path
-    : join(root, path));
-  if (!(target === root || target.startsWith(root + sep))) {
+  // 越界比较时两边都过 realpath 规范化，否则软链两侧的同一目录会被误判成越界
+  // （CI #491）；但返回给调用方的是原始拼写，见 workspaceWritePath 的注释。
+  const target = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
+    ? resolve(path)
+    : resolve(join(root, path));
+  const canonRoot = canonicalizePath(root);
+  const canonTarget = canonicalizePath(target);
+  if (!(canonTarget === canonRoot || canonTarget.startsWith(canonRoot + sep))) {
     throw new ToolError(`只读工具只能访问工作目录内的路径：${path}（如需读取工作目录外的内容，请设 NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1）`);
   }
     // 读侧禁读清单：命中即拒，不把敏感内容送进模型上下文。
@@ -621,9 +635,11 @@ export function workspaceShellCwd(ctx: ToolContext, cwd?: string | null): string
     }
     return target;
   }
-  const root = canonicalizePath(ctx.workdir);
-  const target = canonicalizePath(join(root, cwd || "."));
-  if (!(target === root || target.startsWith(root + sep))) {
+  const root = resolve(ctx.workdir);
+  const target = resolve(join(root, cwd || "."));
+  const canonRoot = canonicalizePath(root);
+  const canonTarget = canonicalizePath(target);
+  if (!(canonTarget === canonRoot || canonTarget.startsWith(canonRoot + sep))) {
     throw new ToolError("禁止在工作目录之外启动 shell");
   }
   if (!existsSync(target) || !statSync(target).isDirectory()) {
