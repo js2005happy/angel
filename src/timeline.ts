@@ -411,6 +411,47 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `交接给对端 ${peer}（${status}）`, peerRun ? `对端运行 ${peerRun}` : null, status === "accepted", null);
         break;
       }
+      case "friend_requested": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `发好友请求给 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_request_received": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `收到 ${peer} 的好友请求`, null, null, null);
+        break;
+      }
+      case "friend_accepted": {
+        const peer = str(ev.peer) ?? "未知对端";
+        const circle = str(ev.circle) ?? "default";
+        const tier = str(ev.tier) ?? "readonly";
+        push(at, "event", `批准 ${peer} 为好友（${circle} 圈 · ${tier === "readonly" ? "只读" : "可提议修改"}）`, null, null, null);
+        break;
+      }
+      case "friend_declined": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `拒绝 ${peer} 的好友请求`, null, null, null);
+        break;
+      }
+      case "friend_blocked": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `拉黑好友 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_unblocked": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `取消拉黑 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_removed": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `删除好友 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_code_regenerated": {
+        push(at, "event", "好友码已重生成", null, null, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

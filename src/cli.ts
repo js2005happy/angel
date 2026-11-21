@@ -109,6 +109,7 @@ import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from ".
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
 import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
+import { handlePeerFriends, PEER_FRIEND_COMMANDS } from "./peerCard.ts";
 import { reviewBusinessAction, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
 import { handleVoiceCall } from "./voiceCall.ts";
@@ -180,7 +181,7 @@ nyra shopify <auth|status|products|product|orders|order|inventory>   Shopify 原
 nyra slack <auth|status|channels|history|send|card>   Slack 原生连接器：读频道 / 消息、发消息（须显式批准）、发审批卡（详见 docs/connectors.md）
 nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
-nyra peer <status|enable|disable|list|auth|ask|handoff>   对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭，详见 docs/peer.md）
+nyra peer <status|enable|disable|list|auth|ask|handoff|card|code|add|request|accept|friends|block|circle|share>   对端协作：问别的 Nyra 实例、交接运行上下文、名片加好友（默认关闭，详见 docs/peer.md）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
 nyra video <call|signal|ice>   视频通话 + 按需视觉采样：信令 + TURN + ICE 直连传输，帧按需看（本地优先，云端默认关；详见 docs/video-call.md）
@@ -286,7 +287,7 @@ nyra shopify <auth|status|products|product|orders|order|inventory>   native Shop
 nyra slack <auth|status|channels|history|send|card>   native Slack connector: read channels / messages, send messages (explicit approval required), post approval cards (see docs/connectors.md)
 nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
-nyra peer <status|enable|disable|list|auth|ask|handoff>   peer collaboration: ask another Nyra instance, hand off run context (off by default, see docs/peer.md)
+nyra peer <status|enable|disable|list|auth|ask|handoff|card|code|add|request|accept|friends|block|circle|share>   peer collaboration: ask another Nyra instance, hand off run context, agent card and friends (off by default, see docs/peer.md)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
 nyra video <call|signal|ice>   video call + on-demand frame sampling: signaling + TURN + ICE direct transport, frames seen on demand (local first, cloud off by default; see docs/video-call.md)
@@ -5445,7 +5446,13 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "verifier") return handleVerifier(args.subArgs ?? [], home);
   if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);
-  if (args.subcommand === "peer") return handlePeer(args.subArgs ?? [], home);
+  if (args.subcommand === "peer") {
+    const sub = args.subArgs ?? [];
+    if (sub[0] && (PEER_FRIEND_COMMANDS as readonly string[]).includes(sub[0])) {
+      return handlePeerFriends(sub, home);
+    }
+    return handlePeer(sub, home);
+  }
   if (args.subcommand === "voice") {
     const sub = args.subArgs ?? [];
     if (sub[0] === "call") return handleVoiceCall(sub.slice(1), home);

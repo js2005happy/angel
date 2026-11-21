@@ -2232,7 +2232,7 @@ export interface VideoCallCliInput {
 
 function videoUsageError(msg: string): number {
   process.stderr.write(`${msg}\n`);
-  process.stderr.write("用法：nyra video call <start [--peer <名字>] [--agent <id>] [--yes] [--loopback]|answer <通话 id>|decline <通话 id>|end <通话 id>|status [通话 id]|list|connect <通话 id> --role caller|callee|sample <通话 id> <图片> [--mode on-demand|change|timed] [--prompt \"<文字>\"] [--send]|confirm <通话 id> <帧 id>|consent-record <通话 id> --yes|summary <通话 id>>\n");
+  process.stderr.write("用法：nyra video call <start [--peer <名字>|--friend <好友名>] [--agent <id>] [--yes] [--loopback]|answer <通话 id>|decline <通话 id>|end <通话 id>|status [通话 id]|list|connect <通话 id> --role caller|callee|sample <通话 id> <图片> [--mode on-demand|change|timed] [--prompt \"<文字>\"] [--send]|confirm <通话 id> <帧 id>|consent-record <通话 id> --yes|summary <通话 id>>\n");
   process.stderr.write("信令：nyra video signal <serve [--port 18789] [--host 127.0.0.1]|status>\n");
   process.stderr.write("诊断：nyra video ice gather [--stun <url>] [--turn <url>]\n");
   return 2;
@@ -2286,9 +2286,23 @@ export async function handleVideoCall(argv: string[], home: string, input?: Vide
       return 0;
     }
     if (cmd === "start") {
+      // 缺口 38：--friend 按好友账本解析（须是已批准、未拉黑的好友）；
+      // --peer 保持原样（任意名字 + --yes），不破坏既有行为。
+      const friendName = flag("--friend");
+      let peer = flag("--peer");
+      if (friendName) {
+        if (peer) return videoUsageError("用法：--peer 与 --friend 只能二选一");
+        try {
+          const { resolveFriendForCall } = await import("./peerCard.ts");
+          const friend = resolveFriendForCall(home, friendName);
+          peer = friend.name;
+        } catch (e) {
+          return videoUsageError(e instanceof Error ? e.message : String(e));
+        }
+      }
       const call = startVideoCall(home, {
         agent: flag("--agent") ?? undefined,
-        peer: flag("--peer"),
+        peer,
         loopback: has("--loopback"),
         signalingUrl: videoCfg.signalingUrl,
         yes: has("--yes"),

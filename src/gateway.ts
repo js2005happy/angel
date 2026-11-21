@@ -1652,6 +1652,16 @@ export class Gateway {
     if (method === "OPTIONS") { this.sendError(res, 403, "不支持跨域请求"); return; }
     if (method === "GET" && path === "/api/health") { this.sendJson(res, 200, { ok: true, version: VERSION }); return; }
 
+    // 缺口 38：Agent 名片——GET /.well-known/agent-card.json（公开：名片本身
+    // 就是公开信息，不含密钥与内部状态）。默认不发布：关闭时当不存在（404），
+    // 不泄露端点；peer_card.publish 开后才回名片 JSON。
+    if (method === "GET" && path === "/.well-known/agent-card.json") {
+      const { peerCardConfig, buildAgentCard } = await import("./peerCard.ts");
+      if (!peerCardConfig(this.config).publish) { this.sendError(res, 404, "未找到"); return; }
+      this.sendJson(res, 200, buildAgentCard(this.home, this.config) as unknown as Record<string, unknown>);
+      return;
+    }
+
     // 缺口 17：对外 MCP 服务（Streamable HTTP，JSON-RPC）——POST /mcp。
     // 默认关闭：关闭时当不存在（404），不泄露端点；开启后走通用 token 鉴权
     //（owner 或设备 token，与 /api/* 同款 apiAuth），鉴权失败记一行审计。

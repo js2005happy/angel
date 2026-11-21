@@ -202,6 +202,16 @@ vision_input: ["count", "hashes", "model", "kinds"],
 // 问题原文、答复原文与交接包内容。
 peer_asked: ["peer", "question_hash", "ok"],
 peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
+// 缺口 38：名片加好友进证据链——发请求 / 收请求 / 批准 / 拒绝 / 拉黑 /
+// 取消拉黑 / 删除 / 好友码重生成。只记对端名、名片指纹与码指纹，不记码本身。
+friend_requested: ["peer", "card_hash", "code_hash", "ok"],
+friend_request_received: ["peer", "card_hash", "code_hash"],
+friend_accepted: ["peer", "circle", "tier"],
+friend_declined: ["peer"],
+friend_blocked: ["peer"],
+friend_unblocked: ["peer"],
+friend_removed: ["peer"],
+friend_code_regenerated: ["code_hash"],
 // 缺口 51：业务动作硬红线进证据链——改表（哪个连接器、哪个动作、从哪档到
 // 哪档、原因指纹）与拦截（哪个连接器、哪个动作、哪档、哪个工具）。只记
 // 元数据与 SHA-256 前 12 位指纹，不记原因原文、不记业务内容。
