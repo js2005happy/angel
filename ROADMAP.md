@@ -1,5 +1,13 @@
 ## 2026-11-21 — P0 Node claim close 异常资源清理（仅静态）
 
+## 2026-11-21 — P0 claim 异常路径单次关闭（静态检查，待测试）
+
+- **仓库事实**：实验性 `scripts/node_tool_claim.ts` 在写入/文件 fsync 失败时，catch 先关闭 `directoryFd`，finally 又尝试关闭同一目录 fd；文件关闭失败时还可能重复关闭。重复关闭可能抛出额外异常并遮蔽原本的 unknown 结果，且在 fd 编号复用时存在误关风险。本轮改为先标记失败、始终尝试关闭 claim 文件，仅在失败路径关闭目录一次；成功路径仍保持目录 fd 到目录 fsync 和名称复核完成。未接入运行时。
+- **外部事实**：[Codex #62853](https://github.com/openai/codex/issues/62853)，2026-11-20，用户报告执行环境断开后无可验证交付；[Codex #60104](https://github.com/openai/codex/issues/60104)，2026-11-07，用户报告长任务重复返工。二者为公开用户个案，非 Angel 故障复现或发生频率统计。**工程推断**：异常路径应保持 unknown、拒绝自动重放并尽可能可靠释放资源。
+- **候选优先级（价值／难度／安全风险／依赖）**：本项 P0 高／低／低／Node fs（已提交，待测试）；P0 procfs 挂载竞态及异常路径审查 高／高／高／Linux mount namespace；P0 Windows reparse 句柄保护 高／高／高／Windows 原生 API；P0 claim 接入真实工具派发 高／高／高／可信持久状态和审批；P1 MCP 动态工具目录检测 中高／中／中／MCP；P1 可信副作用回执 高／高／高／外部适配器。
+- **限制**：没有运行测试、编译、故障注入或 CI；文件关闭/目录关闭失败仍可能意味着 unknown；本次不是 exactly-once 保障。
+
+
 - **仓库事实**：Linux 实验性 claim 在文件写入后通过 `finally { closeSync(fd) }` 关闭文件；若 close 抛错，后续目录 fsync 前会退出并遗留打开的 directoryFd。本轮在该异常分支尝试关闭目录 fd 并统一抛 `ClaimUnavailable`，正常路径仍保留目录 fd 至同步结束。未接入实际 Node 派发。
 - **外部反馈（事实）**：[Codex #62853](https://github.com/openai/codex/issues/62853)（2026-11-20）报告执行环境断线与交付状态不确定；[Codex #60104](https://github.com/openai/codex/issues/60104)（2026-11-07）报告重复返工和额度浪费。外部个案，不是 Angel 故障或频率统计。**工程推断**：异常路径应释放资源并维持 unknown，不得自动重放。
 - **候选排序（价值／难度／风险／依赖）**：本项 P0 中／低／低／无（已提交待测试）；P0 procfs 挂载竞态 高／高／高／Linux namespace；P0 Windows reparse 句柄保护 高／高／高／Windows API；P0 claim 真实派发集成 高／高／高／安全存储与审批；P1 MCP 目录变化 中高／中／中／MCP；P1 可信外部副作用回执 高／高／高／适配器。
