@@ -1,3 +1,10 @@
+## 2026-11-21 — Static-only security gate; no code change
+
+- Inspected development-branch README.md, DESIGN.md, CHANGELOG.md, VERIFICATION.md, ROADMAP.md and `scripts/node_tool_claim.ts`; checked open Issues/PR (none returned), prior commit `221674e60184416eae356b4c09ff4d272dac1c3e`, and its combined statuses/PR workflow runs (both empty, not a CI pass).
+- No safe claim-runtime increment was established: Linux privileged mount races and Windows native reparse protection need an explicit platform threat model; claim remains unintegrated, so adding another preflight cannot establish exactly-once execution.
+- External research: [Codex #61872](https://github.com/openai/codex/issues/61872), report covering 2026-11-15 to 2026-11-16, describes failure to converge on actual UI delivery despite extensive intermediate checks. External anecdote, not Angel reproduction.
+- **Not executed:** tests, compilation, scripts, fault injection, CI, deployments. No runtime behavior verified.
+
 ## 2026-11-21 — Experimental claim descriptor inheritance (static review only)
 
 - Inspected README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP and `scripts/node_tool_claim.ts`; checked recent repository commits and open Issues/PR. `js2005happy/angel` resolves to `js2005happy/nyra`. Latest retrieved commit `6eb75dc` (2026-11-21 07:45 UTC) concerns team-charter documentation, not this change.
