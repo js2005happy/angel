@@ -26,6 +26,7 @@ class AcceptanceProvenanceTests(unittest.TestCase):
         self.assertEqual(result["requirements"][0]["reported_target_contexts"], [{
             "revision": "commit-abc", "environment": "staging Chrome",
             "reference": "manual-acceptance-1", "matches_expected": True,
+            "reference_recognized": True,
         }])
 
     def test_wrong_revision_or_environment_remains_incomplete(self):
@@ -52,6 +53,30 @@ class AcceptanceProvenanceTests(unittest.TestCase):
                        {"expected_revision": "abc", "expected_environment": 5}):
             with self.subTest(kwargs=kwargs), self.assertRaises(AcceptanceError):
                 assess_acceptance(["checkout"], {}, **kwargs)
+
+    def test_unrecognized_target_reference_stays_incomplete(self):
+        entry = {"level": "target_verified", "reference": "untrusted-report",
+                 "revision": "abc", "environment": "staging"}
+        result = assess_acceptance(["checkout"], {"checkout": [entry]},
+                                   recognized_references=["trusted-report"])
+        self.assertFalse(result["reported_complete"])
+        self.assertEqual(result["incomplete"], ["checkout"])
+        self.assertFalse(result["requirements"][0]["reported_target_contexts"][0]["reference_recognized"])
+        self.assertFalse(result["independently_verified"])
+
+    def test_recognized_reference_remains_self_reported(self):
+        entry = {"level": "target_verified", "reference": "trusted-report",
+                 "revision": "abc", "environment": "staging"}
+        result = assess_acceptance(["checkout"], {"checkout": [entry]},
+                                   recognized_references=["trusted-report"])
+        self.assertTrue(result["reported_complete"])
+        self.assertFalse(result["independently_verified"])
+        self.assertFalse(result["safe_to_auto_resume"])
+
+    def test_invalid_recognized_reference_lists_rejected(self):
+        for refs in ("trusted-report", ["ok", "ok"], [123], [" "], ["x" * 501]):
+            with self.subTest(refs=refs), self.assertRaises(AcceptanceError):
+                assess_acceptance(["checkout"], {}, recognized_references=refs)
 
     def test_lower_levels_remain_backward_compatible(self):
         result = assess_acceptance(["checkout"], {"checkout": [
