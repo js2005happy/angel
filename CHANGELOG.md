@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 acceptance provenance context
+
+- Strengthened the opt-in, read-only acceptance classifier: self-reported `target_verified` entries now require bounded, nonblank tested `revision` and `environment` descriptions; returned summaries retain that context. These values are untrusted claims, not independent proof. Lower evidence levels remain compatible.
+- Added static regression cases (not executed). No runtime integration, new dependency, approval change, automatic replay, CI run, or release.
+
 ## Unreleased — 2026-11-21 read-only acceptance evidence classifier
 
 - Added `angel/acceptance_evidence.py`, a side-effect-free, stdlib-only assessment of supplied requirement evidence. Distinguishes changed, static-reviewed, tests-passed and reported target-verified levels, retaining explicit incomplete requirements. Never claims independent verification or safe automatic resume.
