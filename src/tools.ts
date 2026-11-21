@@ -5,10 +5,10 @@
 import { createHash } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, realpathSync,
   statSync, writeFileSync,
 } from "node:fs";
-import { join, resolve, relative, dirname, sep, posix } from "node:path";
+import { basename, join, resolve, relative, dirname, sep, posix } from "node:path";
 import { appendMemory, searchMemoryEntries, formatMemorySearchResults, previewMemoryDelete, deleteMemoryEntries, listMemoryEntries, memoryOwnerForPath, MemoryDeleteError } from "./memory.ts";
 import { askApproval } from "./approvalUi.ts";
 import { saveSkillFile, loadSkills, readSkillBody, type Skill } from "./skills.ts";
@@ -500,13 +500,13 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
     assertWritableProtected(posix.relative(base, target));
     return target;
   }
-  const root = resolve(ctx.workdir);
-  const target = resolve(join(root, path));
+  const root = canonicalizePath(ctx.workdir);
+  const target = canonicalizePath(join(root, path));
   if (target === root || !(target === root || target.startsWith(root + sep))) {
     // --add-dir：显式加进来的额外可写根同样允许；其余工作目录外的路径一律拒绝。
     const extra = ctx.extraWriteDirs ?? [];
     const under = extra.find((dir) => {
-      const r = resolve(dir);
+      const r = canonicalizePath(dir);
       return target === r || target.startsWith(r + sep);
     });
     if (!under) throw new ToolError("禁止写入工作目录之外的路径（如需写入其他目录，用 --add-dir 显式放开）");
@@ -514,6 +514,28 @@ export function workspaceWritePath(ctx: ToolContext, path: string): string {
   }
   assertWritableProtected(relative(root, target));
   return target;
+}
+
+/** 路径规范化到真实路径：存在时 realpath；不存在时 realpath 最近已存在的祖先再拼回剩余部分。
+ * 只做字符串比较（resolve）会在软链上误判：macOS 的 /var 是到 /private/var 的软链，
+ * workdir 与文件路径可能一个走软链、一个走真实路径，目录内文件会被误判成越界
+ * （CI #491：macOS 上 nyra workflow run 退出码 1）。realpathSync 在不存在的
+ * 路径上抛错，所以不存在时往上找已存在的祖先——读侧“文件不存在”仍由调用方
+ * 按 existsSync 判断，不能在这里抛错。 */
+function canonicalizePath(p: string): string {
+  const abs = resolve(p);
+  let cur = abs;
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      return suffix.length ? join(realpathSync(cur), ...suffix) : realpathSync(cur);
+    } catch {
+      const parent = dirname(cur);
+      if (parent === cur) return abs;
+      suffix.unshift(basename(cur));
+      cur = parent;
+    }
+  }
 }
 
 // 只读工具的工作目录限制（审查报告第 6 项）：与 workspaceWritePath 同款，
@@ -550,7 +572,7 @@ export function resetDenyReadCache(): void {
 export function isDenyReadPath(ctx: ToolContext, absPath: string): string | null {
   const globs = denyReadGlobsFor(ctx.home);
   if (!globs.length) return null;
-  const root = resolve(ctx.workdir);
+  const root = canonicalizePath(ctx.workdir);
   const rel = (absPath.startsWith(root + sep) ? absPath.slice(root.length + 1) : absPath).replace(/\\/g, "/");
   for (const glob of globs) {
     if (matchPathGlob(glob, rel) || matchPathGlob(glob, rel.split("/").pop() ?? rel)) return glob;
@@ -563,11 +585,12 @@ export function workspaceReadPath(ctx: ToolContext, path: string): string {
   }
   if (ctx.backend) return resolveBackendPath(ctx, path);
   if (process.env.NYRA_ALLOW_READ_OUTSIDE_WORKDIR === "1") return resolvePath(ctx, path);
-  const root = resolve(ctx.workdir);
+  const root = canonicalizePath(ctx.workdir);
   // 绝对路径按绝对算（resolvePath 同款），相对路径拼到工作目录下；再验是否在目录内。
-  const target = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
-    ? resolve(path)
-    : resolve(join(root, path));
+  // 两边都先过 realpath 规范化，否则软链两侧的同一目录会被误判成越界（CI #491）。
+  const target = canonicalizePath(path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
+    ? path
+    : join(root, path));
   if (!(target === root || target.startsWith(root + sep))) {
     throw new ToolError(`只读工具只能访问工作目录内的路径：${path}（如需读取工作目录外的内容，请设 NYRA_ALLOW_READ_OUTSIDE_WORKDIR=1）`);
   }
@@ -598,8 +621,8 @@ export function workspaceShellCwd(ctx: ToolContext, cwd?: string | null): string
     }
     return target;
   }
-  const root = resolve(ctx.workdir);
-  const target = resolve(join(root, cwd || "."));
+  const root = canonicalizePath(ctx.workdir);
+  const target = canonicalizePath(join(root, cwd || "."));
   if (!(target === root || target.startsWith(root + sep))) {
     throw new ToolError("禁止在工作目录之外启动 shell");
   }

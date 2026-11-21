@@ -281,7 +281,36 @@ function parseYamlScalar(raw: string, where: string): unknown {
     const q = s[0];
     const inner = s.slice(1, -1);
     if (q === "'") return inner.replace(/''/g, "'");
-    return inner.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    // 单遍反转义：一个正则一次扫过，按“反斜杠 + 下一字符”整体替换。
+    // 顺序 replace 链是错的——先处理 \\n/\\t 会把“转义反斜杠 + 字母 n/t”
+    //（如 Windows 路径 C:\\nyra-... 里的 \\n）误读成换行/制表符，路径被
+    // 改写，Windows 上整轮 run 失败（CI #491：Windows 4 败）。单遍扫描时
+    // \\ 只吃掉两个反斜杠，后面的字母保持原样。
+    // 覆盖 JSON.stringify 会产出的转义（\\ \" \n \r \t \b \f \uXXXX）与
+    // YAML 双引号常见转义；不认识的转义原样保留（与旧实现同款宽容）。
+    return inner.replace(/\\(?:([\\"\/bfnrt0aev ])|u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2}))/g, (m, simple: string | undefined, u: string | undefined, x: string | undefined) => {
+      if (simple !== undefined) {
+        switch (simple) {
+          case "0": return "\0";
+          case "a": return "\x07";
+          case "b": return "\b";
+          case "f": return "\f";
+          case "n": return "\n";
+          case "r": return "\r";
+          case "t": return "\t";
+          case "v": return "\v";
+          case "e": return "\x1b";
+          case " ": return " ";
+          case "\\": return "\\";
+          case '"': return '"';
+          case "/": return "/";
+          default: return m;
+        }
+      }
+      if (u !== undefined) return String.fromCodePoint(parseInt(u, 16));
+      if (x !== undefined) return String.fromCodePoint(parseInt(x, 16));
+      return m;
+    });
   }
   // 模板占位符 {{...}} 是纯量，不是 flow 风格（DSL 里满地都是 unquoted 的 {{inputs.x}}）。
   if (s.startsWith("{") && !s.startsWith("{{")) {
