@@ -164,6 +164,10 @@ export function claimOperation(directory: string, operationId: string): Operatio
       }
     }
   } catch { throw new ClaimUnavailable(); }
-  finally { closeSync(directoryFd); }
+  finally {
+    // A failed close means durability/ownership is uncertain. Never leak a
+    // raw filesystem error or report a successful reservation in that case.
+    try { closeSync(directoryFd); } catch { throw new ClaimUnavailable(); }
+  }
   return { operationId, claimId, state: "unknown" };
 }
