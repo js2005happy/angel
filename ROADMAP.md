@@ -1,3 +1,10 @@
+## 2026-11-22 — Conflicting target context for one receipt (static-only)
+
+- **External report (fact):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16 and reviewed 2026-11-22, describes unsupported completion claims for untested deployed/device environments. [Codex #42080](https://github.com/openai/codex/issues/42080), reviewed 2026-11-22, describes stale/proxy evidence. These are external reports, not Angel reproductions or measured prevalence.
+- **Engineering inference:** a single receipt claimed for two different revision/environment pairs cannot safely be cherry-picked to satisfy acceptance. The assessor now marks both contexts conflicting and excludes that receipt; a separate nonconflicting eligible receipt may still count as *reported* complete. Caller claims are not independently verified.
+- **Priority (value / difficulty / safety risk / dependency):** P1 conflicting-context rejection high / low / low / existing read-only assessor (**implemented; tests not run**); P1 independent provenance adapter high / medium / medium / trusted CI/target authority (open); P1 durable task contract high / medium / medium / privacy design (open); P1 no-progress detector medium-high / medium / medium / reliable events (open); P0 claim dispatch high / high / high / trusted storage and approvals (blocked); P0 Linux/Windows native storage defenses high / high / high / platform validation (blocked).
+- **Scope:** one read-only classifier behavior, two regression cases, no runtime integration, network, filesystem, automatic replay, third-party dependency, merge, or release. Static review only.
+
 ## 2026-11-21 — Shared target receipt ambiguity (static-only)
 
 - **External report (fact):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, describes unsupported completion claims and overlapping task ownership; reviewed 2026-11-21. This is one external report, not an Angel reproduction or frequency estimate.
