@@ -1,3 +1,8 @@
+## 2026-11-22 — Issuer-bound offline receipt verifier (unreleased, static-only)
+
+- Added `angel/acceptance_issuer.py` with a separate HMAC domain and signed issuer/key-id fields, exact requirement/reference/revision/environment matching, and an externally supplied trusted key registry. Unknown or removed key IDs fail closed; existing v1 verifier unchanged.
+- Added unexecuted regression definitions. No trusted registry provisioning, revocation persistence, replay prevention, proof of test execution, runtime wiring, CI, merge or release.
+
 ## 2026-11-22 — Offline receipt reference pinning (unreleased, static-only)
 
 - Added optional `expected_reference` to `verify_receipt`: callers may pin a receipt to an independently selected artifact identifier; mismatch returns false and malformed expectations fail closed. Existing callers remain compatible.
