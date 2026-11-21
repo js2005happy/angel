@@ -21,12 +21,15 @@ _FIELDS = ("requirement", "reference", "revision", "environment")
 
 def verify_receipt(receipt: Mapping[str, object], *, secret: bytes,
                    expected_requirement: str, expected_revision: str,
-                   expected_environment: str) -> bool:
+                   expected_environment: str,
+                   expected_reference: str | None = None) -> bool:
     """Check an exact-context, HMAC-SHA256 receipt without side effects.
 
     The caller MUST obtain secret through a trusted channel inaccessible to
     the agent/model and must establish the issuer's authority independently.
-    False means no acceptance credit. Never log the secret or raw receipt.
+    False means no acceptance credit. An optional expected_reference pins the
+    attestation to the independently selected evidence artifact identifier.
+    Never log the secret or raw receipt.
     """
     if not isinstance(secret, bytes) or len(secret) < 32:
         raise ReceiptError("trusted secret must contain at least 32 bytes")
@@ -39,6 +42,10 @@ def verify_receipt(receipt: Mapping[str, object], *, secret: bytes,
     for value in (expected_requirement, expected_revision, expected_environment):
         if not isinstance(value, str) or not value.strip() or len(value) > 500:
             raise ReceiptError("invalid expected context")
+    if expected_reference is not None and (
+            not isinstance(expected_reference, str) or not expected_reference.strip()
+            or len(expected_reference) > 500):
+        raise ReceiptError("invalid expected reference")
     mac = receipt["mac"]
     if (not isinstance(mac, str) or len(mac) != 64
             or any(char not in "0123456789abcdef" for char in mac)):
@@ -51,4 +58,6 @@ def verify_receipt(receipt: Mapping[str, object], *, secret: bytes,
     return (hmac.compare_digest(mac, expected_mac)
             and payload["requirement"] == expected_requirement
             and payload["revision"] == expected_revision
-            and payload["environment"] == expected_environment)
+            and payload["environment"] == expected_environment
+            and (expected_reference is None
+                 or payload["reference"] == expected_reference))
