@@ -3,7 +3,12 @@
 // 为什么用脚本生成而不是手写：手写文档必然腐化——代码里加了键，文档半年不动。
 // 这里让文档只有一个来源（configExplain.ts），并用测试保证两者一致。
 //
-// 用法：node --experimental-strip-types scripts/gen-config-map.ts > docs/CONFIG-MAP.md
+// 用法：bun scripts/gen-config-map.ts > docs/CONFIG-MAP.md
+//
+// 注意：必须用 bun 跑，不能用 node --experimental-strip-types——configExplain
+// 经 reconciler → kanban/resume → tasks → tools 传进来一个 Bun 文本 import
+//（src/bughunt.ts 的 `with { type: "text" }`），node 载到 .md 就抛
+// ERR_UNKNOWN_FILE_EXTENSION（Pi Bot 第 3 条，2026-11-22 实证）。
 import { explainAll } from "../src/configExplain.ts";
 
 const items = explainAll({ config: {} });
