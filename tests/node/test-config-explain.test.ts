@@ -7,7 +7,7 @@ const CAPABILITIES = [
   "tool_search", "run_recall", "cost_cap", "aux_model_routing",
   "plan_act_model_routing",
   "reasoning_effort", "extra_writable_dirs", "deny_read_globs", "sandbox",
-  "nested_delegate", "trust_ladder", "reconciler",
+  "nested_delegate", "trust_ladder", "reconciler", "watch",
 ];
 
 test("列出全部能力（顺序固定，便于文档引用）", () => {
