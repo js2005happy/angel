@@ -28,7 +28,10 @@ function checkPrivateDirectory(directory: string): void {
   // by this path-based lstat preflight. Disable claims rather than accept a
   // potentially redirected storage location until handle-based checks exist.
   if (process.platform === "win32") throw new ClaimUnavailable();
-  if (!isAbsolute(directory)) throw new ClaimUnavailable();
+  // Reject lexical aliases before opening the caller-supplied path: resolve()
+  // removes dot segments and trailing separators, while the kernel traverses
+  // the original spelling. A symlink followed by /.. can bypass ancestor checks.
+  if (!isAbsolute(directory) || directory !== resolve(directory)) throw new ClaimUnavailable();
   let current = resolve(directory);
   const leaf = current;
   for (;;) {
