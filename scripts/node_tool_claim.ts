@@ -54,6 +54,7 @@ function checkPrivateDirectory(directory: string): void {
 export function claimOperation(directory: string, operationId: string): OperationClaim {
   // Validate the runtime type before RegExp.test: JavaScript coerces numbers,
   // arrays and objects to strings, which could alias another operation ID.
+  if (typeof directory !== "string" || directory.length === 0 || directory.includes("\0")) throw new ClaimUnavailable();
   if (typeof operationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) throw new ClaimUnavailable();
   // Caller must provision a private, stable parent. Do not create ancestors.
   checkPrivateDirectory(directory);
