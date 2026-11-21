@@ -1,3 +1,7 @@
+
+## 2026-11-21 — Linux claim final procfs descriptor revalidation
+
+Static-only review: added a post-directory-fsync `statfsSync("/proc/self/fd")` procfs magic check and `statSync("/proc/self/fd/<directoryFd>")` identity comparison (type/dev/ino/uid) before the final claim filename check. Existing catch converts failures to ClaimUnavailable and closes the directory fd; no automatic claim removal/replay. Not executed: tests, compilation, CI, fault injection. Residual risk: privileged mount changes after verification, non-atomic filesystem durability, Windows disabled, no real Node dispatch integration.
 ## 2026-11-21 — procfs fd 身份校验（仅静态）
 
 - 已核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim、Python Agent/Tools，近期提交与开放 Issues/PR。近期仓库提交 [410cf32](https://github.com/js2005happy/nyra/commit/410cf32c4f869e0c8b074cfcf0b225b0e49af387) 为 peer-card 文档，与本次独立增量不重复。
