@@ -760,15 +760,18 @@ export class BotRunner {
     };
     // 角色路由（Phase 2）：画像跟着发信人走，guest 默认只读。
     const profile = profileForRole(resolveRole(msg, this.policy), this.policy, msg.chatId);
+    // 群聊 @ 过滤（mentionOnly 默认开；私聊不受影响）——缺口 42 第三批：
+    // 这道门对确定性指令同样适用（docs/bot.md 一直这么写，之前代码把指令
+    // 放在门前是漏的：/new、/stop 没做角色限制，群里任何人不用 @ 就能清会
+    // 话、停任务）。审批按钮回调不受影响（Telegram 回调统一置 isMentioned）。
+    if ((msg.chatType === "group" || msg.chatType === "supergroup") && this.policy.mentionOnly && !msg.isMentioned) {
+      audit("ignored:not-mentioned");
+      return;
+    }
     // 确定性指令优先：不走模型、不扣 token、不计配额。
     const cmd = parseBotCommand(msg.text);
     if (cmd) {
       await this.handleCommand(msg, cmd.command, cmd.args, profile);
-      return;
-    }
-    // 群聊 @ 过滤（mentionOnly 默认开；私聊不受影响）。
-    if ((msg.chatType === "group" || msg.chatType === "supergroup") && this.policy.mentionOnly && !msg.isMentioned) {
-      audit("ignored:not-mentioned");
       return;
     }
     // 空消息（没正文也没附件）直接忽略。
