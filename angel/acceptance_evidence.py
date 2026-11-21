@@ -39,7 +39,7 @@ def assess_acceptance(
     When reference_scopes is supplied, target references must additionally
     be explicitly scoped to the current requirement. These scopes are caller
     assertions, not independently authenticated provenance.
-    Only target_verified can satisfy a requirement, and even that is a
+    A target receipt reused across requirements is ambiguous and cannot\n    satisfy either requirement, even without optional scopes.\n    Only target_verified can satisfy a requirement, and even that is a
     *reported* state, not independent verification by Angel.
     """
     if (expected_revision is None) != (expected_environment is None):
@@ -128,6 +128,24 @@ def assess_acceptance(
             "reported_target_contexts": target_contexts,
             "reported_target_verified": matching_target,
         })
+    # A target receipt reused across different requirements is ambiguous, even
+    # when the caller omitted optional reference scopes. Reject *all* affected
+    # requirements rather than trusting whichever entry was visited first.
+    target_owners = {}
+    for item in items:
+        for context in item["reported_target_contexts"]:
+            target_owners.setdefault(context["reference"], set()).add(item["requirement"])
+    shared = {ref for ref, owners in target_owners.items() if len(owners) > 1}
+    if shared:
+        for item in items:
+            for context in item["reported_target_contexts"]:
+                context["reference_shared"] = context["reference"] in shared
+            # Re-evaluate from individually eligible, non-shared receipts.
+            item["reported_target_verified"] = any(
+                context["matches_expected"] and context["reference_recognized"]
+                and context["reference_scope_matches"] and not context["reference_shared"]
+                for context in item["reported_target_contexts"]
+            )
     incomplete = [item["requirement"] for item in items if not item["reported_target_verified"]]
     return {
         "requirements": items,
