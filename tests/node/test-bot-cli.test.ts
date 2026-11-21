@@ -208,3 +208,58 @@ test("handleBot：discord status 未运行时正常退出 0", async () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("handleBot：slack 无 token 时 start 报错退出 1", async () => {
+  const home = tempHome("nyra-bot-cli11-");
+  try {
+    const prevApp = process.env.SLACK_APP_TOKEN;
+    const prevBot = process.env.SLACK_BOT_TOKEN;
+    delete process.env.SLACK_APP_TOKEN;
+    delete process.env.SLACK_BOT_TOKEN;
+    const logs: string[] = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const code = await handleBot(["slack", "start"], home);
+      expect(code).toBe(1);
+      expect(logs.join("")).toContain("token");
+    } finally {
+      process.stderr.write = origErr;
+      if (prevApp === undefined) delete process.env.SLACK_APP_TOKEN;
+      else process.env.SLACK_APP_TOKEN = prevApp;
+      if (prevBot === undefined) delete process.env.SLACK_BOT_TOKEN;
+      else process.env.SLACK_BOT_TOKEN = prevBot;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("handleBot：slack status 未运行时正常退出 0", async () => {
+  const home = tempHome("nyra-bot-cli12-");
+  try {
+    const prevApp = process.env.SLACK_APP_TOKEN;
+    const prevBot = process.env.SLACK_BOT_TOKEN;
+    delete process.env.SLACK_APP_TOKEN;
+    delete process.env.SLACK_BOT_TOKEN;
+    const logs: string[] = [];
+    const origOut = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: unknown) => { logs.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      const code = await handleBot(["slack", "status"], home);
+      expect(code).toBe(0);
+      const out = logs.join("");
+      expect(out).toContain("Slack Bot");
+      expect(out).toContain("未运行");
+      expect(out).toContain("未配置");
+    } finally {
+      process.stdout.write = origOut;
+      if (prevApp === undefined) delete process.env.SLACK_APP_TOKEN;
+      else process.env.SLACK_APP_TOKEN = prevApp;
+      if (prevBot === undefined) delete process.env.SLACK_BOT_TOKEN;
+      else process.env.SLACK_BOT_TOKEN = prevBot;
+    }
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

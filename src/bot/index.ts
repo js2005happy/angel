@@ -81,6 +81,7 @@ import { agentOptionsForProfile, isToolAllowed, profileForRole, resolveRole, typ
 import { SessionQueue } from "./sessionQueue.ts";
 import { TelegramAdapter } from "./channels/telegram.ts";
 import { DiscordAdapter } from "./channels/discord.ts";
+import { SlackAdapter } from "./channels/slack.ts";
 import {
   botPolicyFromConfig,
   memorySessionIdFor,
@@ -93,8 +94,11 @@ import {
 export const BOT_AUDIT_FILE = "bot-audit.jsonl";
 export const BOT_TELEGRAM_PID_FILE = "bot-telegram.pid";
 export const BOT_DISCORD_PID_FILE = "bot-discord.pid";
+export const BOT_SLACK_PID_FILE = "bot-slack.pid";
 export const TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN";
 export const DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN";
+export const SLACK_APP_TOKEN_ENV = "SLACK_APP_TOKEN";
+export const SLACK_BOT_TOKEN_ENV = "SLACK_BOT_TOKEN";
 /**
  * 密码箱/keys.json 里的条目名就是环境变量名（与 keystore 的口径一致：
  * `telegram-bot-token` 这种小写连字符名过不了 validEnvName，进不了
@@ -102,6 +106,8 @@ export const DISCORD_TOKEN_ENV = "DISCORD_BOT_TOKEN";
  */
 export const TELEGRAM_TOKEN_KEY = "TELEGRAM_BOT_TOKEN";
 export const DISCORD_TOKEN_KEY = "DISCORD_BOT_TOKEN";
+export const SLACK_APP_TOKEN_KEY = "SLACK_APP_TOKEN";
+export const SLACK_BOT_TOKEN_KEY = "SLACK_BOT_TOKEN";
 
 export interface AgentRunResult {
   text: string;
@@ -1007,12 +1013,38 @@ export function resolveDiscordToken(home: string): { token: string | null; sourc
   return { token: null, source: "missing" };
 }
 
-function pidPath(home: string, channel: "telegram" | "discord"): string {
-  const file = channel === "telegram" ? BOT_TELEGRAM_PID_FILE : BOT_DISCORD_PID_FILE;
+/** Slack 凭证解析：两个 token 各三来源（环境变量 → 密码箱 → 文件），同款口径。 */
+export function resolveSlackTokens(home: string): {
+  appToken: string | null;
+  botToken: string | null;
+  source: "env" | "vault" | "file" | "missing";
+} {
+  const appEnv = process.env[SLACK_APP_TOKEN_ENV];
+  const botEnv = process.env[SLACK_BOT_TOKEN_ENV];
+  // 两个 token 都从环境变量来才算 env 来源（缺一个降级到 vault/file 补）。
+  if (appEnv && appEnv.trim() && botEnv && botEnv.trim()) {
+    return { appToken: appEnv.trim(), botToken: botEnv.trim(), source: "env" };
+  }
+  const appVault = getCredential(SLACK_APP_TOKEN_KEY, home);
+  const botVault = getCredential(SLACK_BOT_TOKEN_KEY, home);
+  if (appVault && botVault) return { appToken: appVault, botToken: botVault, source: "vault" };
+  const appFile = getFileKey(SLACK_APP_TOKEN_KEY, home);
+  const botFile = getFileKey(SLACK_BOT_TOKEN_KEY, home);
+  if (appFile && botFile) return { appToken: appFile, botToken: botFile, source: "file" };
+  // 三来源都凑不齐两个 token：能拼一个算一个（start 会再判空拒绝）。
+  const app = appEnv?.trim() || appVault || appFile || null;
+  const bot = botEnv?.trim() || botVault || botFile || null;
+  return { appToken: app, botToken: bot, source: "missing" };
+}
+
+type BotChannelName = "telegram" | "discord" | "slack";
+
+function pidPath(home: string, channel: BotChannelName): string {
+  const file = channel === "telegram" ? BOT_TELEGRAM_PID_FILE : channel === "discord" ? BOT_DISCORD_PID_FILE : BOT_SLACK_PID_FILE;
   return join(resolveNyraHome(home), file);
 }
 
-function readPid(home: string, channel: "telegram" | "discord"): number | null {
+function readPid(home: string, channel: BotChannelName): number | null {
   try {
     const raw = readFileSync(pidPath(home, channel), "utf-8").trim();
     const pid = Number(raw);
@@ -1031,29 +1063,42 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-function writePid(home: string, channel: "telegram" | "discord"): void {
+function writePid(home: string, channel: BotChannelName): void {
   const dir = resolveNyraHome(home);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(pidPath(home, channel), `${process.pid}\n`, { encoding: "utf-8", mode: 0o600 });
 }
 
-function removePid(home: string, channel: "telegram" | "discord"): void {
+function removePid(home: string, channel: BotChannelName): void {
   try { rmSync(pidPath(home, channel), { force: true }); } catch { /* ignore */ }
 }
 
 // -- CLI：nyra bot telegram <start|stop|status> ----
 
-/** `nyra bot status`：渠道（Telegram/Discord 运行态 + token 配置）+ 电脑总览（数量、醒/休眠、已声明内存）。 */
+/** `nyra bot status`：渠道（Telegram/Discord/Slack 运行态 + token 配置）+ 电脑总览（数量、醒/休眠、已声明内存）。 */
 export function handleBotStatus(home: string): number {
   const resolvedHome = home || resolveHome();
   const config = loadConfig(resolvedHome);
-  for (const channel of ["telegram", "discord"] as const) {
-    const label = channel === "telegram" ? "Telegram" : "Discord";
-    const pid = readPid(resolvedHome, channel);
+  const channelMeta: { channel: BotChannelName; label: string; tokenDesc: string }[] = [
+    { channel: "telegram", label: "Telegram", tokenDesc: "" },
+    { channel: "discord", label: "Discord", tokenDesc: "" },
+    { channel: "slack", label: "Slack", tokenDesc: "" },
+  ];
+  for (const meta of channelMeta) {
+    const pid = readPid(resolvedHome, meta.channel);
     const alive = pid !== null && pidAlive(pid);
-    const resolveToken = channel === "telegram" ? resolveTelegramToken : resolveDiscordToken;
-    const token = resolveToken(resolvedHome);
-    process.stdout.write(`${label} Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}，Token：${token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : "未配置"}\n`);
+    let tokenLine: string;
+    if (meta.channel === "slack") {
+      const tokens = resolveSlackTokens(resolvedHome);
+      tokenLine = tokens.appToken && tokens.botToken
+        ? `已配置（${tokens.source}，${maskKey(tokens.appToken)} / ${maskKey(tokens.botToken)}）`
+        : "未配置（需 app token + bot token）";
+    } else {
+      const resolveToken = meta.channel === "telegram" ? resolveTelegramToken : resolveDiscordToken;
+      const token = resolveToken(resolvedHome);
+      tokenLine = token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : "未配置";
+    }
+    process.stdout.write(`${meta.label} Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}，Token：${tokenLine}\n`);
   }
   const summary = computerResourceSummary(resolvedHome);
   process.stdout.write(`电脑：${summary.computers} 台（醒着 ${summary.active}，休眠 ${summary.sleeping}），已声明内存 ${summary.declaredMemoryMb} MB / 上限 ${summary.memoryCapMb} MB（系统 ${summary.systemMemoryMb} MB 的 80%）\n`);
@@ -1087,22 +1132,21 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     return handleBotStatus(resolvedHome);
   }
   const action = argv[1];
-  if (channel !== "telegram" && channel !== "discord") {
-    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>\n       nyra bot status\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
+  if (channel !== "telegram" && channel !== "discord" && channel !== "slack") {
+    process.stdout.write("用法：nyra bot telegram <start|stop|status>\n       nyra bot discord <start|stop|status>\n       nyra bot slack <start|stop|status>\n       nyra bot computer <create|list|status|sleep|wake|remove|credential|shell|sleep-due>\n       nyra bot status\n       nyra bot redlines <status|list|show|tighten|loosen|set>\n");
     return 2;
   }
   if (!action) {
     process.stdout.write(`用法：nyra bot ${channel} <start|stop|status>\n`);
     return 2;
   }
-  const label = channel === "telegram" ? "Telegram" : "Discord";
-  const resolveToken = channel === "telegram" ? resolveTelegramToken : resolveDiscordToken;
-  const tokenEnv = channel === "telegram" ? TELEGRAM_TOKEN_ENV : DISCORD_TOKEN_ENV;
+  const label = channel === "telegram" ? "Telegram" : channel === "discord" ? "Discord" : "Slack";
+  const cn: BotChannelName = channel;
 
   if (action === "stop") {
-    const pid = readPid(resolvedHome, channel);
+    const pid = readPid(resolvedHome, cn);
     if (pid === null || !pidAlive(pid)) {
-      if (pid !== null) removePid(resolvedHome, channel);
+      if (pid !== null) removePid(resolvedHome, cn);
       process.stdout.write(`${label} Bot 未在运行。\n`);
       return 0;
     }
@@ -1112,14 +1156,13 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
       process.stderr.write(`停止失败：${err instanceof Error ? err.message : String(err)}\n`);
       return 1;
     }
-    removePid(resolvedHome, channel);
+    removePid(resolvedHome, cn);
     process.stdout.write(`已停止 ${label} Bot（pid ${pid}）。\n`);
     return 0;
   }
   if (action === "status") {
-    const pid = readPid(resolvedHome, channel);
+    const pid = readPid(resolvedHome, cn);
     const alive = pid !== null && pidAlive(pid);
-    const token = resolveToken(resolvedHome);
     const config = loadConfig(resolvedHome);
     const quota = new QuotaStore(resolvedHome);
     const dedup = new DedupStore(resolvedHome);
@@ -1128,7 +1171,15 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
       monthlySpent = new UsageLedger(resolvedHome).monthTotal(monthKeyString()).spentUsd;
     } catch { /* ignore */ }
     process.stdout.write(`${label} Bot：${alive ? `运行中（pid ${pid}）` : "未运行"}\n`);
-    process.stdout.write(`Token：${token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : `未配置（环境变量 ${tokenEnv}，或 nyra vault add ${tokenEnv}）`}\n`);
+    if (cn === "slack") {
+      const tokens = resolveSlackTokens(resolvedHome);
+      process.stdout.write(`Token：${tokens.appToken && tokens.botToken ? `已配置（${tokens.source}，${maskKey(tokens.appToken)} / ${maskKey(tokens.botToken)}）` : `未配置（需 app token ${SLACK_APP_TOKEN_ENV} + bot token ${SLACK_BOT_TOKEN_ENV}，或 nyra vault add 分别存）`}\n`);
+    } else {
+      const resolveToken = cn === "telegram" ? resolveTelegramToken : resolveDiscordToken;
+      const tokenEnv = cn === "telegram" ? TELEGRAM_TOKEN_ENV : DISCORD_TOKEN_ENV;
+      const token = resolveToken(resolvedHome);
+      process.stdout.write(`Token：${token.token ? `已配置（${token.source}，${maskKey(token.token)}）` : `未配置（环境变量 ${tokenEnv}，或 nyra vault add ${tokenEnv}）`}\n`);
+    }
     process.stdout.write(`今日 token 花费：${quota.dailySpentUsd() > 0 ? `$${quota.dailySpentUsd().toFixed(4)}` : "无"}\n`);
     process.stdout.write(`本月已花：${monthlySpent !== null ? `$${monthlySpent.toFixed(4)}` : "未知（未计价）"}\n`);
     process.stdout.write(`去重记录：${dedup.size()} 条\n`);
@@ -1136,36 +1187,49 @@ export async function handleBot(argv: string[], home: string): Promise<number> {
     return 0;
   }
   if (action === "start") {
-    const pid = readPid(resolvedHome, channel);
+    const pid = readPid(resolvedHome, cn);
     if (pid !== null && pidAlive(pid)) {
       process.stderr.write(`${label} Bot 已在运行（pid ${pid}），先 nyra bot ${channel} stop 再启动。\n`);
       return 1;
     }
-    if (pid !== null) removePid(resolvedHome, channel);
-    const token = resolveToken(resolvedHome);
-    if (!token.token) {
-      const hint = channel === "telegram"
-        ? "先在 @BotFather 建机器人"
-        : "先在 Discord 开发者门户（discord.com/developers）建应用 + Bot，并开启 Message Content Intent";
-      process.stderr.write(`未找到 ${label} Bot token：${hint}，再用环境变量 ${tokenEnv} 或 nyra vault add ${tokenEnv} 存 token（详见 docs/bot.md）。\n`);
-      return 1;
-    }
+    if (pid !== null) removePid(resolvedHome, cn);
     const config = loadConfig(resolvedHome);
-    const adapter = channel === "telegram"
-      ? new TelegramAdapter({ token: token.token })
-      : new DiscordAdapter({ token: token.token });
+    let adapter: ChannelAdapter;
+    if (cn === "slack") {
+      const tokens = resolveSlackTokens(resolvedHome);
+      if (!tokens.appToken || !tokens.botToken) {
+        const hint = "先在 Slack 后台（api.slack.com/apps）建 app，开 Socket Mode（拿 app-level token xapp-…）+ Bot User（拿 bot token xoxb-…）";
+        process.stderr.write(`未找到 ${label} token：${hint}，再用环境变量 ${SLACK_APP_TOKEN_ENV} 与 ${SLACK_BOT_TOKEN_ENV}（或 nyra vault add 分别存）存两个 token（详见 docs/bot.md）。\n`);
+        return 1;
+      }
+      adapter = new SlackAdapter({ appToken: tokens.appToken, botToken: tokens.botToken });
+    } else {
+      const resolveToken = cn === "telegram" ? resolveTelegramToken : resolveDiscordToken;
+      const tokenEnv = cn === "telegram" ? TELEGRAM_TOKEN_ENV : DISCORD_TOKEN_ENV;
+      const token = resolveToken(resolvedHome);
+      if (!token.token) {
+        const hint = cn === "telegram"
+          ? "先在 @BotFather 建机器人"
+          : "先在 Discord 开发者门户（discord.com/developers）建应用 + Bot，并开启 Message Content Intent";
+        process.stderr.write(`未找到 ${label} Bot token：${hint}，再用环境变量 ${tokenEnv} 或 nyra vault add ${tokenEnv} 存 token（详见 docs/bot.md）。\n`);
+        return 1;
+      }
+      adapter = cn === "telegram"
+        ? new TelegramAdapter({ token: token.token })
+        : new DiscordAdapter({ token: token.token });
+    }
     const runner = new BotRunner({ home: resolvedHome, workdir: process.cwd(), config, adapter });
-    writePid(resolvedHome, channel);
+    writePid(resolvedHome, cn);
     process.stdout.write(`${label} Bot 已启动（pid ${process.pid}，模型：${runner.modelName ?? "未配置"}，电脑：${runner.boundComputer ? `${runner.boundComputer.id}（${runner.boundComputer.name}）` : "未接"}）。Ctrl+C 停止，或 nyra bot ${channel} stop。\n`);
     const shutdown = (): void => {
       runner.stopPolling();
-      removePid(resolvedHome, channel);
+      removePid(resolvedHome, cn);
       process.exit(0);
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
     await runner.startPolling();
-    removePid(resolvedHome, channel);
+    removePid(resolvedHome, cn);
     return 0;
   }
   process.stdout.write(`用法：nyra bot ${channel} <start|stop|status>\n`);

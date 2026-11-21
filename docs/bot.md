@@ -1,4 +1,4 @@
-# Bot 方向：Telegram + Discord 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
+# Bot 方向：Telegram + Discord + Slack 渠道（Phase 1 骨架 + Phase 2 角色与审批 + Phase 3 推送与附件）
 
 用户 2026-11-20 给的双场景架构：场景 A（外部社群/客服/办公 IM Bot）
 与场景 B（个人/业务自动化监控与任务 Bot）复用同一套 Bot Core（会话
@@ -7,7 +7,8 @@
 与 approvalBridge（聊天内审批）+ 用量硬顶；Phase 3 做了场景 B 的主
 动推送（notifier：Heartbeat 静默巡查 + Watch 文件变化 + 任务结果推
 送）与附件处理（文本文档提取、图片只记元信息）。2026-11-21 新增
-Discord 渠道（Gateway 收消息 + REST 发消息）。
+Discord 渠道（Gateway 收消息 + REST 发消息）与 Slack 渠道（Socket
+Mode 收事件 + Web API 发消息）。
 
 ## 快速开始
 
@@ -74,10 +75,35 @@ task.run）才进活动账本与运行事件。
 4. 存 token（同 Telegram）：环境变量 `DISCORD_BOT_TOKEN` 或 `nyra vault add DISCORD_BOT_TOKEN`。
 5. 启动：`nyra bot discord start`；状态 `nyra bot discord status`。
 
+### Slack
+
+Slack 走 Socket Mode（官方为「无公网回调」场景的方案，家里电脑也能跑），
+需要两个 token：
+
+1. 到 Slack 后台（api.slack.com/apps）新建 app。
+2. **开 Socket Mode**：Settings → Socket Mode → Enable，拿 **app-level token**
+   （`xapp-…`）。这是连 Socket Mode、收事件用的。
+3. **建 Bot User**：Bot Users → 加一个 Bot，拿 **bot token**（`xoxb-…`）。这是
+   发 / 编辑消息用的。
+4. 给 bot token 配 scope（至少 `chat:write` + `channels:read`，私聊 `im:read`）；
+   订阅事件（app_mention、message.im）。
+5. 存两个 token（二选一，绝不写进配置文件）：
+   - 环境变量：`SLACK_APP_TOKEN=<xapp-…>` 与 `SLACK_BOT_TOKEN=<xoxb-…>`；
+   - 或密码箱：`nyra vault add SLACK_APP_TOKEN`、`nyra vault add SLACK_BOT_TOKEN`
+     （交互输入；没解锁密码箱时进 `~/.nyra/keys.json`，0600）。
+6. 启动：`nyra bot slack start`；状态 `nyra bot slack status`。
+
+Slack 渠道只接两类消息：群里 `app_mention`（有人 @ 了 Bot）与私聊
+`message.im`。群里的普通闲聊不接（避免把所有话都吃进模型）。与 Discord
+的 Gateway 不同，Socket Mode 不需要应用层心跳（WebSocket 协议层 ping/pong
+兜底）、没有 sequence/RESUME——断了就拆掉重新 `apps.connections.open` 拿新
+URL 重连。
+
 ## 消息处理主链路
 
 ```
-Telegram getUpdates 长轮询 → 归一化 InboundMessage
+Telegram getUpdates 长轮询 / Discord Gateway 事件 / Slack Socket Mode 事件
+  → 归一化 InboundMessage
   → 幂等去重（messageId，落盘，重启后仍有效）
   → 群聊 @ 过滤（mentionOnly 默认开，没 @ 直接忽略；指令同样要过这道门）
   → 确定性指令优先（/help、/status、/new、/stop、/model、/approve、/reject、/computer-shell）

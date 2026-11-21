@@ -14,7 +14,7 @@
 //     会话历史与长期记忆按 memorySessionId 隔离，A 用户的上下文绝不进
 //     B 用户的 Agent（Agent 自己按 sessionId 读写会话文件）。
 
-export type BotChannel = "telegram" | "discord";
+export type BotChannel = "telegram" | "discord" | "slack";
 
 export type BotChatType = "private" | "group" | "supergroup" | "channel";
 
@@ -169,6 +169,8 @@ export interface BotPolicy {
   telegram: { enabled: boolean; username: string | null };
   /** Discord 渠道开关（@ 判定靠 mentions 数组，不需要用户名）。 */
   discord: { enabled: boolean };
+  /** Slack 渠道开关（Socket Mode 收事件 + Web API 发消息，需要 app token + bot token）。 */
+  slack: { enabled: boolean };
 }
 
 export const DEFAULT_BOT_POLICY: BotPolicy = {
@@ -191,6 +193,7 @@ export const DEFAULT_BOT_POLICY: BotPolicy = {
   attachmentTextChars: 20000,
   telegram: { enabled: false, username: null },
   discord: { enabled: false },
+  slack: { enabled: false },
 };
 
 function asNonNegInt(v: unknown, fallback: number): number {
@@ -296,6 +299,11 @@ export function botPolicyFromConfig(config: Record<string, unknown>): BotPolicy 
         ? (b.discord as Record<string, unknown>).enabled === true
         : false,
     },
+    slack: {
+      enabled: b.slack && typeof b.slack === "object" && !Array.isArray(b.slack)
+        ? (b.slack as Record<string, unknown>).enabled === true
+        : false,
+    },
   };
 }
 
@@ -309,7 +317,10 @@ export function botEnabled(config: Record<string, unknown>): boolean {
   const dc = b.discord && typeof b.discord === "object" && !Array.isArray(b.discord)
     ? (b.discord as Record<string, unknown>)
     : {};
-  return b.enabled === true || tg.enabled === true || dc.enabled === true;
+  const sl = b.slack && typeof b.slack === "object" && !Array.isArray(b.slack)
+    ? (b.slack as Record<string, unknown>)
+    : {};
+  return b.enabled === true || tg.enabled === true || dc.enabled === true || sl.enabled === true;
 }
 
 /** 会话 key：群聊按 channel:chatId:threadId，私聊按 channel:senderId。 */
