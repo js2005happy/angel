@@ -1,3 +1,9 @@
+## 2026-11-21 — Experimental claim descriptor inheritance (static review only)
+
+- Inspected README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP and `scripts/node_tool_claim.ts`; checked recent repository commits and open Issues/PR. `js2005happy/angel` resolves to `js2005happy/nyra`. Latest retrieved commit `6eb75dc` (2026-11-21 07:45 UTC) concerns team-charter documentation, not this change.
+- Source-only inspection confirms `O_CLOEXEC` was added to the Linux directory open and exclusive claim file open. It requests close-on-exec, not a demonstrated fix for an observed descriptor leak; Node may already enforce it.
+- **Not run:** tests, TypeScript compilation, CI, fault injection, or cross-platform validation. Windows remains disabled; procfs mount races, storage durability, real tool dispatch, and exactly-once remain unresolved.
+
 
 ## 2026-11-21 — Linux claim final procfs descriptor revalidation
 
