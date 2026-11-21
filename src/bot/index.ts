@@ -50,6 +50,7 @@ import { loadSession, resolveNyraHome, saveSession, sessionPath } from "../memor
 import { buildProviderChain } from "../providers.ts";
 import { resolveReviewerModel } from "../reviewer.ts";
 import { monthKeyString, UsageLedger } from "../usageLedger.ts";
+import { makeTieredCapCheck, type TieredCtxHolder } from "../costCaps.ts";
 import type { UsageSnapshot } from "../usage.ts";
 import { ApprovalBridge, approvalArgsHash } from "./approvalBridge.ts";
 import { resolveBotComputer, type BotComputerBinding } from "./binding.ts";
@@ -372,6 +373,11 @@ export class BotRunner {
     const sandbox = resolveSandbox(this.config);
     const monthlyLimit = resolveMonthlyLimit(this.config);
     const monthlySpentBeforeUsd = monthlyLimit === null ? null : () => this.monthSpentBeforeUsd();
+    // 缺口 43 第三批：分层成本上限——Bot 的 agent id 就是 this.agent（BotRunner
+    // 构造时定死），回调收本次运行进行中的花费、超了先建暂停记录再抛错中止。
+    // 暂停记录没运行 id 时不带 taskId（Bot 任务不在任务板上时没有 taskId）。
+    const tieredCtx: TieredCtxHolder = {};
+    const tieredCapCheck = makeTieredCapCheck(this.home, this.agent, tieredCtx);
     // 画像定 Agent：mode / interactive / 白名单 / 系统提示词 / 步数都跟着角色走
     //（guest/member 只读；owner/admin 的写操作逐次走 approvalBridge）。
     // 工作目录是 Bot 那台电脑的 workspace（缺口 42 第二批；没接电脑时是启动目录）。
@@ -396,6 +402,8 @@ export class BotRunner {
       pricing: resolvePricing(this.config.pricing, primaryCfg.model),
       monthlyCostLimitUsd: monthlyLimit,
       monthlySpentBeforeUsd,
+      // 缺口 43 第三批：分层成本上限（与月度硬顶同级硬停）。
+      tieredCapCheck,
       reviewerModel: resolveReviewerModel(this.config).model,
       sandbox: { backend: sandbox.backend, mode: sandbox.mode as "read-only" | "workspace-write" | "danger-full-access", allowNet: sandbox.allowNet },
     });
@@ -413,7 +421,7 @@ export class BotRunner {
     try {
       const snap = agent.usage.snapshot();
       const spent = agent.lastCost?.status === "priced" ? agent.lastCost.spentUsd : null;
-      const rec = this.ledger.recordDelta(snap, this.lastSnap.get(sessionKey) ?? null, spent, this.lastSpent.get(sessionKey) ?? null, agent.provider.model);
+      const rec = this.ledger.recordDelta(snap, this.lastSnap.get(sessionKey) ?? null, spent, this.lastSpent.get(sessionKey) ?? null, agent.provider.model, undefined, this.agent);
       if (rec && rec.spent_usd !== null) this.flushedUsd += rec.spent_usd;
       this.lastSnap.set(sessionKey, snap);
       this.lastSpent.set(sessionKey, spent);
