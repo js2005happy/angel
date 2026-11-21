@@ -1,3 +1,8 @@
+## 2026-11-22 — Offline receipt reference pinning (unreleased, static-only)
+
+- Added optional `expected_reference` to `verify_receipt`: callers may pin a receipt to an independently selected artifact identifier; mismatch returns false and malformed expectations fail closed. Existing callers remain compatible.
+- Added three regression cases (not run). This is not independent artifact validation, issuer authorization, replay protection or evidence of successful execution. No runtime wiring, dependencies, CI, merge or release.
+
 ## 2026-11-22 — Offline acceptance receipt verifier (unreleased, static-only)
 
 - Added `angel/acceptance_receipt.py`: side-effect-free HMAC-SHA256 verification of an exact requirement, revision and environment using an independently provisioned secret. Refuses malformed input and short secrets; does not create or manage signatures/keys.
