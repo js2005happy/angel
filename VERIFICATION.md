@@ -1,3 +1,10 @@
+## 2026-11-21 — Acceptance evidence assessment (static-only)
+
+- Inspected development branch README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, Python Agent/Tools/ToolJournal, experimental Node claim, recent commits, open Issues/PR (none returned), and GitHub commit statuses/PR-triggered workflow runs (empty, not a pass).
+- Added `angel/acceptance_evidence.py`: pure standard-library classifier, bounded requirements and evidence entries, rejects unknown levels, duplicate/unknown requirements and missing references. It never dereferences references, writes files, executes tools, or grants replay. Reported completion is not independent verification.
+- Source: [Codex #61872](https://github.com/openai/codex/issues/61872), report covering 2026-11-15–16, describes a long task with passing scoped checks and unfinished delivery; external user report, not Angel reproduction.
+- **Not executed:** tests, compilation, scripts, CI, platform probes, or runtime integration. Static reasoning only; the new module is not wired into the Agent loop.
+
 ## 2026-11-21 — Static-only security gate; no code change
 
 - Inspected development-branch README.md, DESIGN.md, CHANGELOG.md, VERIFICATION.md, ROADMAP.md and `scripts/node_tool_claim.ts`; checked open Issues/PR (none returned), prior commit `221674e60184416eae356b4c09ff4d272dac1c3e`, and its combined statuses/PR workflow runs (both empty, not a CI pass).
