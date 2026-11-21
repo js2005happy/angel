@@ -1,3 +1,11 @@
+
+## 2026-11-21 — P0 Linux claim procfs final descriptor revalidation (static review only)
+
+- **Repository fact:** experimental Node claim checks procfs type and fd identity before creation but previously did not recheck either after directory fsync, before its final name check. This increment repeats both checks against the still-open directory fd, failing closed on mismatch. Runtime dispatch remains unintegrated.
+- **External user reports (facts):** 2026-08-25 [Codex #40646](https://github.com/openai/codex/issues/40646) reports execution claims diverging from observable tool traces; 2026-09-01 [Codex #41988](https://github.com/openai/codex/issues/41988) describes interrupted tool-output records. These are external reports, not Angel reproduction or prevalence data.
+- **Engineering inference:** uncertain operation state should not be interpreted as verified execution; late storage identity checks narrow one detectable mount-change window but cannot eliminate a privileged mount-namespace race.
+- **Priorities (value / effort / security risk / dependencies):** completed P0 final procfs recheck high / low / low / Linux procfs; pending P0 privileged mount race high / high / high / OS namespace trust; pending P0 Windows reparse handle guard high / high / high / Win32 API; pending P0 real Node dispatch integration high / high / high / verified storage and approval; pending P1 MCP tool catalog invalidation medium-high / medium / medium / MCP; pending P1 external effect receipts high / high / high / adapters.
+- **Verification:** source-only inspection; no tests, build, fault injection, or CI run. This is not exactly-once execution or tamper-proof logging.
 ## 2026-11-21 — P0 procfs 描述符身份复核（静态审查）
 
 - **仓库事实**：实验性 Linux claim 先检查 procfs 类型，但未在创建前核对 `/proc/self/fd/<directoryFd>` 是否解析到已打开目录。现在对该 procfs 描述符路径执行 `statSync`，要求目录类型、dev、ino、uid 与 `fstatSync(directoryFd)` 一致；异常失败关闭，不删除 claim、不重试、不增加依赖。
