@@ -9,7 +9,11 @@
 送）与附件处理（文本文档提取、图片只记元信息）。2026-11-21 新增
 Discord 渠道（Gateway 收消息 + REST 发消息）、Slack 渠道（Socket
 Mode 收事件 + Web API 发消息，含审批按钮闭环）与 WhatsApp 渠道
-（Cloud API 发消息 + webhook 收消息）。
+（Cloud API 发消息 + webhook 收消息）。**常驻多渠道网关见
+[`docs/channels.md`](channels.md)**（缺口 27）：四个渠道一个进程跑着，
+入站消息先过 bindings 确定性路由再交给对应的 Bot（每条绑定一个
+BotRunner、一个沙箱档位），路由决定进 `bot-audit.jsonl` 证据链；单渠道
+前台跑仍用下面的 `nyra bot <渠道> start`。
 
 ## 快速开始
 
