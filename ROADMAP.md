@@ -1,3 +1,10 @@
+## 2026-11-22 — Offline authenticated acceptance receipt (static-only)
+
+- **External reports (facts):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16, reports unsupported target verification claims; [Codex #60258](https://github.com/openai/codex/issues/60258), opened 2026-11-08, reports premature stopping in multi-step tasks. Reviewed 2026-11-22. Individual reports, not Angel reproductions or prevalence estimates.
+- **Engineering inference:** untrusted caller reference lists cannot establish provenance. Added standalone offline HMAC-SHA256 verifier for an exact requirement/revision/environment tuple; a secret provisioned by an independent authority must stay outside agent control. Verification authenticates a claim from the key holder, **not** that a test ran. No issuer/key management, replay protection, revocation, external CI API or runtime integration is implemented.
+- **Ranking (value / difficulty / safety risk / dependency):** P1 offline receipt authenticity high / low-medium / medium / independent key issuer (**implemented, tests not run**); P1 trusted issuer lifecycle and replay protection high / high / high / external authority (open); P1 durable task contract high / medium / medium / privacy design (open); P1 no-progress detector medium-high / medium / medium / reliable events (open); P0 claim dispatch high / high / high / trusted storage and approvals (blocked).
+- **Scope:** one standalone standard-library module, regression source, no execution or persistence, no automatic completion credit, no CI, merge or release.
+
 ## 2026-11-22 — Conflicting target context for one receipt (static-only)
 
 - **External report (fact):** [Codex #61857](https://github.com/openai/codex/issues/61857), opened 2026-11-16 and reviewed 2026-11-22, describes unsupported completion claims for untested deployed/device environments. [Codex #42080](https://github.com/openai/codex/issues/42080), reviewed 2026-11-22, describes stale/proxy evidence. These are external reports, not Angel reproductions or measured prevalence.
