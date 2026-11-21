@@ -326,12 +326,13 @@ test("工具层 delegate_parallel：缺 task 时明确报错；正常走 stub �
   expect(bad).toContain("缺少非空 task");
   const empty = await executeTool("delegate_parallel", { tasks: [] }, ctx);
   expect(empty).toContain("至少需要一个子任务");
-  const ok = await executeTool("delegate_parallel", { tasks: [{ task: "甲" }, { task: "乙" }] }, ctx);
+  // H-6：background 默认 true（走后台），同步路须显式传 background: false。
+  const ok = await executeTool("delegate_parallel", { tasks: [{ task: "甲" }, { task: "乙" }], background: false }, ctx);
   expect(ok).toContain("并行完成 2 个");
 });
 
 test("工具层 delegate_parallel：未接 delegateParallelFn 时明确报错", async () => {
   const ctx = newToolContext({ workdir: mkdtempSync(join(tmpdir(), "nyra-tool2-")) });
-  const out = await executeTool("delegate_parallel", { tasks: [{ task: "甲" }] }, ctx);
+  const out = await executeTool("delegate_parallel", { tasks: [{ task: "甲" }], background: false }, ctx);
   expect(out).toContain("并行子 agent 不可用");
 });

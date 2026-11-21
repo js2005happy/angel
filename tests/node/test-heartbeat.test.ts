@@ -43,7 +43,7 @@ test("HeartbeatTest.test_monitor_crud_and_validation", () => {
   const home = tmpHome("nyra-heartbeat-");
   const m = addHeartbeatMonitor(home, { agent: "nyra", intervalMinutes: 30 });
   expect(m.enabled).toBe(true);
-  expect(m.checks).toEqual(["inbox_unread", "kanban_blocked", "resume_pending", "stale_runs"]);
+  expect(m.checks).toEqual(["inbox_unread", "kanban_blocked", "resume_pending", "stale_runs", "fanout_unfinished"]);
   expect(listHeartbeatMonitors(home)).toHaveLength(1);
   expect(() => addHeartbeatMonitor(home, { agent: "nyra" })).toThrow(HeartbeatError);
   expect(() => addHeartbeatMonitor(home, { agent: "x", intervalMinutes: 4 })).toThrow(HeartbeatError);
