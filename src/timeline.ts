@@ -643,6 +643,27 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `看门狗：任务 ${str(ev.task_id) ?? "?"} 的运行已结束`, `运行 ${str(ev.run_id) ?? "?"} 状态 ${str(ev.status) ?? "?"}，任务仍在 working，等验证证据才能标完成`, null, null);
         break;
       }
+      // 缺口 32：变化监测例程（哪个监测、变了多少行、触发了什么动作）。
+      case "watch_changed": {
+        push(at, "event", `监测「${str(ev.label) ?? "?"}」变了`, `新增 ${num(ev.added_lines) ?? 0} 行、删除 ${num(ev.removed_lines) ?? 0} 行（${str(ev.from_hash) ?? "?"} → ${str(ev.to_hash) ?? "?"}）`, null, null);
+        break;
+      }
+      case "watch_missing": {
+        push(at, "event", `监测「${str(ev.label) ?? "?"}」的目标取不到了`, str(ev.reason) ?? "?", null, null);
+        break;
+      }
+      case "watch_action_triggered": {
+        push(at, "event", `监测「${str(ev.label) ?? "?"}」触发了动作`, `动作 ${str(ev.action) ?? "?"}，条件 ${str(ev.condition) ?? "?"}${str(ev.run_id) ? `，入队任务 ${str(ev.run_id)}` : ""}`, null, null);
+        break;
+      }
+      case "watch_action_pending": {
+        push(at, "event", `监测「${str(ev.label) ?? "?"}」的动作等批准`, `动作 ${str(ev.action) ?? "?"}：${str(ev.reason) ?? "?"}`, null, null);
+        break;
+      }
+      case "watch_action_done": {
+        push(at, "event", `监测「${str(ev.label) ?? "?"}」的动作${ev.ok ? "完成了" : "失败了"}`, `动作 ${str(ev.action) ?? "?"}：${str(ev.detail) ?? "?"}`, ev.ok ? true : false, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";
