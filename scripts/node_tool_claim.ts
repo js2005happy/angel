@@ -93,6 +93,7 @@ export function claimOperation(directory: string, operationId: string): Operatio
     } catch (error) { closeSync(directoryFd); throw error; }
   } catch { throw new ClaimUnavailable(); }
   let claimFileIdentity: { dev: number; ino: number; size: number } | undefined;
+  let writeFailed = false;
   try {
     const body = JSON.stringify({ version: 1, operationId, claimId, state: "unknown" }) + "\n";
     const data = Buffer.from(body, "utf8");
@@ -120,18 +121,19 @@ export function claimOperation(directory: string, operationId: string): Operatio
     claimFileIdentity = { dev: opened.dev, ino: opened.ino, size: opened.size };
   } catch {
     // Never unlink: a partial claim is also a reason to block replay.
-    closeSync(directoryFd);
-    throw new ClaimUnavailable();
+    writeFailed = true;
   } finally {
-    // A failed claim-file close must not leak the directory handle or allow
-    // the caller to treat durability as confirmed. Preserve UNKNOWN.
-    try { closeSync(fd); }
-    catch {
-      try { closeSync(directoryFd); } catch { /* already unavailable */ }
-      throw new ClaimUnavailable();
+    // Always attempt to close the claim file, even when writing/fsync failed.
+    // A close failure makes durability unknown; never report a successful claim.
+    try { closeSync(fd); } catch { writeFailed = true; }
+    if (writeFailed) {
+      // Release the directory exactly once on this error path. Do not let
+      // cleanup failures hide the original unknown outcome.
+      try { closeSync(directoryFd); } catch { /* unavailable */ }
     }
-    // Keep directoryFd open until after directory fsync and name checks.
+    // On success keep directoryFd open for directory fsync and name checks.
   }
+  if (writeFailed) throw new ClaimUnavailable();
   if (!claimFileIdentity) { closeSync(directoryFd); throw new ClaimUnavailable(); }
   // Sync the SAME directory descriptor used for exclusive creation. A path
   // reopen could sync a replacement directory instead of the reserved inode.
