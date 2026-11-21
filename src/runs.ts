@@ -234,6 +234,16 @@ trust_spot_check_reviewed: ["evidence_id", "decision"],
 trust_promoted: ["kind", "subject_id", "level"],
 trust_demoted: ["kind", "subject_id", "level"],
 trust_blocked: ["agent", "tool", "level", "required_level"],
+// 缺口 25 第一批：声明式工作流——开始（哪个工作流、是否 dry-run/试跑）、
+// 节点（哪个运行、哪个节点、什么类型、状态、耗时、花费）、等审批（哪个节点、
+// 哪个审阅项）、完成（花了多少、几个节点）、失败（原因前 200 字）。只记元数据
+// 与 id，不记节点输入/输出原文、不记绝对路径；名字超过 32 字无空格时会被
+// redact 掩掉一部分，只影响显示，不影响功能。
+workflow_started: ["workflow_run_id", "workflow", "dry_run", "trial"],
+workflow_node: ["workflow_run_id", "workflow", "node_id", "node_type", "status", "ms", "spent_usd"],
+workflow_awaiting_approval: ["workflow_run_id", "workflow", "node_id", "review_item_id"],
+workflow_completed: ["workflow_run_id", "workflow", "spent_usd", "nodes"],
+workflow_failed: ["workflow_run_id", "workflow", "error"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

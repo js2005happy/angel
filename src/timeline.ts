@@ -559,6 +559,23 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       case "trust_blocked":
         push(at, "event", `信任阶梯拦截了 ${str(ev.tool) ?? "?"}`, `agent ${str(ev.agent) ?? "?"} 当前 ${str(ev.level) ?? "?"}级，要求 ${str(ev.required_level) ?? "?"}级`, false, null);
         break;
+      case "workflow_started":
+        push(at, "event", `工作流 ${str(ev.workflow) ?? "?"} 开始${bool(ev.dry_run) === true ? "（dry-run）" : bool(ev.trial) === true ? "（试跑）" : ""}`, str(ev.workflow_run_id) ? `运行 ${str(ev.workflow_run_id)}` : null, null, null);
+        break;
+      case "workflow_node": {
+        const status = str(ev.status);
+        push(at, "event", `工作流节点 ${str(ev.node_id) ?? "?"}（${str(ev.node_type) ?? "?"}）${status === "ok" ? "完成" : status === "skipped" ? "跳过" : status === "failed" ? "失败" : status ?? ""}`, `耗时 ${num(ev.ms) ?? "?"}ms${typeof ev.spent_usd === "number" ? `，已花 $${(ev.spent_usd as number).toFixed(4)}` : ""}`, status === "ok" ? true : status === "failed" ? false : null, null);
+        break;
+      }
+      case "workflow_awaiting_approval":
+        push(at, "event", `工作流节点 ${str(ev.node_id) ?? "?"} 等人工批复`, str(ev.review_item_id) ? `审阅项 ${str(ev.review_item_id)}` : null, null, null);
+        break;
+      case "workflow_completed":
+        push(at, "verdict", `工作流 ${str(ev.workflow) ?? "?"} 完成（${num(ev.nodes) ?? "?"} 个节点）`, typeof ev.spent_usd === "number" ? `已花 $${(ev.spent_usd as number).toFixed(4)}` : null, true, null);
+        break;
+      case "workflow_failed":
+        push(at, "event", `工作流 ${str(ev.workflow) ?? "?"} 失败`, str(ev.error) ? str(ev.error)!.slice(0, 200) : null, false, null);
+        break;
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";
