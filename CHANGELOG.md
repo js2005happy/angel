@@ -1,3 +1,8 @@
+
+## 2026-11-21 — P0 Linux claim 目录句柄最终关闭失败的错误归一化（仅静态审查）
+
+- `scripts/node_tool_claim.ts`：最终目录句柄关闭失败现在统一抛 `ClaimUnavailable`，避免泄漏原生异常或报告成功；不删除 claim、不自动重放，无新增依赖。
+- 仅静态审阅，未运行测试、编译或 CI；仍未接入真实派发，也不保证 exactly-once。
 ## 2026-11-21 — Experimental Linux claim cleanup (unreleased)
 
 - Fixed a double-close error path in `scripts/node_tool_claim.ts`: a failed write or file fsync no longer closes the directory in both catch and finally. File close is always attempted; directory cleanup is attempted once on failure, and successful writes keep the directory descriptor for later fsync/verification.
