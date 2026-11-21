@@ -69,7 +69,7 @@
 | `nyra schedule <list\|add\|remove\|run\|daemon>` | 定时任务（`add` 可加 `--agent <名字>`，让任务跑在该 Bot 的电脑里） |
 | `nyra events <list\|add\|remove\|enable\|disable\|test\|poll>` | 事件触发任务：webhook 与新邮件触发进任务队列（详见 `docs/event-triggers.md`） |
 | `nyra mail-inbox <status\|enable\|disable\|allowlist\|set\|poll>` | 邮件即任务入口：白名单发件人的邮件直接进任务队列，跑完回信（详见 `docs/mail-inbox.md`） |
-| `nyra responsibility <list\|add\|remove\|enable\|disable\|check>` | 常驻责任巡查：领一份持续责任、自己定复查节奏，无人值守时强制只读（详见 `docs/responsibilities.md`） |
+| `nyra responsibility <list\|add\|remove\|enable\|disable\|check\|pause\|resume\|complete\|cancel\|brief\|show>` | 持续责任语义：责任对象（归属人 + 验收标准 + 升级条件 + 过期时间）与晨间简报，无事安静（详见 `docs/responsibilities.md`） |
 | `nyra bot telegram <start\|stop\|status>` | Bot 方向 Phase 1+2+3：Telegram 渠道（长轮询收消息、会话串行、去重配额、确定性指令；角色路由与聊天内审批；主动推送 notifier 与附件处理，详见 `docs/bot.md`） |
 | `nyra bot discord <start\|stop\|status>` | Bot 方向：Discord 渠道（Gateway 收 MESSAGE_CREATE 事件、REST 发/编辑消息；需 Message Content Intent，详见 `docs/bot.md`） |
 | `nyra bot slack <start\|stop\|status>` | Bot 方向：Slack 渠道（Socket Mode 收 app_mention/message.im 事件、Web API 发/编辑消息；需 app token + bot token，详见 `docs/bot.md`） |
@@ -146,4 +146,4 @@
 |---|---|
 | `nyra events <list\|add\|remove\|enable\|disable\|test\|poll>` | 事件触发任务：webhook 与新邮件触发进任务队列（详见 [events.md](./events.md)） |
 | `nyra mail-inbox <status\|enable\|disable\|allowlist\|set\|poll>` | 邮件即任务入口：白名单发件人的邮件直接进队列，跑完回信 |
-| `nyra responsibility <list\|add\|remove\|enable\|disable\|check>` | 常驻责任巡查：自己定复查节奏，无人值守时强制只读 |
+| `nyra responsibility <list\|add\|remove\|enable\|disable\|check\|pause\|resume\|complete\|cancel\|brief\|show>` | 持续责任语义：责任对象与晨间简报，无事安静 |
