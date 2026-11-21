@@ -46,6 +46,7 @@ import {
   type ProviderLike,
   type SwitchRecord,
 } from "./providers.ts";
+import { formatModelSwitchNotice, recordModelSwitch } from "./modelSwitch.ts";
 import { decryptEntry, encryptEntry, Vault } from "./vault.ts";
 import type { SandboxMode } from "./sandbox.ts";
 
@@ -837,6 +838,16 @@ export class GroupStore {
    * （402/429/5xx/…）才落到下一个模型，auth 错误不兜底——该判定由
    * FallbackProvider 按最后一次失败的 kind 做，与 Python 相同。
    */
+  /**
+   * 备用模型切换通知（群聊机器人）：stderr 提示照旧，再记一行审计
+   * （SIEM 导出第 7 个来源，agent 记机器人 id）。立刻通知用户本人的
+   * 那一半在 runBot 里：切换附在当轮回复前面发出去。
+   */
+  private onBotSwitch(bot: Bot, record: SwitchRecord): void {
+    fallbackNotice(record);
+    recordModelSwitch(this.home, record, { agent: bot.id });
+  }
+
   keyRotatingProvider(bot: Bot): ProviderLike {
     const config = loadConfig(this.home);
     const base = resolveProvider({
@@ -853,7 +864,7 @@ export class GroupStore {
     const keyed = this.resolveBotKeys(bot).map(
       (key) => new Provider({ ...base, apiKey: key, auth: "env" }),
     );
-    const rotating = new KeyRotatingProvider(keyed, fallbackNotice);
+    const rotating = new KeyRotatingProvider(keyed, (r) => this.onBotSwitch(bot, r));
     // 缺口 5：该机器人自己的兜底 opt-in（null = 沿用全局配置）；false =
     // 该机器人永不自动换（全局开了也不换），true = 触顶就换（全局没开也换）。
     const chainNames = resolveFallbackChain(config, base.name, bot.fallback_enabled ?? undefined, bot.fallback_providers ?? undefined);
@@ -894,7 +905,7 @@ export class GroupStore {
       fallbacks.push(candidate);
     }
     if (!fallbacks.length) return rotating;
-    return new FallbackProvider([rotating, ...fallbacks], fallbackNotice);
+    return new FallbackProvider([rotating, ...fallbacks], (r) => this.onBotSwitch(bot, r));
   }
 
   /** 与 Python _provider 一致：注入的 factory 原样使用；否则 Key 走轮换，无 Key 走默认链。 */
@@ -920,7 +931,7 @@ export class GroupStore {
         provider = buildProviderChain(
           primary,
           resolveFallbackChain(config, primary.name, bot.fallback_enabled ?? undefined, bot.fallback_providers ?? undefined),
-          fallbackNotice,
+          (r) => this.onBotSwitch(bot, r),
           {
             providerCls: Provider,
             resolver: (name: string) =>
@@ -1029,7 +1040,12 @@ export class GroupStore {
           );
         },
       );
-      const content = result.text.slice(0, MAX_RESPONSE_CHARS) || "（无回复）";
+      const body = result.text.slice(0, MAX_RESPONSE_CHARS) || "（无回复）";
+      // 备用模型切换通知：本轮真切了模型时，把切换通知附在回复前面发出去
+      // （与终端 stderr 同款文案），用户当轮就看到，不用等用量汇总。
+      // entry.model_switches 照旧记进群记录，供事后核对。
+      const notices = (result.switches ?? []).map((s) => formatModelSwitchNotice(s)).join("\n");
+      const content = notices ? `${notices}\n\n${body}` : body;
       const entry: RoomMessage = { sender: bot.id, content, time: stamp() };
       if (result.switches && result.switches.length > 0) {
         entry.model_switches = [...result.switches];

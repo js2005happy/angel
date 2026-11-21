@@ -22,6 +22,7 @@ import { buildTimeline, formatTimelineText, formatReplayText, exportTimelineMark
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
 import { handleCost } from "./costCli.ts";
 import { handleStats, formatMonthLine } from "./statsCli.ts";
+import { formatModelSwitchNotice, modelSwitchSummaryLine, recordModelSwitch, switchTimeShort } from "./modelSwitch.ts";
 import { handleModels } from "./modelsCli.ts";
 import { loadModelCache, manualWindowFromConfig, resolveContextWindow } from "./modelCatalog.ts";
 import { modelSupportsVision, prepareVisionInputs, resolveVisionConfig, visionGateMessage } from "./vision.ts";
@@ -234,7 +235,7 @@ nyra memory <export|export-prompt|import|local|import-zip|search|forget>  记忆
 nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul 身份层：每 agent 的身份与 Tenets（不变量进规则层、代码拦截；Charter 角色契约见 nyra soul charter <set|show|clear>，详见 docs/soul.md 与 docs/team.md）
 nyra style <learn|show|list|delete|export|import>  分应用文风学习（详见 docs/style.md）
 nyra doctor [--provider 名字]  中文自检：运行时、配置文件、配置目录、Key、网络、磁盘、写权限、密码箱权限
-nyra models [list|show <模型名>|refresh]   查模型上下文窗口、刷新模型数据（见 docs/model-catalog.md）
+nyra models [list|show <模型名>|refresh|fallback]   查模型上下文窗口、刷新模型数据、看备用链与本月切换统计（见 docs/model-catalog.md）
 nyra setup                     首次启动向导
 nyra --example [文件]          本地示例任务（不调模型、不花钱）
 nyra ui                        网页界面（本地网页，含模式切换与创造模式）
@@ -350,7 +351,7 @@ nyra memory <export|export-prompt|import|local|import-zip|search|forget>  memory
 nyra soul <show|status|list|init|add|remove|enable|disable|edit|export|import>  Soul identity layer: per-agent identity and Tenets (invariants compile into the rule layer and are enforced by code; role Charter via nyra soul charter <set|show|clear>, see docs/soul.md and docs/team.md)
 nyra style <learn|show|list|delete|export|import>  per-channel writing style profiles (see docs/style.md)
 nyra doctor [--provider name]  self-check: runtime, config, home dir, key, network, disk, write access, vault permissions
-nyra models [list|show <model>|refresh]   look up model context windows, refresh model data (see docs/model-catalog.md)
+nyra models [list|show <model>|refresh|fallback]   look up model context windows, refresh model data, show fallback chain and this month's switches (see docs/model-catalog.md)
 nyra setup                     first-run wizard
 nyra --example [file]          local example task (no model calls, no cost)
 nyra permissions ...           Poppy site permission intents (local ledger; records, never grants)
@@ -544,14 +545,12 @@ function fallbackEnabled(args: CliArgs): boolean | null {
   return null;
 }
 
-function fallbackNotice(record: { from: string; to: string; error: string; kind?: SwitchRecord["kind"]; trigger?: SwitchRecord["trigger"] }): void {
-  let reason = record.error;
-  if (reason.length > 120) reason = reason.slice(0, 117) + "…";
-  // 缺口 5：提示写明触发原因（用量触顶 / 限流 / 服务端错误…），不让用户
-  // 从报错原文里猜“为什么换了模型”。
-  const trigger = record.trigger ?? (record.kind ? switchTriggerFor(record.kind) : "other");
-  const label = t(`fallback.trigger.${trigger}` as MsgKey);
-  process.stderr.write(t("fallback.notice", { from: record.from, reason, to: record.to, trigger: label }) + "\n");
+function fallbackNotice(record: { from: string; to: string; error: string; kind?: SwitchRecord["kind"]; trigger?: SwitchRecord["trigger"] }, runId?: string | null): void {
+  // 备用模型切换通知：文案与群聊回复同款（formatModelSwitchNotice），
+  // 后附时间与运行 id——用户一眼能对上是哪次运行、什么时候切的。
+  const time = switchTimeShort();
+  const suffix = runId ? `（运行 ${runId}，${time}）` : `（${time}）`;
+  process.stderr.write(formatModelSwitchNotice(record as SwitchRecord) + suffix + "\n");
 }
 
 const TRUSTED_FILE = "trusted_workspaces.json";
@@ -649,6 +648,12 @@ interface BuiltAgent {
   * 证据链）。REPL `/model` 建新链时复用同一回调，之后自动切换照样留痕。
   */
   onModelSwitch: (record: SwitchRecord) => void;
+  /**
+  * 备用模型切换通知：本次运行的运行 id holder（单次运行建 RunRecorder
+  * 后填进去，与 tieredCtx.runId 同款 holder 模式；REPL 里没有 RunRecorder
+  * 时保持 null，审计里的 run_id 就记 null）。
+  */
+  switchRunId: { current: string | null };
 }
 
 async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDirs?: string[]; onRetry?: (record: RetryRecord) => void; agentId?: string | null; soulAgent?: string | null; teamId?: string | null; teamRole?: "chief" | "member" | null }): Promise<BuiltAgent> {
@@ -666,8 +671,12 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
   // model_switch 事件，RunRecorder 写进 events.jsonl（与 REPL /model
   // 的手动切换同一事件、同一口径：何时换、从谁换到谁、为什么换、花了多少）。
   const switchAgent: { current: Agent | null } = { current: null };
+  const switchRunId: { current: string | null } = { current: null };
   const onModelSwitch = (r: SwitchRecord): void => {
-    fallbackNotice(r);
+    fallbackNotice(r, switchRunId.current);
+    // 备用模型切换通知：每次真切换记一行审计（SIEM 导出第 7 个来源），
+    // 写失败不抛错、不拦运行；Agent 还没建好时也记（run_id 可能为 null）。
+    recordModelSwitch(home, r, { runId: switchRunId.current });
     const a = switchAgent.current;
     if (!a) return;
     const spent = a.lastCost?.status === "priced" ? a.lastCost.spentUsd : null;
@@ -857,7 +866,7 @@ async function buildAgent(args: CliArgs, opts?: { interactive: boolean; skillsDi
       },
     });
   switchAgent.current = agent;
-  return { agent, providerName: primaryCfg.name, config, home, agentId, tieredCtx, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed }, onModelSwitch };
+  return { agent, providerName: primaryCfg.name, config, home, agentId, tieredCtx, monthly: { ledger: monthlyLedger, flushed: monthlyFlushed }, onModelSwitch, switchRunId };
 }
 
 // ---- 缺口 20：用量账本 flush ----
@@ -4307,6 +4316,8 @@ async function runJson(args: CliArgs): Promise<number> {
       });
     // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
     built.tieredCtx.runId = recorder.runId;
+    // 备用模型切换通知：切换审计里的 run_id 与 stderr 提示后的运行 id 从这里来。
+    built.switchRunId.current = recorder.runId;
     const result = await recorder.run(args.task ?? "");
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
@@ -4597,6 +4608,8 @@ async function runOneShot(args: CliArgs): Promise<number> {
       });
     // 缺口 43 第三批：分层上限触顶时暂停记录要带运行 id（检查点引用）。
     built.tieredCtx.runId = recorder.runId;
+    // 备用模型切换通知：切换审计里的 run_id 与 stderr 提示后的运行 id 从这里来。
+    built.switchRunId.current = recorder.runId;
     const result = await recorder.run(args.task ?? "");
     flusher.flushNow(agent);
     const final = store.load(recorder.runId);
@@ -4986,7 +4999,8 @@ async function runRepl(args: CliArgs): Promise<number> {
       if (text === "/stats" || text.startsWith("/stats ")) {
         const arg = text.slice("/stats".length).trim();
         if (arg === "" ) {
-          process.stdout.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + "\n");
+          const switchLine = modelSwitchSummaryLine(home);
+          process.stdout.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + (switchLine ? "\n" + switchLine : "") + "\n");
         } else if (arg === "heatmap" || arg.startsWith("heatmap ")) {
           const weeksRaw = parseInt(arg.split(/\s+/)[1] ?? "8", 10);
           const weeks = Number.isFinite(weeksRaw) && weeksRaw >= 1 && weeksRaw <= 52 ? weeksRaw : 8;
@@ -5270,7 +5284,8 @@ async function runRepl(args: CliArgs): Promise<number> {
     process.removeListener("SIGINT", onReplSigint);
   }
   flusher.flushNow(agent);
-  process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + "\n");
+  const replSwitchLine = modelSwitchSummaryLine(home);
+  process.stderr.write(t("repl.usageTitle") + "\n" + formatUsage(agent.usage.snapshot()) + "\n" + formatMonthLine(home) + (replSwitchLine ? "\n" + replSwitchLine : "") + "\n");
   return 0;
 }
 

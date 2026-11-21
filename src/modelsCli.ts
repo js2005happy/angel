@@ -3,10 +3,12 @@
 //   nyra models [list] [--provider 名字]   列出内置表 + 刷新缓存里的模型窗口
 //   nyra models show <模型名>             看一个模型的窗口、输出上限、计价与来源
 //   nyra models refresh                  从 OpenRouter 公开列表拉取最新数据进缓存
+//   nyra models fallback                 看备用链开关、顺序与本月切换统计
 //
 // 日常运行不联网；只有 refresh 会发一次公网请求（15 秒超时），失败时旧缓存原样保留。
 import { listCatalog, loadModelCache, lookupBuiltin, lookupCache, refreshModelCache, MODEL_CATALOG_UPDATED, OPENROUTER_MODELS_URL } from "./modelCatalog.ts";
-import { getProviderPresets } from "./config.ts";
+import { getProviderPresets, loadConfig, resolveFallbackChain, resolveProvider } from "./config.ts";
+import { modelSwitchSummaryLine, summarizeModelSwitches } from "./modelSwitch.ts";
 
 function fmtMoney(v: number | null | undefined): string {
   if (typeof v !== "number") return "—";
@@ -31,6 +33,32 @@ export async function handleModels(argv: string[], home: string): Promise<number
       process.stderr.write("已保留旧缓存（或无缓存）；日常运行继续用内置模型表，不受影响。\n");
       return 1;
     }
+  }
+  if (sub === "fallback") {
+    // 备用模型切换通知：开关、链顺序、本月切换统计一次看清。
+    // 只读，不改配置；主模型解析失败时说清楚，不编链。
+    const config = loadConfig(home);
+    const enabled = config.fallback_enabled === true;
+    let primary = "?";
+    try {
+      primary = resolveProvider({ home, config }).name;
+    } catch {
+      process.stdout.write("主模型未配置或无法解析：请先在 config.json 里配好 provider / model。\n");
+      return 1;
+    }
+    const chain = resolveFallbackChain(config, primary);
+    const summary = summarizeModelSwitches(home);
+    process.stdout.write(`备用模型：${enabled ? "已开启" : "未开启（默认关闭；触顶时任务直接失败，不静默换）"}\n`);
+    process.stdout.write(`主模型：${primary}\n`);
+    process.stdout.write(`备用链：${chain.join(" → ") || primary}\n`);
+    process.stdout.write(`允许列表：${(config.fallback_providers as string[] | undefined)?.join("、") ?? "（默认）"}\n`);
+    const line = modelSwitchSummaryLine(home);
+    process.stdout.write(line ? line.trimStart() + "\n" : `本月模型切换 0 次。\n`);
+    if (summary.count > 0 && summary.last) {
+      process.stdout.write(`最近一次报错：${summary.last.error || "（无）"}\n`);
+    }
+    process.stdout.write("说明：每次真切换都会立刻通知（终端 stderr、网关事件流、群聊回复内附），并记进模型切换审计（nyra governance audit export 可导出）。\n");
+    return 0;
   }
   if (sub === "show") {
     const model = rest[0];
@@ -63,7 +91,7 @@ export async function handleModels(argv: string[], home: string): Promise<number
     return 0;
   }
   if (sub !== "list") {
-    process.stderr.write("用法：nyra models [list] [--provider 名字]；nyra models show <模型名>；nyra models refresh\n");
+    process.stderr.write("用法：nyra models [list] [--provider 名字]；nyra models show <模型名>；nyra models refresh；nyra models fallback\n");
     return 2;
   }
   const providerFlag = rest.indexOf("--provider");

@@ -7,6 +7,7 @@
 import { estimateRunCost, resolvePricing, formatCost, estimateCost, adjustEstimateForRecall, resolveMonthlyLimit, type Pricing } from "./cost.ts";
 import { UsageLedger, monthKeyString, nextMonthlyResetDate } from "./usageLedger.ts";
 import { McpCostTracker } from "./mcpCost.ts";
+import { modelSwitchSummaryLine, summarizeModelSwitches } from "./modelSwitch.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { t } from "./i18n.ts";
 
@@ -60,6 +61,9 @@ function printPricingTable(config: Record<string, unknown>, home?: string): void
         mcp: mcp.toFixed(4), reset: nextMonthlyResetDate(),
       }) + "\n");
     }
+    // 备用模型切换通知：本月切过模型时，定价汇总里同样加一行切换统计。
+    const switchLine = modelSwitchSummaryLine(home);
+    if (switchLine) process.stdout.write(switchLine + "\n");
   }
 }
 
@@ -74,7 +78,7 @@ export function handleCost(argv: string[], config: Record<string, unknown>, mode
           const llm = new UsageLedger(opts.home!).monthTotal(month);
           const mcp = new McpCostTracker(opts.home!).monthTotalUsd(month);
           const limit = resolveMonthlyLimit(config);
-          return { limitUsd: limit, spentUsd: llm.spentUsd + mcp, mcpUsd: mcp, month, resetAt: nextMonthlyResetDate() };
+          return { limitUsd: limit, spentUsd: llm.spentUsd + mcp, mcpUsd: mcp, month, resetAt: nextMonthlyResetDate(), modelSwitches: summarizeModelSwitches(opts.home!, month) };
         })()
         : null;
       process.stdout.write(JSON.stringify(buildCostJson({ model: flags.model ?? model, config, monthly })) + "\n");
@@ -156,6 +160,12 @@ export interface CostJson {
     mcp_usd: number;
     month: string;
     reset_at: string | null;
+    /** 本月模型切换统计（次数、触发原因分布、最近一次）；0 次时 count 为 0、last 为 null。 */
+    model_switches: {
+      count: number;
+      by_trigger: Record<string, number>;
+      last: { from: string; to: string; trigger: string; at: string } | null;
+    };
   } | null;
 }
 
@@ -163,7 +173,10 @@ export interface CostJson {
 export function buildCostJson(input: {
   model: string | null;
   config: Record<string, unknown>;
-  monthly: { limitUsd: number | null; spentUsd: number; mcpUsd: number; month: string; resetAt: string | null } | null;
+  monthly: {
+    limitUsd: number | null; spentUsd: number; mcpUsd: number; month: string; resetAt: string | null;
+    modelSwitches?: { count: number; byTrigger: Record<string, number>; last: { from: string; to: string; trigger: string; at: string } | null };
+  } | null;
 }): CostJson {
   const table = input.config.pricing;
   const entries = table && typeof table === "object" ? Object.entries(table as Record<string, unknown>) : [];
@@ -187,6 +200,13 @@ export function buildCostJson(input: {
         mcp_usd: input.monthly.mcpUsd,
         month: input.monthly.month,
         reset_at: input.monthly.resetAt,
+        model_switches: {
+          count: input.monthly.modelSwitches?.count ?? 0,
+          by_trigger: input.monthly.modelSwitches?.byTrigger ?? {},
+          last: input.monthly.modelSwitches?.last
+            ? { from: input.monthly.modelSwitches.last.from, to: input.monthly.modelSwitches.last.to, trigger: input.monthly.modelSwitches.last.trigger, at: input.monthly.modelSwitches.last.at }
+            : null,
+        },
       }
       : null,
   };

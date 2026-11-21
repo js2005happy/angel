@@ -8,6 +8,7 @@
 // 未计价的部分（没配单价/没报 usage）只记 token、不记金额，花费显示“未知”。
 import { loadConfig } from "./config.ts";
 import { resolveMonthlyLimit } from "./cost.ts";
+import { modelSwitchSummaryLine, summarizeModelSwitches } from "./modelSwitch.ts";
 import { UsageLedger, formatHeatmap, localDateString, monthKeyString, nextMonthlyResetDate } from "./usageLedger.ts";
 import { McpCostTracker } from "./mcpCost.ts";
 import { t } from "./i18n.ts";
@@ -41,6 +42,10 @@ function printMonthSummary(home: string, now = new Date()): void {
   const llm = ledger.monthTotal(month);
   process.stdout.write(t("stats.monthTitle", { month }) + "\n");
   process.stdout.write(formatMonthLine(home, now) + "\n");
+  // 备用模型切换通知：本月切过模型时，用量汇总里加一行切换统计（次数、
+  // 触发原因分布、最近一次从谁切到谁）；0 次时不打印，不占地方。
+  const switchLine = modelSwitchSummaryLine(home, now);
+  if (switchLine) process.stdout.write(switchLine + "\n");
   const today = ledger.dailyTotals(1, now).get(localDateString(now));
   if (today) {
     process.stdout.write(t("stats.todayLine", {
@@ -87,6 +92,7 @@ export function handleStats(argv: string[], home: string): number {
       resetAt: nextMonthlyResetDate(now),
       today: t0 ? { date: todayKey, tokens: t0.total, spent: t0.spent, calls: t0.calls } : null,
       days,
+      modelSwitches: summarizeModelSwitches(home, month, now),
     })) + "\n");
     return 0;
   }
@@ -145,6 +151,12 @@ export interface StatsJson {
   today: { date: string; tokens: number; spent_usd: number | null; calls: number } | null;
   /** 最近 N 天，按日期升序；只含真的有调用或 token 的天。 */
   days: { date: string; tokens: number; spent_usd: number | null; calls: number }[];
+  /** 本月模型切换统计（次数、触发原因分布、最近一次）；0 次时 count 为 0、last 为 null。 */
+  model_switches: {
+    count: number;
+    by_trigger: Record<string, number>;
+    last: { from: string; to: string; trigger: string; at: string } | null;
+  };
 }
 
 /** 把 stats 要显示的东西整理成结构。账本读取与计价由调用方完成，这里只做整形。 */
@@ -158,6 +170,7 @@ export function buildStatsJson(input: {
   resetAt: string;
   today: { date: string; tokens: number; spent: number | null; calls: number } | null;
   days: { date: string; tokens: number; spent: number | null; calls: number }[];
+  modelSwitches?: { count: number; byTrigger: Record<string, number>; last: { from: string; to: string; trigger: string; at: string } | null };
 }): StatsJson {
   const day = (d: { date: string; tokens: number; spent: number | null; calls: number }) => ({
     date: d.date,
@@ -176,5 +189,12 @@ export function buildStatsJson(input: {
     reset_at: input.resetAt,
     today: input.today ? day(input.today) : null,
     days: input.days.map(day),
+    model_switches: {
+      count: input.modelSwitches?.count ?? 0,
+      by_trigger: input.modelSwitches?.byTrigger ?? {},
+      last: input.modelSwitches?.last
+        ? { from: input.modelSwitches.last.from, to: input.modelSwitches.last.to, trigger: input.modelSwitches.last.trigger, at: input.modelSwitches.last.at }
+        : null,
+    },
   };
 }

@@ -35,6 +35,7 @@ import { listMailInboxPublic } from "./mailInbox.ts";
 import { listResponsibilitiesPublic } from "./responsibilities.ts";
   // 缺口 30：网关入口此前完全不接成本硬顶与用量账本——Web UI 一跑等于绕过 --max-cost。
 import { resolvePricing, resolveMonthlyLimit } from "./cost.ts";
+import { recordModelSwitch } from "./modelSwitch.ts";
 import { UsageLedger, monthKeyString } from "./usageLedger.ts";
 import type { UsageSnapshot } from "./usage.ts";
 import { resolveSandboxBackend, type SandboxMode } from "./sandbox.ts";
@@ -361,8 +362,13 @@ export class Gateway {
     const reason = record.error.length > 120 ? record.error.slice(0, 117) + "…" : record.error;
     const trigger = record.trigger ?? switchTriggerFor(record.kind);
     process.stderr.write(`模型切换（${switchTriggerLabel(trigger)}）：${record.from} 失败（${reason}），已切换到 ${record.to} 继续\n`);
-    for (const run of this.runs.values()) {
-      if (run.status === "running") this.record(run, "model_switch", { from: record.from, to: record.to, error: reason, trigger, kind: record.kind });
+    const running = [...this.runs.values()].filter((run) => run.status === "running");
+    // 备用模型切换通知：每次真切换记一行审计（SIEM 导出第 7 个来源）；
+    // run_id 只在恰好一个会话在跑时才认得出，多会话并发时记 null（事件本身
+    // 已按会话分别记进各 running 会话的事件流，网页端照样立刻看到）。
+    recordModelSwitch(this.home, record, { runId: running.length === 1 ? running[0].sessionId : null });
+    for (const run of running) {
+      this.record(run, "model_switch", { from: record.from, to: record.to, error: reason, trigger, kind: record.kind });
     }
   }
 
