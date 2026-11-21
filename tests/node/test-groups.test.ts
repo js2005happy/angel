@@ -359,7 +359,13 @@ test("轮换：401 后切第二把 Key 成功，model_switches 记在 bot 记录
     const result = await store.send("dev", "@bot1 请回答");
     const entry = result.messages[1];
     expect(entry.sender).toBe("bot1");
-    expect(entry.content).toBe("第二把 key 答复");
+    // 备用模型切换通知（用户 2026-11-21 拍板）：Key 轮换是真切换，通知附在
+    // 回复前面发出去，不再静默；正文原文仍在通知后面。
+    expect(entry.content).toContain("模型切换");
+    expect(entry.content).toContain("bot1 key 1");
+    expect(entry.content).toContain("bot1 key 2");
+    expect(entry.content).toContain("认证失败");
+    expect(entry.content.endsWith("第二把 key 答复")).toBe(true);
     expect(entry.model_switches?.length).toBe(1);
     expect(entry.model_switches?.[0].from).toBe(`${"bot1"} key 1`);
     expect(entry.model_switches?.[0].to).toBe(`${"bot1"} key 2`);

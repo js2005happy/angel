@@ -59,7 +59,7 @@ const CASES: Case[] = [
       month: "2026-11", monthTokens: 0, monthSpentUsd: 0, incomplete: false, mcpSpentUsd: 0,
       monthlyLimitUsd: null, resetAt: "2026-12-01", today: null, days: [],
     }) as never,
-    keys: ["schema_version", "month", "month_tokens", "month_spent_usd", "incomplete", "mcp_spent_usd", "monthly_limit_usd", "reset_at", "today", "days"],
+    keys: ["schema_version", "month", "month_tokens", "month_spent_usd", "incomplete", "mcp_spent_usd", "monthly_limit_usd", "reset_at", "today", "days", "model_switches"],
   },
   {
     name: "redlines",

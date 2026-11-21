@@ -43,6 +43,7 @@ test("C5 月度字段用 snake_case，且数值原样搬运", () => {
   const j = buildCostJson({ model: "m1", config: cfg, monthly });
   expect(j.monthly).toEqual({
     limit_usd: 50, spent_usd: 1.2, mcp_usd: 0.2, month: "2026-11", reset_at: "2026-12-01",
+    model_switches: { count: 0, by_trigger: {}, last: null },
   });
 });
 

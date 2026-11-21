@@ -31,7 +31,7 @@ test("T1 schema_version 是显式常量", () => {
 test("T2 字段顺序稳定（契约：只加不改）", () => {
   expect(Object.keys(buildStatsJson(base))).toEqual([
     "schema_version", "month", "month_tokens", "month_spent_usd", "incomplete",
-    "mcp_spent_usd", "monthly_limit_usd", "reset_at", "today", "days",
+    "mcp_spent_usd", "monthly_limit_usd", "reset_at", "today", "days", "model_switches",
   ]);
 });
 
