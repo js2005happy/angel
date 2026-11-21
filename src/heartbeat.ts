@@ -19,6 +19,7 @@ import { RunStore } from "./runs.ts";
 import { appendInbox, loadInbox } from "./tasks.ts";
 import { listKanbanTasks } from "./kanban.ts";
 import { listSubagentRuns } from "./resume.ts";
+import { getAgentMode, recordDryRun } from "./governance.ts";
 import { pythonJsonDump } from "./pyjson.ts";
 
 export class HeartbeatError extends Error {
@@ -219,6 +220,18 @@ export function runHeartbeat(home: string, agent: string, opts?: { force?: boole
   monitor.lastFindings = findings.length;
   saveHeartbeatStore(home, store);
   appendHeartbeatAudit(home, agent, findings);
+  // 缺口 43（DSH-2）：observe 模式下，Heartbeat 发现的待续跑子 agent 只记
+  // 干跑、不真干（recordDryRun 自带去重，同一待续跑只留一条未定的记录）。
+  if (findings.some((f) => f.kind === "resume_pending") && getAgentMode(home, agent) === "observe") {
+    for (const row of listSubagentRuns(home, { status: "resume_pending" })) {
+      try {
+        recordDryRun(home, {
+          agent, kind: "resume_subagent", action: "resume", target: row.runId,
+          reason: "Heartbeat 发现待续跑子 agent；observe 模式：只记录，不执行",
+        });
+      } catch { /* 干跑记不上不破坏巡查 */ }
+    }
+  }
   if (!findings.length) return { agent, findings, quiet: true, skipped: null };
   // 有发现：先记证据（上一步 audit），再汇报（收件箱，不直接发消息打扰）。
   const summary = findings.map((f) => f.summary).join("；").slice(0, 200);

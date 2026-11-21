@@ -73,6 +73,8 @@ import { handleKanban } from "./kanban.ts";
 import { handleSubagent } from "./resume.ts";
 import { handleSideEffects } from "./sideEffects.ts";
 import { handleHeartbeat } from "./heartbeat.ts";
+import { handleGovernance } from "./governance.ts";
+import { handleOptimize } from "./optimizer.ts";
 import { loadSchedule, saveSchedule, addScheduleTask, removeScheduleTask, listScheduleTasks, runDaemon, ScheduleError, type ScheduleTask } from "./scheduler.ts";
 import {
   loadEventTriggers, saveEventTriggers, addEventTrigger, removeEventTrigger, setEventTriggerEnabled,
@@ -152,6 +154,8 @@ nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|
 nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   崩溃自续：子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑（详见 docs/kanban.md）
 nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   静默巡查：无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 docs/heartbeat.md）
+nyra governance <policy|mandate|mode|dry-runs>   企业治理：版本化策略 + 不可变授权 + observe/auto 接单模式 + 干跑记录（详见 docs/governance.md）
+nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   带人批的自优化环：只起草改指令建议，须人批才生效，三数据集 + holdout 定放行（详见 docs/governance.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -247,6 +251,8 @@ nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|
 nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   crash resume: persistent sub-agent rows + heartbeat checkpoints + boot sweep + verify-before-resume (see docs/kanban.md)
 nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   silent patrol: quiet when nothing is wrong, findings go to evidence first then inbox; inferred commitments need one user confirmation and auto-expire (see docs/heartbeat.md)
+nyra governance <policy|mandate|mode|dry-runs>   enterprise governance: versioned policy + immutable mandates + observe/auto intake modes + dry-run ledger (see docs/governance.md)
+nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   human-approved self-optimization loop: drafts instruction changes only, needs approval to apply, three datasets + holdout decide release (see docs/governance.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -5392,6 +5398,8 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
   if (args.subcommand === "side-effects") return handleSideEffects(args.subArgs ?? [], home);
   if (args.subcommand === "heartbeat") return handleHeartbeat(args.subArgs ?? [], home);
+  if (args.subcommand === "governance") return handleGovernance(args.subArgs ?? [], home);
+  if (args.subcommand === "optimize") return handleOptimize(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "verdict") {
     // --json：机器可读输出（CI 门禁只看 grade，看板画趋势线看 reasons 里的数字）。
     const verdictJson = (args.subArgs ?? []).includes("--json");

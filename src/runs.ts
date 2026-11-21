@@ -135,6 +135,27 @@ subagent_suspended: ["run_id", "restarts"],
 // （哪个副作用、已做过/重新执行/失败）。只记元数据，不记参数原文。
 side_effect_recorded: ["effect_id", "kind"],
 side_effect_recovered: ["effect_id", "outcome"],
+// 缺口 43（DSH-1/DSH-2/G-4）：企业治理进证据链——策略发布（哪个版本、
+// 指纹、原因指纹）、授权签发/重验证/替代/撤销（哪个授权、哪个策略版本、
+// 什么结论）、接单模式切换（哪个 agent、切到哪档）、干跑记录与定夺
+// （哪条记录、哪个 agent、什么动作、什么结论）、自优化提议（哪条提议、
+// 什么来源、什么决定、放行还是失败、回滚到哪个目标）。只记 id 与指纹，
+// 不记原文、不记绝对路径；hash 指纹截到 12 位，免得被 appendEvent 的
+// redact 当长词串掩掉。
+policy_changed: ["policy_version", "hash", "reason_hash"],
+mandate_issued: ["mandate_id", "policy_version", "scope"],
+mandate_revalidated: ["mandate_id", "old_policy_version", "new_policy_version", "result"],
+mandate_superseded: ["mandate_id", "superseded_by"],
+mandate_revoked: ["mandate_id", "reason_hash"],
+governance_mode_changed: ["agent", "mode"],
+dry_run_recorded: ["dry_run_id", "agent", "kind", "action"],
+dry_run_decided: ["dry_run_id", "decision"],
+proposal_created: ["proposal_id", "source"],
+proposal_decided: ["proposal_id", "decision"],
+proposal_applied: ["proposal_id", "target"],
+proposal_released: ["proposal_id", "holdout_passed"],
+proposal_failed: ["proposal_id", "reason"],
+proposal_reverted: ["proposal_id", "target"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

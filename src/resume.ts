@@ -22,6 +22,7 @@ import { randomBytes } from "node:crypto";
 import { resolveHome } from "./config.ts";
 import { RunStore, prepareResume, type RunState } from "./runs.ts";
 import { WorkerLock, TASKS_DIR, WORKER_LOCK, buildProvider, runOne } from "./tasks.ts";
+import { checkAutoAllowed, getAgentMode, recordDryRun, revalidateMandateForResume } from "./governance.ts";
 
 export class ResumeError extends Error {
   constructor(message: string) {
@@ -51,6 +52,8 @@ export interface SubagentRun {
   restarts: number;
   autoResume: boolean;
   unattended: boolean;
+  /** 缺口 43：绑定的治理授权 id（可空）。续跑前按当前 Policy 重验证。 */
+  mandateId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -129,7 +132,7 @@ export function findRunStore(home: string, runId: string): { store: RunStore; st
 
 export function registerSubagentRun(
   home: string,
-  opts: { runId: string; agent?: string; sessionId?: string; workdir?: string; mode?: string; autoResume?: boolean; unattended?: boolean },
+  opts: { runId: string; agent?: string; sessionId?: string; workdir?: string; mode?: string; autoResume?: boolean; unattended?: boolean; mandateId?: string },
 ): SubagentRun {
   const registry = loadSubagentRegistry(home);
   const existing = registry.runs.find((r) => r.runId === opts.runId);
@@ -141,6 +144,7 @@ export function registerSubagentRun(
     mode: opts.mode ?? "auto", status: "running", stopReason: "unknown",
     lastStep: null, lastHeartbeatAt: null, restarts: 0,
     autoResume: opts.autoResume ?? false, unattended: opts.unattended ?? false,
+    mandateId: opts.mandateId ?? null,
     createdAt: at, updatedAt: at,
   };
   registry.runs.push(row);
@@ -178,6 +182,8 @@ export interface SweepReport {
   suspended: string[];
   skipped: string | null;
   resumed: string[];
+  /** 缺口 43：observe 模式或月度硬顶挡下的自动续跑，只记干跑、不真干。 */
+  dryRuns: string[];
 }
 
 /** 启动扫荡：running 的行按心跳年龄标 resume_pending（crashed）；连崩
@@ -188,7 +194,7 @@ export async function sweepSubagents(
   home: string,
   opts?: { auto?: boolean; now?: Date },
 ): Promise<SweepReport> {
-  const report: SweepReport = { markedPending: [], suspended: [], skipped: null, resumed: [] };
+  const report: SweepReport = { markedPending: [], suspended: [], skipped: null, resumed: [], dryRuns: [] };
   mkdirSync(join(home, TASKS_DIR), { recursive: true });
   const lock = new WorkerLock(join(home, TASKS_DIR, WORKER_LOCK));
   if (!lock.acquire()) {
@@ -221,6 +227,25 @@ export async function sweepSubagents(
       for (const runId of [...report.markedPending]) {
         const row = getRun(loadSubagentRegistry(home), runId);
         if (!row.autoResume) continue;
+        // 缺口 43（DSH-2）：自动续跑先过接单模式与月度硬顶。observe 模式只记
+        // 干跑、不真干；月度硬顶已触顶也不续跑，同样只记干跑。
+        if (getAgentMode(home, row.agent) === "observe") {
+          recordDryRun(home, {
+            agent: row.agent, kind: "resume_subagent", action: "resume", target: runId,
+            reason: "observe 模式：评估通过，只记干跑，不真干",
+          });
+          report.dryRuns.push(runId);
+          continue;
+        }
+        const cap = checkAutoAllowed(home, row.agent);
+        if (!cap.allowed) {
+          recordDryRun(home, {
+            agent: row.agent, kind: "resume_subagent", action: "resume", target: runId,
+            reason: cap.reason,
+          });
+          report.dryRuns.push(runId);
+          continue;
+        }
         try {
           await resumeSubagentRun(home, runId, {});
           report.resumed.push(runId);
@@ -260,6 +285,12 @@ export function prepareSubagentResume(
   }
   if (row.status !== "resume_pending" && row.status !== "suspended") {
     throw new ResumeError(`只能续跑 resume_pending/suspended 状态的子 agent 运行，当前为 ${row.status}`);
+  }
+  // 缺口 43（DSH-1）：绑了授权的运行，续跑前按当前 Policy 重验证。冲突、
+  // 撤销、不存在时直接抛错、拒绝续跑；换发了新授权就更新注册表上的绑定。
+  if (row.mandateId) {
+    const currentMandateId = revalidateMandateForResume(home, row.mandateId);
+    if (currentMandateId !== row.mandateId) row.mandateId = currentMandateId;
   }
   const found = findRunStore(home, runId);
   if (!found) throw new ResumeError(`找不到运行记录 ${runId}（任务队列与主运行里都没有），无法验状态`);
@@ -396,13 +427,13 @@ export async function handleSubagent(argv: string[], home: string): Promise<numb
     if (action === "register") {
       const runId = argv[1] ?? "";
       if (!runId) {
-        process.stderr.write("错误：用法：nyra subagent register <运行 id> [--agent <名字>] [--auto-resume] [--unattended]\n");
+        process.stderr.write("错误：用法：nyra subagent register <运行 id> [--agent <名字>] [--auto-resume] [--unattended] [--mandate <授权 id>]\n");
         return 2;
       }
       const row = registerSubagentRun(resolvedHome, {
         runId, agent: get("--agent"), workdir: get("--workdir"),
         mode: get("--mode"), autoResume: argv.includes("--auto-resume"),
-        unattended: argv.includes("--unattended"),
+        unattended: argv.includes("--unattended"), mandateId: get("--mandate") ?? undefined,
       });
       process.stdout.write(`已注册子 agent 运行 ${row.runId}（${row.status}）。\n`);
       return 0;

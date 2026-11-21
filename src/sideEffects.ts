@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { resolveHome } from "./config.ts";
 import { RunStore } from "./runs.ts";
+import { revalidateMandateForResume } from "./governance.ts";
 
 export class SideEffectError extends Error {
   constructor(message: string) {
@@ -35,6 +36,8 @@ export interface SideEffect {
   description: string;
   target: string;
   status: SideEffectStatus;
+  /** 缺口 43：绑定的治理授权 id（可空）。恢复前按当前 Policy 重验证。 */
+  mandateId: string | null;
   createdAt: string;
   executedAt: string | null;
   recoveryNote: string | null;
@@ -119,7 +122,7 @@ function mirrorEvent(home: string, runId: string | null, type: string, fields: R
 /** 先存后做：执行之前先把副作用记下来，崩了重启后才找得到它。 */
 export function recordSideEffect(
   home: string,
-  opts: { runId?: string | null; kind?: SideEffectKind; description: string; target?: string },
+  opts: { runId?: string | null; kind?: SideEffectKind; description: string; target?: string; mandateId?: string },
 ): SideEffect {
   const description = (opts.description ?? "").trim();
   if (!description) throw new SideEffectError("副作用描述不能为空");
@@ -130,7 +133,8 @@ export function recordSideEffect(
   const effect: SideEffect = {
     id: newEffectId(), runId: opts.runId ?? null, kind, description,
     target: String(opts.target ?? "").slice(0, 120),
-    status: "pending", createdAt: nowIso(), executedAt: null, recoveryNote: null,
+    status: "pending", mandateId: opts.mandateId ?? null,
+    createdAt: nowIso(), executedAt: null, recoveryNote: null,
   };
   store.effects.push(effect);
   saveSideEffectStore(home, store);
@@ -210,6 +214,26 @@ export async function recoverSideEffects(
   const pending = listSideEffects(home, { status: "pending" });
   report.total = pending.length;
   for (const effect of pending) {
+    // 缺口 43（DSH-1）：绑了授权的副作用，恢复前按当前 Policy 重验证。
+    // 冲突、撤销、不存在时标 failed、不执行；换发了新授权就更新绑定。
+    if (effect.mandateId) {
+      try {
+        const currentMandateId = revalidateMandateForResume(home, effect.mandateId);
+        if (currentMandateId !== effect.mandateId) {
+          const store = loadSideEffectStore(home);
+          const row = getEffect(store, effect.id);
+          row.mandateId = currentMandateId;
+          saveSideEffectStore(home, store);
+          effect.mandateId = currentMandateId;
+        }
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        markSideEffect(home, effect.id, "failed", `恢复前授权重验证失败，拒绝执行：${reason}`.slice(0, 500));
+        mirrorEvent(home, effect.runId, "side_effect_recovered", { effect_id: effect.id, outcome: "failed" });
+        report.failed.push(effect.id);
+        continue;
+      }
+    }
     const workdir = opts?.workdir ?? process.cwd();
     const note = buildRecoveryNote(workdir);
     let verdict: "already-done" | "not-done" | "unknown" = "unknown";
@@ -250,7 +274,7 @@ const USAGE =
   "用法：nyra side-effects <list|show|record|mark|recover> [选项]\n" +
   "  list [--status pending|done|failed|skipped] [--run <运行 id>] [--json]\n" +
   "  show <副作用 id> [--json]\n" +
-  "  record \"<描述>\" [--kind file_write|external_send|shell|other] [--target \"<目标摘要>\"] [--run <运行 id>]\n" +
+  "  record \"<描述>\" [--kind file_write|external_send|shell|other] [--target \"<目标摘要>\"] [--run <运行 id>] [--mandate <授权 id>]\n" +
   "  mark <副作用 id> <done|failed|skipped> [--note \"<说明>\"]\n" +
   "  recover          按年龄从老到新恢复 pending 项（无执行器时只写 recovery note、不擅自标 done）\n";
 
@@ -293,7 +317,7 @@ export async function handleSideEffects(argv: string[], home: string): Promise<n
       const description = argv[1] ?? "";
       const effect = recordSideEffect(resolvedHome, {
         description, kind: (get("--kind") as SideEffectKind | undefined) ?? "other",
-        target: get("--target"), runId: get("--run"),
+        target: get("--target"), runId: get("--run"), mandateId: get("--mandate"),
       });
       process.stdout.write(`${effect.id}\n`);
       return 0;
