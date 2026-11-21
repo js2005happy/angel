@@ -62,6 +62,11 @@ import {
   type VerifierConfig,
 } from "./verifier.ts";
 import {
+  consumeSteers, finishSubagentRun, getSubagentRun, heartbeatSubagent, isStopRequested,
+  registerSubagentRun, type QueuedSteer,
+} from "./resume.ts";
+import { checkOutputSchema, validateOutputSchema } from "./outputSchema.ts";
+import {
   runParallelDelegate, formatParallelResults, parallelConvergenceNote,
   resolveParallelOptions,
   type ParallelTaskSpec, type ParallelDelegateResult, type ParallelThreadOutcome,
@@ -157,6 +162,9 @@ export interface AgentOptions {
   sessionRules?: SessionRules | null;
   delegateDepth?: number;
   delegateBudget?: DelegationBudget | null;
+  /** H-2/H-3：本 Agent 在子 agent 注册表里的运行 id——只对 delegate 派出的
+   * 子 agent 设；设了才跑委派检查点（引导消费 + 停止响应 + 心跳），主 agent 不设。 */
+  subagentRunId?: string | null;
   systemInstructions?: string;
   /** 缺口 28：当前运行用的 Soul（~/.nyra/souls/<soulAgent>.json）；不传默认 "default"。 */
   soulAgent?: string;
@@ -321,6 +329,8 @@ export interface DelegateResult {
   diffStat: string | null;
   /** 缺口 13：验收者的验收结论（未开启时恒为 not-verified，见 verifyOutput）。 */
   verification: ParallelThreadEvidence["verification"];
+  /** H-4：结构化输出契约的校验结论（没给契约时不填）。 */
+  schema?: { valid: boolean; errors: string[]; corrected: boolean };
 }
 
 function delegateFailed(text: string): DelegateResult {
@@ -458,6 +468,8 @@ export class Agent {
   private voiceFetch: typeof fetch | null = null;
   /** 缺口 15：本次运行已计价的语音花费合计（STT 按分钟、TTS 按字数；单次硬顶与月度硬顶要含这部分，否则语音就是旁路）。 */
   voiceSpentUsd = 0;
+  /** H-2/H-3：本 Agent 在子 agent 注册表里的运行 id（delegate 派出的子 agent 才有）。 */
+  private subagentRunId: string | null = null;
   /** 缺口 15：本次运行的语音调用次数（STT + TTS）。 */
   voiceCalls = 0;
   skillsDirs: string[];
@@ -489,6 +501,8 @@ export class Agent {
     this.channel = opts.channel ?? null;
     this.delegateDepth = opts.delegateDepth ?? 0;
     this.delegateBudget = opts.delegateBudget ?? new DelegationBudget();
+    // H-2/H-3：委派检查点认这个 id——delegateDetailed 派子 agent 时传 taskId。
+    this.subagentRunId = opts.subagentRunId ?? null;
     this.maxCostUsd = typeof opts.maxCostUsd === "number" ? opts.maxCostUsd : null;
     this.pricing = opts.pricing ?? null;
     this.monthlyCostLimitUsd = typeof opts.monthlyCostLimitUsd === "number" ? opts.monthlyCostLimitUsd : null;
@@ -1529,11 +1543,78 @@ export class Agent {
         this.emit("repeat_guard_stop", { reason: "repeated_success" });
         return repeatGuard.honestFailureText("本轮因同一调用重复返回相同答案被守卫停掉");
       }
+      // H-2/H-3：委派检查点——只对已注册的子 agent 生效。本轮工具调用已经
+      // 执行完、下一轮模型调用之前：在这里消费排队的引导、响应停止请求、
+      // 记一笔心跳。检查点本身绝不打断在跑的工具调用（那一轮已经跑完了），
+      // 检查点读不到注册表也不破坏主循环（引导/停止功能降级，主流程照常）。
+      if (this.subagentRunId) {
+        const checkpoint = this.consumeSubagentCheckpoint(toolCalls, messages);
+        if (checkpoint.stopped) {
+          this.messages = messages.slice(1);
+          saveSession(this.sessionId, this.messages, this.home);
+          return checkpoint.partialText;
+        }
+        if (checkpoint.steerMessage) {
+          messages.push({ role: "user", content: checkpoint.steerMessage });
+        }
+      }
     }
     this.messages = messages.slice(1);
     saveSession(this.sessionId, this.messages, this.home);
     this.emit("max_turns", { max_turns: this.maxTurns });
     return repeatGuard.honestFailureText("已达到最大轮数");
+  }
+
+  /**
+   * H-2/H-3：委派检查点（子 agent 每轮工具调用跑完后调一次）。
+   *
+   * 顺序是停止优先于引导：已请求停止就停在这一轮，不再消费引导——停下的
+   * 子 agent 不该再收新方向。心跳记这一轮做到哪一步（工具名，不记参数与
+   * 结果原文），花名册的“当前动作”就从这里来。
+   * 全部 try/catch：注册表读不到、写不上时检查点静默降级，主循环照常跑，
+   * 不因检查点故障把子任务整段毁掉。
+   */
+  private consumeSubagentCheckpoint(
+    toolCalls: Record<string, unknown>[],
+    _messages: Record<string, unknown>[],
+  ): { stopped: boolean; partialText: string; steerMessage: string } {
+    const empty = { stopped: false, partialText: "", steerMessage: "" };
+    const runId = this.subagentRunId;
+    if (!runId) return empty;
+    const toolNames = toolCalls.map((tc) => {
+      const fn = (tc.function as Record<string, unknown>) ?? {};
+      return typeof fn.name === "string" && fn.name ? fn.name : "未知工具";
+    });
+    const lastStep = toolNames.length
+      ? `第 ${this.turn} 轮：${toolNames.slice(0, 5).join("、")}${toolNames.length > 5 ? " 等" : ""}`
+      : `第 ${this.turn} 轮：无工具调用`;
+    // 1. 停止优先。
+    let stopRequested = false;
+    try { stopRequested = isStopRequested(this.home, runId); } catch { stopRequested = false; }
+    if (stopRequested) {
+      try { heartbeatSubagent(this.home, runId, `按请求停下：${lastStep}`); } catch { /* ignore */ }
+      return {
+        stopped: true,
+        partialText:
+          `（已请求停止：子 agent 在${lastStep}后停下，未继续做。未完成的部分没有继续做，` +
+          `部分成果见任务板/审阅队列，等人定去向。）`,
+        steerMessage: "",
+      };
+    }
+    // 2. 心跳：做到哪一步。
+    try { heartbeatSubagent(this.home, runId, lastStep); } catch { /* ignore */ }
+    // 3. 消费引导：只改接下来的方向，不改已做过的。
+    let steers: QueuedSteer[] = [];
+    try { steers = consumeSteers(this.home, runId); } catch { steers = []; }
+    if (!steers.length) return empty;
+    const lines = steers.map((s, i) => `（引导 ${i + 1}/${steers.length}：${s.text}）`);
+    return {
+      stopped: false,
+      partialText: "",
+      steerMessage:
+        "收到运行中引导（只改接下来的方向，不改已做过的、不改已发出去的动作；" +
+        "引导与红线冲突时以红线为准）：\n" + lines.join("\n"),
+    };
   }
 
   /**
@@ -1802,6 +1883,14 @@ export class Agent {
     if (this.delegateDepth >= MAX_DELEGATE_DEPTH) return delegateFailed(`错误：子任务已达到最大委派深度（${MAX_DELEGATE_DEPTH} 层）`);
     if (!this.delegateBudget.consume()) return delegateFailed(`错误：本次任务最多创建 ${MAX_DELEGATE_CALLS} 个子 Agent`);
 
+    // H-4：契约本身写坏了要在委派前拒绝，不等跑完才发现。
+    let schema: Record<string, unknown> | null = null;
+    if (opts.outputSchema !== undefined) {
+      const schemaError = checkOutputSchema(opts.outputSchema);
+      if (schemaError) return delegateFailed(`错误：${schemaError}`);
+      schema = opts.outputSchema;
+    }
+
     const taskId = `task-${randomBytes(4).toString("hex")}`;
     const notes: string[] = [];
 
@@ -1894,6 +1983,21 @@ export class Agent {
       }
     }
 
+    // H-2/H-3：委派调用点自动注册——子任务从此在注册表里有一行，花名册
+    // 看得见、stop/steer 找得到、心跳有地方落。注册表写不上时不毁掉委派，
+    // 只记一条备注、本次无花名册/停止/引导支持（检查点认 subagentRunId，
+    // 没注册就不设）。
+    let registered = false;
+    try {
+      registerSubagentRun(this.home, {
+        runId: taskId, agent: this.soulAgent, workdir: childWorkdir, mode: this.mode,
+        parentRunId: this.subagentRunId ?? undefined,
+      });
+      registered = true;
+    } catch (err: unknown) {
+      notes.push(`子 agent 注册表写入失败，本次无花名册/停止/引导支持：${err instanceof Error ? err.message : String(err)}`);
+    }
+
     const child = new Agent(provider, {
       workdir: childWorkdir,
       mode: this.mode,
@@ -1910,6 +2014,9 @@ export class Agent {
       sessionRules: this.ctx.sessionRules ?? null,
       delegateDepth: this.delegateDepth + 1,
       delegateBudget: this.delegateBudget,
+      // H-2/H-3：子 agent 的注册表行 id——检查点（引导消费 + 停止响应 +
+      // 心跳）认它；没注册成功时传 null，检查点不跑。
+      subagentRunId: registered ? taskId : null,
       // 缺口 3a：并行线程的收敛规则写进子任务的系统提示（只做自己那件任务、
       // 不碰别线程的文件、收尾写收敛小结）；串行 delegate 不受影响。
       systemInstructions: opts.parallel
@@ -1970,6 +2077,22 @@ export class Agent {
     // 已经花的钱不能凭空消失，否则账本与单次硬顶都会漏计。
     let delegateUsageRecorded = false;
     let childSpentUsd: number | null = null;
+    // H-4：本轮契约校验结论（没给契约时保持 undefined）。
+    let schemaResult: DelegateResult["schema"];
+    // H-2：检查点里消费掉的引导，由父级在子任务结束后补进父级证据链
+    // （子 agent 自己没有 RunStore，消费时只在注册表上标 consumedAt）。
+    const consumedSteerIds = new Set<string>();
+    const emitConsumedSteers = (): void => {
+      if (!registered) return;
+      let row;
+      try { row = getSubagentRun(this.home, taskId); } catch { return; }
+      for (const s of row.steerQueue) {
+        if (s.consumedAt && !consumedSteerIds.has(s.id)) {
+          consumedSteerIds.add(s.id);
+          try { this.emit("subagent_steer_consumed", { run_id: taskId, by: s.by, steer_id: s.id }); } catch { /* ignore */ }
+        }
+      }
+    };
     const recordChildUsage = (): void => {
       if (delegateUsageRecorded) return;
       delegateUsageRecorded = true;
@@ -2020,11 +2143,18 @@ export class Agent {
       let firstFailNote = "";
       let cleanedNoChanges = false;
       let attempts = 0;
+      // H-3：本轮是否因已请求停止而提前交回——是的话行状态不标 completed，
+      // 留给人用 confirm-stopped 确认（停没停下以确认为准）。
+      let stoppedByRequest = false;
+      // H-4：契约写进任务文本——子 agent 事先看到输出契约；重做轮同样带契约。
+      const schemaNote = schema
+        ? `\n\n（结构化输出契约：你的最终回答里必须包含一段 JSON，且必须符合以下 JSON Schema；JSON 之外不要再写自由文本总结。\n${JSON.stringify(schema)}\n）`
+        : "";
       while (attempts < (reworkOn ? 2 : 1)) {
         attempts += 1;
         const taskText = attempts === 1
-          ? task
-          : `${task}\n\n（验收打回重做：上一次验收未通过——${firstFailNote}请只改这些问题，不要重做已通过的部分。）`;
+          ? task + schemaNote
+          : `${task}\n\n（验收打回重做：上一次验收未通过——${firstFailNote}请只改这些问题，不要重做已通过的部分。）${schemaNote}`;
         summary = await child.run(taskText);
         // 缺口 19：SubagentStop 钩子——只通知，不拦截；失败只警告。
         await this.runSubagentStopHook(taskId, task, true);
@@ -2046,6 +2176,35 @@ export class Agent {
             cleanedNoChanges = true;
           }
         }
+        // H-2：检查点里消费掉的引导补进父级证据链。
+        emitConsumedSteers();
+        // H-3：已请求停止——不验收、不重做，部分成果直接交回。
+        try { stoppedByRequest = registered && isStopRequested(this.home, taskId); } catch { stoppedByRequest = false; }
+        if (stoppedByRequest) {
+          verification = { status: "not-verified", note: "已请求停止，部分成果见摘要" };
+          break;
+        }
+        // H-4：契约校验 + 一次有界纠正轮（只纠格式/缺字段，不重做任务本身）。
+        if (schema) {
+          let check = validateOutputSchema(summary, schema);
+          let corrected = false;
+          if (!check.valid) {
+            corrected = true;
+            summary = await child.run(
+              `（结构化输出契约校验未通过：${check.errors.join("；")}。请只修正这些问题，重新输出符合契约的 JSON，不要重做任务本身。）`,
+            );
+            emitConsumedSteers();
+            check = validateOutputSchema(summary, schema);
+          }
+          schemaResult = { valid: check.valid, errors: check.errors, corrected };
+          if (!check.valid) {
+            verification = {
+              status: "failed",
+              note: `结构化输出契约未通过：${check.errors[0] ?? "格式不符"}（schema_valid: false，原文已保留）`,
+            };
+            break;
+          }
+        }
         verification = await this.verifyDelegateResult(taskId, task, summary, changedFiles, diffStat, worktreePath);
         if (verification.status !== "failed") break;
         if (!reworkOn || attempts >= 2) break;
@@ -2057,6 +2216,9 @@ export class Agent {
         } catch { /* 观察器故障绝不破坏主流程 */ }
       }
       recordChildUsage();
+      // H-3：已请求停止而提前交回的行不标 completed——停没停下以人的
+      // confirm-stopped 确认为准，行留在 running + stopRequestedAt。
+      if (registered && !stoppedByRequest) finishSubagentRun(this.home, taskId, "completed");
       // 缺口 21：子任务结束（成功路径）——轮数取子 agent 实际跑的轮数。
       try {
         this.emit("delegate_end", { task_id: taskId, ok: true, turns: child.turn, spent_usd: childSpentUsd, verification: verification.status });
@@ -2068,19 +2230,28 @@ export class Agent {
         : verification.status === "failed"
           ? `\n\n验收：未通过${verification.method ? `（${verification.method}）` : ""}——${verification.note}${reworked ? "（已打回重做 1 次，仍未通过）" : "（未重做：rework 未开启或无改动可改）"}`
           : `\n\n验收：未验收——${verification.note}`;
+      // H-4：契约结论写进交回文本——通过还是未通过、纠过几次，一眼可见；
+      // 未通过时原文已保留在摘要里，不静默接受坏结果。
+      const schemaLine = schemaResult
+        ? schemaResult.valid
+          ? `\n\n结构化输出：校验通过（schema_valid: true）${schemaResult.corrected ? "（纠正 1 次后通过）" : ""}`
+          : `\n\n结构化输出：校验未通过（schema_valid: false）——${schemaResult.errors[0] ?? "格式不符"}；原文已保留，未静默接受。`
+        : "";
+      const schemaOverride = schemaResult ? { schema: schemaResult } : {};
       if (!worktreePath) {
-        return detail(head + summary + cleanedNote + verdictLine, { verification });
+        return detail(head + summary + cleanedNote + verdictLine + schemaLine, { verification, ...schemaOverride });
       }
       return detail(
         head + summary +
         `\n\n（worktree 隔离：改动留在独立工作树，主工作区未受影响）\n路径：${worktreePath}\n` +
         (diffStat ? `diffstat：\n${diffStat}` : "") +
         `\n审查：git -C "${worktreePath}" diff HEAD\n合并后清理：git worktree remove --force "${worktreePath}"` +
-        verdictLine,
-        { worktreePath, changedFiles, diffStat: diffStat || null, verification },
+        verdictLine + schemaLine,
+        { worktreePath, changedFiles, diffStat: diffStat || null, verification, ...schemaOverride },
       );
     } catch (err: unknown) {
       recordChildUsage();
+      if (registered) finishSubagentRun(this.home, taskId, "failed");
       // 缺口 21：子任务结束（失败路径）。
       try {
         this.emit("delegate_end", { task_id: taskId, ok: false, turns: child.turn, spent_usd: childSpentUsd, verification: "not-verified" });
@@ -2166,6 +2337,7 @@ export class Agent {
           isolation: spec.isolation,
           ...(Array.isArray(spec.tools) ? { tools: spec.tools } : {}),
           ...(typeof spec.model === "string" && spec.model.trim() ? { model: spec.model.trim() } : {}),
+          ...(spec.outputSchema ? { outputSchema: spec.outputSchema } : {}),
           parallel: { index, total: tasks.length },
         });
         return {

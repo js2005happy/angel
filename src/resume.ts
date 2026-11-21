@@ -63,9 +63,23 @@ export interface SubagentRun {
   stopNote: string | null;
   /** H-3：确认停下的时间（可空）。 */
   stoppedAt: string | null;
+  /** H-2：排队等消费的引导（每条含 id/文本/发起人/排队与消费时间）。 */
+  steerQueue: QueuedSteer[];
   createdAt: string;
   updatedAt: string;
 }
+
+/** H-2：一条排队中的引导——子 agent 在下一个检查点消费；在跑的工具调用不被打断。 */
+export interface QueuedSteer {
+  id: string;
+  text: string;
+  by: string;
+  queuedAt: string;
+  consumedAt: string | null;
+}
+
+/** H-2：引导文本上限（1000 字）——检查点消息里整条带给模型，太长会撑爆上下文。 */
+export const MAX_STEER_TEXT_LENGTH = 1000;
 
 export interface SubagentRegistry {
   version: 1;
@@ -106,6 +120,7 @@ export function loadSubagentRegistry(home: string): SubagentRegistry {
   }
   // H-3：老注册表里的行没有 parentRunId/stop* 字段，读时补 null，
   // 下次保存即回写——只加字段，不改旧行的语义。
+  // H-2：同款——老行没有 steerQueue，读时补空数组。
   const registry = raw as SubagentRegistry;
   for (const row of registry.runs) {
     if (row.parentRunId === undefined) row.parentRunId = null;
@@ -113,6 +128,7 @@ export function loadSubagentRegistry(home: string): SubagentRegistry {
     if (row.stopRequestedBy === undefined) row.stopRequestedBy = null;
     if (row.stopNote === undefined) row.stopNote = null;
     if (row.stoppedAt === undefined) row.stoppedAt = null;
+    if (!Array.isArray(row.steerQueue)) row.steerQueue = [];
   }
   return registry;
 }
@@ -166,6 +182,7 @@ export function registerSubagentRun(
     mandateId: opts.mandateId ?? null,
     parentRunId: opts.parentRunId ?? null,
     stopRequestedAt: null, stopRequestedBy: null, stopNote: null, stoppedAt: null,
+    steerQueue: [],
     createdAt: at, updatedAt: at,
   };
   registry.runs.push(row);
@@ -430,6 +447,86 @@ export function isStopRequested(home: string, runId: string): boolean {
   } catch { return false; }
 }
 
+// H-2：单点引导（排队式，不打断在跑的调用）。
+//
+// 引导只确认“已排队”，不谎称“已送达”：queueSteer 把文本写进注册表行的
+// steerQueue，子 agent 在委派检查点（runLoop 每轮工具调用跑完、下一轮
+// 模型调用之前）消费；消费时只改接下来的方向，不改已做过的、不改已发出
+// 去的动作。引导文本是用户指令，进证据链（subagent_steer_queued 在父
+// 运行的事件链里，subagent_steer_consumed 由父级在子任务结束后补记）；
+// 引导不能绕过红线（deny 的动作仍拒），也不能给子 agent 加它没有的权限
+// ——检查点只递纸条，不改工具白名单、不改模式、不改审批。
+export function queueSteer(
+  home: string,
+  runId: string,
+  text: string,
+  opts?: { by?: string },
+): QueuedSteer {
+  const clean = (text ?? "").trim();
+  if (!clean) throw new ResumeError("引导文本不能为空");
+  if (clean.length > MAX_STEER_TEXT_LENGTH) {
+    throw new ResumeError(`引导文本太长（${clean.length} 字，上限 ${MAX_STEER_TEXT_LENGTH} 字），请拆短再发`);
+  }
+  const by = (opts?.by ?? "operator").slice(0, 60);
+  const registry = loadSubagentRegistry(home);
+  const row = getRun(registry, runId);
+  if (row.status !== "running" && row.status !== "resume_pending") {
+    throw new ResumeError(`只能给 running/resume_pending 的子 agent 排引导，${runId} 当前为 ${row.status}`);
+  }
+  const steer: QueuedSteer = {
+    id: `steer-${randomBytes(4).toString("hex")}`,
+    text: clean,
+    by,
+    queuedAt: nowIso(),
+    consumedAt: null,
+  };
+  row.steerQueue.push(steer);
+  row.updatedAt = nowIso();
+  saveSubagentRegistry(home, registry);
+  // 事件记在父运行的链上（委派行本身没有独立的 RunStore）；父运行找不
+  // 到时只记队列不记事件，队列才是事实来源，不静默丢引导。
+  if (row.parentRunId) {
+    const found = findRunStore(home, row.parentRunId);
+    if (found) {
+      try {
+        found.store.appendEvent(row.parentRunId, "subagent_steer_queued", {
+          run_id: runId, by, steer_id: steer.id, text: clean.slice(0, 500),
+        });
+      } catch { /* 事件写不上不破坏排队 */ }
+    }
+  }
+  return steer;
+}
+
+/** 委派检查点消费引导：取回尚未消费的，逐条标 consumedAt。只在子 agent
+ * 自己的检查点里调；调用方把返回的文本当用户消息递给模型。 */
+export function consumeSteers(home: string, runId: string): QueuedSteer[] {
+  const registry = loadSubagentRegistry(home);
+  const row = getRun(registry, runId);
+  const pending = row.steerQueue.filter((s) => !s.consumedAt);
+  if (!pending.length) return [];
+  const at = nowIso();
+  for (const s of pending) s.consumedAt = at;
+  row.updatedAt = at;
+  saveSubagentRegistry(home, registry);
+  return pending;
+}
+
+/** 委派结束时回写行状态（执行结论，不含验收结论）：子任务正常跑完标
+ * completed，抛错标 failed；已终态的行不动。写不上注册表不破坏委派结果。 */
+export function finishSubagentRun(home: string, runId: string, status: "completed" | "failed"): void {
+  try {
+    const registry = loadSubagentRegistry(home);
+    const row = registry.runs.find((r) => r.runId === runId);
+    if (!row) return;
+    if (row.status === "completed" || row.status === "failed" || row.status === "stopped" || row.status === "suspended") return;
+    row.status = status;
+    row.stopReason = status === "completed" ? "completed" : "unknown";
+    row.updatedAt = nowIso();
+    saveSubagentRegistry(home, registry);
+  } catch { /* 注册表写不上不破坏委派结果 */ }
+}
+
 function appendStopEvent(home: string, runId: string, type: string, fields: Record<string, unknown>): void {
   const found = findRunStore(home, runId);
   if (!found) return;
@@ -539,7 +636,7 @@ export function cancelSubagentStop(home: string, runId: string, opts?: { by?: st
 }
 
 const USAGE =
-  "用法：nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop> [选项]\n" +
+  "用法：nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop|steer> [选项]\n" +
   "  list [--status running|resume_pending|suspended|completed|failed|stopped] [--agent <名字>] [--json]\n" +
   "  show <运行 id> [--json]\n" +
   "  register <运行 id> [--agent <名字>] [--workdir <目录>] [--mode readonly|auto] [--auto-resume] [--unattended] [--parent <父运行 id>]\n" +
@@ -549,7 +646,8 @@ const USAGE =
   "  suspend <运行 id>\n" +
   "  stop <运行 id> --yes [--reason \"<原因>\"] [--by <名字>]   请求停止（沿 parentRunId 递归停子树；只记请求，停没停下以 confirm-stopped 为准）\n" +
   "  confirm-stopped <运行 id> [--step \"<停在哪一步>\"] [--by <名字>]   确认已停下（只对已停的事实断言，没停不要调）\n" +
-  "  cancel-stop <运行 id> [--by <名字>]   取消停止请求（任务板任务若已进 review，等人用 kanban decide 定）\n";
+  "  cancel-stop <运行 id> [--by <名字>]   取消停止请求（任务板任务若已进 review，等人用 kanban decide 定）\n" +
+  "  steer <运行 id> \"<引导文本>\" --yes [--by <名字>]   排队引导（只确认“已排队”，子 agent 在下一个检查点消费；在跑的工具调用不会被打断）\n";
 
 export async function handleSubagent(argv: string[], home: string): Promise<number> {
   const action = argv[0];
@@ -673,6 +771,21 @@ export async function handleSubagent(argv: string[], home: string): Promise<numb
       }
       const row = cancelSubagentStop(resolvedHome, runId, { by: get("--by") });
       process.stdout.write(`${row.runId} 的停止请求已取消（回到 ${row.status}，可正常续跑）。\n`);
+      return 0;
+    }
+    if (action === "steer") {
+      const runId = argv[1] ?? "";
+      const text = argv[2] ?? "";
+      if (!runId || !text) {
+        process.stderr.write("错误：用法：nyra subagent steer <运行 id> \"<引导文本>\" --yes [--by <名字>]\n");
+        return 2;
+      }
+      if (!argv.includes("--yes")) {
+        process.stderr.write("给在跑的子 agent 发引导须加 --yes 确认：nyra subagent steer <运行 id> \"<引导文本>\" --yes（只确认“已排队”，子 agent 在下一个检查点才消费）\n");
+        return 2;
+      }
+      const steer = queueSteer(resolvedHome, runId, text, { by: get("--by") });
+      process.stdout.write(`引导已排队：${steer.id}（子 agent 在下一个检查点消费；在跑的工具调用不会被打断；排队不等于已送达）。\n`);
       return 0;
     }
     process.stderr.write(`错误：未知子命令 subagent ${action}\n${USAGE}`);

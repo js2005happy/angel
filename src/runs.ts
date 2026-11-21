@@ -138,6 +138,11 @@ subagent_suspended: ["run_id", "restarts"],
 subagent_stop_requested: ["run_id", "by", "step"],
 subagent_stopped: ["run_id", "by", "step"],
 subagent_stop_cancelled: ["run_id", "by"],
+// H-2：单点引导进证据链——排队（哪个运行、谁发起、哪条引导、引导原文节选）、
+// 消费（哪个运行、哪条引导、谁发起）。引导是用户指令，原文进证据链；
+// 只确认“已排队”，不谎称“已送达”。
+subagent_steer_queued: ["run_id", "by", "steer_id", "text"],
+subagent_steer_consumed: ["run_id", "by", "steer_id"],
 // DSH-4：先存后做进证据链——记下来（哪个副作用、什么类型）、恢复结论
 // （哪个副作用、已做过/重新执行/失败）。只记元数据，不记参数原文。
 side_effect_recorded: ["effect_id", "kind"],

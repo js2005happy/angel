@@ -29,6 +29,8 @@ maxTurns?: number;
 isolation?: "none" | "worktree";
 tools?: string[];
 model?: string;
+/** H-4：结构化输出契约（JSON Schema），与 delegate 的 output_schema 同义。 */
+outputSchema?: Record<string, unknown>;
 }
 
 export type ParallelThreadStatus = "ok" | "failed" | "timeout" | "rejected";

@@ -121,6 +121,9 @@ export interface DelegateOptions {
   model?: string;
   /** 缺口 3a：并行线程身份（第 index+1 个，共 total 个）——agent.ts 据此把收敛规则写进子任务系统提示。 */
   parallel?: { index: number; total: number };
+  /** H-4：结构化输出契约（JSON Schema）：子 agent 的最终回答里必须包含
+   * 符合它的 JSON；父级校验，失败给一次有界纠正轮，仍失败标 schema_valid: false 并保留原文。 */
+  outputSchema?: Record<string, unknown>;
 }
 
 export interface ToolContext {
@@ -342,13 +345,14 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
   schema("read_skill", "按名读取一个技能的全文（描述、适用时机与完整步骤）。只读，不改文件、不需审批；不存在的技能名会返回可用技能列表",
     { name: { type: "string", description: "技能名，如 debugging" } },
     ["name"]),
-  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响",
+  schema("delegate", "把子任务交给子 agent 执行并返回摘要；每次主任务最多 8 个子 agent，最多嵌套 3 层，单个子任务最多 12 轮。isolation=worktree 时子 agent 在独立 git worktree 里干活，主工作区不受影响；output_schema 给了时子 agent 的最终回答里必须包含符合该 JSON Schema 的 JSON，父级校验、失败给一次有界纠正轮",
     {
       task: { type: "string", minLength: 1 },
       max_turns: { type: "integer", default: 6, minimum: 1, maximum: 12 },
       isolation: { type: "string", enum: ["none", "worktree"], default: "none" },
       tools: { type: "array", items: { type: "string" } },
       model: { type: "string" },
+      output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象）" },
     },
     ["task"]),
   schema("delegate_parallel", "把多个互不依赖的子任务并行交给子 agent 跑并汇总结果（缺口 3a，opt-in：只有显式调这个工具才并行）。默认最多 5 个同时跑（硬顶，给再大也只按 5 跑）、单个子任务 10 分钟超时；失败/超时的线程不拖垮其他线程，只返回成功者的结果并注明失败原因与已花成本。每个线程继承 delegate 的工具白名单与 worktree 隔离，收敛规则写进子任务系统提示；本批不做自动验证，验证结论待 review queue 验收",
@@ -363,9 +367,10 @@ export const TOOL_SCHEMAS: Record<string, unknown>[] = [
             isolation: { type: "string", enum: ["none", "worktree"] },
             tools: { type: "array", items: { type: "string" } },
             model: { type: "string" },
+            output_schema: { type: "object", description: "结构化输出契约（JSON Schema 对象），与 delegate 同义" },
           },
         },
-        description: "并行子任务列表（每项至少含 task；isolation/tools/model 与 delegate 同义）",
+        description: "并行子任务列表（每项至少含 task；isolation/tools/model/output_schema 与 delegate 同义）",
       },
       max_concurrency: { type: "integer", default: 5, minimum: 1, maximum: 5, description: "同时跑的线程数上限，默认 5，也是硬顶" },
       timeout_ms: { type: "integer", default: 600000, minimum: 1000, description: "单个子任务超时（毫秒），默认 600000（10 分钟），到点即判该线程超时" },
@@ -2061,6 +2066,9 @@ async function toolDelegateParallel(
       if (tools.length) spec.tools = tools;
     }
     if (typeof raw.model === "string" && raw.model.trim()) spec.model = raw.model.trim();
+    if (raw.output_schema && typeof raw.output_schema === "object" && !Array.isArray(raw.output_schema)) {
+      spec.outputSchema = raw.output_schema as Record<string, unknown>;
+    }
     tasks.push(spec);
   }
   return ctx.delegateParallelFn(tasks, {
@@ -2507,6 +2515,8 @@ export async function executeTool(name: string, args: Record<string, unknown>, c
           isolation: args.isolation === "worktree" ? "worktree" : "none",
           ...(Array.isArray(args.tools) ? { tools: (args.tools as unknown[]).map((t) => String(t)).filter(Boolean) } : {}),
           ...(typeof args.model === "string" && args.model.trim() ? { model: args.model.trim() } : {}),
+          ...(args.output_schema && typeof args.output_schema === "object" && !Array.isArray(args.output_schema)
+            ? { outputSchema: args.output_schema as Record<string, unknown> } : {}),
         },
       );
       case "delegate_parallel": return await toolDelegateParallel(

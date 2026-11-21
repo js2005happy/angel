@@ -469,6 +469,17 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 的停止请求已取消（${by}）`, null, null, null);
         break;
       }
+      case "subagent_steer_queued": {
+        const by = str(ev.by) ?? "未记发起人";
+        const text = str(ev.text) ?? "";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 收到引导（${by} 排队）`, text ? `引导：${text.slice(0, 60)}` : null, null, null);
+        break;
+      }
+      case "subagent_steer_consumed": {
+        const by = str(ev.by) ?? "未记发起人";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 已消费引导（${by}）`, null, null, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";
