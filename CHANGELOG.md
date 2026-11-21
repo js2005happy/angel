@@ -1,3 +1,8 @@
+## Unreleased — 2026-11-21 research-only security gate
+
+- Recorded [Codex #61872](https://github.com/openai/codex/issues/61872) as external evidence for bounded deliverable acceptance and long-task convergence; distinguished the report from Angel defects and engineering inference.
+- No runtime source change: Linux mount-namespace races, Windows handle-based checks, and integration of experimental claim into actual dispatch remain unresolved. Avoided speculative security changes that could falsely imply stronger guarantees. Static review only; no tests or CI run.
+
 ## Unreleased — 2026-11-21 Linux claim close-on-exec hardening
 
 - Explicitly request `O_CLOEXEC` when opening both the Linux claim directory fd and exclusive claim file fd, to avoid accidental descriptor inheritance into executed child processes. Defense in depth; runtime already may set this flag. No new dependencies or automatic replay.
