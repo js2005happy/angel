@@ -112,6 +112,7 @@ import { handlePeer } from "./peer.ts";
 import { reviewBusinessAction, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
 import { handleVoiceCall } from "./voiceCall.ts";
+import { handleVideo } from "./videoCall.ts";
 import { handleSoul, resolveSoulAgentId } from "./soul.ts";
 import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
@@ -133,6 +134,7 @@ nyra --voice <音频路径> ["任务"]   语音指挥：先转文字再当任务
 nyra "任务" --speak   任务跑完后把结果读出来（默认关；只读结果前 500 字）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
+nyra video <call|signal|ice>   视频通话 + 按需视觉采样：信令 + TURN + ICE 直连传输，帧按需看（本地优先，云端默认关；详见 docs/video-call.md）
 --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
 nyra                                                        进入交互模式（REPL）
 nyra --help                    显示帮助（不用 Key、不联网）
@@ -181,6 +183,7 @@ nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对�
 nyra peer <status|enable|disable|list|auth|ask|handoff>   对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭，详见 docs/peer.md）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
+nyra video <call|signal|ice>   视频通话 + 按需视觉采样：信令 + TURN + ICE 直连传输，帧按需看（本地优先，云端默认关；详见 docs/video-call.md）
 nyra export --format docx|xlsx|pptx --from <内容 JSON> --out <路径>   成品导出：结构化内容写成可编辑的真办公文件（详见 docs/office.md）
 nyra media <status|enable|disable|ingest <链接> [--out <路径>]|setup|scope ...>   媒体抓取：公开视频先取字幕、没有再本地转写（默认关，须先 nyra media enable；详见 docs/media-ingest.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
@@ -236,6 +239,7 @@ nyra --voice <audio path> ["task"]   voice command: transcribe first, then run i
 nyra "task" --speak   read the result aloud after the run (off by default; only the first 500 chars)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
+nyra video <call|signal|ice>   video call + on-demand frame sampling: signaling + TURN + ICE direct transport, frames seen on demand (local first, cloud off by default; see docs/video-call.md)
 --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
 nyra                                                        interactive mode (REPL)
 nyra --help                    show help (no key, no network)
@@ -285,6 +289,7 @@ nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   exter
 nyra peer <status|enable|disable|list|auth|ask|handoff>   peer collaboration: ask another Nyra instance, hand off run context (off by default, see docs/peer.md)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
+nyra video <call|signal|ice>   video call + on-demand frame sampling: signaling + TURN + ICE direct transport, frames seen on demand (local first, cloud off by default; see docs/video-call.md)
 nyra export --format docx|xlsx|pptx --from <content JSON> --out <path>   export a finished office file from structured content (see docs/office.md)
 nyra media <status|enable|disable|ingest <url> [--out <path>]|setup|scope ...>   media ingest: public videos, subtitles first, local transcription fallback (off by default, run nyra media enable first; see docs/media-ingest.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
@@ -5446,6 +5451,7 @@ export async function main(argv: string[]): Promise<number> {
     if (sub[0] === "call") return handleVoiceCall(sub.slice(1), home);
     return handleVoice(sub, home);
   }
+  if (args.subcommand === "video") return handleVideo(args.subArgs ?? [], home);
   if (args.subcommand === "export") return handleExport(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "media") return handleMedia(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);

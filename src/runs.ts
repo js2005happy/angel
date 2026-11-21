@@ -235,6 +235,22 @@ voice_call_transcribed: ["call_id", "segment_id", "vad", "seconds", "chars", "en
 voice_call_spoken: ["call_id", "segment_id", "chars", "engine", "cost_usd"],
 voice_call_blocked: ["call_id", "segment_id", "reason", "text_hash"],
 voice_call_confirmed: ["call_id", "segment_id", "reason"],
+// 缺口 37：视频通话进证据链——通话 id、帧 id、ICE 对、字节数、图像指纹、
+// 花费。只记元数据与 SHA-256 前 12 位指纹，不记图像内容与绝对路径。
+video_call_started: ["call_id", "agent", "peer", "transport"],
+video_call_answered: ["call_id"],
+video_call_declined: ["call_id"],
+video_call_ended: ["call_id", "duration_seconds", "frames", "frames_described", "bytes_in", "bytes_out", "cost_usd", "held"],
+video_call_transport_connected: ["call_id", "ice_pair", "relayed", "rtt_ms"],
+video_call_transport_failed: ["call_id", "reason"],
+video_frame_sampled: ["call_id", "frame_id", "mode", "engine", "image_hash", "cost_usd"],
+video_frame_blocked: ["call_id", "frame_id", "reason", "text_hash"],
+video_frame_confirmed: ["call_id", "frame_id", "reason"],
+video_frame_skipped: ["call_id", "mode", "reason"],
+video_frame_sent: ["call_id", "frame_id", "bytes"],
+video_frame_received: ["call_id", "frame_id", "bytes", "image_hash"],
+video_call_degraded: ["call_id", "reason"],
+video_call_restored: ["call_id"],
 // 缺口 23：办公成品导出进证据链——格式、字节数、核查结论（已核实/未核实数、
 // 文件指纹）。只记元数据与指纹，不记文件全文与绝对路径。
 office_exported: ["format", "bytes", "verified", "unverified", "file_hash"],
