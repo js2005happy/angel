@@ -1,3 +1,10 @@
+## 2026-11-21 — P0 Linux claim 路径词法规范化门禁（仅静态审阅）
+
+- **仓库事实**：`checkPrivateDirectory` 用 `resolve(directory)` 检查祖先，但 `openSync(directory)` 打开原始路径；含 `..`、`.`、重复分隔符或尾部斜杠的路径可能让词法祖先检查与实际内核路径遍历不一致。新增 `directory === resolve(directory)` 要求，非规范绝对路径失败关闭；不改已有合法规范路径、claim 格式或工具派发。仅 Linux 实验性模块，未接入主运行时。
+- **公开反馈事实**：2026-10-27 [Codex #57549](https://github.com/openai/codex/issues/57549) 报告委派后停止继续工作；2026-08-25 [Codex #40646](https://github.com/openai/codex/issues/40646) 报告执行声明缺少工具轨迹支持。两者是外部个案，不证明 Angel 存在同类问题或总体发生频率。**工程推断**：操作状态应绑定明确、不可歧义的存储位置，再讨论恢复或证明。
+- **候选优先级（价值／难度／安全风险／依赖）**：本项 P0 中／低／低／Node path（已提交、待测试）；P0 Linux procfs 挂载竞态 高／高／高／可信 mount namespace；P0 Windows reparse 句柄保护 高／高／高／Windows 原生 API；P0 claim 接入真实派发 高／高／高／可信存储和审批；P1 MCP 动态工具目录检测 中高／中／中／MCP；P1 可核验副作用回执 高／高／高／工具适配器。
+- **限制**：规范化拒绝是输入门禁，不解决目录被并发替换、mount namespace、文件系统持久化或 exactly-once。未运行测试、编译、脚本或 CI。
+
 
 ## 2026-11-21 — P0 Linux claim 目录句柄最终关闭失败的错误归一化（仅静态审查）
 
