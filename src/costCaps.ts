@@ -728,6 +728,8 @@ export const AUDIT_SOURCES: AuditSource[] = [
   { file: "accounts-audit.jsonl", label: "accounts" },
   { file: "business-redlines-audit.jsonl", label: "redlines" },
   { file: "soul-audit.jsonl", label: "soul" },
+  // GROK-6：信任阶梯审计也是治理审计日志，进同一份 SIEM 导出。
+  { file: "trust-ladder-audit.jsonl", label: "trust" },
 ];
 
 /** 稳定序列化（键排序，递归）：同一条记录在任何机器上算出的哈希都一样。 */

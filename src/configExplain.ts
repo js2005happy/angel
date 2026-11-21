@@ -12,6 +12,7 @@ import { featureOn, resolveFeatures, type FeatureResolution } from "./features.t
 import { resolveAuxRouting, resolvePlanActRouting } from "./modelRouting.ts";
 import { resolveReasoningOptions } from "./reasoning.ts";
 import { resolveExtraDirs } from "./extraDirs.ts";
+import { resolveTrustLadderSettings } from "./trustLadder.ts";
 
 export type ExplainSource = "cli" | "config" | "env" | "default" | "conflict";
 
@@ -205,6 +206,20 @@ export function explainAll(input: ExplainInput): CapabilityExplain[] {
       source: valid ? "config" : "default",
       keys: ["delegate_max_depth"],
       note: "子 agent 默认不能再委派（flat）；委派时传 orchestrator: true 才允许嵌套，最多嵌套这么多层，每层预算独立记账",
+    });
+  }
+
+  // 10) GROK-6：信任阶梯（新 agent / 新技能默认只读，攒够证据才升级）
+  {
+    const s = resolveTrustLadderSettings(cfg);
+    const raw = (pick(cfg, "trust_ladder") ?? {}) as Record<string, unknown>;
+    const configured = raw.required_successes !== undefined || raw.spot_check_rate !== undefined;
+    out.push({
+      capability: "trust_ladder",
+      effective: `${s.requiredSuccesses} 次成功/级，抽查 ${Math.round(s.spotCheckRate * 100)}%`,
+      source: configured ? "config" : "default",
+      keys: ["trust_ladder.required_successes", "trust_ladder.spot_check_rate"],
+      note: "新 agent / 新技能登记后默认只读；每级要攒够连续成功且零违规才升一级，升级须人点头；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做",
     });
   }
 

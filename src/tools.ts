@@ -722,6 +722,32 @@ export async function checkApproval(
     throw new ToolError(`Soul 的 invariant 拦截了 ${toolName}：${soulBlock.reason}`);
   }
 
+  // GROK-6：信任阶梯——已登记的 agent 对外动作须够级。位置在 Soul invariant
+  // 之后、团队门之前：未登记的主体不在阶梯里（行为不变，老用户与既有测试不
+  // 受影响）；登记过的从只读起步，级别不够直接拦截，不走后面的 allow 快路
+  // 与幂等重试短路。门本身不判断对错，只按账本拦；审批不能放开它（与红线、
+  // Soul invariant 同款硬约束）。被拦记事件与审计。
+  const trustGate = await (async () => {
+    // 动态导入（与团队门同款原因：trustLadder 经 runs.ts 间接依赖 tools.ts，
+    // 静态导入会形成循环）。没配 home 时不导入，零额外开销。
+    if (!ctx.home) return null;
+    const tl = await import("./trustLadder.ts");
+    return tl.checkTrustGate(ctx.home, ctx.soulAgent ?? "default", toolName);
+  })();
+  if (trustGate) {
+    observeApproval(ctx, toolName, false);
+    try {
+      ctx.onEvent?.("trust_blocked", { agent: trustGate.agent, tool: toolName, level: trustGate.level, required_level: trustGate.required });
+    } catch { /* 观察器故障不破坏拦截 */ }
+    if (ctx.home) {
+      try {
+        const tl = await import("./trustLadder.ts");
+        tl.appendTrustGateAudit(ctx.home, trustGate);
+      } catch { /* 审计落盘失败不破坏拦截 */ }
+    }
+    throw new ToolError(`信任阶梯拦截了 ${toolName}：${trustGate.reason}`);
+  }
+
   // GROK-3：团队审批门——团队模式下，下游成员的对外动作（对外通信、采购、
   // 删除、发布）一律回参谋长/人批，不由子代理自批。位置在 Soul invariant
   // 之后、权限规则 allow 快路与幂等重试短路之前：deny 规则仍生效（下面照
@@ -2852,6 +2878,8 @@ const APPROVAL_REFUSAL_MARKERS = [
   "只读模式下不允许执行",
   "已被权限规则拒绝",
   "无人值守巡查为只读",
+  // GROK-6：信任阶梯是硬约束（与无人值守只读同款），被拦的写操作绝不重试。
+  "信任阶梯拦截",
 ];
 
 /** 该工具结果是不是一次审批拒绝（是就绝不重试，见 executeToolIdempotent）。 */

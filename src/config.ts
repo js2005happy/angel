@@ -118,6 +118,10 @@ export const DEFAULT_CONFIG: Record<string, unknown> = {
   // H-7：嵌套委派深度上限（默认 2，整数 1–5；非法回 2）。子 agent 默认
   // 不能再委派（flat），只有被授予 orchestrator 角色的才能再往下派。
   delegate_max_depth: 2,
+  // GROK-6：信任阶梯（见 docs/trust-ladder.md）。required_successes = 每级
+  // 升级要攒的连续成功次数（默认 5，整数 1–20，非法回 5）；spot_check_rate =
+  // 每次记成功被随机抽查的概率（默认 0.1，0–0.5，非法回 0.1）。
+  trust_ladder: { required_successes: 5, spot_check_rate: 0.1 },
   // 缺口 24：Plan/Act 分模型。plan_model = 规划阶段（--plan / buildPlan）用的强推理模型；
   // act_model = 执行阶段（Act）用的便宜模型（不填沿用主模型）。与主模型相同会被忽略。
   plan_model: null,

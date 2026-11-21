@@ -222,6 +222,18 @@ cost_cap_relaxed: ["scope", "field", "old_value", "new_value"],
 cost_cap_paused: ["pause_id", "agent", "scope"],
 cost_cap_resumed: ["pause_id", "agent"],
 cost_cap_discarded: ["pause_id", "agent"],
+// GROK-6（信任阶梯，缺口 43 治理深化）：登记（哪类主体、哪个 id、哪一级）、
+// 证据（哪类主体、哪个 id、哪条证据、成功还是违规）、抽查挂起/复核（哪条证据、
+// 通过还是驳回）、升级/降级（哪类主体、哪个 id、升到/降到哪一级）、门拦截
+// （哪个 agent、哪个工具、当前哪一级、要求哪一级）。只记 id 与级别，不记原文、
+// 不记绝对路径；evidence_id 是 ev_ + 12 位十六进制，不会被 redact 当长词串掩掉。
+trust_registered: ["kind", "subject_id", "level"],
+trust_evidence_recorded: ["kind", "subject_id", "evidence_id", "outcome"],
+trust_spot_check_flagged: ["kind", "subject_id", "evidence_id"],
+trust_spot_check_reviewed: ["evidence_id", "decision"],
+trust_promoted: ["kind", "subject_id", "level"],
+trust_demoted: ["kind", "subject_id", "level"],
+trust_blocked: ["agent", "tool", "level", "required_level"],
 // 缺口 44 第 0 批：连接器授权状态机进证据链——授权（哪个连接器、哪个用户、
 // scope 指纹）、过期（哪个连接器、哪个用户、为什么）、撤销（哪个连接器、
 // 哪个用户）。token 本身绝不进事件，只记指纹；scope 指纹截到 12 位，免得

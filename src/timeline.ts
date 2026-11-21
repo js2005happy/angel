@@ -538,6 +538,27 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
       case "goal_item_linked":
         push(at, "event", `目标 ${str(ev.goal_id) ?? "?"} 的清单项已关联任务板任务`, str(ev.task_id) ? `任务 ${str(ev.task_id)}` : null, null, null);
         break;
+      case "trust_registered":
+        push(at, "event", `${str(ev.kind) ?? "?"} ${str(ev.subject_id) ?? "?"} 已登记进信任阶梯`, `起步 ${str(ev.level) ?? "?"}级`, null, null);
+        break;
+      case "trust_evidence_recorded":
+        push(at, "event", `${str(ev.kind) ?? "?"} ${str(ev.subject_id) ?? "?"} 记了一条验证证据`, str(ev.outcome) === "success" ? "成功" : str(ev.outcome) === "violation" ? "违规" : null, str(ev.outcome) === "success" ? true : str(ev.outcome) === "violation" ? false : null, null);
+        break;
+      case "trust_spot_check_flagged":
+        push(at, "event", `${str(ev.kind) ?? "?"} ${str(ev.subject_id) ?? "?"} 的一条证据被随机抽查选中`, "待复核才计入升级", null, null);
+        break;
+      case "trust_spot_check_reviewed":
+        push(at, "event", `抽查证据已复核：${str(ev.decision) === "approve" ? "通过，计入升级" : "驳回，按违规算"}`, null, str(ev.decision) === "approve" ? true : str(ev.decision) === "reject" ? false : null, null);
+        break;
+      case "trust_promoted":
+        push(at, "event", `${str(ev.kind) ?? "?"} ${str(ev.subject_id) ?? "?"} 已升级`, `升到 ${str(ev.level) ?? "?"}级`, true, null);
+        break;
+      case "trust_demoted":
+        push(at, "event", `${str(ev.kind) ?? "?"} ${str(ev.subject_id) ?? "?"} 已降级`, `降到 ${str(ev.level) ?? "?"}级`, false, null);
+        break;
+      case "trust_blocked":
+        push(at, "event", `信任阶梯拦截了 ${str(ev.tool) ?? "?"}`, `agent ${str(ev.agent) ?? "?"} 当前 ${str(ev.level) ?? "?"}级，要求 ${str(ev.required_level) ?? "?"}级`, false, null);
+        break;
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

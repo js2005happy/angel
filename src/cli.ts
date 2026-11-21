@@ -78,6 +78,7 @@ import { handleRoster } from "./roster.ts";
 import { handleSideEffects } from "./sideEffects.ts";
 import { handleHeartbeat } from "./heartbeat.ts";
 import { handleGovernance } from "./governance.ts";
+import { handleTrust } from "./trustLadder.ts";
 import { makeTieredCapCheck, type TieredCtxHolder } from "./costCaps.ts";
 import { handleOptimize } from "./optimizer.ts";
 import { handleSso } from "./sso.ts";
@@ -173,6 +174,7 @@ nyra governance <policy|mandate|mode|dry-runs>   企业治理：版本化策略 
 nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   分层成本上限：按 Bot/角色/团队/人设设月度上限，触顶进可恢复暂停态
 nyra governance audit <export|verify>   审计导出：治理审计日志导出给 SIEM（JSONL + 哈希链，可验证）
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   带人批的自优化环：只起草改指令建议，须人批才生效，三数据集 + holdout 定放行（详见 docs/governance.md）
+nyra trust <register|list|show|evidence|promote|demote|review|check>   信任阶梯（GROK-6，缺口 43 治理深化）：新 agent / 新技能默认只读，攒够 N 次连续成功且零违规才升一级；每次记成功有概率被随机抽查，抽中须复核才计入；降级随时可做（详见 docs/trust-ladder.md）
 nyra restore [检查点] [--mode both|files|session]   从影子快照恢复文件与会话（不带参数列出检查点，详见 docs/shadow-snapshots.md）
 nyra redlines [--json]         上线红线自检：证据/权限/沙箱/成本/钩子（--json 给 CI 按 code 判定）
 nyra verdict [任务] [--json]     一条结论：这次跑得值不值（红线+省钱+回忆+历史）
@@ -284,6 +286,7 @@ nyra governance <policy|mandate|mode|dry-runs>   enterprise governance: versione
 nyra governance caps <set|list|show|check|assign-team|pause|resume|discard|pauses>   tiered cost caps: monthly USD/token limits per Bot/role/team/persona, over-cap tasks pause recoverably
 nyra governance audit <export|verify>   audit export: governance audit logs to SIEM (JSONL + hash chain, verifiable)
 nyra optimize <propose|list|show|edit|approve|reject|apply|verify|revert>   human-approved self-optimization loop: drafts instruction changes only, needs approval to apply, three datasets + holdout decide release (see docs/governance.md)
+nyra trust <register|list|show|evidence|promote|demote|review|check>   trust ladder (GROK-6, gap 43 governance): new agents / skills start read-only, earn one level per N consecutive successes with zero violations; each recorded success may be randomly spot-checked and only counts after review; demotion any time (see docs/trust-ladder.md)
 nyra restore [checkpoint] [--mode both|files|session]   restore files and session from a shadow snapshot (no argument lists checkpoints, see docs/shadow-snapshots.md)
 nyra redlines [--json]         production redlines: evidence/permissions/sandbox/cost/hooks (--json for CI)
 nyra verdict [task] [--json]   one conclusion: is this run worth it
@@ -5553,6 +5556,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
   if (args.subcommand === "goal") return handleGoal(args.subArgs ?? [], home);
+  if (args.subcommand === "trust") return handleTrust(args.subArgs ?? [], home);
   if (args.subcommand === "fanout") return handleFanout(args.subArgs ?? [], home);
   if (args.subcommand === "team") return handleTeamCommand(args, home);
   if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
