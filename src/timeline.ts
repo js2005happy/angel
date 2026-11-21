@@ -664,6 +664,35 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `监测「${str(ev.label) ?? "?"}」的动作${ev.ok ? "完成了" : "失败了"}`, `动作 ${str(ev.action) ?? "?"}：${str(ev.detail) ?? "?"}`, ev.ok ? true : false, null);
         break;
       }
+      // 缺口 45：持续责任语义（生命周期、升级、晨间简报）。
+      case "responsibility_paused": {
+        push(at, "event", `责任「${str(ev.responsibility_name) ?? "?"}」已暂停`, "巡查暂停，恢复前不跑", null, null);
+        break;
+      }
+      case "responsibility_resumed": {
+        push(at, "event", `责任「${str(ev.responsibility_name) ?? "?"}」已恢复`, "按原节奏继续巡查", null, null);
+        break;
+      }
+      case "responsibility_completed": {
+        push(at, "event", `责任「${str(ev.responsibility_name) ?? "?"}」已完成`, `验收通过 ${num(ev.checks_passed) ?? 0} 项、未通过 ${num(ev.checks_failed) ?? 0} 项`, true, null);
+        break;
+      }
+      case "responsibility_cancelled": {
+        push(at, "event", `责任「${str(ev.responsibility_name) ?? "?"}」已取消`, "取消是终态，不再巡查", null, null);
+        break;
+      }
+      case "responsibility_expired": {
+        push(at, "event", `责任「${str(ev.responsibility_name) ?? "?"}」已过期失效`, "到期自动失效，不永久驻留", null, null);
+        break;
+      }
+      case "responsibility_escalated": {
+        push(at, "event", `责任「${str(ev.responsibility_name) ?? "?"}」命中升级条件`, `条件「${str(ev.condition) ?? "?"}」，已进审阅队列 ${str(ev.item_id) ?? "?"} 等人批`, false, null);
+        break;
+      }
+      case "briefing_generated": {
+        push(at, "event", `晨间简报已生成（${str(ev.date) ?? "?"}）`, ev.quiet ? "无事安静，未打扰" : `进展 ${num(ev.progress_items) ?? 0} 条、待决策 ${num(ev.decision_items) ?? 0} 项、异常 ${num(ev.anomaly_items) ?? 0} 条`, null, null);
+        break;
+      }
       case "redline_changed": {
         const connector = str(ev.connector) ?? "未知连接器";
         const action = str(ev.action) ?? "未知动作";

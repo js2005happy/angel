@@ -86,6 +86,19 @@ mail_task_enqueued: ["message_id", "thread_id", "from", "subject", "run_id", "mo
 // 收件箱通知，不控制证据：没发现的巡查同样留一条报告事件。
 patrol_report: ["responsibility_id", "responsibility_name", "run_id", "findings", "reported"],
 patrol_write_blocked: ["tool", "reason"],
+// 缺口 45：持续责任语义进证据链——责任生命周期（暂停/恢复/完成/取消/过期）、
+// 巡查命中用户写明的升级条件（哪个条件、进了审阅队列哪一项）、晨间简报生成
+// （哪天、进展/待决策/异常各几条、无事安静时 quiet 为真）。生命周期事件没有
+// 运行上下文时走 evidence/responsibility/ 下的证据文件（见 responsibilities.ts
+// 的 recordResponsibilityEvent），不静默丢审计；巡查里的升级事件直接记进当次
+// 巡查运行的 events.jsonl。
+responsibility_paused: ["responsibility_id", "responsibility_name"],
+responsibility_resumed: ["responsibility_id", "responsibility_name"],
+responsibility_completed: ["responsibility_id", "responsibility_name", "checks_passed", "checks_failed"],
+responsibility_cancelled: ["responsibility_id", "responsibility_name"],
+responsibility_expired: ["responsibility_id", "responsibility_name"],
+responsibility_escalated: ["responsibility_id", "responsibility_name", "condition", "item_id"],
+briefing_generated: ["date", "progress_items", "decision_items", "anomaly_items", "quiet"],
 // 内置机器人市场：安装（哪个条目、哪个版本、哪种、哪个源、Bot Ready 评分、
 // 审查模型）、卸载（哪个条目、哪种）、发布（哪个条目、哪个版本、哪种、
 // 许可证、Bot Ready 评分）。事件里只记名字与来源 id，不记绝对路径——
