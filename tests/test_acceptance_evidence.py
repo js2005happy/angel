@@ -26,7 +26,7 @@ class AcceptanceProvenanceTests(unittest.TestCase):
         self.assertEqual(result["requirements"][0]["reported_target_contexts"], [{
             "revision": "commit-abc", "environment": "staging Chrome",
             "reference": "manual-acceptance-1", "matches_expected": True,
-            "reference_recognized": True,
+            "reference_recognized": True, "reference_scope_matches": True,
         }])
 
     def test_wrong_revision_or_environment_remains_incomplete(self):
@@ -77,6 +77,30 @@ class AcceptanceProvenanceTests(unittest.TestCase):
         for refs in ("trusted-report", ["ok", "ok"], [123], [" "], ["x" * 501]):
             with self.subTest(refs=refs), self.assertRaises(AcceptanceError):
                 assess_acceptance(["checkout"], {}, recognized_references=refs)
+
+    def test_reference_scope_blocks_cross_requirement_reuse(self):
+        evidence = {
+            "checkout": [{"level": "target_verified", "reference": "receipt-1",
+                          "revision": "abc", "environment": "staging"}],
+            "refund": [{"level": "target_verified", "reference": "receipt-1",
+                        "revision": "abc", "environment": "staging"}],
+        }
+        result = assess_acceptance(
+            ["checkout", "refund"], evidence,
+            recognized_references=["receipt-1"],
+            reference_scopes={"receipt-1": "checkout"},
+        )
+        self.assertEqual(result["incomplete"], ["refund"])
+        self.assertTrue(result["requirements"][0]["reported_target_verified"])
+        self.assertFalse(result["requirements"][1]["reported_target_contexts"][0]["reference_scope_matches"])
+        self.assertFalse(result["independently_verified"])
+
+    def test_reference_scope_requires_known_requirement_and_reference(self):
+        for scopes in ({"receipt-1": "unknown"}, {"receipt-2": "checkout"},
+                       {"": "checkout"}, {"receipt-1": 3}, ["checkout"]):
+            with self.subTest(scopes=scopes), self.assertRaises(AcceptanceError):
+                assess_acceptance(["checkout"], {}, recognized_references=["receipt-1"],
+                                  reference_scopes=scopes)
 
     def test_lower_levels_remain_backward_compatible(self):
         result = assess_acceptance(["checkout"], {"checkout": [
