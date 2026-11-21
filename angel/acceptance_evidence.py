@@ -22,6 +22,7 @@ def assess_acceptance(
     expected_revision: str | None = None,
     expected_environment: str | None = None,
     recognized_references: Sequence[str] | None = None,
+    reference_scopes: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Return a conservative, serializable summary of explicitly supplied evidence.
 
@@ -35,6 +36,9 @@ def assess_acceptance(
     When recognized_references is supplied, only references on that explicit
     caller-provided list count toward reported completion. The list is not
     independently authenticated and never proves a successful deployment.
+    When reference_scopes is supplied, target references must additionally
+    be explicitly scoped to the current requirement. These scopes are caller
+    assertions, not independently authenticated provenance.
     Only target_verified can satisfy a requirement, and even that is a
     *reported* state, not independent verification by Angel.
     """
@@ -55,6 +59,14 @@ def assess_acceptance(
         recognized = set(recognized_references)
         if len(recognized) != len(recognized_references):
             raise AcceptanceError("duplicate recognized reference")
+    if reference_scopes is not None:
+        if (not isinstance(reference_scopes, Mapping) or len(reference_scopes) > 1000
+                or any(not isinstance(ref, str) or not ref.strip() or len(ref) > 500
+                       or not isinstance(scope, str) or not scope.strip() or len(scope) > 200
+                       for ref, scope in reference_scopes.items())):
+            raise AcceptanceError("invalid reference scopes")
+        if recognized is not None and set(reference_scopes) - recognized:
+            raise AcceptanceError("reference scopes contain unrecognized references")
     if isinstance(requirements, (str, bytes)) or not isinstance(requirements, Sequence):
         raise AcceptanceError("requirements must be a sequence")
     if not isinstance(evidence, Mapping):
@@ -66,6 +78,8 @@ def assess_acceptance(
         raise AcceptanceError("invalid requirement")
     if len(set(requirements)) != len(requirements):
         raise AcceptanceError("duplicate requirement")
+    if reference_scopes is not None and set(reference_scopes.values()) - set(requirements):
+        raise AcceptanceError("reference scopes contain unknown requirements")
     if set(evidence) - set(requirements):
         raise AcceptanceError("evidence for unknown requirement")
 
@@ -96,11 +110,14 @@ def assess_acceptance(
                     raise AcceptanceError("target verification requires revision and environment")
                 matches = (expected_revision is None or
                            (revision == expected_revision and environment == expected_environment))
-                matching_target = matching_target or (matches and
+                scope_matches = (reference_scopes is None or
+                                 reference_scopes.get(reference) == requirement)
+                matching_target = matching_target or (matches and scope_matches and
                                                       (recognized is None or reference in recognized))
                 target_contexts.append({"revision": revision, "environment": environment,
                                         "reference": reference, "matches_expected": matches,
-                                        "reference_recognized": recognized is None or reference in recognized})
+                                        "reference_recognized": recognized is None or reference in recognized,
+                                        "reference_scope_matches": scope_matches})
             references.append(reference)
             if highest is None or _LEVEL_INDEX[level] > _LEVEL_INDEX[highest]:
                 highest = level
