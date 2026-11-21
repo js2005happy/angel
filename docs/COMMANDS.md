@@ -76,6 +76,7 @@
 | `nyra bot status` | Bot 总览：Telegram/Discord/Slack/WhatsApp 运行态 + 电脑数量与资源，本 Bot 的电脑带标注（详见 `docs/bot.md` 与 `docs/bot-computer.md`） |
 | `nyra task <add\|list\|show\|cancel\|worker\|approve>` | 后台任务队列 |
 | `nyra kanban <create\|list\|show\|start\|fail\|review\|decide\|verify\|done\|reset\|remove\|tick\|sweep>` | 缺口 26：持久任务板——任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 `docs/kanban.md`） |
+| `nyra goal <create\|list\|show\|add-item\|start-item\|verify-item\|complete\|pause\|resume\|cancel\|instruct\|link\|split>` | GROK-5（缺口 26/30 深化）：长目标对象——目标陈述 + 动态进度清单 + 逐项验证，全部通过才标完成；中途加指令不丢目标，可暂停/恢复/取消；恢复前重验证；目标可拆成任务板任务（详见 `docs/goal-object.md`） |
 | `nyra fanout <list\|show\|recover>` | H-5 + H-6：后台扇出——顶层委派默认后台跑，跑完单条 consolidated 消息回填；合并步合成为一份交付物（详见 `docs/merge-fanout.md`） |
 | `nyra team <create\|list\|show\|add\|remove\|dissolve\|dispatch\|handover>` | GROK 批（新缺口 52）：团队模式——参谋长独占入口，只拆解、分派、汇总；成员须有完整 Charter 才能接单；交接走 inbox/outbox/变更日志；对外动作一律回参谋长/人批（详见 `docs/team.md`） |
 | `nyra subagent <list\|show\|register\|heartbeat\|sweep\|resume\|suspend\|stop\|confirm-stopped\|cancel-stop\|steer>` | 缺口 30：崩溃自续——子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑；H-3：单点停止（请求停止/确认停下/取消请求，详见 `docs/roster.md`）；H-2：单点引导（排队式引导、检查点消费，`nyra subagent steer <运行 id> "<引导文本>" --yes`，详见 `docs/steer-schema.md`）；H-4：结构化输出契约（`delegate` / `delegate_parallel` 可带 `output_schema`，详见 `docs/steer-schema.md`） |
