@@ -1,3 +1,8 @@
+## 未发布（2026-11-21，Node claim 目录参数失败关闭）
+
+- 实验性 `claimOperation` 在进入目录预检前拒绝非字符串、空字符串或含 NUL 的 `directory`，统一抛 `ClaimUnavailable`；不创建目录或执行工具，不增加依赖。
+- 本轮仅静态核对，未运行测试、编译或 CI；Node claim 仍未接入真实执行链，不提供 exactly-once。
+
 ## Unreleased — 2026-11-21 Linux claim procfs 类型门禁
 
 - 实验性 Node/Bun claim 在通过 `/proc/self/fd` 创建文件前，使用 Node 标准库 `statfsSync` 核对文件系统类型为 Linux procfs（`0x9fa0`）；异常或不匹配失败关闭，不新增依赖。
