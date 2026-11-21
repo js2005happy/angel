@@ -1,3 +1,7 @@
+## Unreleased — 2026-11-21 acceptance reference allowlist
+
+- Added an optional bounded caller-provided reference allowlist to the read-only acceptance assessor; unknown references no longer satisfy reported target completion when the gate is enabled. This is not independent provenance verification. Added regression cases (not executed); no runtime integration or dependencies.
+
 ## Unreleased — 2026-11-21 acceptance target-context matching
 
 - Added optional exact expected revision/environment matching to the read-only acceptance evidence assessor. Target reports for a different revision or environment remain visible but do not count as reported complete; matching reports are still not independent verification. Added unexecuted regression tests. No new dependencies, runtime integration, permissions, tool replay or release.
