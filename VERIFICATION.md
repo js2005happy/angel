@@ -1,3 +1,9 @@
+## 2026-11-22 — Issuer-bound receipt verification (static inspection only)
+
+- Reviewed development branch README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, Agent/Tools, existing acceptance modules/tests, recent commits, Issues/PR and available CI status. External reports: [Codex #61857](https://github.com/openai/codex/issues/61857) (2026-11-16) and [#40646](https://github.com/openai/codex/issues/40646) (2026-08-25); reviewed 2026-11-22. Reports are not Angel reproductions.
+- Added offline v2 issuer/key-id-bound HMAC verifier and regression source; reviewed source text only. **Tests, compilation, scripts and CI were not run.** No cross-platform runtime validation.
+- The caller must independently protect and provision trusted keys. Removing an entry only blocks subsequent offline checks using that registry; it does not invalidate previously acted-on claims, prevent replay or prove real CI/target execution. No runtime wiring, main merge or release.
+
 ## 2026-11-22 — Receipt reference pinning (static review only)
 
 - Reviewed development-branch README, DESIGN, CHANGELOG, VERIFICATION, ROADMAP, acceptance source/tests, Agent/Tools; checked recent commits, open Issues/PR and previous commit status/workflow records (none returned). No inference of CI success.
