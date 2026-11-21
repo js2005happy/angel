@@ -39,7 +39,7 @@ def assess_acceptance(
     When reference_scopes is supplied, target references must additionally
     be explicitly scoped to the current requirement. These scopes are caller
     assertions, not independently authenticated provenance.
-    A target receipt reused across requirements is ambiguous and cannot\n    satisfy either requirement, even without optional scopes.\n    Only target_verified can satisfy a requirement, and even that is a
+    A target receipt reused across requirements is ambiguous and cannot\n    satisfy either requirement, even without optional scopes.\n    Conflicting revision/environment claims for the same receipt are also\n    ambiguous, including when supplied under the same requirement.\n    Only target_verified can satisfy a requirement, and even that is a
     *reported* state, not independent verification by Angel.
     """
     if (expected_revision is None) != (expected_environment is None):
@@ -135,15 +135,28 @@ def assess_acceptance(
     for item in items:
         for context in item["reported_target_contexts"]:
             target_owners.setdefault(context["reference"], set()).add(item["requirement"])
+    # A reference must describe one consistent target context. Conflicting
+    # claims are rejected even when they appear under the same requirement;
+    # otherwise a caller could cherry-pick whichever context happens to match.
+    target_contexts_by_ref = {}
+    for item in items:
+        for context in item["reported_target_contexts"]:
+            target_contexts_by_ref.setdefault(context["reference"], set()).add(
+                (context["revision"], context["environment"])
+            )
+    conflicting = {ref for ref, contexts in target_contexts_by_ref.items()
+                   if len(contexts) > 1}
     shared = {ref for ref, owners in target_owners.items() if len(owners) > 1}
-    if shared:
+    if shared or conflicting:
         for item in items:
             for context in item["reported_target_contexts"]:
                 context["reference_shared"] = context["reference"] in shared
+                context["reference_context_conflict"] = context["reference"] in conflicting
             # Re-evaluate from individually eligible, non-shared receipts.
             item["reported_target_verified"] = any(
                 context["matches_expected"] and context["reference_recognized"]
                 and context["reference_scope_matches"] and not context["reference_shared"]
+                and not context["reference_context_conflict"]
                 for context in item["reported_target_contexts"]
             )
     incomplete = [item["requirement"] for item in items if not item["reported_target_verified"]]
