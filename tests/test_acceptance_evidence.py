@@ -122,6 +122,39 @@ class AcceptanceProvenanceTests(unittest.TestCase):
         self.assertTrue(result["requirements"][0]["reported_target_verified"])
         self.assertFalse(result["independently_verified"])
 
+    def test_conflicting_context_same_reference_fails_closed(self):
+        evidence = {"checkout": [
+            {"level": "target_verified", "reference": "receipt-1",
+             "revision": "old", "environment": "staging"},
+            {"level": "target_verified", "reference": "receipt-1",
+             "revision": "new", "environment": "production"},
+        ]}
+        result = assess_acceptance(["checkout"], evidence,
+                                   expected_revision="new",
+                                   expected_environment="production")
+        self.assertEqual(result["incomplete"], ["checkout"])
+        self.assertFalse(result["reported_complete"])
+        self.assertTrue(all(context["reference_context_conflict"]
+                            for context in result["requirements"][0]["reported_target_contexts"]))
+        self.assertFalse(result["independently_verified"])
+
+    def test_conflicting_receipt_does_not_invalidate_distinct_receipt(self):
+        evidence = {"checkout": [
+            {"level": "target_verified", "reference": "receipt-1",
+             "revision": "old", "environment": "staging"},
+            {"level": "target_verified", "reference": "receipt-1",
+             "revision": "new", "environment": "production"},
+            {"level": "target_verified", "reference": "receipt-2",
+             "revision": "new", "environment": "production"},
+        ]}
+        result = assess_acceptance(["checkout"], evidence,
+                                   expected_revision="new",
+                                   expected_environment="production")
+        self.assertTrue(result["reported_complete"])
+        self.assertFalse(result["requirements"][0]["reported_target_contexts"][2]
+                         ["reference_context_conflict"])
+        self.assertFalse(result["independently_verified"])
+
     def test_lower_levels_remain_backward_compatible(self):
         result = assess_acceptance(["checkout"], {"checkout": [
             {"level": "static_reviewed", "reference": "review-1"},
