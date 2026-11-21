@@ -1,3 +1,9 @@
+## 2026-11-21 — Linux claim 非规范路径拒绝（仅静态）
+
+- 核对开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP、Node claim；main TypeScript Agent/Tools、近期提交、开放 Issues/PR 和提交状态。main 最新检索提交 [e3f8c78](https://github.com/js2005happy/nyra/commit/e3f8c7801dbf1a1bf040198de173fb8d10f30158)（2026-11-21 04:35 UTC），涉及 Slack 审批按钮，与本增量不重复；开放 Issues/PR 查询为空，combined status 空不等于 CI 通过。
+- 静态确认新增 `directory !== resolve(directory)` 拒绝词法非规范绝对路径，避免检查已归一化祖先而打开未经归一化路径的差异。未执行测试、编译、脚本、CI、故障注入；未验证各平台运行时行为。
+- claim 仍未接入真实 Node 工具派发；Linux procfs 挂载竞态、Windows reparse 保护及跨进程 exactly-once 仍未解决。
+
 
 ## 2026-11-21 — P0 Linux claim 目录句柄最终关闭失败的错误归一化（仅静态审查）
 
