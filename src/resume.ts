@@ -23,6 +23,7 @@ import { resolveHome } from "./config.ts";
 import { RunStore, prepareResume, type RunState } from "./runs.ts";
 import { WorkerLock, TASKS_DIR, WORKER_LOCK, buildProvider, runOne } from "./tasks.ts";
 import { checkAutoAllowed, getAgentMode, recordDryRun, revalidateMandateForResume } from "./governance.ts";
+import { listKanbanTasks, requestKanbanReview } from "./kanban.ts";
 
 export class ResumeError extends Error {
   constructor(message: string) {
@@ -31,7 +32,7 @@ export class ResumeError extends Error {
   }
 }
 
-export type SubagentStatus = "running" | "resume_pending" | "suspended" | "completed" | "failed";
+export type SubagentStatus = "running" | "resume_pending" | "suspended" | "completed" | "failed" | "stopped";
 export type StopReason = "completed" | "crashed" | "timeout" | "approval_blocked" | "cancelled" | "unknown";
 
 /** Hermes 的刹车：跨 3 次连续重启仍活跃的会话挂起。 */
@@ -54,6 +55,14 @@ export interface SubagentRun {
   unattended: boolean;
   /** 缺口 43：绑定的治理授权 id（可空）。续跑前按当前 Policy 重验证。 */
   mandateId: string | null;
+  /** H-3：父运行 id（可空）。子树停用时沿 parentRunId 递归。 */
+  parentRunId: string | null;
+  /** H-3：已请求停止的时间 / 发起人 / 备注（可空）。请求是请求，不是已停。 */
+  stopRequestedAt: string | null;
+  stopRequestedBy: string | null;
+  stopNote: string | null;
+  /** H-3：确认停下的时间（可空）。 */
+  stoppedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,7 +104,17 @@ export function loadSubagentRegistry(home: string): SubagentRegistry {
     backupCorrupt(path);
     throw new ResumeError("子 agent 注册表格式无效，已备份");
   }
-  return raw as SubagentRegistry;
+  // H-3：老注册表里的行没有 parentRunId/stop* 字段，读时补 null，
+  // 下次保存即回写——只加字段，不改旧行的语义。
+  const registry = raw as SubagentRegistry;
+  for (const row of registry.runs) {
+    if (row.parentRunId === undefined) row.parentRunId = null;
+    if (row.stopRequestedAt === undefined) row.stopRequestedAt = null;
+    if (row.stopRequestedBy === undefined) row.stopRequestedBy = null;
+    if (row.stopNote === undefined) row.stopNote = null;
+    if (row.stoppedAt === undefined) row.stoppedAt = null;
+  }
+  return registry;
 }
 
 export function saveSubagentRegistry(home: string, registry: SubagentRegistry): void {
@@ -132,7 +151,7 @@ export function findRunStore(home: string, runId: string): { store: RunStore; st
 
 export function registerSubagentRun(
   home: string,
-  opts: { runId: string; agent?: string; sessionId?: string; workdir?: string; mode?: string; autoResume?: boolean; unattended?: boolean; mandateId?: string },
+  opts: { runId: string; agent?: string; sessionId?: string; workdir?: string; mode?: string; autoResume?: boolean; unattended?: boolean; mandateId?: string; parentRunId?: string },
 ): SubagentRun {
   const registry = loadSubagentRegistry(home);
   const existing = registry.runs.find((r) => r.runId === opts.runId);
@@ -145,6 +164,8 @@ export function registerSubagentRun(
     lastStep: null, lastHeartbeatAt: null, restarts: 0,
     autoResume: opts.autoResume ?? false, unattended: opts.unattended ?? false,
     mandateId: opts.mandateId ?? null,
+    parentRunId: opts.parentRunId ?? null,
+    stopRequestedAt: null, stopRequestedBy: null, stopNote: null, stoppedAt: null,
     createdAt: at, updatedAt: at,
   };
   registry.runs.push(row);
@@ -167,7 +188,7 @@ export function listSubagentRuns(home: string, filter?: { status?: SubagentStatu
 export function heartbeatSubagent(home: string, runId: string, lastStep: string): SubagentRun {
   const registry = loadSubagentRegistry(home);
   const row = getRun(registry, runId);
-  if (row.status === "completed" || row.status === "failed" || row.status === "suspended") {
+  if (row.status === "completed" || row.status === "failed" || row.status === "suspended" || row.status === "stopped") {
     throw new ResumeError(`子 agent 运行 ${runId} 已终态（${row.status}），不再接受心跳`);
   }
   row.lastStep = String(lastStep).slice(0, 300);
@@ -227,6 +248,8 @@ export async function sweepSubagents(
       for (const runId of [...report.markedPending]) {
         const row = getRun(loadSubagentRegistry(home), runId);
         if (!row.autoResume) continue;
+        // H-3：已请求停止的行不自动续跑——停下优先于续跑，须先取消请求或确认停下。
+        if (row.stopRequestedAt) continue;
         // 缺口 43（DSH-2）：自动续跑先过接单模式与月度硬顶。observe 模式只记
         // 干跑、不真干；月度硬顶已触顶也不续跑，同样只记干跑。
         if (getAgentMode(home, row.agent) === "observe") {
@@ -282,6 +305,11 @@ export function prepareSubagentResume(
   const row = getRun(registry, runId);
   if (row.status === "suspended" && !opts?.force) {
     throw new ResumeError(`子 agent 运行 ${runId} 已挂起（连崩 ${row.restarts} 次），续跑须加 --force 并由人确认`);
+  }
+  // H-3：已请求停止的行不续跑——先取消请求（nyra subagent cancel-stop）
+  // 或确认停下（nyra subagent confirm-stopped），再决定要不要重新注册跑。
+  if (row.stopRequestedAt) {
+    throw new ResumeError(`子 agent 运行 ${runId} 已请求停止（${row.stopRequestedBy ?? "未记发起人"}），不续跑；先取消请求或确认停下`);
   }
   if (row.status !== "resume_pending" && row.status !== "suspended") {
     throw new ResumeError(`只能续跑 resume_pending/suspended 状态的子 agent 运行，当前为 ${row.status}`);
@@ -367,7 +395,7 @@ export async function resumeSubagentRun(
 export function suspendSubagentRun(home: string, runId: string, reason = "人工挂起"): SubagentRun {
   const registry = loadSubagentRegistry(home);
   const row = getRun(registry, runId);
-  if (row.status === "completed" || row.status === "failed") throw new ResumeError(`子 agent 运行 ${runId} 已终态（${row.status}），不能挂起`);
+  if (row.status === "completed" || row.status === "failed" || row.status === "stopped") throw new ResumeError(`子 agent 运行 ${runId} 已终态（${row.status}），不能挂起`);
   row.status = "suspended";
   row.updatedAt = nowIso();
   saveSubagentRegistry(home, registry);
@@ -379,15 +407,149 @@ export function suspendSubagentRun(home: string, runId: string, reason = "人工
   return row;
 }
 
+// H-1/H-3：单点停止（只走既有状态机，不新造一套）。
+//
+// 语义是“请求停止”，不是“已停止”：requestSubagentStop 只在注册表上记
+// 一笔请求（stopRequestedAt/By/Note），并把绑了同一运行的 working 任务
+// 板任务送 review（partial 路径：部分成果留着，等人看）；子 agent 本身
+// 在下一个安全点停下——停没停下来，以 acknowledgeSubagentStop 的确认
+// 为准，停不下来就如实写“仍在跑”，不谎称已停。模型调用本身不能真中断
+// （与 Bot /stop 同一限制），已发出去的外部动作也停不掉。
+// 委派主循环里的检查点调 isStopRequested（下一批接线：delegate 调用点
+// 自动注册 + 检查点，本批只留钩子与注册表/任务板侧的完整语义）。
+export interface StopReport {
+  requested: string[];
+  alreadyRequested: string[];
+  skipped: { runId: string; reason: string }[];
+}
+
+/** 委派检查点用的钩子：这行有没有待处理的停止请求。 */
+export function isStopRequested(home: string, runId: string): boolean {
+  try {
+    return getSubagentRun(home, runId).stopRequestedAt !== null;
+  } catch { return false; }
+}
+
+function appendStopEvent(home: string, runId: string, type: string, fields: Record<string, unknown>): void {
+  const found = findRunStore(home, runId);
+  if (!found) return;
+  try { found.store.appendEvent(runId, type, fields); } catch { /* 事件写不上不破坏停止 */ }
+}
+
+/** 找绑了同一运行的 working 任务板任务，有就送 review（partial 路径：
+ * 部分成果留着，等人看）；没绑任务板任务时只记注册表与事件。 */
+function routeKanbanTaskToReview(home: string, runId: string, by: string, step: string | null): string | null {
+  const tasks = listKanbanTasks(home, { status: "working" });
+  const task = tasks.find((t) => t.runId === runId);
+  if (!task) return null;
+  try {
+    requestKanbanReview(home, task.id, by, `已请求停止，停在：${step ?? "未记步骤"}（部分成果留着，等人看）`);
+  } catch { return null; }
+  return task.id;
+}
+
+/** 请求停止：只在 running/resume_pending 的行上记请求，沿 parentRunId
+ * 递归停子树（还在跑的孩子一起停，终态/已挂起的跳过并写清原因）。
+ * 已请求过的幂等返回，不重复记事件。 */
+export function requestSubagentStop(
+  home: string,
+  runId: string,
+  opts?: { by?: string; reason?: string },
+): StopReport {
+  const by = (opts?.by ?? "operator").slice(0, 60);
+  const reason = (opts?.reason ?? "").trim().slice(0, 200);
+  const report: StopReport = { requested: [], alreadyRequested: [], skipped: [] };
+  const visit = (id: string, depth: number): void => {
+    if (depth > 5) {
+      report.skipped.push({ runId: id, reason: "子树太深（超过 5 层），未继续往下停" });
+      return;
+    }
+    const registry = loadSubagentRegistry(home);
+    const row = registry.runs.find((r) => r.runId === id);
+    if (!row) {
+      report.skipped.push({ runId: id, reason: "注册表里没有这个运行" });
+      return;
+    }
+    if (row.status === "completed" || row.status === "failed" || row.status === "stopped") {
+      report.skipped.push({ runId: id, reason: `已终态（${row.status}），无须再停` });
+      return;
+    }
+    if (row.status === "suspended") {
+      report.skipped.push({ runId: id, reason: "已挂起，无须再停" });
+      return;
+    }
+    if (row.stopRequestedAt) {
+      report.alreadyRequested.push(id);
+    } else {
+      row.stopRequestedAt = nowIso();
+      row.stopRequestedBy = by;
+      row.stopNote = reason || null;
+      row.updatedAt = nowIso();
+      saveSubagentRegistry(home, registry);
+      report.requested.push(id);
+      appendStopEvent(home, id, "subagent_stop_requested", { run_id: id, by, step: row.lastStep ?? "" });
+      routeKanbanTaskToReview(home, id, by, row.lastStep);
+    }
+    const children = loadSubagentRegistry(home).runs.filter((r) => r.parentRunId === id);
+    for (const child of children) visit(child.runId, depth + 1);
+  };
+  visit(runId, 0);
+  return report;
+}
+
+/** 确认停下：running/resume_pending 的行标 stopped（stopReason cancelled），
+ * 停在哪一步以心跳检查点为准，调用方给了 --step 就以给的为准。确认是
+ * 对“已经停了”这个事实的断言——没停下来不要调它，调了就是谎报。
+ * 绑的任务板任务留在 review，等人看部分成果再定去向（不停任务板的状态机）。 */
+export function acknowledgeSubagentStop(
+  home: string,
+  runId: string,
+  opts?: { by?: string; step?: string },
+): SubagentRun {
+  const by = (opts?.by ?? "operator").slice(0, 60);
+  const registry = loadSubagentRegistry(home);
+  const row = getRun(registry, runId);
+  if (row.status !== "running" && row.status !== "resume_pending") {
+    throw new ResumeError(`只能确认 running/resume_pending 状态的子 agent 运行已停下，当前为 ${row.status}`);
+  }
+  if (opts?.step) row.lastStep = String(opts.step).slice(0, 300);
+  row.status = "stopped";
+  row.stopReason = "cancelled";
+  row.stoppedAt = nowIso();
+  row.updatedAt = nowIso();
+  saveSubagentRegistry(home, registry);
+  appendStopEvent(home, runId, "subagent_stopped", { run_id: runId, by, step: row.lastStep ?? "" });
+  return row;
+}
+
+/** 取消停止请求：清掉 stopRequestedAt/By/Note，行回到可续跑状态。
+ * 任务板任务若已因这次请求进了 review，不自动搬回来——等人用 kanban decide 定。 */
+export function cancelSubagentStop(home: string, runId: string, opts?: { by?: string }): SubagentRun {
+  const by = (opts?.by ?? "operator").slice(0, 60);
+  const registry = loadSubagentRegistry(home);
+  const row = getRun(registry, runId);
+  if (!row.stopRequestedAt) throw new ResumeError(`子 agent 运行 ${runId} 没有待处理的停止请求，无须取消`);
+  row.stopRequestedAt = null;
+  row.stopRequestedBy = null;
+  row.stopNote = null;
+  row.updatedAt = nowIso();
+  saveSubagentRegistry(home, registry);
+  appendStopEvent(home, runId, "subagent_stop_cancelled", { run_id: runId, by });
+  return row;
+}
+
 const USAGE =
-  "用法：nyra subagent <list|show|register|heartbeat|sweep|resume|suspend> [选项]\n" +
-  "  list [--status running|resume_pending|suspended|completed|failed] [--agent <名字>] [--json]\n" +
+  "用法：nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop> [选项]\n" +
+  "  list [--status running|resume_pending|suspended|completed|failed|stopped] [--agent <名字>] [--json]\n" +
   "  show <运行 id> [--json]\n" +
-  "  register <运行 id> [--agent <名字>] [--workdir <目录>] [--mode readonly|auto] [--auto-resume] [--unattended]\n" +
+  "  register <运行 id> [--agent <名字>] [--workdir <目录>] [--mode readonly|auto] [--auto-resume] [--unattended] [--parent <父运行 id>]\n" +
   "  heartbeat <运行 id> \"<做到哪一步>\"\n" +
   "  sweep [--auto]        启动扫荡：running 的行按心跳标 resume_pending/挂起；--auto 只续跑 autoResume=true 的行\n" +
   "  resume <运行 id> [--force]   先验状态再续跑；无人值守的行强制只读；挂起的行须 --force\n" +
-  "  suspend <运行 id>\n";
+  "  suspend <运行 id>\n" +
+  "  stop <运行 id> --yes [--reason \"<原因>\"] [--by <名字>]   请求停止（沿 parentRunId 递归停子树；只记请求，停没停下以 confirm-stopped 为准）\n" +
+  "  confirm-stopped <运行 id> [--step \"<停在哪一步>\"] [--by <名字>]   确认已停下（只对已停的事实断言，没停不要调）\n" +
+  "  cancel-stop <运行 id> [--by <名字>]   取消停止请求（任务板任务若已进 review，等人用 kanban decide 定）\n";
 
 export async function handleSubagent(argv: string[], home: string): Promise<number> {
   const action = argv[0];
@@ -427,13 +589,14 @@ export async function handleSubagent(argv: string[], home: string): Promise<numb
     if (action === "register") {
       const runId = argv[1] ?? "";
       if (!runId) {
-        process.stderr.write("错误：用法：nyra subagent register <运行 id> [--agent <名字>] [--auto-resume] [--unattended] [--mandate <授权 id>]\n");
+        process.stderr.write("错误：用法：nyra subagent register <运行 id> [--agent <名字>] [--auto-resume] [--unattended] [--mandate <授权 id>] [--parent <父运行 id>]\n");
         return 2;
       }
       const row = registerSubagentRun(resolvedHome, {
         runId, agent: get("--agent"), workdir: get("--workdir"),
         mode: get("--mode"), autoResume: argv.includes("--auto-resume"),
         unattended: argv.includes("--unattended"), mandateId: get("--mandate") ?? undefined,
+        parentRunId: get("--parent") ?? undefined,
       });
       process.stdout.write(`已注册子 agent 运行 ${row.runId}（${row.status}）。\n`);
       return 0;
@@ -471,6 +634,45 @@ export async function handleSubagent(argv: string[], home: string): Promise<numb
     if (action === "suspend") {
       const row = suspendSubagentRun(resolvedHome, argv[1] ?? "");
       process.stdout.write(`${row.runId} 已挂起（${row.status}）。\n`);
+      return 0;
+    }
+    if (action === "stop") {
+      const runId = argv[1] ?? "";
+      if (!runId) {
+        process.stderr.write("错误：用法：nyra subagent stop <运行 id> --yes [--reason \"<原因>\"] [--by <名字>]\n");
+        return 2;
+      }
+      if (!argv.includes("--yes")) {
+        process.stderr.write("停止一个子 agent 须加 --yes 确认：nyra subagent stop <运行 id> --yes（只记“已请求停止”，不停下来不算停）\n");
+        return 2;
+      }
+      const report = requestSubagentStop(resolvedHome, runId, { by: get("--by"), reason: get("--reason") });
+      const parts: string[] = [];
+      if (report.requested.length) parts.push(`已请求停止 ${report.requested.length} 个：${report.requested.join("、")}`);
+      if (report.alreadyRequested.length) parts.push(`早已请求过 ${report.alreadyRequested.length} 个：${report.alreadyRequested.join("、")}`);
+      for (const s of report.skipped) parts.push(`${s.runId} 未停：${s.reason}`);
+      parts.push("注意：这只是“请求停止”，子 agent 在下一个安全点停下后，须用 nyra subagent confirm-stopped 确认。");
+      process.stdout.write(parts.join("\n") + "\n");
+      return 0;
+    }
+    if (action === "confirm-stopped") {
+      const runId = argv[1] ?? "";
+      if (!runId) {
+        process.stderr.write("错误：用法：nyra subagent confirm-stopped <运行 id> [--step \"<停在哪一步>\"] [--by <名字>]\n");
+        return 2;
+      }
+      const row = acknowledgeSubagentStop(resolvedHome, runId, { by: get("--by"), step: get("--step") });
+      process.stdout.write(`${row.runId} 已确认停下（${row.status}，停在：${row.lastStep ?? "未记步骤"}）。\n`);
+      return 0;
+    }
+    if (action === "cancel-stop") {
+      const runId = argv[1] ?? "";
+      if (!runId) {
+        process.stderr.write("错误：用法：nyra subagent cancel-stop <运行 id> [--by <名字>]\n");
+        return 2;
+      }
+      const row = cancelSubagentStop(resolvedHome, runId, { by: get("--by") });
+      process.stdout.write(`${row.runId} 的停止请求已取消（回到 ${row.status}，可正常续跑）。\n`);
       return 0;
     }
     process.stderr.write(`错误：未知子命令 subagent ${action}\n${USAGE}`);

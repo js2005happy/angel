@@ -318,6 +318,68 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         push(at, "event", `通话段落已确认（${reason === "payment" ? "支付类" : reason === "external_send" ? "对外发送类" : "敏感意图"}，含义已确认，未执行）`, null, null, null);
         break;
       }
+      case "video_call_started": {
+        const peer = str(ev.peer);
+        push(at, "event", `视频通话开始${peer ? `（对方 ${peer}）` : "（本机回环）"}，传输 ${str(ev.transport) ?? "webrtc"}`, null, false, null);
+        break;
+      }
+      case "video_call_answered": {
+        push(at, "event", "视频通话已接听", null, false, null);
+        break;
+      }
+      case "video_call_declined": {
+        push(at, "event", "视频通话被拒绝", null, false, null);
+        break;
+      }
+      case "video_call_ended": {
+        const frames = num(ev.frames) ?? 0;
+        const cost = typeof ev.cost_usd === "number" ? `，看花费 $${ev.cost_usd.toFixed(4)}` : "";
+        push(at, "event", `视频通话结束（时长 ${num(ev.duration_seconds) ?? 0} 秒，看了 ${frames} 帧${cost}）`, null, false, null);
+        break;
+      }
+      case "video_call_transport_connected": {
+        push(at, "event", `视频传输已连通（${str(ev.ice_pair) ?? ""}${ev.relayed === true ? "，经 TURN 中转" : ""}，往返 ${num(ev.rtt_ms) ?? 0}ms）`, null, false, null);
+        break;
+      }
+      case "video_call_transport_failed": {
+        push(at, "event", `视频传输失败（${str(ev.reason) ?? ""}）`, null, false, null);
+        break;
+      }
+      case "video_frame_sampled": {
+        const cost = typeof ev.cost_usd === "number" ? `，$${ev.cost_usd.toFixed(4)}` : "";
+        push(at, "event", `视频帧已看（${str(ev.mode) ?? "on-demand"} 档，${str(ev.engine) ?? "本地"}${cost}）`, null, false, null);
+        break;
+      }
+      case "video_frame_blocked": {
+        const reason = str(ev.reason) ?? "";
+        push(at, "event", `视频帧被扣下（${reason === "payment" ? "支付类" : reason === "external_send" ? "对外发送类" : "敏感意图"}，须文字确认）`, null, false, null);
+        break;
+      }
+      case "video_frame_confirmed": {
+        const reason = str(ev.reason) ?? "";
+        push(at, "event", `视频帧已确认（${reason === "payment" ? "支付类" : reason === "external_send" ? "对外发送类" : "敏感意图"}，含义已确认，未执行）`, null, null, null);
+        break;
+      }
+      case "video_frame_skipped": {
+        push(at, "event", `视频帧已跳过（${str(ev.mode) ?? ""} 档，${str(ev.reason) ?? "未到采样条件"}，没看、没花钱）`, null, false, null);
+        break;
+      }
+      case "video_frame_sent": {
+        push(at, "event", `视频帧已发（${num(ev.bytes) ?? 0} 字节）`, null, false, null);
+        break;
+      }
+      case "video_frame_received": {
+        push(at, "event", `收到对方一帧（${num(ev.bytes) ?? 0} 字节，已存 inbox）`, null, false, null);
+        break;
+      }
+      case "video_call_degraded": {
+        push(at, "event", "网络较弱，已自动切到仅语音（协作与 agent 不受影响）", null, false, null);
+        break;
+      }
+      case "video_call_restored": {
+        push(at, "event", "网络恢复，视频已回来", null, false, null);
+        break;
+      }
       case "office_exported": {
         const format = str(ev.format) ?? "未知格式";
         const bytes = num(ev.bytes) ?? 0;
@@ -347,6 +409,64 @@ export function buildTimeline(store: RunStore, runId: string): Timeline {
         const status = str(ev.status) ?? "?";
         const peerRun = str(ev.peer_run_id) ?? "";
         push(at, "event", `交接给对端 ${peer}（${status}）`, peerRun ? `对端运行 ${peerRun}` : null, status === "accepted", null);
+        break;
+      }
+      case "friend_requested": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `发好友请求给 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_request_received": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `收到 ${peer} 的好友请求`, null, null, null);
+        break;
+      }
+      case "friend_accepted": {
+        const peer = str(ev.peer) ?? "未知对端";
+        const circle = str(ev.circle) ?? "default";
+        const tier = str(ev.tier) ?? "readonly";
+        push(at, "event", `批准 ${peer} 为好友（${circle} 圈 · ${tier === "readonly" ? "只读" : "可提议修改"}）`, null, null, null);
+        break;
+      }
+      case "friend_declined": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `拒绝 ${peer} 的好友请求`, null, null, null);
+        break;
+      }
+      case "friend_blocked": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `拉黑好友 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_unblocked": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `取消拉黑 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_removed": {
+        const peer = str(ev.peer) ?? "未知对端";
+        push(at, "event", `删除好友 ${peer}`, null, null, null);
+        break;
+      }
+      case "friend_code_regenerated": {
+        push(at, "event", "好友码已重生成", null, null, null);
+        break;
+      }
+      case "subagent_stop_requested": {
+        const by = str(ev.by) ?? "未记发起人";
+        const step = str(ev.step) ?? "";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 已请求停止（${by} 发起）`, step ? `停在：${step.slice(0, 60)}` : null, null, null);
+        break;
+      }
+      case "subagent_stopped": {
+        const by = str(ev.by) ?? "未记发起人";
+        const step = str(ev.step) ?? "";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 已确认停下（${by} 确认）`, step ? `停在：${step.slice(0, 60)}` : null, null, null);
+        break;
+      }
+      case "subagent_stop_cancelled": {
+        const by = str(ev.by) ?? "未记发起人";
+        push(at, "event", `子 agent ${str(ev.run_id) ?? "?"} 的停止请求已取消（${by}）`, null, null, null);
         break;
       }
       case "redline_changed": {

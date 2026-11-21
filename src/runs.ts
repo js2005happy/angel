@@ -131,6 +131,13 @@ kanban_verified: ["task_id", "method", "passed"],
 subagent_resume_pending: ["run_id", "reason"],
 subagent_resumed: ["run_id", "mode"],
 subagent_suspended: ["run_id", "restarts"],
+// H-1/H-3：单点停止进证据链——请求停止（哪个运行、谁发起、停在哪一步）、
+// 确认停下（哪个运行、谁确认、停在哪一步）、取消请求（哪个运行、谁取消）。
+// “请求停止”不是“已停止”：停没停下来以 subagent_stopped 为准；step 是
+// 心跳检查点里的上一步摘要，不记任务正文。
+subagent_stop_requested: ["run_id", "by", "step"],
+subagent_stopped: ["run_id", "by", "step"],
+subagent_stop_cancelled: ["run_id", "by"],
 // DSH-4：先存后做进证据链——记下来（哪个副作用、什么类型）、恢复结论
 // （哪个副作用、已做过/重新执行/失败）。只记元数据，不记参数原文。
 side_effect_recorded: ["effect_id", "kind"],
@@ -202,6 +209,16 @@ vision_input: ["count", "hashes", "model", "kinds"],
 // 问题原文、答复原文与交接包内容。
 peer_asked: ["peer", "question_hash", "ok"],
 peer_handoff: ["peer", "run_id", "peer_run_id", "status"],
+// 缺口 38：名片加好友进证据链——发请求 / 收请求 / 批准 / 拒绝 / 拉黑 /
+// 取消拉黑 / 删除 / 好友码重生成。只记对端名、名片指纹与码指纹，不记码本身。
+friend_requested: ["peer", "card_hash", "code_hash", "ok"],
+friend_request_received: ["peer", "card_hash", "code_hash"],
+friend_accepted: ["peer", "circle", "tier"],
+friend_declined: ["peer"],
+friend_blocked: ["peer"],
+friend_unblocked: ["peer"],
+friend_removed: ["peer"],
+friend_code_regenerated: ["code_hash"],
 // 缺口 51：业务动作硬红线进证据链——改表（哪个连接器、哪个动作、从哪档到
 // 哪档、原因指纹）与拦截（哪个连接器、哪个动作、哪档、哪个工具）。只记
 // 元数据与 SHA-256 前 12 位指纹，不记原因原文、不记业务内容。
@@ -235,6 +252,22 @@ voice_call_transcribed: ["call_id", "segment_id", "vad", "seconds", "chars", "en
 voice_call_spoken: ["call_id", "segment_id", "chars", "engine", "cost_usd"],
 voice_call_blocked: ["call_id", "segment_id", "reason", "text_hash"],
 voice_call_confirmed: ["call_id", "segment_id", "reason"],
+// 缺口 37：视频通话进证据链——通话 id、帧 id、ICE 对、字节数、图像指纹、
+// 花费。只记元数据与 SHA-256 前 12 位指纹，不记图像内容与绝对路径。
+video_call_started: ["call_id", "agent", "peer", "transport"],
+video_call_answered: ["call_id"],
+video_call_declined: ["call_id"],
+video_call_ended: ["call_id", "duration_seconds", "frames", "frames_described", "bytes_in", "bytes_out", "cost_usd", "held"],
+video_call_transport_connected: ["call_id", "ice_pair", "relayed", "rtt_ms"],
+video_call_transport_failed: ["call_id", "reason"],
+video_frame_sampled: ["call_id", "frame_id", "mode", "engine", "image_hash", "cost_usd"],
+video_frame_blocked: ["call_id", "frame_id", "reason", "text_hash"],
+video_frame_confirmed: ["call_id", "frame_id", "reason"],
+video_frame_skipped: ["call_id", "mode", "reason"],
+video_frame_sent: ["call_id", "frame_id", "bytes"],
+video_frame_received: ["call_id", "frame_id", "bytes", "image_hash"],
+video_call_degraded: ["call_id", "reason"],
+video_call_restored: ["call_id"],
 // 缺口 23：办公成品导出进证据链——格式、字节数、核查结论（已核实/未核实数、
 // 文件指纹）。只记元数据与指纹，不记文件全文与绝对路径。
 office_exported: ["format", "bytes", "verified", "unverified", "file_hash"],

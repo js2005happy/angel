@@ -71,6 +71,7 @@ import { handleVerifier, resolveVerifierModel, verifierConfig } from "./verifier
 import { handleRegression } from "./regression.ts";
 import { handleKanban } from "./kanban.ts";
 import { handleSubagent } from "./resume.ts";
+import { handleRoster } from "./roster.ts";
 import { handleSideEffects } from "./sideEffects.ts";
 import { handleHeartbeat } from "./heartbeat.ts";
 import { handleGovernance } from "./governance.ts";
@@ -109,9 +110,11 @@ import { rewindTo, rewindEdit, rewindFork, storeHistoryToAgentMessages } from ".
 import { ShadowSnapshotStore, buildRestoreNote, type RestoreMode, type RestoreResult, type SnapshotRecord } from "./shadowSnapshots.ts";
 import { loadMcpServers, handleMcpServer } from "./mcp.ts";
 import { handlePeer } from "./peer.ts";
+import { handlePeerFriends, PEER_FRIEND_COMMANDS } from "./peerCard.ts";
 import { reviewBusinessAction, appendBusinessRedlineAudit } from "./businessRedlines.ts";
 import { handleVoice, loadAudioFile, resolveVoiceConfig } from "./voice.ts";
 import { handleVoiceCall } from "./voiceCall.ts";
+import { handleVideo } from "./videoCall.ts";
 import { handleSoul, resolveSoulAgentId } from "./soul.ts";
 import { handleExport } from "./office.ts";
 import { handleMedia } from "./mediaIngest.ts";
@@ -133,6 +136,7 @@ nyra --voice <音频路径> ["任务"]   语音指挥：先转文字再当任务
 nyra "任务" --speak   任务跑完后把结果读出来（默认关；只读结果前 500 字）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
+nyra video <call|signal|ice>   视频通话 + 按需视觉采样：信令 + TURN + ICE 直连传输，帧按需看（本地优先，云端默认关；详见 docs/video-call.md）
 --max-cost <美元> --monthly-max-cost <美元>   单次 / 月度支出上限（超限即停；月度默认不设上限）
 nyra                                                        进入交互模式（REPL）
 nyra --help                    显示帮助（不用 Key、不联网）
@@ -155,7 +159,8 @@ nyra timeline <运行 ID> [--verbose] [--json] [--out <路径>]   执行时间�
 nyra replay <运行 ID> [--verbose]   会话回放：按轮次逐步重现一次运行的关键步骤（只读，不重新执行）
 nyra regression <list|precipitate --run <运行 ID>|remove <用例 id>|status <用例 id> <open|verified|retired>>   回归测例库：把一次运行的失败步骤沉淀为回归用例（只记元数据，不调模型、不自动重跑，详见 docs/regression.md）
 nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   持久任务板：任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 docs/kanban.md）
-nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   崩溃自续：子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑（详见 docs/kanban.md）
+nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop>   崩溃自续：子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑 + 单点停止（详见 docs/kanban.md 与 docs/roster.md）
+nyra roster <list|show>   实时花名册：每个子 agent 一行——状态 + 已耗时 + 当前动作（只读快照，不花 token；token/费用默认不显示，详见 docs/roster.md）
 nyra side-effects <list|show|record|mark|recover>   先存后做的副作用队列：执行前先落库，重启按年龄恢复、带 recovery note（详见 docs/kanban.md）
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   静默巡查：无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 docs/heartbeat.md）
 nyra governance <policy|mandate|mode|dry-runs>   企业治理：版本化策略 + 不可变授权 + observe/auto 接单模式 + 干跑记录（详见 docs/governance.md）
@@ -178,9 +183,10 @@ nyra shopify <auth|status|products|product|orders|order|inventory>   Shopify 原
 nyra slack <auth|status|channels|history|send|card>   Slack 原生连接器：读频道 / 消息、发消息（须显式批准）、发审批卡（详见 docs/connectors.md）
 nyra connector <status|list|approve|revoke>   连接器授权状态机：每应用一次批准、过期与撤销（详见 docs/connectors.md）
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   对外 MCP 服务开关：别的 agent 经网关 POST /mcp 调记忆与任务（默认关闭，详见 docs/mcp.md）
-nyra peer <status|enable|disable|list|auth|ask|handoff>   对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭，详见 docs/peer.md）
+nyra peer <status|enable|disable|list|auth|ask|handoff|card|code|add|request|accept|friends|block|circle|share>   对端协作：问别的 Nyra 实例、交接运行上下文、名片加好友（默认关闭，详见 docs/peer.md）
 nyra voice <status|speak <文字>|enable-tts|disable-tts>   语音指挥：看配置与可用性、读一段文字、开关自动回读（详见 docs/voice.md）
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 docs/voice.md）
+nyra video <call|signal|ice>   视频通话 + 按需视觉采样：信令 + TURN + ICE 直连传输，帧按需看（本地优先，云端默认关；详见 docs/video-call.md）
 nyra export --format docx|xlsx|pptx --from <内容 JSON> --out <路径>   成品导出：结构化内容写成可编辑的真办公文件（详见 docs/office.md）
 nyra media <status|enable|disable|ingest <链接> [--out <路径>]|setup|scope ...>   媒体抓取：公开视频先取字幕、没有再本地转写（默认关，须先 nyra media enable；详见 docs/media-ingest.md）
 nyra stats [--heatmap] [--json]  本月用量与每日用量热力图（--json 给机器）
@@ -237,6 +243,7 @@ nyra --voice <audio path> ["task"]   voice command: transcribe first, then run i
 nyra "task" --speak   read the result aloud after the run (off by default; only the first 500 chars)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
+nyra video <call|signal|ice>   video call + on-demand frame sampling: signaling + TURN + ICE direct transport, frames seen on demand (local first, cloud off by default; see docs/video-call.md)
 --max-cost <USD> --monthly-max-cost <USD>   per-run / monthly spend caps (hard stop when exceeded; monthly cap unset by default)
 nyra                                                        interactive mode (REPL)
 nyra --help                    show help (no key, no network)
@@ -260,7 +267,8 @@ nyra timeline <run id> [--verbose] [--json] [--out <path>]   rebuild one multi-a
 nyra replay <run id> [--verbose]   replay one run step by step, grouped by turn (read-only, no re-execution)
 nyra regression <list|precipitate --run <run id>|remove <case id>|status <case id> <open|verified|retired>>   regression case library: precipitate failed steps of a run into cases (metadata only, no model calls, no auto re-run, see docs/regression.md)
 nyra kanban <create|list|show|start|fail|review|decide|verify|done|reset|remove|tick|sweep>   durable task board: tasks are ledger rows, crash-safe, circuit-breaker to blocked, completion needs verification evidence (see docs/kanban.md)
-nyra subagent <list|show|register|heartbeat|sweep|resume|suspend>   crash resume: persistent sub-agent rows + heartbeat checkpoints + boot sweep + verify-before-resume (see docs/kanban.md)
+nyra subagent <list|show|register|heartbeat|sweep|resume|suspend|stop|confirm-stopped|cancel-stop>   crash resume: persistent sub-agent rows + heartbeat checkpoints + boot sweep + verify-before-resume + per-child stop (see docs/kanban.md and docs/roster.md)
+nyra roster <list|show>   live roster: one line per sub-agent — status + elapsed + current action (read-only snapshot, no tokens spent; token/cost hidden by default, see docs/roster.md)
 nyra side-effects <list|show|record|mark|recover>   store-before-do side-effect queue: recorded before execution, recovered oldest-first with a recovery note (see docs/kanban.md)
 nyra heartbeat <add|list|remove|enable|disable|run|commitments>   silent patrol: quiet when nothing is wrong, findings go to evidence first then inbox; inferred commitments need one user confirmation and auto-expire (see docs/heartbeat.md)
 nyra governance <policy|mandate|mode|dry-runs>   enterprise governance: versioned policy + immutable mandates + observe/auto intake modes + dry-run ledger (see docs/governance.md)
@@ -283,9 +291,10 @@ nyra shopify <auth|status|products|product|orders|order|inventory>   native Shop
 nyra slack <auth|status|channels|history|send|card>   native Slack connector: read channels / messages, send messages (explicit approval required), post approval cards (see docs/connectors.md)
 nyra connector <status|list|approve|revoke>   connector auth state machine: approve once per app, expiry and revocation (see docs/connectors.md)
 nyra mcp server <status|enable|disable|allow-writes-on|allow-writes-off>   external MCP server switch: other agents call Nyra memory and tasks via gateway POST /mcp (off by default, see docs/mcp.md)
-nyra peer <status|enable|disable|list|auth|ask|handoff>   peer collaboration: ask another Nyra instance, hand off run context (off by default, see docs/peer.md)
+nyra peer <status|enable|disable|list|auth|ask|handoff|card|code|add|request|accept|friends|block|circle|share>   peer collaboration: ask another Nyra instance, hand off run context, agent card and friends (off by default, see docs/peer.md)
 nyra voice <status|speak <text>|enable-tts|disable-tts>   voice commands: show config and availability, speak a text, toggle auto readback (see docs/voice.md)
 nyra voice call <start|answer|decline|end|status|list|segment|confirm>   live voice call: start a call, feed audio segments to transcribe, optional readback (local whisper.cpp first, cloud off by default; see docs/voice.md)
+nyra video <call|signal|ice>   video call + on-demand frame sampling: signaling + TURN + ICE direct transport, frames seen on demand (local first, cloud off by default; see docs/video-call.md)
 nyra export --format docx|xlsx|pptx --from <content JSON> --out <path>   export a finished office file from structured content (see docs/office.md)
 nyra media <status|enable|disable|ingest <url> [--out <path>]|setup|scope ...>   media ingest: public videos, subtitles first, local transcription fallback (off by default, run nyra media enable first; see docs/media-ingest.md)
 nyra stats [--heatmap]         this month's usage and the daily usage heatmap (see docs/cost.md)
@@ -5442,12 +5451,19 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "reviewer") return handleReviewer(args.subArgs ?? [], resolve(args.workdir));
   if (args.subcommand === "verifier") return handleVerifier(args.subArgs ?? [], home);
   if (args.subcommand === "mcp") return handleMcpServer(args.subArgs ?? [], home);
-  if (args.subcommand === "peer") return handlePeer(args.subArgs ?? [], home);
+  if (args.subcommand === "peer") {
+    const sub = args.subArgs ?? [];
+    if (sub[0] && (PEER_FRIEND_COMMANDS as readonly string[]).includes(sub[0])) {
+      return handlePeerFriends(sub, home);
+    }
+    return handlePeer(sub, home);
+  }
   if (args.subcommand === "voice") {
     const sub = args.subArgs ?? [];
     if (sub[0] === "call") return handleVoiceCall(sub.slice(1), home);
     return handleVoice(sub, home);
   }
+  if (args.subcommand === "video") return handleVideo(args.subArgs ?? [], home);
   if (args.subcommand === "export") return handleExport(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "media") return handleMedia(args.subArgs ?? [], home, resolve(args.workdir));
   if (args.subcommand === "skills") return handleSkills(args.subArgs ?? [], home);
@@ -5479,6 +5495,7 @@ export async function main(argv: string[]): Promise<number> {
   if (args.subcommand === "regression") return handleRegression(args.subArgs ?? [], home);
   if (args.subcommand === "kanban") return handleKanban(args.subArgs ?? [], home);
   if (args.subcommand === "subagent") return handleSubagent(args.subArgs ?? [], home);
+  if (args.subcommand === "roster") return handleRoster(args.subArgs ?? [], home);
   if (args.subcommand === "side-effects") return handleSideEffects(args.subArgs ?? [], home);
   if (args.subcommand === "heartbeat") return handleHeartbeat(args.subArgs ?? [], home);
   if (args.subcommand === "governance") return handleGovernance(args.subArgs ?? [], home);

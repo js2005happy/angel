@@ -264,11 +264,11 @@ export function resumeKanbanTask(home: string, id: string): KanbanTask {
   return transition(home, id, "queued", "分层上限放行，恢复进队列");
 }
 
-export function requestKanbanReview(home: string, id: string, by: string): KanbanTask {
+export function requestKanbanReview(home: string, id: string, by: string, note = ""): KanbanTask {
   const store = loadKanbanStore(home);
   const task = getTask(store, id);
   if (task.status !== "working") throw new KanbanError(`只能对 working 状态的任务请求审阅，当前为 ${task.status}`);
-  task.review = { by: by.slice(0, 60), note: "", at: nowIso() };
+  task.review = { by: by.slice(0, 60), note: String(note).slice(0, 300), at: nowIso() };
   saveKanbanStore(home, store);
   return transition(home, id, "review", `请求审阅（${task.review.by}）`);
 }

@@ -121,3 +121,135 @@ nyra peer handoff --to b --run 20261120-120000-abcdef
 - 局域网自动发现没做；跨用户互问的“对方是谁”只认对端名，不做身份认证
 （网关 token 是唯一的鉴权手段，见 `docs/mcp.md`）。
 - Windows / macOS 真机未验证。
+
+## 名片与加好友（缺口 38，§4.3 第三批）
+
+好友 = 一个人 + 他的 agent。加好友不是扫个码就完事——双向批准才互认：
+你发请求、对方批准，另一边同样走一遍；没批准之前，对方什么都看不到、
+什么都调不动。
+
+### 名片
+
+`nyra peer card` 看我的名片（JSON）。名片是 A2A 风格的一张卡：名字、
+描述、能力清单、端点、认证方式。内容由 Soul（`~/.nyra/souls/<agent>.json`，
+见 `docs/soul.md`）与对外 MCP 服务的工具清单如实生成，不编造没有的能力：
+
+- 名字与描述来自 Soul 身份（name / persona / goal），没配 Soul 时是默认值。
+- 技能 = 对外 MCP 服务的工具清单（`search_memory`、`query_evidence`、
+  `answer_question`、`add_memory`、`forget_session`、`dispatch_task`）。
+- `authentication.schemes` 只有 `bearer`；`capabilities` 里 streaming 与
+  pushNotifications 都是 false——Nyra 目前只回 JSON、不做流式推送。
+
+名片本身是公开信息（不含密钥与内部状态），但默认不发布。发布开关在
+`config.json` 的 `peer_card` 一节：
+
+```json
+{
+  "peer_card": {
+    "publish": true,
+    "public_url": "https://nyra.example.com"
+  }
+}
+```
+
+- `publish` 默认关；关时网关 `GET /.well-known/agent-card.json` 当不存在
+  （404），不泄露端点。
+- `public_url` 只认 http(s)，即网关根地址；名片的 `url` 就是它，`endpoints.mcp`
+  是它后面加 `/mcp`。不配时 `url` 与 `endpoints.mcp` 都是 null。
+- 开关也可以用命令改：`nyra peer card publish on|off`（改 `config.json`，
+  不重启也生效——网关每次请求都读当前配置）。
+
+### 好友码
+
+`nyra peer code` 看我的好友码。格式 `NYR-XXXX-XXXX`（字母表去掉了 0/1/I/O，
+免得念错），24 小时有效，过期自动换新（`--regenerate` 立即换一枚）。
+码是双方人工比对的共享口令：你把码发给对方（聊天里贴一下就行），对方
+登记请求时带上这枚码，我这边验得上才认——错码不认、过期码不认。
+
+账本与事件里只记码的 SHA-256 前 12 位指纹，不记码本身。
+
+### 加好友（双向批准）
+
+```bash
+# 我发请求：先拉对方名片校验（格式不对、名片没发布都直接拒绝）
+nyra peer add --name pilot --url http://127.0.0.1:18080/mcp
+# 对方把码给你，你登记他的请求（--code 必填）
+nyra peer request --name pilot --url http://127.0.0.1:18080/mcp --code NYR-ABCD-1234
+# 批准（默认只读，须 --yes）
+nyra peer accept pilot --yes
+# 拒绝
+nyra peer decline pilot --yes
+```
+
+- 发请求只记我方账本，不通知对方——对方那边也要走一遍 `request` + `accept`
+  才算双向。状态分得开：`好友（双向）`（两边都走了流程）与 `好友`
+  （只我这边批准了）。
+- 未批准前对方什么都看不到、什么都调不动：`share` 与视频 `--friend`
+  都只认已批准、未拉黑的好友。
+- 批准、拒绝、拉黑、删除都须 `--yes`（accept/decline/block/remove），
+  删圈也须 `--yes`。
+
+### 好友分圈与权限档
+
+```bash
+nyra peer circle create work        # 建圈（default 是默认圈，不用建、不能删）
+nyra peer circle list
+nyra peer friend pilot --circle work --tier propose
+nyra peer circle delete work        # 删圈须先移空
+```
+
+- 每个好友归属一个圈（默认 `default`），权限档只有两档：`readonly`
+  （默认，只读）与 `propose`（可提议修改，不能直接改）。
+- 圈只决定“我主动发给谁”与“共享给谁”：`share --to <圈名>` 发给整圈
+  （圈名与好友名重名时好友优先）；`well-known` 名片端点本身是公开的，
+  圈不限制谁来拉名片——完整的 per-circle 名片可见性是缺口 34 的事，
+  本批不做。
+- 人的权限和 agent 的权限分开管：这里只管 agent 这一侧；人那一侧是
+  视频通话面板（`docs/design/video-call/SPEC.md`）的事。
+
+### 只共享任务产物
+
+```bash
+nyra peer share --to pilot --run 20261120-120000-abcdef
+nyra peer share --to work --run 20261120-120000-abcdef --share evidence
+```
+
+- 只共享已完成任务的产物（文件 / 结论 / 证据摘要），不共享原始对话、
+  凭证、内部账本与用量细节。底层复用缺口 12 的交接包与审查门：先过独立
+  审查（`reviewer` 须开），放行才发；只读模式，不给写权限。
+- `--to` 可为好友名或圈名；发给整圈时逐个发、逐个记结果（某一家拒绝
+  不影响其他家）。
+- 对方发来的名片、消息、任务产物一律按不可信输入处理：先验格式再用，
+  不直接执行、不直接进记忆、不直接进审批（缺口 12 的口径沿用）。
+
+### 视频通话接线
+
+```bash
+nyra video call start --friend pilot --yes
+```
+
+- `--friend <好友名>` 按好友账本解析：须是已批准、未拉黑的好友，否则
+  拒绝呼叫（`--peer` 保持原样：任意名字 + `--yes`）。
+- `--friend` 与 `--peer` 二选一；呼叫有名有姓的对方须 `--yes` 的规矩沿用。
+- 本批只校验好友身份，不改通话媒体面。
+
+### 账本与证据链
+
+- 好友账本 `~/.nyra/friends.json`（原子写 0600，损坏先备份再抛错，
+  不静默重建）+ 好友码 `~/.nyra/friend-codes.json`（同款写法）。
+- 8 个新运行事件已注册进 EVENT_FIELDS（`friend_requested` /
+  `friend_request_received` / `friend_accepted` / `friend_declined` /
+  `friend_blocked` / `friend_unblocked` / `friend_removed` /
+  `friend_code_regenerated`），每次好友操作单独建一条只记 friend_* 事件的
+  证据运行（peer.ts 同款做法）；审计进 `~/.nyra/peer-audit.jsonl`
+  （只记对端名、名片指纹与码指纹）。
+
+### 已知局限
+
+- 真实对端未接通过：只在假名片服务器（本机 Bun.serve）与假 MCP 服务器
+  上验过握手与分享。
+- 名片发布只在网关跑着时才可达；网关没跑，对方拉不到名片。
+- 圈不限制名片拉取（只限主动分享），完整分圈体系是缺口 34 的事。
+- 视频 `--friend` 只校验好友身份，不改媒体面；跨 agent 联合会话是
+  缺口 39 的事，等缺口 34 落地再做。
+- Windows / macOS 真机未验证。

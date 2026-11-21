@@ -95,6 +95,15 @@ nyra side-effects recover
 不擅自标 done。已读/未读跨重启保留：恢复只读写副作用队列本身，绝不碰
 收件箱（`inbox.jsonl` 的 read 标记重启前后不变）。
 
+## 单点停止（H-3）
+
+停一个子 agent 不用整批推倒重来，详见 `docs/roster.md`。停止是“请求
+停止”不是“已停止”：`nyra subagent stop <运行 id> --yes` 只记请求，
+并把绑了同一运行的 working 任务送 review（partial 路径：部分成果留着，
+等人看，备注里写清停在哪一步）；停没停下来以 `nyra subagent confirm-stopped`
+的确认为准。已请求停止的任务不续跑、不自动续跑；取消请求用
+`nyra subagent cancel-stop`（任务若已进 review，等人用 `kanban decide` 定）。
+
 ## 事件（证据链）
 
 `kanban_created / kanban_transition / kanban_blocked / kanban_reviewed /

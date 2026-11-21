@@ -76,7 +76,8 @@
 | `nyra bot status` | Bot 总览：Telegram/Discord/Slack/WhatsApp 运行态 + 电脑数量与资源，本 Bot 的电脑带标注（详见 `docs/bot.md` 与 `docs/bot-computer.md`） |
 | `nyra task <add\|list\|show\|cancel\|worker\|approve>` | 后台任务队列 |
 | `nyra kanban <create\|list\|show\|start\|fail\|review\|decide\|verify\|done\|reset\|remove\|tick\|sweep>` | 缺口 26：持久任务板——任务是账本里的一行，崩溃不丢、熔断进 blocked、完成须附验证证据（详见 `docs/kanban.md`） |
-| `nyra subagent <list\|show\|register\|heartbeat\|sweep\|resume\|suspend>` | 缺口 30：崩溃自续——子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑（详见 `docs/kanban.md`） |
+| `nyra subagent <list\|show\|register\|heartbeat\|sweep\|resume\|suspend\|stop\|confirm-stopped\|cancel-stop>` | 缺口 30：崩溃自续——子 agent 持久行 + 心跳检查点 + 启动扫荡 + 先验状态再续跑；H-3：单点停止（请求停止/确认停下/取消请求，详见 `docs/roster.md`） |
+| `nyra roster <list\|show>` | H-1：实时花名册——每个子 agent 一行：状态 + 已耗时 + 当前动作（只读快照，token/费用默认不显示，详见 `docs/roster.md`） |
 | `nyra side-effects <list\|show\|record\|mark\|recover>` | DSH-4：先存后做的副作用队列——执行前先落库，重启按年龄恢复、带 recovery note（详见 `docs/kanban.md`） |
 | `nyra heartbeat <add\|list\|remove\|enable\|disable\|run\|commitments>` | 缺口 31：静默巡查——无事安静、有发现先记证据再写收件箱；推断承诺须用户确认一次、过期自动失效（详见 `docs/heartbeat.md`） |
 | `nyra governance <policy\|mandate\|mode\|dry-runs>` | 缺口 43：企业治理——版本化策略 + 不可变授权 + observe/auto 接单模式 + 干跑记录（详见 `docs/governance.md`） |
@@ -101,9 +102,10 @@
 | `nyra shopify <auth\|status\|products\|product\|orders\|order\|inventory>` | Shopify 连接器（只读）：查商品、订单、库存；写操作一律拒绝（详见 `docs/connectors.md`） |
 | `nyra slack <auth\|status\|channels\|history\|send\|card>` | Slack 连接器：读频道/消息、发消息（须显式批准）、发审批卡；删消息/改频道/管理成员一律拒绝（详见 `docs/connectors.md`） |
 | `nyra mcp server <status\|enable\|disable\|allow-writes-on\|allow-writes-off>` | 对外 MCP 服务开关：别的 agent 经网关 `POST /mcp` 调 Nyra 的记忆与任务（默认关闭；写操作须显式开且过独立审查，详见 `docs/mcp.md`） |
-| `nyra peer <status\|enable\|disable\|list\|auth\|ask\|handoff>` | 对端协作：问别的 Nyra 实例、交接运行上下文（默认关闭；对外发送须开独立审查，详见 `docs/peer.md`） |
+| `nyra peer <status\|enable\|disable\|list\|auth\|ask\|handoff\|card\|code\|add\|request\|accept\|friends\|block\|circle\|share>` | 对端协作：问别的 Nyra 实例、交接运行上下文、名片加好友（默认关闭；对外发送须开独立审查，详见 `docs/peer.md`） |
 | `nyra voice <status\|speak <文字>\|enable-tts\|disable-tts>` | 语音指挥：看配置与可用性、读一段文字、开关自动回读（默认关；详见 `docs/voice.md`） |
 | `nyra voice call <start\|answer\|decline\|end\|status\|list\|segment\|confirm>` | 实时语音通话：建通话、喂音频段落转写、可选回读（本地 whisper 优先，云端默认关；详见 `docs/voice.md`） |
+| `nyra video <call\|signal\|ice>` | 视频通话 + 按需视觉采样：信令 + TURN + ICE 直连传输，帧按需看（本地优先，云端默认关；详见 `docs/video-call.md`） |
 | `nyra export --format docx\|xlsx\|pptx --from <内容 JSON> --out <路径>` | 成品导出：结构化内容写成可编辑的真办公文件，附事实核查（详见 `docs/office.md`） |
 | `nyra media <status\|enable\|disable\|ingest <链接> [--out <路径>]\|setup\|scope …>` | 媒体抓取：公开视频 → 字幕/转写 → 文本（默认关；yt-dlp 二进制须 `nyra media setup` 按官方 release 下载并验签安装；详见 `docs/media-ingest.md`） |
 
