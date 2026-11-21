@@ -345,6 +345,7 @@ Phase 2 的审批指令认人；`owner` 是机主的 id（只认一个），`mem
 覆盖系统提示词、最大步数与超时（例：`"profiles": {"guest":
 {"maxTurns": 4}}`）。`timeout_ms` 是单条消息从入队到出结果的超时
 （默认 120 秒；超时按取消处理）。
+`team`（GROK 批，新缺口 52）：团队名或 id，配了它 Bot 就跑在该团队里——Bot 只能是该团队的参谋长或成员（启动时校验，不在团队里直接拒绝启动），且须有完整 Charter；团队模式下 Bot 的对外动作一律回参谋长/人批（详见 `docs/team.md`）。不配时 Bot 是单机，行为不变。
 `notifier` 一节（Phase 3，见上文“主动推送”）：`enabled` 默认 false；
 `target_chat_id` 是推送目标会话的 id；`heartbeat_interval_ms` 默认
 300000（5 分钟，夹在 60 秒到 1 小时之间）；`notify_cooldown_ms` 默认

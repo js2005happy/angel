@@ -38,6 +38,7 @@
   - `prior`（偏好）：柔性偏好，只进提示词，不带 deny 规则。
   - 每条可开关（`enabled`：关掉的不参与编译与提示词注入，文件里留着）。
 - **memory_index**：只记“哪个记忆文件、有几条、上次同步时间”，不复制记忆正文；路径只记相对 home 的相对路径。
+- **charter**（角色契约，GROK-2）：与 Tenet 并列的一份书面合同——负责什么（`own`）、信息来源（`sources`，1–10 条）、输出格式（`output`）、审批门（`approval`）、停下条件（`stop`），每项 1–1000 字，五项齐全有效才算一份契约。建团队接单须有完整 Charter（缺了直接拒绝）；交付时配 verifier 抽查（`charter_valid` 行，只核说法不验语义）。命令见下文“命令”一节的 `soul charter` 三行，详见 `docs/team.md`。
 
 当前运行用哪个 Soul：`config.json` 的 `soul.agent`（默认 `default`），或环境变量 `NYRA_SOUL_AGENT`。没有 Soul 文件时一切如旧（零影响）。
 
@@ -64,6 +65,9 @@ nyra soul enable <tenet id> / disable <tenet id>
 nyra soul edit <tenet id> [--text "新正文"] [--deny "规则" ...]
 nyra soul export [agent] [--out <路径>]   # 导出 JSON（0600，默认不上传）
 nyra soul import <路径> [--agent <名字>] [--yes]  # 导入（替换同名文件，须确认）
+nyra soul charter set <agent> --own "负责什么" --sources "来源1、来源2" --output "输出格式" --approval "审批门" --stop "停下条件" [--yes]
+nyra soul charter show [agent]          # 看某个 agent 的角色契约
+nyra soul charter clear <agent> [--yes]  # 清掉角色契约（清掉后该 agent 不能再接团队单）
 ```
 
 - **查看 Tenets 是一等命令**：`nyra soul show` 直接看全部 Tenet（id、类型、开/关、正文、deny 规则、来源会话、创建时间），不用翻 JSON。
@@ -81,3 +85,4 @@ nyra soul import <路径> [--agent <名字>] [--yes]  # 导入（替换同名文
 - invariant 的 deny 规则是权限规则语法（工具名 + 通配），表达不了“这句话的意思是删除”这种语义判断——语义层面的拦截仍靠独立审查层。
 - 手改 Soul 文件改坏了某条 deny 规则时，编译跳过它并在 `soul show` / `soul status` 里亮 warning；写入路径（add/edit/import）会直接拒绝坏规则，不让它进文件。
 - 真机验证：只在临时 home 与假审查 runner 上验过；真实 Bot（缺口 42）接 Soul 是下一批的事，本批只做身份层本身。
+- Charter（角色契约）写得再好模型也可能不遵守：抽查是确定性启发式检查、只核说法不验语义，内容对错仍由 verifier + 人批负责（详见 `docs/team.md`）。
