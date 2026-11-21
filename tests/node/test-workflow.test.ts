@@ -212,10 +212,17 @@ test("YAML：导入后重读定义，Windows 路径原样保存（CI #491）", a
 // DSL 校验
 // ---------------------------------------------------------------------------
 
-test("校验：最小合法定义通过；mode coordinator/dynamic 明确提示后续批次", () => {
+test("校验：最小合法定义通过；coordinator/dynamic 须写 goal，fixed 不认 goal/coordinator", () => {
   expect(validateWorkflowDefinition({ ...TOOL_DEF }).name).toBe("读文件");
-  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, mode: "coordinator" })).toThrow(/后续批次/);
-  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, mode: "dynamic" })).toThrow(/后续批次/);
+  const coordDef: WorkflowDefinition = { ...TOOL_DEF, mode: "coordinator", goal: "读一个文件" };
+  expect(validateWorkflowDefinition(coordDef).mode).toBe("coordinator");
+  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, mode: "coordinator" })).toThrow(/goal/);
+  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, mode: "dynamic", goal: "读一个文件", steps: [] })).not.toThrow();
+  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, mode: "dynamic", goal: "读一个文件", steps: [], coordinator: { max_new_steps: 0 } })).toThrow(/max_new_steps/);
+  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, goal: "多余" })).toThrow(/goal 只用于/);
+  expect(() => validateWorkflowDefinition({ ...TOOL_DEF, coordinator: { max_rounds: 5 } })).toThrow(/coordinator 配置只用于/);
+  expect(() => validateWorkflowDefinition({ ...coordDef, coordinator: { max_rounds: 21 } })).toThrow(/max_rounds/);
+  expect(() => validateWorkflowDefinition({ ...coordDef, coordinator: { max_new_steps: 11 } })).toThrow(/max_new_steps/);
   expect(() => validateWorkflowDefinition({ ...TOOL_DEF, mode: "other" })).toThrow(WorkflowError);
 });
 
@@ -314,7 +321,7 @@ test("dry-run：verify 用定义快照重算哈希，改过定义就失败", () 
       id: "20261121-120000-abcdef", workflow: "计划", status: "completed", inputs: {},
       definition: def, nodes: [], spentUsd: 0, startedAt: "2026-11-21T12:00:00Z", endedAt: "2026-11-21T12:00:01Z",
       dryRun: true, trial: false, error: null, pendingNodeId: null, pendingNodeIndex: null,
-      reviewItemId: null, dryRunPlanHash: plan.hash,
+      reviewItemId: null, dryRunPlanHash: plan.hash, coordinator: null,
     };
     saveWorkflowRun(home, run);
     expect(verifyDryRunPlan(run).ok).toBe(true);
@@ -588,7 +595,7 @@ test("账本：注册表损坏先备份再抛错；运行账本上限 200 条", 
         id: `20261121-120000-${String(i).padStart(6, "0")}`, workflow: "x", status: "completed", inputs: {},
         definition: TOOL_DEF, nodes: [], spentUsd: 0, startedAt: "2026-11-21T12:00:00Z", endedAt: "2026-11-21T12:00:01Z",
         dryRun: false, trial: false, error: null, pendingNodeId: null, pendingNodeIndex: null,
-        reviewItemId: null, dryRunPlanHash: null,
+        reviewItemId: null, dryRunPlanHash: null, coordinator: null,
       });
     }
     expect(loadWorkflowRuns(home2).runs).toHaveLength(200);
