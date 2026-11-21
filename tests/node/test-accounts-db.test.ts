@@ -68,6 +68,9 @@ function accountRow(overrides: Record<string, unknown> = {}): Record<string, unk
     email: "user@example.com",
     name: "User",
     role: "owner",
+    status: "active",
+    suspended_at: null,
+    external_id: null,
     created_at: new Date(1_700_000_000 * 1000),
     last_seen: new Date(1_700_000_000 * 1000),
     ...overrides,
@@ -80,6 +83,7 @@ function identityRow(overrides: Record<string, unknown> = {}): Record<string, un
     sub: "g-1",
     email: "user@example.com",
     name: "User",
+    issuer: null,
     linked_at: new Date(1_700_000_000 * 1000),
     ...overrides,
   };
@@ -87,14 +91,14 @@ function identityRow(overrides: Record<string, unknown> = {}): Record<string, un
 
 /** 给账号读路径（findById/loadAccount）挂上 canned 行。 */
 function accountReadHandlers(db: FakeDb, account: Record<string, unknown>, identities: Record<string, unknown>[]): void {
-  db.on(starts("SELECT id, email, name, role, created_at, last_seen FROM accounts WHERE id"), () => ({ rows: [account] }));
-  db.on(starts("SELECT provider, sub, email, name, linked_at FROM account_identities"), () => ({ rows: identities }));
+  db.on(starts("SELECT id, email, name, role, status, suspended_at, external_id, created_at, last_seen FROM accounts WHERE id"), () => ({ rows: [account] }));
+  db.on(starts("SELECT provider, sub, email, name, issuer, linked_at FROM account_identities"), () => ({ rows: identities }));
 }
 
 // ---- 表结构 ----
 
 test("AccountsDbTest.test_schema_statements", () => {
-  expect(ACCOUNTS_SCHEMA_VERSION).toBe(1);
+  expect(ACCOUNTS_SCHEMA_VERSION).toBe(2);
   const joined = ACCOUNTS_SCHEMA_STATEMENTS.join("\n");
   for (const table of ["accounts", "account_identities", "account_sessions", "magic_links", "account_audit", "schema_migrations"]) {
     expect(joined).toContain("CREATE TABLE IF NOT EXISTS " + table);
@@ -179,7 +183,7 @@ test("AccountsDbTest.test_pg_account_find_and_create", async () => {
   expect(first.email).toBe("owner@example.com");
   const insert = db2.inserts().find((q) => q.text.startsWith("INSERT INTO accounts"));
   expect(insert?.params[3]).toBe("owner");
-  expect(insert?.text).toContain("VALUES ($1, $2, $3, $4, to_timestamp($5), to_timestamp($6))");
+  expect(insert?.text).toContain("VALUES ($1, $2, $3, $4, 'active', $5, to_timestamp($6), to_timestamp($6))");
 
   // 第二个账号是 user；重复邮箱在 INSERT 之前就拒绝。
   const db3 = new FakeDb();
@@ -253,7 +257,73 @@ test("AccountsDbTest.test_pg_account_link_identity", async () => {
   const linked = await store4.linkIdentity("a-1", { provider: "github", sub: "gh-9", email: "user@example.com" });
   expect(linked.providers.length).toBe(1); // fake 只回了旧身份行，映射以 fake 为准
   const identityInsert = db4.inserts().find((q) => q.text.startsWith("INSERT INTO account_identities"));
-  expect(identityInsert?.params).toEqual(["a-1", "github", "gh-9", "user@example.com", null, 1_700_000_000]);
+  expect(identityInsert?.params).toEqual(["a-1", "github", "gh-9", "user@example.com", null, null, 1_700_000_000]);
+});
+
+test("AccountsDbTest.test_pg_account_suspend_reactivate_role_external_id", async () => {
+  // v2 迁移语句里有 status / suspended_at / external_id / issuer 四列。
+  const joined = ACCOUNTS_SCHEMA_STATEMENTS.join("\n");
+  expect(joined).toContain("ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'");
+  expect(joined).toContain("ADD COLUMN IF NOT EXISTS suspended_at timestamptz");
+  expect(joined).toContain("ADD COLUMN IF NOT EXISTS external_id text");
+  expect(joined).toContain("ADD COLUMN IF NOT EXISTS issuer text");
+  expect(joined).toContain("INSERT INTO schema_migrations (version) VALUES (2)");
+
+  // 停用：UPDATE 改状态，读回 suspended。
+  const db = new FakeDb();
+  accountReadHandlers(db, accountRow({ status: "suspended" }), [identityRow()]);
+  db.on(starts("UPDATE accounts SET status = 'suspended'"), () => ({ rows: [{ id: "a-1" }] }));
+  const store = new PostgresAccountStore(db, { clock: () => 1_700_000_000 });
+  const suspended = await store.suspend("a-1");
+  expect(suspended.status).toBe("suspended");
+  expect(db.updates().some((q) => q.text.startsWith("UPDATE accounts SET status = 'suspended'"))).toBe(true);
+
+  // 已停用的账号拒绝再绑登录方式。
+  const db2 = new FakeDb();
+  accountReadHandlers(db2, accountRow({ status: "suspended" }), [identityRow()]);
+  db2.on(starts("SELECT account_id FROM account_identities WHERE provider"), () => ({ rows: [] }));
+  const store2 = new PostgresAccountStore(db2, { clock: () => 1_700_000_000 });
+  await expect(store2.linkIdentity("a-1", { provider: "github", sub: "gh-9", email: "user@example.com" })).rejects.toThrow("已停用");
+  expect(db2.inserts()).toEqual([]);
+  expect(db2.updates()).toEqual([]);
+
+  // 恢复：UPDATE 清状态与停用时间。
+  const db3 = new FakeDb();
+  accountReadHandlers(db3, accountRow({ status: "active" }), [identityRow()]);
+  db3.on(starts("UPDATE accounts SET status = 'active'"), () => ({ rows: [{ id: "a-1" }] }));
+  const store3 = new PostgresAccountStore(db3, { clock: () => 1_700_000_000 });
+  const reactivated = await store3.reactivate("a-1");
+  expect(reactivated.status).toBe("active");
+
+  // 改角色与清 externalId 各走一条 UPDATE。
+  const db4 = new FakeDb();
+  accountReadHandlers(db4, accountRow({ role: "user" }), [identityRow()]);
+  db4.on(starts("UPDATE accounts SET role"), () => ({ rows: [{ id: "a-1" }] }));
+  const store4 = new PostgresAccountStore(db4, { clock: () => 1_700_000_000 });
+  await store4.setRole("a-1", "user");
+  expect(db4.updates()[0].params).toEqual(["user", "a-1"]);
+  const db5 = new FakeDb();
+  accountReadHandlers(db5, accountRow({ external_id: null }), [identityRow()]);
+  db5.on(starts("UPDATE accounts SET external_id"), () => ({ rows: [{ id: "a-1" }] }));
+  const store5 = new PostgresAccountStore(db5, { clock: () => 1_700_000_000 });
+  await store5.updateExternalId("a-1", null);
+  expect(db5.updates()[0].params).toEqual([null, "a-1"]);
+
+  // 创建带 external_id：INSERT 参数里有它；SSO 身份带 issuer：身份 INSERT 参数里有它。
+  const db6 = new FakeDb();
+  db6.on(starts("SELECT 1 FROM accounts WHERE lower(email)"), () => ({ rows: [] }));
+  db6.on(starts("SELECT COUNT(*)"), () => ({ rows: [{ n: 1 }] }));
+  const store6 = new PostgresAccountStore(db6, { clock: () => 1_700_000_000 });
+  await store6.create({ email: "scim@example.com", external_id: "ext-7" });
+  const insert6 = db6.inserts().find((q) => q.text.startsWith("INSERT INTO accounts"));
+  expect(insert6?.params[4]).toBe("ext-7");
+  const db7 = new FakeDb();
+  accountReadHandlers(db7, accountRow(), [identityRow()]);
+  db7.on(starts("SELECT account_id FROM account_identities WHERE provider"), () => ({ rows: [] }));
+  const store7 = new PostgresAccountStore(db7, { clock: () => 1_700_000_000 });
+  await store7.linkIdentity("a-1", { provider: "sso", sub: "sso-1", email: "user@example.com", issuer: "https://idp.example.com" });
+  const identityInsert7 = db7.inserts().find((q) => q.text.startsWith("INSERT INTO account_identities"));
+  expect(identityInsert7?.params).toEqual(["a-1", "sso", "sso-1", "user@example.com", null, "https://idp.example.com", 1_700_000_000]);
 });
 
 // ---- 会话目录（Postgres） ----
