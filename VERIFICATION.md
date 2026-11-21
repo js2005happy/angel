@@ -945,3 +945,11 @@ python3 -m angel --list-sessions
 3. **memory_append / save_skill 未进单元测试**：这两个工具会写 `~/.angel/` 下的真实文件，单元测试里未覆盖；其代码路径已随主循环跑通过（工具分发表无问题），但未单独断言。
 4. **模型调用要花钱**：软件免费，推理按 token 计费。本次验证总计只用了几百 token 的 deepseek-flash，成本可忽略；日常使用建议默认 flash 模型。
 5. **auto + 非交互**：cron/管道运行时 auto 模式遇到写操作会明确报错退出，不会悄悄写入；后台任务请用 `--mode full`。
+
+
+## 2026-11-21 — claim 执行边界与验收证据审阅（仅静态）
+
+- 已读取开发分支 README、DESIGN、CHANGELOG、VERIFICATION、ROADMAP 和 `scripts/node_tool_claim.ts`，对照最新提交及开放 Issues/PR；源码明确声明 Node claim 未接入真实工具派发。
+- 未运行测试、编译、脚本、CI、故障注入或外部 API；不能将先前 main 的 CI 状态当作本开发分支的验证结果。
+- 安全阻塞：`statfsSync` 和 procfs fd 身份复核仅在检查瞬间有效，无法锁住特权挂载命名空间；Windows 句柄方案仍未完成。下一项实现前需要可审查的执行链设计与平台测试计划。
+- 新增外部反馈来源：2026-11-16 Codex #61857（未验证即宣称完成）；2026-10-04 Codex #50771（长任务提前停止）。它们不证明 Angel 有同类故障。
